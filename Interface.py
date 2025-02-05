@@ -4,11 +4,11 @@ import sqlite3
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QWidget, QLabel, QPushButton, 
     QLineEdit, QTextEdit, QScrollArea, QMessageBox, QFileDialog, QListWidget, 
-    QListWidgetItem, QHBoxLayout, QCheckBox, QDateEdit, QSplitter
+    QListWidgetItem, QHBoxLayout, QCheckBox, QDateEdit, QSplitter, QTextBrowser
 )
-from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal, pyqtSlot, QUrl
 import PyQt6.QtGui
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QMouseEvent, QDesktopServices
 from grok_chat import ChatHandler
 import os
 import markdown
@@ -117,7 +117,8 @@ class ChatWindow(QMainWindow):
         chatWidget.setMinimumSize(400, 600)
         chat_layout = QVBoxLayout(chatWidget)
 
-        self.chatDisplay = QTextEdit(self)
+        self.chatDisplay = QTextBrowser(self)
+        self.chatDisplay.setOpenExternalLinks(True)
         self.chatDisplay.setReadOnly(True)
         chat_layout.addWidget(self.chatDisplay)
 
@@ -355,14 +356,14 @@ class ChatWindow(QMainWindow):
     @pyqtSlot(str)
     def onResponseReceived(self, response):
         # comment out: print(f"Response received: {response}")  # Debug statement
-        html_content = markdown.markdown(response)
-
+        html_content = markdown.markdown(response, extensions=['extra'])
+       
         # Ensure the response ends with proper HTML to close any open lists
         if html_content.endswith('<li>'):
             html_content += '</li></ul>'  # Close last list item and the list itself
         elif '<li>' in html_content and not html_content.endswith('</ul>'):
             html_content += '</ul>'  # If there's an <li> but no closing </ul>
-
+        print(f"HTML content: {html_content}")
         self.chatDisplay.append(f"<b>Navi:</b> {html_content}")
         self.conversation_history.append({"role": "assistant", "content": response})
         self.chat_handler.save_message(self.session_id, "assistant", response)

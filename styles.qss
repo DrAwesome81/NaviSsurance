@@ -1,9 +1,24 @@
 QTextEdit {
     background-color: #f8f9fa;
-    border: 1px solid #ced4da;
+    border: 1px solid white;
     padding: 10px;
     font-family: Arial, sans-serif;
     font-size: 14px;
+}
+
+QTextEdit a {
+    color: #0000EE; /* Link color */ 
+    text-decoration: underline; /* Underline to indicate it's a link */
+    cursor: pointer; /* Changes cursor to a hand indicating clickable link */
+}
+
+QTextEdit a:hover {
+    color: #551A8B; /* Darker blue on hover */
+    text-decoration: none; /* Optionally remove underline on hover for a different effect */
+}
+
+QTextEdit a:visited {
+    color: #551A8B; /* Purple for visited links */
 }
 
 QLineEdit {

@@ -1,6 +1,6 @@
 .env
 __pycache__/
 todo.db
-function_tests.py
 navissurance.db
 navissurance_documents.db
+Get_Tokens.py

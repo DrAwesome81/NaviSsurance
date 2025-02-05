@@ -6,29 +6,40 @@ import re
 import json
 from dotenv import load_dotenv
 import os
-from dropbox import Dropbox, files, DropboxOAuth2FlowNoRedirect
+from dropbox import Dropbox, files
 from dropbox.files import SearchMatch, FileMetadata, SearchOptions
 from dropbox.exceptions import AuthError
 from datetime import datetime
 from dateutil import parser
 from docx import Document # for DOCX text extraction
-import io
-from io import BytesIO
 import fitz # PyMuPDF for PDF text extraction
 import pandas as pd # For reading Excel files
-import queue
 
 load_dotenv()
 
 API_KEY = os.getenv('GROK_API_KEY')
+if API_KEY is None:
+    raise ValueError("GOK_API_KEY is not set in the environment")
+
 API_ENDPOINT = 'https://api.x.ai/v1/chat/completions'
+
 BRAVE_TOKEN = os.getenv('BRAVE_API_KEY')
+if BRAVE_TOKEN is None:
+    print("Warning: BRAVE_API_KEY not set. Web search functionality may be limited")
+
 BRAVE_API_URL = "https://api.search.brave.com/res/v1/web/search"
+
 DROPBOX_APP_KEY = os.getenv('DROPBOX_APP_KEY')
 DROPBOX_APP_SECRET = os.getenv('DROPBOX_APP_SECRET')
 DROPBOX_REFRESH_TOKEN = os.getenv('DROPBOX_REFRESH_TOKEN')
+if any(var is None for var in (DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN)):
+    raise ValueError("One or more Dropbox credentials are missing")
+
 DROPBOX_TOKEN_URL = "https://api.dropboxapi.com/oauth2/token"
+
 DROPBOX_API_KEY = os.getenv("DROPBOX_API_KEY")
+if DROPBOX_API_KEY is None:
+    print("DROPBOX_API_KEY not set. Using refresh token to get new one.")
 
 headers = {
     "Authorization": f"Bearer {API_KEY}",
@@ -52,7 +63,6 @@ base_system_message = {
     }
 
 def refresh_dropbox_token():
-    """Refresh the Dropbox access token using the refresh token."""
     response = requests.post("https://api.dropbox.com/oauth2/token", data={
         "grant_type": "refresh_token",
         "refresh_token": DROPBOX_REFRESH_TOKEN,
@@ -245,23 +255,25 @@ class ChatHandler(QObject):
                 else:
                     return "No relevant search results found."
             elif grok_response.startswith("DROPBOX_SEARCH:"):
-                print("starting Dropbox search")
                 search_query = grok_response.split("DROPBOX_SEARCH:")[1]
-                print("parsing query")
                 dropbox_search_result = self._search_dropbox(search_query)
-                print("attempting to search Dropbox")
                 
                 # Prepare a new message for Grok with the search results
                 new_system_message = {
                     "role": "system",
-                    "content": base_system_message['content'] + "Here are the Dropbox search results for '{search_query}'"
-                    ": {dropbox_search_result}. Please summarize or format these results appropriately for Dr. Odeh, "
-                    "in your characteristic manner."
+                    "content": base_system_message['content'] + " Here are the Dropbox search results for '{search_query}'. "
+                    "Summarize or format these results for Dr. Odeh in your characteristic manner, using bullet "
+                    "points for the file names and links when available.".format(search_query=search_query)
                 }
                 
-                # Send this new request to Grok for processing
+                search_result_message = {
+                    "role": "assistant",
+                    "content": json.dumps(dropbox_search_result)
+                }
+                
+                # Combine the messages for the new request
                 confirm_data = {
-                    "messages": [new_system_message],
+                    "messages": [base_system_message, new_system_message, search_result_message],
                     "model": "grok-2-latest",
                     "stream": False
                 }
@@ -272,7 +284,7 @@ class ChatHandler(QObject):
                     return confirm_response.json()['choices'][0]['message']['content']
                 except requests.exceptions.RequestException as e:
                     print(f"API call for Dropbox result processing failed: {e}")
-                    return "I couldn't process the Dropbox search results, but they include: " + dropbox_search_result[:200] + "..."
+                    return "I couldn't process the Dropbox search results, but they include: " + str(dropbox_search_result)[:200] + "..."
             else:
                 # If it's neither, return the response directly
                 return grok_response
@@ -307,27 +319,29 @@ class ChatHandler(QObject):
             
             results = []
             for match in search_results.matches:
-                print(f"Match type: {type(match.metadata)}")
                 if isinstance(match.metadata, files.MetadataV2):
                     inner_metadata = match.metadata.get_metadata()
                     if isinstance(inner_metadata, files.FileMetadata):
-                        print(f"File Name: {inner_metadata.name}")
-                        print(f"Path: {inner_metadata.path_display}")
-                        print(f"Match Type: {match.match_type}")
-                        print("---")
-                        results.append({
-                            "name": inner_metadata.name,
-                            "path": inner_metadata.path_display
-                        })
-                    else:
-                        print(f"Unexpected inner metadata type: {type(inner_metadata)}")
-                else:
-                    print(f"Unexpected metadata type: {type(match.metadata)}")
-            return json.dumps(results)
-
+                        # Generate a shared link for each file
+                        try:
+                            shared_link = dbx.sharing_create_shared_link(inner_metadata.path_lower).url
+                            results.append({
+                                "name": inner_metadata.name,
+                                "path": inner_metadata.path_display,
+                                "link": shared_link
+                            })
+                        except Exception as link_error:
+                            print(f"Failed to create shared link for {inner_metadata.name}: {link_error}")
+                            results.append({
+                                "name": inner_metadata.name,
+                                "path": inner_metadata.path_display,
+                                "link": None
+                            })
+            return results
+        
         except Exception as e:
-            print(f"An error occurred: {e}")
-            return json.dumps([])
+            print(f"An error occurred while searching Dropbox: {e}")
+            return []
     
     def _add_task_from_chat(self, task_text, due_date, session_id):
         # comment out: print(f"Adding task: {task_text}, Due Date: {due_date}")
