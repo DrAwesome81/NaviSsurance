@@ -3,12 +3,12 @@ import json
 import sqlite3
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QWidget, QLabel, QPushButton, 
-    QLineEdit, QTextEdit, QScrollArea, QMessageBox, QFileDialog, QListWidget, 
-    QListWidgetItem, QHBoxLayout, QCheckBox, QDateEdit, QSplitter, QTextBrowser
+    QLineEdit, QScrollArea, QMessageBox, QFileDialog, QListWidget, 
+    QListWidgetItem, QHBoxLayout, QCheckBox, QDateEdit, QSplitter, QTextBrowser, QSplashScreen
 )
 from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal, pyqtSlot, QUrl
 import PyQt6.QtGui
-from PyQt6.QtGui import QAction, QMouseEvent, QDesktopServices
+from PyQt6.QtGui import QAction, QMouseEvent, QDesktopServices, QPixmap, QIcon
 from grok_chat import ChatHandler
 import os
 import markdown
@@ -21,20 +21,14 @@ class ChatThread(QThread):
     def __init__(self, chatHandler, message, session_id, history):
         super().__init__()
         self.chat_handler = chatHandler
-        # comment out: print(f"ChatHandler type: {type(self.chat_handler)}")  # Debug to confirm type
         self.message = message
         self.session_id = session_id
         self.history = history
 
     def run(self):
         try:
-            # comment out: print(f"[DEBUG] In ChatThread.run(), self is of type: {type(self)}")  # Confirm type
-            # comment out: print(f"ChatThread started for session {self.session_id}")  # Debug statement
-
             # This step triggers the task addition logic
             response = self.chat_handler.get_response(self.message, self.session_id, self.history)
-            # comment out: print(f"Received response: {response}")  # Debug statement
-
             if response:
                 if "I've added the task" in response:
                     task_match = re.search(r"'([^']*)'", response)
@@ -45,7 +39,6 @@ class ChatThread(QThread):
                         due_date = date_match.group(1)
 
                         # Ensure task_added_signal is emitted from ChatThread, not ChatHandler
-                        # comment out: print("[DEBUG] Emitting task_added_signal from ChatThread")  # Debug
                         self.chat_handler.task_added_signal.emit(task_text, due_date)  # Emit from ChatThread instance directly
                 self.response_signal.emit(response)
             else:
@@ -61,12 +54,19 @@ class ChatThread(QThread):
 class ChatWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        pixmap = QPixmap("logo v2.png")
+        self.splash = QSplashScreen(pixmap)
+        self.splash.show()
+
+        # Show the splash screen for a bit, or until the main window is ready
+        # You can use a QTimer or just processEvents to keep the GUI responsive
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(2000, self.show_main_window)  # Show main window after 2 seconds
+
         self.chat_handler = ChatHandler(self)
-        # comment out: print(f"task_added_signal exists: {hasattr(self.chat_handler, 'task_added_signal')}")
         self.session_id = f"SESSION_GUI_{hash(str(self))}"
         self.conversation_history = []
         self.initDatabase()
-        # comment out: print("Database initialized")
         self.initUI()
 
     def initDatabase(self):
@@ -80,7 +80,6 @@ class ChatWindow(QMainWindow):
                     due_date TEXT
                 )
             """)
-            # comment out: print("Tasks table created or already exists")
 
             self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS archived_tasks (
@@ -97,13 +96,18 @@ class ChatWindow(QMainWindow):
         self.conn.close()
         super().closeEvent(event)
 
+    def show_main_window(self):
+        self.splash.finish(self)  # Finish the splash screen and show the main window
+        self.show()    
+    
     def initUI(self):
-        # comment out: print("Starting initUI")
         self.setWindowTitle('NaviSsurance')
         self.setGeometry(300, 300, 1000, 600)
 
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
+
+        main_layout = QVBoxLayout(central_widget)
 
         self.chatThread = ChatThread(self.chat_handler, "", self.session_id, self.conversation_history)
         self.chatThread.response_signal.connect(self.onResponseReceived)
@@ -111,15 +115,18 @@ class ChatWindow(QMainWindow):
 
         # Splitter for dividing chat and to-do list
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        main_layout.addWidget(splitter)
 
         # Chat panel
         chatWidget = QWidget()
         chatWidget.setMinimumSize(400, 600)
+        chatWidget.setStyleSheet("background-color: rgb(20, 20, 22);")
         chat_layout = QVBoxLayout(chatWidget)
 
         self.chatDisplay = QTextBrowser(self)
         self.chatDisplay.setOpenExternalLinks(True)
         self.chatDisplay.setReadOnly(True)
+        self.chatDisplay.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         chat_layout.addWidget(self.chatDisplay)
 
         self.userInput = QLineEdit(self)
@@ -129,6 +136,8 @@ class ChatWindow(QMainWindow):
 
         self.sendButton = QPushButton("Send", self)
         self.sendButton.clicked.connect(self.sendMessage)
+        self.sendButton.setStyleSheet("background-color: rgb(253, 98, 98); color: white; border: none; padding: "
+                                      "10px 20px; font-size: 14px; border-radius: 5px;")
         chat_layout.addWidget(self.sendButton)
 
         splitter.addWidget(chatWidget)
@@ -136,6 +145,7 @@ class ChatWindow(QMainWindow):
         # To-do list panel
         todoWidget = QWidget()
         todoWidget.setMinimumSize(350, 600)
+        todoWidget.setStyleSheet("background-color: rgb(20, 20, 22);")
         todo_layout = QVBoxLayout(todoWidget)
 
         self.todoList = QListWidget(self)
@@ -153,25 +163,25 @@ class ChatWindow(QMainWindow):
 
         self.addTaskButton = QPushButton("Add Task", self)
         self.addTaskButton.clicked.connect(self.addTask)
+        self.addTaskButton.setStyleSheet("background-color: rgb(253, 98, 98); color: white; border: none; "
+                                         "padding: 10px 20px; font-size: 14px; border-radius: 5px;")
         add_task_layout.addWidget(self.addTaskButton)
 
         todo_layout.addLayout(add_task_layout)
 
         self.archiveButton = QPushButton("Archive Completed Tasks", self)
         self.archiveButton.clicked.connect(self.archiveCompletedTasks)
+        self.archiveButton.setStyleSheet("background-color: rgb(253, 98, 98); color: white; border: none; "
+                                         "padding: 10px 20px; font-size: 14px; border-radius: 5px;")
         todo_layout.addWidget(self.archiveButton)
 
         splitter.addWidget(todoWidget)
 
         self.loadTasksFromDB()
-        # comment out: print("Finished loading tasks from DB")
 
         splitter.setSizes([7, 3])  # Chat: 70%, To-do: 30%
         splitter.setStretchFactor(0, 7)
         splitter.setStretchFactor(1, 3)
-
-        layout = QVBoxLayout(central_widget)
-        layout.addWidget(splitter)
 
         # Menu Bar
         menubar = self.menuBar()
@@ -212,20 +222,14 @@ class ChatWindow(QMainWindow):
         due_date = self.dueDateInput.date().toString("MM-dd-yyyy")
 
         if task_text:
-            # comment out: print("Starting to insert task into DB")
             self.insertTaskIntoDB(task_text, due_date)  # Insert the task into the database
-            # comment out: print("Finished inserting task into DB")
-
-            # comment out: print("Refreshing tasks from DB to update UI")
             self.loadTasksFromDB()  # Refresh the UI by loading tasks from the database
-            # comment out: print("UI refreshed with tasks from DB")
 
             # Clear input fields
             self.taskInput.clear()
             self.dueDateInput.setDate(QDate.currentDate())
     
     def addTaskFromChat(self, task_text, due_date):
-        # comment out: print(f"Adding task from chat: {task_text}")
         self.insertTaskIntoDB(task_text, due_date)  # Add to DB
         self.loadTasksFromDB() # Refresh the UI by loading tasks from the database
 
@@ -264,6 +268,7 @@ class ChatWindow(QMainWindow):
         label = QLabel(task_text)
         label.setWordWrap(True)  # Enable word wrapping
         label.setStyleSheet("max-width: 300px;")  # Adjust this width for less aggressive wrapping
+        label.setStyleSheet("color: white;")
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)  # Ensure left and top alignment
         layout.addWidget(label, alignment=Qt.AlignmentFlag.AlignTop)  # Align label to top for matching with checkbox
 
@@ -308,8 +313,6 @@ class ChatWindow(QMainWindow):
                     
                         if due_date_label:
                             due_date = QDate.fromString(due_date_label.text(), "MM-dd-yyyy")
-                        # comment out: print("Parsed due date:", due_date.toString("MM-dd-yyyy"))
-                        #comment out: print("Is overdue:", due_date < QDate.currentDate())
                         if due_date < QDate.currentDate():
                             label.setStyleSheet("color: red;")
 
@@ -355,7 +358,7 @@ class ChatWindow(QMainWindow):
 
     @pyqtSlot(str)
     def onResponseReceived(self, response):
-        # comment out: print(f"Response received: {response}")  # Debug statement
+
         html_content = markdown.markdown(response, extensions=['extra'])
        
         # Ensure the response ends with proper HTML to close any open lists
@@ -395,6 +398,7 @@ class ChatWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon("logo v2.png"))
 
     # Load styles
     with open("styles.qss", "r") as f:

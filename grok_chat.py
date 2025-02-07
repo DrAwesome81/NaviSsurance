@@ -63,6 +63,7 @@ base_system_message = {
     }
 
 def refresh_dropbox_token():
+    """Refresh the Dropbox access token using the refresh token."""
     response = requests.post("https://api.dropbox.com/oauth2/token", data={
         "grant_type": "refresh_token",
         "refresh_token": DROPBOX_REFRESH_TOKEN,
@@ -98,8 +99,6 @@ def brave_search(query):
         "q": query,
         "count": 10 # Number of results to return
     }
-    
-    # comment out: print(f"Query sent to Brave Search API: {params['q']}")  # Debug print to see the exact query
 
     try:
         response = requests.get(BRAVE_API_URL, headers=headers, params=params)
@@ -122,6 +121,7 @@ class ChatHandler(QObject):
 
     def close(self):
         self.conn.close()
+        self.cursor.close()
 
     def extract_text_from_pdf(pdf_path):
         document = fitz.open(pdf_path)
@@ -159,28 +159,13 @@ class ChatHandler(QObject):
         except requests.exceptions.RequestException as e:
             print(f"API call for summary failed: {e}")
             return "An error occurred while summarizing search results."
-    
-    def get_chat_history(self, session_id):
-        conn = sqlite3.connect('navissurance.db')
-        c = conn.cursor()
-        c.execute('''
-            SELECT role, content, timestamp 
-            FROM conversation 
-            WHERE session_id = ? 
-            ORDER BY timestamp DESC LIMIT 20
-        ''', (session_id,))
-        history = c.fetchall()
-        conn.close()
-        return history
 
     def save_message(self, session_id, role, content):
         conn = sqlite3.connect('navissurance.db')
-        c = conn.cursor()
-        c.execute('''
+        self.cursor.execute('''
             INSERT INTO conversation (session_id, role, content) VALUES (?, ?, ?)
         ''', (session_id, role, content))
-        conn.commit()
-        conn.close()
+        self.conn.commit()
 
     def get_response(self, message, session_id, conversation_history):
         
@@ -188,7 +173,6 @@ class ChatHandler(QObject):
 
         try:
             grok_response = chat_with_grok(conversation_history, session_id)
-            # comment out: print(grok_response)
             
             # Check for specific phrases
             if grok_response.startswith("ADD_TASK:"):
@@ -300,7 +284,6 @@ class ChatHandler(QObject):
         if match:
             task_text = match.group(1)
             due_date = match.group(2)
-            # comment out: print(f"Adding extracted task: {task_text}, Due Date: {due_date}")
 
             if self.task_added_signal:
                 self.task_added_signal.emit(task_text, due_date)
@@ -344,11 +327,9 @@ class ChatHandler(QObject):
             return []
     
     def _add_task_from_chat(self, task_text, due_date, session_id):
-        # comment out: print(f"Adding task: {task_text}, Due Date: {due_date}")
         if self.task_added_signal:
             self.task_added_signal.emit(task_text, due_date)  # Emit the task-added signal
         else:
-            # comment out: print(f"Task to add: {task_text}, Due Date: {due_date}")  # Fallback for debugging
             return f"I've added the task '{task_text}' with a due date of {due_date}."
 
     def get_chat_history(self, session_id):

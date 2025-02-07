@@ -1,9 +1,10 @@
 QTextEdit {
     background-color: #f8f9fa;
-    border: 1px solid white;
+    border: 1px solid #808080; /* Light Gray */
     padding: 10px;
     font-family: Arial, sans-serif;
     font-size: 14px;
+    color: white;
 }
 
 QTextEdit a {
@@ -23,14 +24,15 @@ QTextEdit a:visited {
 
 QLineEdit {
     background-color: white;
-    border: 1px solid #ced4da;
+    border: 1px solid #808080; /* Light Gray */
     padding: 8px;
     font-family: Arial, sans-serif;
     font-size: 14px;
+    color: white;
 }
 
 QPushButton {
-    background-color: #007bff;
+    background-color: rgb(253, 98, 98);
     color: white;
     border: none;
     padding: 10px 20px;
@@ -45,7 +47,34 @@ QCheckBox {
     margin: 0 5px;
 }
 
+QCheckBox::indicator {
+    color: white;
+}
+
+QCheckBox::indicator:checked {
+    color: white;
+}
+
 QLabel {
     font-size: 14px;
     margin: 0 5px;
+}
+
+QMenuBar {
+    background-color: rgb(20, 20, 22);
+    color: white;
+}
+
+QMenuBar::item {
+    background-color: rgb(20, 20, 22);
+    color: white;
+}
+
+QMenuBar::item:selected { /* For Hover Effect */
+    background-color: rgb(30, 30, 34); /* Slightly different shade for visibility */
+}
+
+QDateEdit, QDateEdit QAbstractSpinBox, QDateEdit QAbstractSpinBox::down-button, QDateEdit QAbstractSpinBox::up-button,
+QLabel {
+    color: white;
 }
