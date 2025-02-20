@@ -1,5 +1,9 @@
-QTextEdit {
-    background-color: #f8f9fa;
+QWidget {
+    background-color: rgb(20, 20, 22);
+}
+
+QTextBrowser {
+    background-color rgba(27, 28, 30, 0.8);
     border: 1px solid #808080; /* Light Gray */
     padding: 10px;
     font-family: Arial, sans-serif;
@@ -7,23 +11,23 @@ QTextEdit {
     color: white;
 }
 
-QTextEdit a {
+QTextBrowser a {
     color: #0000EE; /* Link color */ 
     text-decoration: underline; /* Underline to indicate it's a link */
     cursor: pointer; /* Changes cursor to a hand indicating clickable link */
 }
 
-QTextEdit a:hover {
+QTextBrowser a:hover {
     color: #551A8B; /* Darker blue on hover */
     text-decoration: none; /* Optionally remove underline on hover for a different effect */
 }
 
-QTextEdit a:visited {
+QTextBrowser a:visited {
     color: #551A8B; /* Purple for visited links */
 }
 
 QLineEdit {
-    background-color: white;
+    background-color: rgba(27, 28, 30, 0.8);
     border: 1px solid #808080; /* Light Gray */
     padding: 8px;
     font-family: Arial, sans-serif;
@@ -31,50 +35,56 @@ QLineEdit {
     color: white;
 }
 
+QCheckBox {
+    margin: 0 5px;
+}
+
+QCheckBox::indicator {
+    background-color: white;
+    border: 1px solid #808080;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #0056b3;
+}
+
+QLabel {
+    font-size: 14px;
+    margin: 0 5px;
+    color: white;
+}
+
+QMenuBar {
+    background-color: rgb(20, 20, 22);
+   color: white;
+}
+
+QMenuBar::item {
+    background-color: rgb(20, 20, 22);    
+}
+
+QMenuBar::item:selected { /* For Hover Effect */
+    background-color: rgb(30, 30, 34); 
+}
+
+QDateEdit {
+    background-color: rgba(27, 28, 30, 0.8);
+}
+
+QListWidget {
+    background-color: rgba(27, 28, 30, 0.8);
+    border: 1px solid #808080;
+}
+
 QPushButton {
-    background-color: rgb(253, 98, 98);
+    background-color: rgba(253, 98, 98, 0.8);
     color: white;
     border: none;
     padding: 10px 20px;
     font-size: 14px;
     border-radius: 5px;
 }
+
 QPushButton:hover {
-    background-color: #0056b3;
-}
-
-QCheckBox {
-    margin: 0 5px;
-}
-
-QCheckBox::indicator {
-    color: white;
-}
-
-QCheckBox::indicator:checked {
-    color: white;
-}
-
-QLabel {
-    font-size: 14px;
-    margin: 0 5px;
-}
-
-QMenuBar {
-    background-color: rgb(20, 20, 22);
-    color: white;
-}
-
-QMenuBar::item {
-    background-color: rgb(20, 20, 22);
-    color: white;
-}
-
-QMenuBar::item:selected { /* For Hover Effect */
-    background-color: rgb(30, 30, 34); /* Slightly different shade for visibility */
-}
-
-QDateEdit, QDateEdit QAbstractSpinBox, QDateEdit QAbstractSpinBox::down-button, QDateEdit QAbstractSpinBox::up-button,
-QLabel {
-    color: white;
+    background-color: rgb(200, 50, 50);
 }

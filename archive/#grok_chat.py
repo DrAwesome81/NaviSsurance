@@ -2,6 +2,8 @@ from PyQt6.QtCore import QObject, pyqtSignal, QDate
 import sqlite3
 import uuid
 import requests
+from requests.exceptions import Timeout
+import logging
 import re
 import json
 from dotenv import load_dotenv
@@ -17,75 +19,14 @@ import pandas as pd # For reading Excel files
 
 load_dotenv()
 
-API_KEY = os.getenv('GROK_API_KEY')
-if API_KEY is None:
-    raise ValueError("GOK_API_KEY is not set in the environment")
 
-API_ENDPOINT = 'https://api.x.ai/v1/chat/completions'
-
-BRAVE_TOKEN = os.getenv('BRAVE_API_KEY')
-if BRAVE_TOKEN is None:
-    print("Warning: BRAVE_API_KEY not set. Web search functionality may be limited")
-
-BRAVE_API_URL = "https://api.search.brave.com/res/v1/web/search"
-
-DROPBOX_APP_KEY = os.getenv('DROPBOX_APP_KEY')
-DROPBOX_APP_SECRET = os.getenv('DROPBOX_APP_SECRET')
-DROPBOX_REFRESH_TOKEN = os.getenv('DROPBOX_REFRESH_TOKEN')
-if any(var is None for var in (DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN)):
-    raise ValueError("One or more Dropbox credentials are missing")
-
-DROPBOX_TOKEN_URL = "https://api.dropboxapi.com/oauth2/token"
-
-DROPBOX_API_KEY = os.getenv("DROPBOX_API_KEY")
-if DROPBOX_API_KEY is None:
-    print("DROPBOX_API_KEY not set. Using refresh token to get new one.")
-
-headers = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json"
-}
-
-current_date = datetime.now().strftime("%B %d, %Y")
-
-base_system_message = {
-        "role": "system",
-        "content": f"Today is {current_date} You are Navi, an advanced AI model powering NaviSsurance, "
-        "a software used at NaviSure Consulting, a medical device consultancy focused on "
-        "startups in the fields of AI/ML, IVDs, SaMD, DTC devices, and other cutting edge tech. Your "
-        "personality is similar to Jarvis, with sarcasm used sparingly and occasional skepticism and "
-        "exasperation. Your sole user is Dr. Adam Odeh. If you are asked to add a task or a reminder, "
-        "return exactly 'ADD_TASK:<task description>|<due date>', without any other details or "
-        "explanation. If you are asked anything that would require a web search, return exactly "
-        "'WEB_SEARCH:<search query>'. If you are asked for anything indicating a search of local files, "
-        "return exactly 'DROPBOX_SEARCH:<search query>'. For all other chat messages, respond "
-        "normally.".format(current_date=current_date)
-    }
-
-def refresh_dropbox_token():
-    """Refresh the Dropbox access token using the refresh token."""
-    response = requests.post("https://api.dropbox.com/oauth2/token", data={
-        "grant_type": "refresh_token",
-        "refresh_token": DROPBOX_REFRESH_TOKEN,
-        "client_id": DROPBOX_APP_KEY,
-        "client_secret": DROPBOX_APP_SECRET
-    })
-
-    if response.status_code == 200:
-        data = response.json()
-        new_access_token = data["access_token"]
-        new_refresh_token = data.get("refresh_token", DROPBOX_REFRESH_TOKEN)  # Refresh token might change
-        return new_access_token, new_refresh_token
-    else:
-        print(f"Failed to refresh token: {response.text}")
-        return None, DROPBOX_REFRESH_TOKEN
 
 def get_dropbox_client():
     """Creates a Dropbox client with the current or refreshed access token."""
     new_access_token, new_refresh_token = refresh_dropbox_token()
     if new_access_token:
-        os.environ["DROPBOX_API_KEY"] = new_access_token
-        os.environ["DROPBOX_REFRESH_TOKEN"] = new_refresh_token
+        #os.environ["DROPBOX_API_KEY"] = new_access_token
+        #os.environ["DROPBOX_REFRESH_TOKEN"] = new_refresh_token
         return Dropbox(new_access_token)
     else:
         raise Exception("Failed to refresh access token")
@@ -241,11 +182,18 @@ class ChatHandler(QObject):
             elif grok_response.startswith("DROPBOX_SEARCH:"):
                 search_query = grok_response.split("DROPBOX_SEARCH:")[1]
                 dropbox_search_result = self._search_dropbox(search_query)
+
+                files_list = ""
+                for file in dropbox_search_result:
+                    if file['link']:  # If there's a link
+                        files_list += f"- **{file['name']}** ([link]({file['link']}))\n"
+                    else:  # If there's no link
+                        files_list += f"- {file['name']}\n"
                 
                 # Prepare a new message for Grok with the search results
                 new_system_message = {
                     "role": "system",
-                    "content": base_system_message['content'] + " Here are the Dropbox search results for '{search_query}'. "
+                    "content": base_system_message['content'] + " Here are the Dropbox search results for '{search_query}':\n{files_list}. "
                     "Summarize or format these results for Dr. Odeh in your characteristic manner, using bullet "
                     "points for the file names and links when available.".format(search_query=search_query)
                 }
@@ -291,12 +239,16 @@ class ChatHandler(QObject):
             print("No task found in Navi's response")
     
     def _search_dropbox(self, query, folder_path="/"):
-        dbx = get_dropbox_client()
+        dbx = self.dropbox
+
+        print(f"Dropbox query: {query}")
+
+        if not folder_path:
+            folder_path = "/"
         
         try:
             search_options = files.SearchOptions(max_results=1000, path=folder_path)
             search_results = dbx.files_search_v2(query=query, options=search_options)
-            print(f"Query: {query}")
             
             print(f"Number of matches found: {len(search_results.matches)}")
             
@@ -306,8 +258,11 @@ class ChatHandler(QObject):
                     inner_metadata = match.metadata.get_metadata()
                     if isinstance(inner_metadata, files.FileMetadata):
                         # Generate a shared link for each file
+                        logging.info(f"Creating shared link for {inner_metadata.path_lower}")
                         try:
                             shared_link = dbx.sharing_create_shared_link(inner_metadata.path_lower).url
+                        except Timeout:
+                            print(f"Timeout occurred while creating shared link for {inner_metadata.name}")
                             results.append({
                                 "name": inner_metadata.name,
                                 "path": inner_metadata.path_display,
@@ -320,11 +275,18 @@ class ChatHandler(QObject):
                                 "path": inner_metadata.path_display,
                                 "link": None
                             })
+                    else:
+                        print(f"Path not available for {inner_metadata.name}. Skipping shared link creation.")
+                        results.append({
+                            "name": inner_metadata.name,
+                            "path": inner_metadata.path_display,
+                            "link": None
+                        })
             return results
         
         except Exception as e:
-            print(f"An error occurred while searching Dropbox: {e}")
-            return []
+            raise Exception(f"An error occurred while searching Dropbox: {e}")
+            #return []
     
     def _add_task_from_chat(self, task_text, due_date, session_id):
         if self.task_added_signal:
@@ -393,3 +355,18 @@ def initDatabase(self):
             due_date TEXT
         )
     """)
+
+if __name__ == "__main__":
+    # This block will only run if you execute this script directly, not if it's imported
+    session_id = str(uuid.uuid4())
+    handler = ChatHandler()  # Assuming ChatHandler is instantiated without GUI dependencies for this use
+
+    print("NaviSsurance Terminal Mode. Type 'exit' or 'quit' to quit.")
+    while True:
+        user_message = input("You: ")
+        if user_message.lower() in ['exit', 'quit']:
+            handler.close()
+            break
+
+        response = handler.get_response(user_message, session_id, [])
+        print(f"Navi: {response}")

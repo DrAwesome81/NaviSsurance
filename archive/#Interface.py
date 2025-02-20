@@ -4,9 +4,9 @@ import sqlite3
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QWidget, QLabel, QPushButton, 
     QLineEdit, QScrollArea, QMessageBox, QFileDialog, QListWidget, 
-    QListWidgetItem, QHBoxLayout, QCheckBox, QDateEdit, QSplitter, QTextBrowser, QSplashScreen
+    QListWidgetItem, QHBoxLayout, QCheckBox, QDateEdit, QSplitter, QTextBrowser, QSplashScreen, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal, pyqtSlot, QUrl
+from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal, pyqtSlot, QUrl, QTimer
 import PyQt6.QtGui
 from PyQt6.QtGui import QAction, QMouseEvent, QDesktopServices, QPixmap, QIcon
 from grok_chat import ChatHandler
@@ -124,21 +124,22 @@ class ChatWindow(QMainWindow):
         chat_layout = QVBoxLayout(chatWidget)
 
         self.chatDisplay = QTextBrowser(self)
+        self.chatDisplay.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
         self.chatDisplay.setOpenExternalLinks(True)
         self.chatDisplay.setReadOnly(True)
-        self.chatDisplay.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         chat_layout.addWidget(self.chatDisplay)
 
         self.userInput = QLineEdit(self)
         self.userInput.setPlaceholderText("Type your message here...")
+        self.userInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
         self.userInput.returnPressed.connect(self.sendMessage)
         chat_layout.addWidget(self.userInput)
 
         self.sendButton = QPushButton("Send", self)
         self.sendButton.clicked.connect(self.sendMessage)
-        self.sendButton.setStyleSheet("background-color: rgb(253, 98, 98); color: white; border: none; padding: "
-                                      "10px 20px; font-size: 14px; border-radius: 5px;")
+        self.sendButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
         chat_layout.addWidget(self.sendButton)
+        
 
         splitter.addWidget(chatWidget)
 
@@ -149,30 +150,31 @@ class ChatWindow(QMainWindow):
         todo_layout = QVBoxLayout(todoWidget)
 
         self.todoList = QListWidget(self)
+        self.todoList.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
         todo_layout.addWidget(self.todoList)
 
         add_task_layout = QHBoxLayout()
         self.taskInput = QLineEdit(self)
         self.taskInput.setPlaceholderText("Enter a task...")
+        self.taskInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
         add_task_layout.addWidget(self.taskInput)
 
         self.dueDateInput = QDateEdit(self)
         self.dueDateInput.setCalendarPopup(True)
         self.dueDateInput.setDate(QDate.currentDate())
+        self.dueDateInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
         add_task_layout.addWidget(self.dueDateInput)
 
         self.addTaskButton = QPushButton("Add Task", self)
         self.addTaskButton.clicked.connect(self.addTask)
-        self.addTaskButton.setStyleSheet("background-color: rgb(253, 98, 98); color: white; border: none; "
-                                         "padding: 10px 20px; font-size: 14px; border-radius: 5px;")
+        self.addTaskButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
         add_task_layout.addWidget(self.addTaskButton)
 
         todo_layout.addLayout(add_task_layout)
 
         self.archiveButton = QPushButton("Archive Completed Tasks", self)
         self.archiveButton.clicked.connect(self.archiveCompletedTasks)
-        self.archiveButton.setStyleSheet("background-color: rgb(253, 98, 98); color: white; border: none; "
-                                         "padding: 10px 20px; font-size: 14px; border-radius: 5px;")
+        self.archiveButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
         todo_layout.addWidget(self.archiveButton)
 
         splitter.addWidget(todoWidget)
@@ -283,7 +285,7 @@ class ChatWindow(QMainWindow):
         delete_button = QPushButton("Delete")
         delete_button.setFixedWidth(100)  # Adjusted width to fit "Delete" text
         delete_button.clicked.connect(lambda: self.deleteTask(item_widget))
-        delete_button.setStyleSheet("text-align: center;")  # Right align text inside button
+        delete_button.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
         layout.addWidget(delete_button, alignment=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignRight)
 
         item_widget.setLayout(layout)
@@ -315,6 +317,11 @@ class ChatWindow(QMainWindow):
                             due_date = QDate.fromString(due_date_label.text(), "MM-dd-yyyy")
                         if due_date < QDate.currentDate():
                             label.setStyleSheet("color: red;")
+
+                        # Set vertical alignment for the due date label
+                        layout.setAlignment(due_date_label, Qt.AlignmentFlag.AlignVCenter)
+                        due_date_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
 
     def deleteTask(self, widget):
         for i in range(self.todoList.count()):
@@ -409,6 +416,9 @@ if __name__ == "__main__":
     chatWindow = ChatWindow()
     chatWindow.show()
     sys.exit(app.exec())
+
+
+
 
 
 
