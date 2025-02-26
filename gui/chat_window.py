@@ -8,9 +8,9 @@ import json
 class ChatThread(QThread):
     response_signal = pyqtSignal(str)
 
-    def __init__(self, chatHandler, message, session_id, history):
+    def __init__(self, chat_manager, message, session_id, history):
         super().__init__()
-        self.chat_handler = chatHandler
+        self.chat_handler = chat_manager
         self.message = message
         self.session_id = session_id
         self.history = history

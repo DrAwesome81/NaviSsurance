@@ -1,4 +1,5 @@
 import fitz
+import sqlite3
 from docx import Document
 from dropbox import Dropbox, files
 import logging
@@ -24,47 +25,23 @@ def extract_text_from_txt(txt_path):
     with open(txt_path, 'r', encoding='utf-8') as file:
         return file.read()[:1000]
 
-def search_dropbox(self, query, folder_path=""):
-    dbx = self
-    print(f"Smart searching Dropbox for: {query}")
+def search_dropbox_index(db_manager, query):
+    """Search indexed Dropbox files using FTS5."""
     try:
-        result = dbx.files_list_folder(folder_path)
-        files_data = []
-        supported_types = {'.pdf', '.txt', '.docx', '.xlsx', '.xls'}
-        for entry in result.entries:
-            if isinstance(entry, files.FileMetadata) and os.path.splitext(entry.name)[1].lower() in supported_types:
-                temp_dir = tempfile.gettempdir()
-                safe_name = "".join(c if c.isalnum() or c in ['.', '_'] else '_' for c in entry.name)
-                temp_path = os.path.join(temp_dir, safe_name)
-                print(f"Downloading {entry.name} to {temp_path}")
-                dbx.files_download_to_file(temp_path, entry.path_lower)
-                if entry.name.endswith(".pdf"):
-                    content = extract_text_from_pdf(temp_path)
-                elif entry.name.endswith(".docx"):
-                    content = extract_text_from_docx(temp_path)
-                elif entry.name.endswith(".txt"):
-                    content = extract_text_from_txt(temp_path)
-                elif entry.name.endswith((".xlsx", ".xls")):
-                    content = "(Excel file - content extraction not supported yet)"
-                else:
-                    content = ""  # Shouldn’t hit this with filter
-                shared_link = None
-                try:
-                    shared_link = dbx.sharing_create_shared_link(entry.path_lower).url
-                except Exception as e:
-                    print(f"Failed to create link for {entry.name}: {e}")
-                files_data.append({
-                    "name": entry.name,
-                    "path": entry.path_display,
-                    "content": content,
-                    "link": shared_link
-                })
-                try:
-                    os.remove(temp_path)
-                except Exception as e:
-                    print(f"Failed to delete temp file {temp_path}: {e}")
-        print(f"Extracted content from {len(files_data)} files")
-        return files_data
+        with sqlite3.connect(db_manager.db_name) as conn:
+            cursor = conn.execute("""
+                SELECT f.name, f.path, f.link, i.content
+                FROM dropbox_index i
+                JOIN dropbox_files f ON i.name = f.name
+                WHERE dropbox_index MATCH ?
+                ORDER BY rank
+            """, (query,))
+            results = [
+                {"name": row[0], "path": row[1], "link": row[2], "content": row[3]}
+                for row in cursor.fetchall()
+            ]
+            print(f"Found {len(results)} matches for '{query}' in index.")
+            return results
     except Exception as e:
-        print(f"Dropbox search error: {e}")
+        print(f"Search error: {e}")
         return []
