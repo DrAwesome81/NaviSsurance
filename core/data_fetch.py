@@ -13,8 +13,8 @@ class DataFetcher:
             'https://www.googleapis.com/auth/gmail.readonly',
             'https://www.googleapis.com/auth/calendar.readonly'
         ]
-        self.CRED_FILE = r"C:\Users\adamo\Dropbox\_Consulting\NaviSsurance\client_secret.json"
-        self.TOKEN_FILE = r"C:\Users\adamo\Dropbox\_Consulting\NaviSsurance\navi_token.pkl"
+        self.CRED_FILE = r"C:\Users\adamo\Dropbox\_Consulting\NaviSsurance\config\client_secret.json"
+        self.TOKEN_FILE = r"C:\Users\adamo\Dropbox\_Consulting\NaviSsurance\config\navi_token.pkl"
         self.DB_FILE = r"F:\naviSsurance_index.db"
         self.gmail, self.calendar = self.get_services()
 

@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 import os
 import requests
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), "config", ".env"))
 
 API_KEY = os.getenv('GROK_API_KEY')
 if API_KEY is None:

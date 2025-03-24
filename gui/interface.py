@@ -12,7 +12,7 @@ from core.chat import ChatManager
 class ChatWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        pixmap = QPixmap("logo v2.png")
+        pixmap = QPixmap("assets/logo v2.png")
         self.splash = QSplashScreen(pixmap)
         self.splash.show()
         QTimer.singleShot(2000, self.show_main_window)
@@ -273,6 +273,13 @@ class ChatWindow(QMainWindow):
         self.userInput.clear()            # Clear the input
         self.userInput.setFocus()         # Put cursor back in input
 
+    def on_index_button(self): # Placeholder for when we figure out where to put the button
+        from core.index_dropbox import manual_index
+        from core.api import get_dropbox_client
+        dbx = get_dropbox_client()
+        manual_index(dbx)
+        self.chatDisplay.append("<b>Navi:</b> Dropbox index updated—fresh data inbound!")   
+    
     def archiveCompletedTasks(self):
         self.todo_list.archiveCompletedTasks()
 

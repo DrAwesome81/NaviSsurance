@@ -8,7 +8,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Load environment variables
-load_dotenv(override=True)
+load_dotenv("C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/.env", override=True)
 
 # Load from environment variables
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
@@ -45,30 +45,20 @@ class DropboxClient:
 
 dropbox_client = DropboxClient()
 
-def refresh_dropbox_token() -> tuple[str, str]:
-    """Refresh the Dropbox access token using the refresh token.
-
-    Returns:
-        Tuple of (new_access_token, new_refresh_token).
-
-    Raises:
-        ValueError: If the token refresh fails.
-    """
-    try:
-        response = requests.post("https://api.dropbox.com/oauth2/token", data={
-            "grant_type": "refresh_token",
-            "refresh_token": DROPBOX_REFRESH_TOKEN,
-            "client_id": DROPBOX_APP_KEY,
-            "client_secret": DROPBOX_APP_SECRET
-        })
-        response.raise_for_status()
+def refresh_dropbox_token():
+    response = requests.post("https://api.dropbox.com/oauth2/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": DROPBOX_REFRESH_TOKEN,
+        "client_id": DROPBOX_APP_KEY,
+        "client_secret": DROPBOX_APP_SECRET
+    })
+    print(f"Request Data: {response.request.body}")
+    print(f"Status: {response.status_code}, Response: {response.text}")
+    if response.status_code == 200:
         data = response.json()
-        new_access_token = data["access_token"]
-        new_refresh_token = data.get("refresh_token", DROPBOX_REFRESH_TOKEN)
-        return new_access_token, new_refresh_token
-    except requests.RequestException as e:
-        logger.error(f"Failed to refresh Dropbox token: {str(e)}")
-        raise ValueError(f"Dropbox token refresh failed: {str(e)}")
+        return data["access_token"], data.get("refresh_token", DROPBOX_REFRESH_TOKEN)
+    else:
+        response.raise_for_status()
 
 def get_dropbox_client() -> Dropbox:
     """Creates a Dropbox client with the current or refreshed access token."""
