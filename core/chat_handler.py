@@ -25,7 +25,9 @@ class ChatHandler(QObject):
         if last_run_date < today:
             print("Running daily briefing—new day detected")
             briefing = self.daily_briefing()
-            self.chat_window.chatDisplay.append(f"<b>Navi:</b> {briefing}<br><br>")
+            # Replace \n with <br> for HTML
+            formatted_briefing = briefing.replace('\n', '<br>')
+            self.chat_window.chatDisplay.append(f"<b>Navi:</b> {formatted_briefing}<br><br>")
         else:
             print("Skipping daily briefing—already ran today")
 
@@ -34,6 +36,9 @@ class ChatHandler(QObject):
         today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         tomorrow = today + timedelta(days=1)
         cutoff = int((datetime.now(UTC) - timedelta(hours=48)).timestamp())
+
+        # Check for sent emails to update replied status before briefing
+        self.update_replied_status_from_sent_emails(last_run)
 
         # Events
         time_min = today.strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -52,25 +57,59 @@ class ChatHandler(QObject):
         emails = self.data_fetcher.get_new_emails(last_run)
         email_summaries = []
         with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
-            for msg in emails[:5]:
-                details = self.data_fetcher.get_email_details(msg['id'])
+            for msg in emails[:5]:  # Limit to 5 most recent emails
+                details = self.data_fetcher.get_email_details(msg['id'], msg['source'])
+                if not details:
+                    continue
+                    
                 sender = next(h['value'] for h in details['payload']['headers'] if h['name'] == 'From')
                 subject = next(h['value'] for h in details['payload']['headers'] if h['name'] == 'Subject')
                 timestamp = int(details['internalDate']) // 1000
                 snippet = details.get('snippet', '')
+                
+                # Filter out marketing and non-essential emails
+                if any(kw in subject.lower() or kw in str(snippet).lower() for kw in [
+                    'unsubscribe', 'newsletter', 'promotion', 'sale', 'discount',
+                    'marketing', 'advertisement', 'spam', 'junk', 'notification',
+                    'alert', 'update', 'digest', 'summary', 'report'
+                ]):
+                    continue
+                    
+                # Check if email is from a client or potential client
+                is_client = any(domain in sender.lower() for domain in [
+                    'goldbugstrategies.com', 'dovahealth.ca', 'navisure.co'
+                ])
+                is_potential = any(kw in subject.lower() or kw in str(snippet).lower() for kw in [
+                    'consulting', 'project', 'proposal', 'quote', 'estimate',
+                    'opportunity', 'partnership', 'collaboration'
+                ])
+                
                 email_summaries.append(f"- {sender} - {subject} - {snippet}")
-                conn.execute("INSERT OR IGNORE INTO emails (id, sender, subject, timestamp, content, source)"
-                            "VALUES (?, ?, ?, ?, ?, ?)", (msg['id'], sender, subject, timestamp, snippet, 'gmail'))
-                if any(kw in subject.lower() or kw in snippet.lower() for kw in ['urgent', 'asap', 'meeting']):
-                    due_date = today.strftime('%Y-%m-%d')
-                    conn.execute("INSERT INTO tasks (session_id, task, due_date) VALUES (?, ?, ?)",
-                                (self.chat_window.session_id, f"Reply to {sender} re: {subject}", due_date))
-                    self.task_added_signal.emit(f"Reply to {sender} re: {subject}", due_date)
+                conn.execute("INSERT OR IGNORE INTO emails (id, sender, subject, timestamp, content, source, is_client, is_potential)"
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (msg['id'], sender, subject, timestamp, snippet, msg['source'], is_client, is_potential))
+                
+                # Only suggest tasks for client or potential client emails
+                if is_client or is_potential:
+                    if any(kw in subject.lower() or kw in str(snippet).lower() for kw in ['urgent', 'asap', 'meeting', 'follow up', 'action required']):
+                        # Emit signal to show confirmation dialog
+                        self.task_added_signal.emit(
+                            f"Reply to {sender} re: {subject}",
+                            today.strftime('%Y-%m-%d'),
+                            "Would you like to add this as a task?"
+                        )
+                        
         emails_str = "\n".join(email_summaries) if email_summaries else "- No new emails—quiet day!"
 
         # Unreplied
         with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
-            cursor = conn.execute("SELECT sender, subject, timestamp FROM emails WHERE timestamp < ? AND replied = 0", (cutoff,))
+            cursor = conn.execute("""
+                SELECT sender, subject, timestamp 
+                FROM emails 
+                WHERE timestamp < ? 
+                AND replied = 0 
+                AND (is_client = 1 OR is_potential = 1)
+            """, (cutoff,))
             unreplied = cursor.fetchall()
         unreplied_str = "\n".join([f"- {u[0]} - \"{u[1]}\" (sent {datetime.fromtimestamp(u[2]).strftime('%Y-%m-%d %H:%M')})"
                                 for u in unreplied]) if unreplied else "- No ignored emails—caught up, huh?"
@@ -98,3 +137,55 @@ class ChatHandler(QObject):
         self.db.add_task(session_id, task_text, due_date)
         print(f"Emitting signal: {task_text} due {due_date}")
         self.task_added_signal.emit(task_text, due_date)
+
+    def update_replied_status(self, sent_email_id, source):
+        """
+        Update the replied status of an email in the database based on a sent email.
+        This method should be called when a reply is sent to mark the original email as replied.
+        Uses 'In-Reply-To' header for more accurate matching if available.
+        """
+        try:
+            with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
+                # Fetch details of the sent email to get subject or thread information
+                try:
+                    sent_details = self.data_fetcher.get_email_details(sent_email_id, source)
+                except Exception as e:
+                    print(f"Error fetching details for sent email {sent_email_id} from {source}: {e}")
+                    return
+
+                # Try to find 'In-Reply-To' header for direct reply matching
+                in_reply_to = next((h['value'] for h in sent_details['payload']['headers'] if h['name'] == 'In-Reply-To'), None)
+                if in_reply_to:
+                    # Look for the original email by its Message-ID in the database
+                    cursor = conn.execute("SELECT id FROM emails WHERE id = ? AND replied = 0", (in_reply_to,))
+                    matching_email = cursor.fetchone()
+                    if matching_email:
+                        email_id = matching_email[0]
+                        conn.execute("UPDATE emails SET replied = 1 WHERE id = ?", (email_id,))
+                        conn.commit()
+                        print(f"Updated replied status for email ID {email_id} based on In-Reply-To header of sent email {sent_email_id}")
+                        return
+
+                # Fallback to subject matching if In-Reply-To is not available or no match found
+                sent_subject = next((h['value'] for h in sent_details['payload']['headers'] if h['name'] == 'Subject'), '')
+                original_subject = sent_subject.replace('Re: ', '').strip()
+                cursor = conn.execute("SELECT id FROM emails WHERE subject LIKE ? AND replied = 0", ('%' + original_subject + '%',))
+                matching_emails = cursor.fetchall()
+                if matching_emails:
+                    email_id = matching_emails[0][0]
+                    conn.execute("UPDATE emails SET replied = 1 WHERE id = ?", (email_id,))
+                    conn.commit()
+                    print(f"Updated replied status for email ID {email_id} based on subject match with sent email {sent_email_id}")
+                else:
+                    print(f"No matching email found for sent email {sent_email_id} from {source}")
+        except Exception as e:
+            print(f"Error updating replied status for sent email {sent_email_id}: {e}")
+
+    def update_replied_status_from_sent_emails(self, last_run):
+        """
+        Check for sent emails since last_run and update the replied status of corresponding received emails.
+        """
+        sent_emails = self.data_fetcher.get_sent_emails(last_run)
+        for email in sent_emails:
+            self.update_replied_status(email['id'], email['source'])
+        print(f"Checked {len(sent_emails)} sent emails for replied status updates.")

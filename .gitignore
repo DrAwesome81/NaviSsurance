@@ -3,4 +3,5 @@ __pycache__/
 todo.db
 navissurance.db
 navissurance_documents.db
-Get_Tokens.py
+Get_Tokens
+cuda_env/ 

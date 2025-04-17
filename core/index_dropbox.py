@@ -83,6 +83,10 @@ def index_dropbox(dbx, db_path="F:/naviSsurance_index.db", progress_callback=Non
 
     c.execute("SELECT path, modified_time, size FROM dropbox_files")
     db_files = {row[0]: (row[1], row[2]) for row in c.fetchall()}
+    c.execute("SELECT value FROM index_metadata WHERE key = 'last_cursor'")
+    row = c.fetchone()
+    last_cursor = row[0] if row else None
+
 
     full_index_types = {'.pdf', '.txt', '.docx', '.xlsx', '.xls'}
     processed_files = 0
@@ -108,7 +112,10 @@ def index_dropbox(dbx, db_path="F:/naviSsurance_index.db", progress_callback=Non
 
     try:
         total_processed = 0  # Track total across refreshes
-        result = dbx.files_list_folder("", recursive=True)
+        if last_cursor:
+            result = dbx.files_list_folder_continue(last_cursor)
+        else:
+            result = dbx.files_list_folder("", recursive=True)
         files_to_index = []
         while True:
             for entry in result.entries:
@@ -171,7 +178,7 @@ def index_dropbox(dbx, db_path="F:/naviSsurance_index.db", progress_callback=Non
                     c.execute("INSERT INTO dropbox_index (name, content) VALUES (?, ?)", (name, content))
                     added_or_updated += 1
 
-                if processed_files % 100 == 0:
+                if processed_files % 10 == 0:
                     callback()
                     # Save periodically and refresh token if needed
                     elapsed = time.time() - start_time
@@ -184,8 +191,9 @@ def index_dropbox(dbx, db_path="F:/naviSsurance_index.db", progress_callback=Non
                             print(f"Saved {len(unreadable_files)} unreadable files to {csv_path} at {processed_files} files")
                         dbx = get_dropbox_client()  # Refresh token
                         start_time = time.time()  # Reset timer
-
+            c.execute("INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('last_cursor', ?)", (result.cursor,))
             conn.commit()
+
             if result.has_more:
                 result = dbx.files_list_folder_continue(result.cursor)
             else:

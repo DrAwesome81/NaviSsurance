@@ -5,8 +5,12 @@ from gui.interface import ChatWindow
 from PyQt6.QtGui import QIcon
 from core.index_dropbox import auto_index_on_launch
 from core.api import get_dropbox_client
+from dotenv import load_dotenv
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# Load environment variables
+load_dotenv(os.path.join(os.path.dirname(__file__), "config", ".env"), override=True)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

@@ -7,7 +7,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "config", ".env"))
 
 API_KEY = os.getenv('GROK_API_KEY')
 if API_KEY is None:
-    raise ValueError("GOK_API_KEY is not set in the environment")
+    raise ValueError("GROK_API_KEY is not set in the environment")
 
 API_ENDPOINT = 'https://api.x.ai/v1/chat/completions'
 
@@ -54,7 +54,7 @@ base_system_message = {
         "in the context of AI/ML, SaMD, etc. If you are asked for anything indicating a search of local files, "
         "return exactly 'DROPBOX_SEARCH:<search query>'. When responding to DROPBOX_SEARCH results, "
         "format each item as: <b>filename</b> - <a href='url'>Link</a> - snarky description (plain text), "
-        "use <br><br> between items, limit to 5 files max, keep it conversational—don’t add extra bolding or formatting "
+        "use <br><br> between items, limit to 5 files max, keep it conversational—don't add extra bolding or formatting "
         "beyond filenames unless I ask. For all other chat messages, respond normally.".format(current_date=current_date)
     }
 
