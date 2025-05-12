@@ -1,38 +1,447 @@
 import sqlite3
+import logging
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QSplashScreen, 
                             QTextBrowser, QLineEdit, QPushButton, QListWidget, QDateEdit, QTableWidget, 
-                            QTableWidgetItem, QCheckBox, QComboBox, QLabel, QSplitter, QTextEdit)
-from PyQt6.QtCore import Qt, QDate, QTimer, pyqtSlot
-from PyQt6.QtGui import QPixmap, QAction
+                            QTableWidgetItem, QCheckBox, QComboBox, QLabel, QSplitter, QTextEdit, QDialog, QDialogButtonBox, QHeaderView, QMessageBox)
+from PyQt6.QtCore import Qt, QDate, QTimer, pyqtSlot, QUrl
+from PyQt6.QtGui import QPixmap, QAction, QDesktopServices, QColor
 from core.db import DatabaseManager
 from gui.chat_window import ChatThread, onResponseReceived, sendMessage, saveChat, loadChat
 from gui.todo_list import TodoList
 from core.chat import ChatManager
+import os
+import json
+from anthropic import Anthropic, AnthropicError
+from datetime import datetime
+from PyQt6.QtWidgets import QApplication
+
+logger = logging.getLogger(__name__)
+
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        layout = QVBoxLayout()
+        
+        # Style for the dialog
+        self.setStyleSheet("""
+            QDialog {
+                background-color: rgb(27, 28, 30);
+                color: white;
+            }
+            QTextEdit {
+                background-color: rgba(27, 28, 30, 0.8);
+                color: white;
+                border: 1px solid rgba(253, 98, 98, 0.8);
+            }
+            QLabel {
+                color: white;
+            }
+        """)
+        
+        self.system_message_input = QTextEdit(self)
+        
+        # Load existing system message from config
+        config_path = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/lead_gen_config.json'
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                self.system_message_input.setText(config.get('system_message', ''))
+            except Exception as e:
+                logger.error(f"Error loading system message: {e}")
+                self.system_message_input.setText("")  # Default empty if load fails
+        
+        layout.addWidget(QLabel("Claude System Message:"))
+        layout.addWidget(self.system_message_input)
+        
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(253, 98, 98, 0.8);
+                color: white;
+                border: none;
+                padding: 5px 15px;
+            }
+            QPushButton:hover {
+                background-color: rgba(253, 98, 98, 1);
+            }
+        """)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+        self.setLayout(layout)
 
 class ChatWindow(QMainWindow):
     def __init__(self):
+        logger.info("Initializing ChatWindow...")
         super().__init__()
+        
+        # Create data directory if it doesn't exist
+        self.data_dir = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/data'
+        os.makedirs(self.data_dir, exist_ok=True)
+        
+        logger.info("Loading splash screen...")
         pixmap = QPixmap("assets/logo v2.png")
         self.splash = QSplashScreen(pixmap)
         self.splash.show()
         QTimer.singleShot(2000, self.show_main_window)
 
+        logger.info("Initializing chat handler...")
         self.chat_handler = ChatManager(self)
         self.session_id = f"SESSION_GUI_{hash(str(self))}"
         self.conversation_history = []
+        
+        logger.info("Initializing todo list...")
         self.todoList = QListWidget(self)
         self.todo_list = TodoList(self)
+        
+        logger.info("Setting up UI...")
         self.initUI()
+        
+        logger.info("Starting chat briefing...")
         self.chat_handler.start_briefing()
+        logger.info("ChatWindow initialization complete")
 
     def show_main_window(self):
+        logger.info("Showing main window...")
         self.splash.finish(self)
         self.show()
+        logger.info("Main window shown")
 
-    # Define all methods before initUI
     def search_leads(self):
-        print("Lead search TBD")
+        """Run Claude API search for leads based on system message."""
+        try:
+            # Load system message from config
+            config_path = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/lead_gen_config.json'
+            if not os.path.exists(config_path):
+                logger.error("Lead gen config not found.")
+                return
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            system_message = config.get('system_message', '')
 
+            # Initialize Claude client
+            api_key = os.getenv('ANTHROPIC_API_KEY', '')
+            if not api_key:
+                logger.error("Anthropic API key not found.")
+                return
+            client = Anthropic(api_key=api_key)
+
+            # Run search with explicit JSON formatting request
+            response = client.messages.create(
+                model="claude-3-opus-20240229",
+                max_tokens=1000,
+                system=system_message + "\nIMPORTANT: Your response must be a valid JSON array containing objects with 'name', 'company', 'title', 'rationale', and 'linkedin_url' fields. The rationale should explain why this person was included in the search results. Do not include any other text or explanation.",
+                messages=[{"role": "user", "content": "Execute the smart search for leads. Return the results as a JSON array."}]
+            )
+            
+            try:
+                # Extract the JSON string from the response
+                response_text = response.content[0].text.strip()
+                # Remove any markdown code block markers if present
+                response_text = response_text.replace('```json', '').replace('```', '').strip()
+                new_leads = json.loads(response_text)
+                
+                if not isinstance(new_leads, list):
+                    raise ValueError("Response is not a JSON array")
+                
+                # Load existing leads
+                leads_file = os.path.join(self.data_dir, 'leads.json')
+                existing_leads = []
+                if os.path.exists(leads_file):
+                    with open(leads_file, 'r') as f:
+                        existing_leads = json.load(f)
+                
+                # Create a set of existing lead identifiers (name + company)
+                existing_identifiers = {(lead['name'], lead['company']) for lead in existing_leads}
+                
+                # Add new leads to the beginning of the list, avoiding duplicates
+                for lead in new_leads:
+                    if not all(k in lead for k in ['name', 'company', 'title', 'rationale']):
+                        continue
+                    lead['contacted'] = False
+                    lead['contact_date'] = None
+                    lead['linkedin_url'] = lead.get('linkedin_url', '')
+                    
+                    # Check for duplicates
+                    if (lead['name'], lead['company']) not in existing_identifiers:
+                        existing_leads.insert(0, lead)
+                        existing_identifiers.add((lead['name'], lead['company']))
+                
+                # Save updated leads
+                with open(leads_file, 'w') as f:
+                    json.dump(existing_leads, f, indent=2)
+                
+                # Update table
+                self.update_leads_table(existing_leads)
+                logger.info(f"Successfully loaded {len(new_leads)} new leads")
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse Claude response as JSON: {e}")
+                logger.error(f"Raw response: {response_text}")
+            except Exception as e:
+                logger.error(f"Error processing leads: {e}")
+                
+        except AnthropicError as e:
+            logger.error(f"Claude API error: {e}")
+        except Exception as e:
+            logger.error(f"Search leads error: {e}")
+
+    def update_leads_table(self, leads):
+        """Update the leads table with the provided leads data."""
+        self.leadsTable.setRowCount(len(leads))
+        for row, lead in enumerate(leads):
+            # Name (as hyperlink if LinkedIn URL exists)
+            name_item = QTableWidgetItem(lead.get('name', ''))
+            if lead.get('linkedin_url'):
+                name_item.setData(Qt.ItemDataRole.UserRole, lead['linkedin_url'])
+                name_item.setData(Qt.ItemDataRole.UserRole + 1, "linkedin")
+                name_item.setForeground(QColor("#0077B5"))  # LinkedIn blue
+                font = name_item.font()
+                font.setUnderline(True)
+                name_item.setFont(font)
+            self.leadsTable.setItem(row, 0, name_item)
+            
+            # Company
+            self.leadsTable.setItem(row, 1, QTableWidgetItem(lead.get('company', '')))
+            # Title
+            self.leadsTable.setItem(row, 2, QTableWidgetItem(lead.get('title', '')))
+            
+            # Contacted checkbox
+            contacted_cb = QCheckBox()
+            contacted_cb.setChecked(lead.get('contacted', False))
+            contacted_cb.stateChanged.connect(lambda state, r=row: self.on_contacted_changed(r, state))
+            self.leadsTable.setCellWidget(row, 3, contacted_cb)
+            
+            # Contact date
+            contact_date = lead.get('contact_date')
+            date_item = QTableWidgetItem(contact_date if contact_date else '')
+            self.leadsTable.setItem(row, 4, date_item)
+            
+            # Message button
+            message_button = QPushButton("Generate Message")
+            message_button.clicked.connect(lambda _, r=row: self.generate_message(r))
+            self.leadsTable.setCellWidget(row, 5, message_button)
+            
+            # Delete button
+            delete_button = QPushButton("Delete")
+            delete_button.clicked.connect(lambda _, r=row: self.delete_lead(r))
+            self.leadsTable.setCellWidget(row, 6, delete_button)
+            
+            # Rationale (with view button)
+            view_rationale_button = QPushButton("View")
+            view_rationale_button.clicked.connect(lambda _, r=row: self.show_rationale(r))
+            self.leadsTable.setCellWidget(row, 7, view_rationale_button)
+            
+        # Connect cell click event for LinkedIn links
+        self.leadsTable.cellClicked.connect(self.handle_cell_click)
+
+    def handle_cell_click(self, row, column):
+        """Handle cell clicks, specifically for LinkedIn links."""
+        if column == 0:  # Name column
+            item = self.leadsTable.item(row, column)
+            if item and item.data(Qt.ItemDataRole.UserRole + 1) == "linkedin":
+                url = item.data(Qt.ItemDataRole.UserRole)
+                if url:
+                    # Disconnect the signal temporarily to prevent multiple triggers
+                    self.leadsTable.cellClicked.disconnect(self.handle_cell_click)
+                    QDesktopServices.openUrl(QUrl(url))
+                    # Reconnect the signal
+                    self.leadsTable.cellClicked.connect(self.handle_cell_click)
+
+    def show_rationale(self, row):
+        """Show the rationale in a popup dialog."""
+        leads_file = os.path.join(self.data_dir, 'leads.json')
+        if os.path.exists(leads_file):
+            with open(leads_file, 'r') as f:
+                leads = json.load(f)
+            
+            if 0 <= row < len(leads):
+                rationale = leads[row].get('rationale', 'No rationale available')
+                
+                dialog = QDialog(self)
+                dialog.setWindowTitle("Lead Rationale")
+                dialog.setMinimumWidth(500)
+                dialog.setMinimumHeight(300)
+                dialog.setStyleSheet("""
+                    QDialog {
+                        background-color: rgb(27, 28, 30);
+                        color: white;
+                    }
+                    QTextEdit {
+                        background-color: rgba(27, 28, 30, 0.8);
+                        color: white;
+                        border: 1px solid rgba(253, 98, 98, 0.8);
+                        padding: 10px;
+                    }
+                """)
+                
+                layout = QVBoxLayout()
+                text_edit = QTextEdit()
+                text_edit.setPlainText(rationale)
+                text_edit.setReadOnly(True)
+                layout.addWidget(text_edit)
+                
+                close_button = QPushButton("Close")
+                close_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: rgba(253, 98, 98, 0.8);
+                        color: white;
+                        border: none;
+                        padding: 5px 15px;
+                    }
+                    QPushButton:hover {
+                        background-color: rgba(253, 98, 98, 1);
+                    }
+                """)
+                close_button.clicked.connect(dialog.accept)
+                layout.addWidget(close_button)
+                
+                dialog.setLayout(layout)
+                dialog.exec()
+
+    def on_contacted_changed(self, row, state):
+        """Handle contact checkbox state change."""
+        leads_file = os.path.join(self.data_dir, 'leads.json')
+        if os.path.exists(leads_file):
+            with open(leads_file, 'r') as f:
+                leads = json.load(f)
+            
+            if 0 <= row < len(leads):
+                leads[row]['contacted'] = state == Qt.CheckState.Checked.value
+                leads[row]['contact_date'] = datetime.now().strftime('%Y-%m-%d') if state == Qt.CheckState.Checked.value else None
+                
+                with open(leads_file, 'w') as f:
+                    json.dump(leads, f, indent=2)
+                
+                # Update contact date in table
+                self.leadsTable.setItem(row, 4, QTableWidgetItem(leads[row]['contact_date'] or ''))
+
+    def delete_lead(self, row):
+        """Delete a lead after confirmation."""
+        reply = QMessageBox.question(
+            self, 'Confirm Deletion',
+            'Are you sure you want to delete this lead?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            leads_file = os.path.join(self.data_dir, 'leads.json')
+            if os.path.exists(leads_file):
+                with open(leads_file, 'r') as f:
+                    leads = json.load(f)
+                
+                if 0 <= row < len(leads):
+                    leads.pop(row)
+                    
+                    with open(leads_file, 'w') as f:
+                        json.dump(leads, f, indent=2)
+                    
+                    self.update_leads_table(leads)
+
+    def generate_message(self, row):
+        """Generate a personalized LinkedIn message for the lead in the given row."""
+        try:
+            name = self.leadsTable.item(row, 0).text()
+            company = self.leadsTable.item(row, 1).text()
+            title = self.leadsTable.item(row, 2).text()
+            
+            # Initialize Claude client
+            api_key = os.getenv('ANTHROPIC_API_KEY', '')
+            if not api_key:
+                logger.error("Anthropic API key not found.")
+                return
+            client = Anthropic(api_key=api_key)
+
+            # Generate message
+            prompt = (
+                f"Generate a professional LinkedIn message for {name}, {title} at {company}, "
+                "referencing their medical device company's 510(k) submission before May 2024 and recent staffing changes. "
+                "Offer NaviSure's FDA compliance consultancy services. Keep it concise and personalized."
+            )
+            response = client.messages.create(
+                model="claude-3-opus-20240229",
+                max_tokens=200,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            message = response.content[0].text
+            
+            # Save message
+            messages_file = os.path.join(self.data_dir, 'leads_messages.json')
+            messages = []
+            if os.path.exists(messages_file):
+                with open(messages_file, 'r') as f:
+                    messages = json.load(f)
+            messages.append({
+                "name": name,
+                "company": company,
+                "title": title,
+                "message": message,
+                "date": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            })
+            with open(messages_file, 'w') as f:
+                json.dump(messages, f, indent=2)
+            
+            # Show message in a dialog
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"Message for {name}")
+            dialog.setStyleSheet("""
+                QDialog {
+                    background-color: rgb(27, 28, 30);
+                    color: white;
+                }
+                QTextEdit {
+                    background-color: rgba(27, 28, 30, 0.8);
+                    color: white;
+                    border: 1px solid rgba(253, 98, 98, 0.8);
+                }
+            """)
+            layout = QVBoxLayout()
+            text_edit = QTextEdit()
+            text_edit.setPlainText(message)
+            text_edit.setReadOnly(True)
+            layout.addWidget(text_edit)
+            
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+            buttons.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(253, 98, 98, 0.8);
+                    color: white;
+                    border: none;
+                    padding: 5px 15px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(253, 98, 98, 1);
+                }
+            """)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            
+            dialog.setLayout(layout)
+            dialog.exec()
+            
+            logger.info(f"Message generated for {name}")
+        except Exception as e:
+            logger.error(f"Generate message error: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to generate message: {str(e)}")
+
+    def open_settings(self):
+        """Open settings dialog to edit Claude system message."""
+        dialog = SettingsDialog(self)
+        if dialog.exec():
+            try:
+                system_message = dialog.system_message_input.toPlainText()
+                config = {"system_message": system_message}
+                config_path = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/lead_gen_config.json'
+                with open(config_path, 'w') as f:
+                    json.dump(config, f)
+                logger.info("Lead gen settings saved.")
+            except Exception as e:
+                logger.error(f"Save settings error: {e}")
+
+    # Existing methods (unchanged)
     def refresh_leads(self):
         print("Weekly lead refresh TBD (Grok 3 API pending)")
 
@@ -43,10 +452,6 @@ class ChatWindow(QMainWindow):
         print("Doc save TBD")
 
     def start_recording(self):
-        """
-        Start recording audio using sounddevice.
-        Saves to a temporary WAV file.
-        """
         import sounddevice as sd
         import scipy.io.wavfile as wavfile
         import os
@@ -56,7 +461,7 @@ class ChatWindow(QMainWindow):
         self.stopButton.setEnabled(True)
         print("Starting recording...")
         self.recording = True
-        self.sample_rate = 44100  # Hz
+        self.sample_rate = 44100
         self.audio_data = []
         self.recording_start_time = time.time()
         
@@ -70,9 +475,6 @@ class ChatWindow(QMainWindow):
         self.stream.start()
 
     def stop_recording(self):
-        """
-        Stop recording audio and save to a temporary WAV file.
-        """
         import scipy.io.wavfile as wavfile
         import os
         import numpy as np
@@ -84,17 +486,12 @@ class ChatWindow(QMainWindow):
         self.transcribeButton.setEnabled(True)
         print("Recording stopped")
         
-        # Save the recorded audio to a temporary file
         self.audio_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_recording.wav")
         audio_array = np.array(self.audio_data)
         wavfile.write(self.audio_file_path, self.sample_rate, audio_array)
         print(f"Audio saved to {self.audio_file_path}")
 
     def select_file(self):
-        """
-        Open a file dialog to select a video or audio file for transcription.
-        Extract audio if the file is a video format.
-        """
         from PyQt6.QtWidgets import QFileDialog
         import os
 
@@ -111,12 +508,10 @@ class ChatWindow(QMainWindow):
             self.meetingTranscript.setText(f"Selected file: {file_path}")
             print(f"Selected file: {file_path}")
             
-            # Check if it's a video file
             if file_path.lower().endswith(('.mp4', '.m4v')):
                 self.meetingTranscript.append("Extracting audio from video file...")
                 self.extract_audio_from_video(file_path)
             else:
-                # For audio files, just set the path
                 self.selected_audio_path = file_path
                 self.meetingTranscript.append("Audio file selected. Click 'Generate Transcript' to process.")
         else:
@@ -124,34 +519,26 @@ class ChatWindow(QMainWindow):
             print("No file selected")
 
     def extract_audio_from_video(self, video_path):
-        """
-        Extract audio from a video file using ffmpeg directly and save as a temporary MP3 file.
-        If the audio file is larger than 25MB, compress it to fit within the limit.
-        """
         import os
         import subprocess
         import math
 
         try:
-            # Define temporary audio file path
             temp_audio_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_audio.mp3")
             print(f"Extracting audio to {temp_audio_path}")
             self.meetingTranscript.append(f"Saving temporary audio to {temp_audio_path}")
 
-            # Use ffmpeg to extract audio directly
             subprocess.run(['ffmpeg', '-i', video_path, '-vn', '-acodec', 'libmp3lame', '-ab', '128k', temp_audio_path], check=True)
             print("Audio extraction completed")
             self.meetingTranscript.append("Audio extraction completed. Checking file size...")
 
-            # Check file size (25MB limit for OpenAI Whisper API)
             file_size_mb = os.path.getsize(temp_audio_path) / (1024 * 1024)
             if file_size_mb > 25:
                 self.meetingTranscript.append(f"Audio file size ({file_size_mb:.2f} MB) exceeds 25 MB limit. Compressing...")
-                # Compress the audio file to fit within the limit
                 compressed_audio_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_audio_compressed.mp3")
                 subprocess.run(['ffmpeg', '-i', temp_audio_path, '-acodec', 'libmp3lame', '-ab', '64k', compressed_audio_path], check=True)
-                os.remove(temp_audio_path)  # Remove the original file
-                temp_audio_path = compressed_audio_path  # Use the compressed file
+                os.remove(temp_audio_path)
+                temp_audio_path = compressed_audio_path
                 self.meetingTranscript.append("Audio compression completed. Ready for transcription.")
             else:
                 self.meetingTranscript.append(f"Audio file size ({file_size_mb:.2f} MB) is within limit. Ready for transcription.")
@@ -164,10 +551,6 @@ class ChatWindow(QMainWindow):
             print(f"Audio extraction error: {e}")
 
     def transcribe_meeting(self):
-        """
-        Transcribe the recorded audio file or a selected audio/video file using AssemblyAI's API.
-        Display the transcript with speaker separation in the meetingTranscript text area.
-        """
         import os
         import requests
         import time
@@ -176,63 +559,50 @@ class ChatWindow(QMainWindow):
         self.transcribeButton.setEnabled(False)
         print("Transcribing audio...")
         
-        # Load AssemblyAI API key from environment
         api_key = os.getenv('ASSEMBLYAI_API_KEY', '')
         if not api_key:
-            self.meetingTranscript.setText("Error: AssemblyAI API key not found. Please set ASSEMBLYAI_API_KEY in config/.env.")
+            self.meetingTranscript.setText("Error: AssemblyAI API key not found.")
             self.saveTranscriptButton.setEnabled(False)
             return
 
         try:
-            # Check if we have an audio file to transcribe
             if hasattr(self, 'selected_audio_path') and os.path.exists(self.selected_audio_path):
                 self.meetingTranscript.setText("Uploading audio file...")
                 print(f"Transcribing audio file: {self.selected_audio_path}")
                 
-                # Upload the audio file
                 headers = {'authorization': api_key}
                 with open(self.selected_audio_path, 'rb') as f:
-                    response = requests.post('https://api.assemblyai.com/v2/upload',
-                                          headers=headers,
-                                          data=f)
+                    response = requests.post('https://api.assemblyai.com/v2/upload', headers=headers, data=f)
                 upload_url = response.json()['upload_url']
                 self.meetingTranscript.append("File uploaded successfully. Starting transcription...")
                 
-                # Start transcription with speaker diarization
                 endpoint = "https://api.assemblyai.com/v2/transcript"
                 json = {
                     "audio_url": upload_url,
                     "speaker_labels": True,
-                    "speakers_expected": 16,  # Increased to handle up to 16 speakers
-                    "auto_highlights": True,  # Added to help identify important parts
-                    "iab_categories": True,  # Added to help with context
-                    "auto_chapters": True    # Added to help with structure
+                    "speakers_expected": 16,
+                    "auto_highlights": True,
+                    "iab_categories": True,
+                    "auto_chapters": True
                 }
-                headers = {
-                    "authorization": api_key,
-                    "content-type": "application/json"
-                }
+                headers = {"authorization": api_key, "content-type": "application/json"}
                 response = requests.post(endpoint, json=json, headers=headers)
                 transcript_id = response.json()['id']
                 self.meetingTranscript.append(f"Transcription job started. ID: {transcript_id}")
                 
-                # Poll for completion with timeout
-                self.meetingTranscript.append("Processing audio...")
                 start_time = datetime.now()
-                timeout = timedelta(minutes=10)  # Increased timeout to 10 minutes
+                timeout = timedelta(minutes=10)
                 last_status = None
                 last_progress = 0
                 
                 while True:
-                    # Check for timeout
                     if datetime.now() - start_time > timeout:
                         raise TimeoutError("Transcription timed out after 10 minutes")
                     
                     response = requests.get(f"{endpoint}/{transcript_id}", headers=headers)
                     status = response.json()['status']
-                    progress = response.json().get('confidence', 0) or 0  # Ensure progress is never None
+                    progress = response.json().get('confidence', 0) or 0
                     
-                    # Update status message if it changed
                     if status != last_status or (progress > 0 and progress != last_progress):
                         status_message = f"Status: {status}"
                         if progress > 0:
@@ -242,20 +612,14 @@ class ChatWindow(QMainWindow):
                         last_progress = progress
                     
                     if status == 'completed':
-                        # Format transcript with speaker labels
                         transcript = response.json()['text']
                         utterances = response.json()['utterances']
-                        formatted_transcript = []
-                        
-                        # Add a note about speaker detection
-                        formatted_transcript.append("Note: Speakers who only spoke briefly may not be detected separately.")
-                        formatted_transcript.append("----------------------------------------\n")
-                        
+                        formatted_transcript = ["Note: Speakers who only spoke briefly may not be detected separately.",
+                                             "----------------------------------------\n"]
                         for utterance in utterances:
                             speaker = f"Speaker {utterance['speaker']}"
                             text = utterance['text']
                             formatted_transcript.append(f"{speaker}: {text}")
-                        
                         final_transcript = "\n\n".join(formatted_transcript)
                         self.meetingTranscript.setText(final_transcript)
                         self.saveTranscriptButton.setEnabled(True)
@@ -266,16 +630,14 @@ class ChatWindow(QMainWindow):
                         error_msg = response.json().get('error', 'Unknown error')
                         raise Exception(f"Transcription failed: {error_msg}")
                     elif status == 'queued':
-                        time.sleep(5)  # Longer wait for queued status
+                        time.sleep(5)
                     else:
-                        time.sleep(3)  # Normal polling interval
-                        
+                        time.sleep(3)
             else:
                 self.meetingTranscript.setText("Error: No file found for transcription.")
                 self.saveTranscriptButton.setEnabled(False)
-                return
         except TimeoutError as e:
-            self.meetingTranscript.setText(f"Error: {str(e)}\nThe transcription is still processing on AssemblyAI's servers.\nYou can try again later to retrieve the completed transcript.")
+            self.meetingTranscript.setText(f"Error: {str(e)}\nThe transcription is still processing.")
             self.transcribeButton.setEnabled(True)
             print(f"Transcription timeout: {e}")
         except Exception as e:
@@ -286,9 +648,6 @@ class ChatWindow(QMainWindow):
             self.saveTranscriptButton.setEnabled(False)
 
     def save_transcript(self):
-        """
-        Save the transcript text to a file using a file dialog.
-        """
         from PyQt6.QtWidgets import QFileDialog
         import os
         import time
@@ -298,19 +657,14 @@ class ChatWindow(QMainWindow):
             print("No valid transcript to save")
             return
 
-        # Get the default filename with timestamp
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         default_filename = f"transcript_{timestamp}.txt"
         
-        # Open file dialog
         file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Transcript",
-            default_filename,
-            "Text Files (*.txt);;All Files (*)"
+            self, "Save Transcript", default_filename, "Text Files (*.txt);;All Files (*)"
         )
         
-        if file_path:  # If user didn't cancel
+        if file_path:
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(transcript_text)
@@ -369,26 +723,23 @@ class ChatWindow(QMainWindow):
 
     def initUI(self):
         self.setWindowTitle('NaviSsurance')
-        self.setGeometry(300, 300, 1200, 700)
+        self.setGeometry(300, 300, 1400, 800)  # Increased window size
+        
+        # Center the window on the screen
+        screen = QApplication.primaryScreen().geometry()
+        window_size = self.geometry()
+        x = (screen.width() - window_size.width()) // 2
+        y = (screen.height() - window_size.height()) // 2
+        self.move(x, y)
+        
         self.loadStylesheet("styles.qss")
 
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
+        main_layout = QHBoxLayout(central_widget)
         self.chat_handler.task_added_signal.connect(self.addTaskFromChat)
 
-        # Tab widget with white text
-        tabs = QTabWidget()
-        tabs.setStyleSheet("QTabBar::tab { color: white; background-color: rgb(20, 20, 22); } "
-                          "QTabBar::tab:selected { background-color: rgba(253, 98, 98, 0.8); }")
-        main_layout.addWidget(tabs)
-
-        # Chat & Tasks Tab (Splitter)
-        chat_tasks_tab = QWidget()
-        chat_tasks_layout = QVBoxLayout(chat_tasks_tab)
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-
-        # Chat Panel
+        # Left side - Chat Panel
         chat_widget = QWidget()
         chat_layout = QVBoxLayout(chat_widget)
         self.chatDisplay = QTextBrowser(self)
@@ -408,11 +759,17 @@ class ChatWindow(QMainWindow):
         self.sendButton.clicked.connect(self.sendMessage)
         chat_input_layout.addWidget(self.sendButton)
         chat_layout.addLayout(chat_input_layout)
-        splitter.addWidget(chat_widget)
+        main_layout.addWidget(chat_widget, stretch=30)  # Reduced from 40 to 30
 
-        # Tasks Sidebar
-        tasks_widget = QWidget()
-        tasks_layout = QVBoxLayout(tasks_widget)
+        # Right side - Tab Widget
+        tabs = QTabWidget()
+        tabs.setStyleSheet("QTabBar::tab { color: white; background-color: rgb(20, 20, 22); } "
+                          "QTabBar::tab:selected { background-color: rgba(253, 98, 98, 0.8); }")
+        main_layout.addWidget(tabs, stretch=70)  # Increased from 60 to 70
+
+        # Tasks Tab (unchanged)
+        tasks_tab = QWidget()
+        tasks_layout = QVBoxLayout(tasks_tab)
         self.todoList.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
         tasks_layout.addWidget(self.todoList)
         add_task_layout = QHBoxLayout()
@@ -436,52 +793,103 @@ class ChatWindow(QMainWindow):
         self.archiveButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
         self.archiveButton.setCursor(Qt.CursorShape.PointingHandCursor)
         tasks_layout.addWidget(self.archiveButton)
-        splitter.addWidget(tasks_widget)
-        
-        splitter.setSizes([700, 300])
-        chat_tasks_layout.addWidget(splitter)
-        tabs.addTab(chat_tasks_tab, "Chat & Tasks")
+        tabs.addTab(tasks_tab, "Tasks")
 
-        # Leads Tab
+        # Leads Tab (modified)
         leads_tab = QWidget()
         leads_layout = QVBoxLayout(leads_tab)
-        leads_search_layout = QHBoxLayout()
-        self.leadSearchInput = QLineEdit(self)
-        self.leadSearchInput.setPlaceholderText("Search leads (e.g., 'AI startup')...")
-        self.leadSearchInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
-        leads_search_layout.addWidget(self.leadSearchInput)
-        self.leadSearchButton = QPushButton("Search Leads", self)
-        self.leadSearchButton.clicked.connect(self.search_leads)
-        self.leadSearchButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
-        leads_search_layout.addWidget(self.leadSearchButton)
-        self.refreshLeadsButton = QPushButton("Refresh Leads (Weekly)", self)
-        self.refreshLeadsButton.clicked.connect(self.refresh_leads)  # Now defined
-        self.refreshLeadsButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
-        self.refreshLeadsButton.setEnabled(False)
-        leads_search_layout.addWidget(self.refreshLeadsButton)
-        leads_layout.addLayout(leads_search_layout)
-        self.leadFilters = QWidget()
-        filters_layout = QHBoxLayout(self.leadFilters)
-        self.emailFilter = QCheckBox("Emails", checked=True)
-        self.dropboxFilter = QCheckBox("Dropbox", checked=True)
-        self.unrepliedFilter = QCheckBox("Unreplied")
-        filters_layout.addWidget(self.emailFilter)
-        filters_layout.addWidget(self.dropboxFilter)
-        filters_layout.addWidget(self.unrepliedFilter)
-        leads_layout.addWidget(self.leadFilters)
-        self.leadsTable = QTableWidget(0, 4)
-        self.leadsTable.setHorizontalHeaderLabels(["Source", "Sender/Filename", "Snippet", "Action"])
-        self.leadsTable.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
+        leads_button_layout = QHBoxLayout()
+        self.settingsButton = QPushButton("Settings", self)
+        self.settingsButton.clicked.connect(self.open_settings)
+        self.settingsButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
+        leads_button_layout.addWidget(self.settingsButton)
+        self.runSearchButton = QPushButton("Run Search", self)
+        self.runSearchButton.clicked.connect(self.search_leads)
+        self.runSearchButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
+        leads_button_layout.addWidget(self.runSearchButton)
+        leads_layout.addLayout(leads_button_layout)
+        
+        # Configure the leads table
+        self.leadsTable = QTableWidget(0, 8)  # Added column for rationale
+        self.leadsTable.setHorizontalHeaderLabels([
+            "Name", "Company", "Title", "Contacted", "Contact Date", "Message", "Delete", "Rationale"
+        ])
+        self.leadsTable.setStyleSheet("""
+            QTableWidget {
+                background-color: rgba(27, 28, 30, 0.8);
+                color: white;
+                gridline-color: rgba(253, 98, 98, 0.3);
+            }
+            QTableWidget::item {
+                padding: 5px;
+            }
+            QHeaderView::section {
+                background-color: rgba(253, 98, 98, 0.8);
+                color: white;
+                padding: 5px;
+                border: none;
+            }
+            QPushButton {
+                background-color: rgba(253, 98, 98, 0.8);
+                color: white;
+                border: none;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background-color: rgba(253, 98, 98, 1);
+            }
+            QCheckBox {
+                color: white;
+            }
+            QTableWidget::item[linkedin="true"] {
+                color: #0077B5;
+                text-decoration: underline;
+                cursor: pointer;
+            }
+            QTableWidget::item[linkedin="true"]:hover {
+                color: #005582;
+            }
+        """)
+        
+        # Set column widths and behavior
+        self.leadsTable.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.leadsTable.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Company
+        self.leadsTable.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)  # Title
+        self.leadsTable.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)  # Contacted
+        self.leadsTable.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)  # Contact Date
+        self.leadsTable.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)  # Message
+        self.leadsTable.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)  # Delete
+        self.leadsTable.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)  # Rationale
+        
+        self.leadsTable.setColumnWidth(3, 80)  # Contacted
+        self.leadsTable.setColumnWidth(4, 100)  # Contact Date
+        self.leadsTable.setColumnWidth(5, 120)  # Message
+        self.leadsTable.setColumnWidth(6, 80)  # Delete
+        
+        # Enable word wrap for cells
+        self.leadsTable.setWordWrap(True)
+        
         leads_layout.addWidget(self.leadsTable)
         tabs.addTab(leads_tab, "Leads")
+        
+        # Load existing leads
+        leads_file = os.path.join(self.data_dir, 'leads.json')
+        if os.path.exists(leads_file):
+            try:
+                with open(leads_file, 'r') as f:
+                    leads = json.load(f)
+                self.update_leads_table(leads)
+                logger.info(f"Loaded {len(leads)} existing leads")
+            except Exception as e:
+                logger.error(f"Error loading leads: {e}")
 
-        # Docs Tab (Placeholder)
+        # Docs Tab (unchanged)
         docs_tab = QWidget()
         docs_layout = QVBoxLayout(docs_tab)
         docs_layout.addWidget(QLabel("Document generation coming soon!"))
         tabs.addTab(docs_tab, "Docs")
 
-        # Meetings Tab
+        # Meetings Tab (unchanged)
         meetings_tab = QWidget()
         meetings_layout = QVBoxLayout(meetings_tab)
         self.recordButton = QPushButton("Start Recording", self)
@@ -512,56 +920,3 @@ class ChatWindow(QMainWindow):
         self.saveTranscriptButton.setEnabled(False)
         meetings_layout.addWidget(self.saveTranscriptButton)
         tabs.addTab(meetings_tab, "Meetings")
-
-    def sendMessage(self):
-        user_message = self.userInput.text()
-        if not user_message.strip():
-            return
-        self.chatDisplay.append(f"<b>You:</b> {user_message}<br><br>")
-        self.sendButton.setEnabled(False)
-        self.userInput.setEnabled(False)
-        self.conversation_history.append({"role": "user", "content": user_message})
-        self.chat_handler.save_message(self.session_id, "user", user_message)
-        self.chatThread = ChatThread(self.chat_handler, user_message, self.session_id, self.conversation_history)
-        self.chatThread.response_signal.connect(self.onResponseReceived)
-        self.chatThread.start()
-        self.chatThread.finished.connect(lambda: print("Thread finished"))
-
-    def addTaskFromChat(self, task_text, due_date):
-        print(f"Signal received: {task_text} due {due_date}")
-        self.todo_list.addTaskFromChat(task_text, due_date)
-
-    def addTask(self):
-        self.todo_list.addTask()    
-
-    @pyqtSlot(str)  
-    def onResponseReceived(self, response):
-        self.chatDisplay.append(f"<b>Navi:</b> {response}<br><br>")
-        self.conversation_history.append({"role": "assistant", "content": response})
-        self.chat_handler.save_message(self.session_id, "assistant", response)
-        self.sendButton.setEnabled(True)
-        self.userInput.setEnabled(True)
-        self.userInput.clear()
-        self.userInput.setFocus()
-
-    def on_index_button(self): # Placeholder for when we figure out where to put the button
-        from core.index_dropbox import manual_index
-        from core.api import get_dropbox_client
-        dbx = get_dropbox_client()
-        manual_index(dbx)
-        self.chatDisplay.append("<b>Navi:</b> Dropbox index updated—fresh data inbound!")   
-    
-    def archiveCompletedTasks(self):
-        self.todo_list.archiveCompletedTasks()
-
-    def loadStylesheet(self, filename):
-        try:
-            with open(filename, "r") as f:
-                self.setStyleSheet(f.read())
-        except FileNotFoundError:
-            print(f"Stylesheet '{filename}' not found.")
-        except Exception as e:
-            print(f"Error loading stylesheet: {e}")
-
-    def closeEvent(self, event):
-        super().closeEvent(event)

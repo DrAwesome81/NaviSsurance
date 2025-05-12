@@ -20,7 +20,16 @@ class DatabaseManager:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT,
                 task TEXT,
-                due_date TEXT
+                due_date TEXT,
+                completed INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS archived_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task TEXT,
+                due_date TEXT,
+                completed INTEGER,
+                archived_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
             conn.commit()
 
@@ -44,11 +53,23 @@ class DatabaseManager:
 
     def get_tasks(self):
         with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('SELECT task, due_date FROM tasks ORDER BY date(due_date) ASC')
+            cursor = conn.execute('SELECT task, due_date, completed FROM tasks ORDER BY date(due_date) ASC')
             return cursor.fetchall()
 
     def delete_task(self, task_text):
         with sqlite3.connect(self.db_name) as conn:
+            conn.execute('DELETE FROM tasks WHERE task = ?', (task_text,))
+            conn.commit()
+
+    def update_task_status(self, task_text, completed):
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute('UPDATE tasks SET completed = ? WHERE task = ?', (completed, task_text))
+            conn.commit()
+
+    def archive_task(self, task_text, due_date, completed):
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute('INSERT INTO archived_tasks (task, due_date, completed) VALUES (?, ?, ?)',
+                        (task_text, due_date, completed))
             conn.execute('DELETE FROM tasks WHERE task = ?', (task_text,))
             conn.commit()
 

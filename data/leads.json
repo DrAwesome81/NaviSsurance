@@ -1,0 +1,29 @@
+[
+  {
+    "name": "Bob Johnson",
+    "company": "Next Gen Diagnostics",
+    "title": "Chief Executive Officer",
+    "rationale": "Submitted 510k for AI-based LDT 14 months ago using an outside regulatory consultant firm. No updates on clearance status since original submission announcement.",
+    "linkedin_url": "https://www.linkedin.com/in/bob-johnson-nextgendiagnostics/",
+    "contacted": false,
+    "contact_date": null
+  },
+  {
+    "name": "Jane Doe",
+    "company": "MedTech Innovators Ltd",
+    "title": "President & CEO",
+    "rationale": "Announced plans for FDA submission of AI SaMD product in early 2022 but no clearance announced yet. Company has had two rounds of layoffs in past 6 months.",
+    "linkedin_url": "https://www.linkedin.com/in/jane-doe-medtech/",
+    "contacted": false,
+    "contact_date": null
+  },
+  {
+    "name": "John Smith",
+    "company": "Acme Medical Devices",
+    "title": "Chief Executive Officer",
+    "rationale": "Announced pursuit of FDA clearance for AI-based IVD software 18 months ago with no updates since. Recently had departure of VP of Regulatory Affairs.",
+    "linkedin_url": "https://www.linkedin.com/in/john-smith-acme-md/",
+    "contacted": false,
+    "contact_date": null
+  }
+]
