@@ -17,25 +17,32 @@ class ChatThread(QThread):
 
     def run(self):
         try:
+            print("[DEBUG] ChatThread: Starting response processing")
             # This step triggers the task addition logic
             response = self.chat_handler.get_response(self.message, self.session_id, self.history)
+            print(f"[DEBUG] ChatThread: Got response: {response}")
+            
             if response:
-                if "I've added the task" in response:
+                if "Added" in response and "due on" in response:
+                    print("[DEBUG] ChatThread: Task detected in response")
                     task_match = re.search(r"'([^']*)'", response)
                     date_match = re.search(r'due on (\d{2}-\d{2}-\d{4})', response)
+                    print(f"[DEBUG] ChatThread: Task match: {task_match.group(1) if task_match else 'None'}")
+                    print(f"[DEBUG] ChatThread: Date match: {date_match.group(1) if date_match else 'None'}")
 
                     if task_match and date_match:
                         task_text = task_match.group(1)
                         due_date = date_match.group(1)
-
-                        # Ensure task_added_signal is emitted from ChatThread, not ChatHandler
-                        self.chat_handler.task_added_signal.emit(task_text, due_date)  # Emit from ChatThread instance directly
+                        print(f"[DEBUG] ChatThread: Emitting task signal with text: {task_text}, date: {due_date}")
+                        # Emit the signal through the chat_manager instead of chat_handler
+                        self.chat_handler.task_added_signal.emit(task_text, due_date)
+                        print("[DEBUG] ChatThread: Task signal emitted")
                 self.response_signal.emit(response)
             else:
-                print("ChatThread: No response received.")  # Debug statement
+                print("[DEBUG] ChatThread: No response received.")
                 self.response_signal.emit("Error: No response received.")
         except Exception as e:
-            print(f"ChatThread: Exception occurred: {e}")
+            print(f"[DEBUG] ChatThread: Exception occurred: {e}")
             self.response_signal.emit(f"Error: {str(e)}")
 
 @pyqtSlot(str)

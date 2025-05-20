@@ -12,6 +12,7 @@ from core.chat import ChatManager
 import os
 import json
 from anthropic import Anthropic, AnthropicError
+from anthropic.types import ToolUseBlock
 from datetime import datetime
 from PyQt6.QtWidgets import QApplication
 
@@ -96,12 +97,14 @@ class ChatWindow(QMainWindow):
         logger.info("Initializing todo list...")
         self.todoList = QListWidget(self)
         self.todo_list = TodoList(self)
+        self.todo_list.loadTasksFromDB()  # Load existing tasks
         
         logger.info("Setting up UI...")
         self.initUI()
         
-        logger.info("Starting chat briefing...")
-        self.chat_handler.start_briefing()
+        # Connect the task signal
+        self.chat_handler.task_added_signal.connect(self.addTaskFromChat)
+        
         logger.info("ChatWindow initialization complete")
 
     def show_main_window(self):
@@ -120,7 +123,30 @@ class ChatWindow(QMainWindow):
                 return
             with open(config_path, 'r') as f:
                 config = json.load(f)
-            system_message = config.get('system_message', '')
+            user_system_message = config.get('system_message', '')
+            
+            # If no user system message, use default context
+            if not user_system_message:
+                user_system_message = "You are a lead generation assistant for a medical device regulatory consulting firm. Focus on companies in the AI SaMD and/or IVD/LDT space."
+
+            # Append required format and verification instructions
+            system_message = f"""{user_system_message}
+
+IMPORTANT: When processing search results:
+1. First, use the web_search tool to find relevant information about medical device companies
+2. Verify each company's current status and leadership team
+3. Include a clear rationale for why each lead is relevant
+4. Generate a personalized LinkedIn message for each lead based on your research
+5. Return results as a JSON array with the following fields for each lead:
+   - name: Full name of the key decision maker
+   - company: Company name
+   - title: Their current title
+   - rationale: Why this person/company is a good lead
+   - linkedin_url: Their LinkedIn profile URL (if found)
+   - message: A personalized LinkedIn message referencing their specific regulatory needs and how NaviSure can help
+Only include leads that have been verified through the search results.
+
+Your response must be a valid JSON array, starting with [ and ending with ]. Do not include any other text or thinking process. Do not explain your process or add any commentary - just return the JSON array."""
 
             # Initialize Claude client
             api_key = os.getenv('ANTHROPIC_API_KEY', '')
@@ -129,59 +155,130 @@ class ChatWindow(QMainWindow):
                 return
             client = Anthropic(api_key=api_key)
 
-            # Run search with explicit JSON formatting request
-            response = client.messages.create(
-                model="claude-3-opus-20240229",
-                max_tokens=1000,
-                system=system_message + "\nIMPORTANT: Your response must be a valid JSON array containing objects with 'name', 'company', 'title', 'rationale', and 'linkedin_url' fields. The rationale should explain why this person was included in the search results. Do not include any other text or explanation.",
-                messages=[{"role": "user", "content": "Execute the smart search for leads. Return the results as a JSON array."}]
-            )
-            
+            # Start the conversation
+            messages = [
+                {
+                    "role": "user",
+                    "content": "Search for medical device companies in the AI SaMD and/or IVD/LDT space that announced FDA clearance pursuits over a year ago but haven't announced clearance yet. Return the results as a JSON array."
+                }
+            ]
+
+            # Make the initial API call
             try:
-                # Extract the JSON string from the response
-                response_text = response.content[0].text.strip()
-                # Remove any markdown code block markers if present
-                response_text = response_text.replace('```json', '').replace('```', '').strip()
-                new_leads = json.loads(response_text)
+                response = client.messages.create(
+                    model="claude-3-7-sonnet-20250219",
+                    max_tokens=1000,
+                    system=system_message,
+                    messages=messages,
+                    tools=[{
+                        "type": "web_search_20250305",
+                        "name": "web_search"
+                    }]
+                )
+            except AnthropicError as e:
+                if "overloaded_error" in str(e):
+                    logger.error("API is currently overloaded. Please try again in a few minutes.")
+                    QMessageBox.warning(self, "API Overloaded", "The API is currently experiencing high load. Please try again in 5-10 minutes.")
+                    return
+                raise e
+
+            # Log the initial response
+            logger.info("Initial Claude API Response:")
+            logger.info(f"Response type: {type(response)}")
+            logger.info(f"Response content: {response.content}")
+
+            # Add the response to the conversation
+            messages.append({
+                "role": "assistant",
+                "content": response.content
+            })
+
+            # Check if there's a tool use in the response
+            if response.content and any(isinstance(block, ToolUseBlock) for block in response.content):
+                # Find the tool use block
+                tool_use = next(block for block in response.content if isinstance(block, ToolUseBlock))
                 
-                if not isinstance(new_leads, list):
-                    raise ValueError("Response is not a JSON array")
-                
-                # Load existing leads
-                leads_file = os.path.join(self.data_dir, 'leads.json')
-                existing_leads = []
-                if os.path.exists(leads_file):
-                    with open(leads_file, 'r') as f:
-                        existing_leads = json.load(f)
-                
-                # Create a set of existing lead identifiers (name + company)
-                existing_identifiers = {(lead['name'], lead['company']) for lead in existing_leads}
-                
-                # Add new leads to the beginning of the list, avoiding duplicates
-                for lead in new_leads:
-                    if not all(k in lead for k in ['name', 'company', 'title', 'rationale']):
-                        continue
-                    lead['contacted'] = False
-                    lead['contact_date'] = None
-                    lead['linkedin_url'] = lead.get('linkedin_url', '')
+                # Make another API call to get the final response after tool use
+                response = client.messages.create(
+                    model="claude-3-7-sonnet-20250219",
+                    max_tokens=1000,
+                    system=system_message,
+                    messages=messages
+                )
+
+                # Log the final response
+                logger.info("Final Claude API Response:")
+                logger.info(f"Response type: {type(response)}")
+                logger.info(f"Response content: {response.content}")
+
+                # Try to find JSON array in the final response
+                json_str = None
+                for block in response.content:
+                    if hasattr(block, 'text'):
+                        text = block.text.strip()
+                        start_idx = text.find('[')
+                        end_idx = text.rfind(']') + 1
+                        if start_idx != -1 and end_idx > 0:
+                            json_str = text[start_idx:end_idx]
+                            break
+            else:
+                # Try to find JSON array in the initial response
+                json_str = None
+                for block in response.content:
+                    if hasattr(block, 'text'):
+                        text = block.text.strip()
+                        start_idx = text.find('[')
+                        end_idx = text.rfind(']') + 1
+                        if start_idx != -1 and end_idx > 0:
+                            json_str = text[start_idx:end_idx]
+                            break
+            
+            if json_str:
+                try:
+                    new_leads = json.loads(json_str)
                     
-                    # Check for duplicates
-                    if (lead['name'], lead['company']) not in existing_identifiers:
-                        existing_leads.insert(0, lead)
-                        existing_identifiers.add((lead['name'], lead['company']))
-                
-                # Save updated leads
-                with open(leads_file, 'w') as f:
-                    json.dump(existing_leads, f, indent=2)
-                
-                # Update table
-                self.update_leads_table(existing_leads)
-                logger.info(f"Successfully loaded {len(new_leads)} new leads")
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse Claude response as JSON: {e}")
-                logger.error(f"Raw response: {response_text}")
-            except Exception as e:
-                logger.error(f"Error processing leads: {e}")
+                    if isinstance(new_leads, list):
+                        # Successfully parsed JSON array
+                        logger.info(f"Successfully parsed JSON array with {len(new_leads)} leads")
+                        
+                        # Load existing leads
+                        leads_file = os.path.join(self.data_dir, 'leads.json')
+                        existing_leads = []
+                        if os.path.exists(leads_file):
+                            with open(leads_file, 'r') as f:
+                                existing_leads = json.load(f)
+                        
+                        # Create a set of existing lead identifiers (name + company)
+                        existing_identifiers = {(lead['name'], lead['company']) for lead in existing_leads}
+                        
+                        # Add new leads to the beginning of the list, avoiding duplicates
+                        for lead in new_leads:
+                            if not all(k in lead for k in ['name', 'company', 'title', 'rationale', 'message']):
+                                logger.warning(f"Skipping lead with missing required fields: {lead}")
+                                continue
+                            lead['contacted'] = False
+                            lead['contact_date'] = None
+                            lead['linkedin_url'] = lead.get('linkedin_url', '')
+                            
+                            # Check for duplicates
+                            if (lead['name'], lead['company']) not in existing_identifiers:
+                                existing_leads.insert(0, lead)
+                                existing_identifiers.add((lead['name'], lead['company']))
+                        
+                        # Save updated leads
+                        with open(leads_file, 'w') as f:
+                            json.dump(existing_leads, f, indent=2)
+                        
+                        # Update table
+                        self.update_leads_table(existing_leads)
+                        logger.info(f"Successfully loaded {len(new_leads)} new leads")
+                        return
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse JSON: {e}")
+                    logger.error(f"Raw JSON string: {json_str}")
+            else:
+                logger.error("No JSON array found in any response block")
+                logger.error(f"Raw response blocks: {[block.text if hasattr(block, 'text') else str(block) for block in response.content]}")
                 
         except AnthropicError as e:
             logger.error(f"Claude API error: {e}")
@@ -220,7 +317,7 @@ class ChatWindow(QMainWindow):
             self.leadsTable.setItem(row, 4, date_item)
             
             # Message button
-            message_button = QPushButton("Generate Message")
+            message_button = QPushButton("View Message")
             message_button.clicked.connect(lambda _, r=row: self.generate_message(r))
             self.leadsTable.setCellWidget(row, 5, message_button)
             
@@ -342,51 +439,26 @@ class ChatWindow(QMainWindow):
                     self.update_leads_table(leads)
 
     def generate_message(self, row):
-        """Generate a personalized LinkedIn message for the lead in the given row."""
+        """Show the pre-generated message for the lead in the given row."""
         try:
-            name = self.leadsTable.item(row, 0).text()
-            company = self.leadsTable.item(row, 1).text()
-            title = self.leadsTable.item(row, 2).text()
-            
-            # Initialize Claude client
-            api_key = os.getenv('ANTHROPIC_API_KEY', '')
-            if not api_key:
-                logger.error("Anthropic API key not found.")
+            leads_file = os.path.join(self.data_dir, 'leads.json')
+            if not os.path.exists(leads_file):
+                logger.error("Leads file not found")
                 return
-            client = Anthropic(api_key=api_key)
-
-            # Generate message
-            prompt = (
-                f"Generate a professional LinkedIn message for {name}, {title} at {company}, "
-                "referencing their medical device company's 510(k) submission before May 2024 and recent staffing changes. "
-                "Offer NaviSure's FDA compliance consultancy services. Keep it concise and personalized."
-            )
-            response = client.messages.create(
-                model="claude-3-opus-20240229",
-                max_tokens=200,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            message = response.content[0].text
+                
+            with open(leads_file, 'r') as f:
+                leads = json.load(f)
             
-            # Save message
-            messages_file = os.path.join(self.data_dir, 'leads_messages.json')
-            messages = []
-            if os.path.exists(messages_file):
-                with open(messages_file, 'r') as f:
-                    messages = json.load(f)
-            messages.append({
-                "name": name,
-                "company": company,
-                "title": title,
-                "message": message,
-                "date": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            })
-            with open(messages_file, 'w') as f:
-                json.dump(messages, f, indent=2)
+            if row >= len(leads):
+                logger.error(f"Lead at row {row} not found in leads file")
+                return
+                
+            lead = leads[row]
+            message = lead.get('message', 'No message available')
             
             # Show message in a dialog
             dialog = QDialog(self)
-            dialog.setWindowTitle(f"Message for {name}")
+            dialog.setWindowTitle(f"Message for {lead['name']}")
             dialog.setStyleSheet("""
                 QDialog {
                     background-color: rgb(27, 28, 30);
@@ -422,10 +494,9 @@ class ChatWindow(QMainWindow):
             dialog.setLayout(layout)
             dialog.exec()
             
-            logger.info(f"Message generated for {name}")
         except Exception as e:
-            logger.error(f"Generate message error: {e}")
-            QMessageBox.critical(self, "Error", f"Failed to generate message: {str(e)}")
+            logger.error(f"Show message error: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to show message: {str(e)}")
 
     def open_settings(self):
         """Open settings dialog to edit Claude system message."""
@@ -690,8 +761,9 @@ class ChatWindow(QMainWindow):
         self.chatThread.finished.connect(lambda: print("Thread finished"))
 
     def addTaskFromChat(self, task_text, due_date):
-        print(f"Signal received: {task_text} due {due_date}")
+        print(f"[DEBUG] ChatWindow: Signal received with task: {task_text}, date: {due_date}")
         self.todo_list.addTaskFromChat(task_text, due_date)
+        print("[DEBUG] ChatWindow: Called todo_list.addTaskFromChat")
 
     def addTask(self):
         self.todo_list.addTask()    
@@ -737,7 +809,6 @@ class ChatWindow(QMainWindow):
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
-        self.chat_handler.task_added_signal.connect(self.addTaskFromChat)
 
         # Left side - Chat Panel
         chat_widget = QWidget()

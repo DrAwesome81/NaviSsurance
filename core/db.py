@@ -24,12 +24,33 @@ class DatabaseManager:
                 completed INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
-            conn.execute('''CREATE TABLE IF NOT EXISTS archived_tasks (
+            # Drop and recreate archived_tasks table
+            conn.execute('DROP TABLE IF EXISTS archived_tasks')
+            conn.execute('''CREATE TABLE archived_tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task TEXT,
                 due_date TEXT,
                 completed INTEGER,
+                session_id TEXT,
+                created_at DATETIME,
                 archived_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )''')
+            
+            # Dropbox index tables
+            conn.execute('''CREATE TABLE IF NOT EXISTS dropbox_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                path TEXT UNIQUE NOT NULL,
+                link TEXT,
+                modified_time TEXT,
+                size INTEGER
+            )''')
+            conn.execute('''CREATE VIRTUAL TABLE IF NOT EXISTS dropbox_index
+                USING fts5 (name, content, tokenize='porter')
+            ''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS index_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT
             )''')
             conn.commit()
 
@@ -41,8 +62,30 @@ class DatabaseManager:
 
     def get_chat_history(self, session_id):
         with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('SELECT role, content, timestamp FROM conversation WHERE session_id = ? ORDER BY timestamp DESC LIMIT 20',
+            cursor = conn.execute('SELECT role, content, timestamp FROM conversation WHERE session_id = ? ORDER BY timestamp DESC LIMIT 50',
                                  (session_id,))
+            return cursor.fetchall()
+
+    def get_chat_history_by_date_range(self, session_id, start_date, end_date):
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.execute('''
+                SELECT role, content, timestamp 
+                FROM conversation 
+                WHERE session_id = ? 
+                AND timestamp BETWEEN ? AND ?
+                ORDER BY timestamp ASC
+            ''', (session_id, start_date, end_date))
+            return cursor.fetchall()
+
+    def get_recent_conversations(self, limit=10):
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.execute('''
+                SELECT DISTINCT session_id, MAX(timestamp) as last_message
+                FROM conversation
+                GROUP BY session_id
+                ORDER BY last_message DESC
+                LIMIT ?
+            ''', (limit,))
             return cursor.fetchall()
 
     def add_task(self, session_id, task_text, due_date):
@@ -53,24 +96,34 @@ class DatabaseManager:
 
     def get_tasks(self):
         with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('SELECT task, due_date, completed FROM tasks ORDER BY date(due_date) ASC')
+            cursor = conn.execute('SELECT id, task, due_date, completed FROM tasks ORDER BY date(due_date) ASC')
             return cursor.fetchall()
 
     def delete_task(self, task_text):
         with sqlite3.connect(self.db_name) as conn:
-            conn.execute('DELETE FROM tasks WHERE task = ?', (task_text,))
-            conn.commit()
+            # First get the task ID
+            cursor = conn.execute('SELECT id FROM tasks WHERE task = ? ORDER BY created_at DESC LIMIT 1', (task_text,))
+            task_id = cursor.fetchone()
+            if task_id:
+                conn.execute('DELETE FROM tasks WHERE id = ?', (task_id[0],))
+                conn.commit()
 
     def update_task_status(self, task_text, completed):
         with sqlite3.connect(self.db_name) as conn:
-            conn.execute('UPDATE tasks SET completed = ? WHERE task = ?', (completed, task_text))
-            conn.commit()
+            # First get the task ID
+            cursor = conn.execute('SELECT id FROM tasks WHERE task = ? ORDER BY created_at DESC LIMIT 1', (task_text,))
+            task_id = cursor.fetchone()
+            if task_id:
+                conn.execute('UPDATE tasks SET completed = ? WHERE id = ?', (completed, task_id[0]))
+                conn.commit()
 
     def archive_task(self, task_text, due_date, completed):
         with sqlite3.connect(self.db_name) as conn:
-            conn.execute('INSERT INTO archived_tasks (task, due_date, completed) VALUES (?, ?, ?)',
-                        (task_text, due_date, completed))
-            conn.execute('DELETE FROM tasks WHERE task = ?', (task_text,))
+            # Add to archived_tasks with all required fields
+            conn.execute('''INSERT INTO archived_tasks 
+                          (task, due_date, completed, session_id, created_at) 
+                          VALUES (?, ?, ?, ?, ?)''',
+                        (task_text, due_date, completed, None, datetime.now()))
             conn.commit()
 
     def init_email_calendar_tables(self):
@@ -127,3 +180,8 @@ class DatabaseManager:
             cursor = conn.execute("SELECT timestamp FROM last_run WHERE id = 1")
             result = cursor.fetchone()
             return result[0] if result else 0
+
+    def clear_tasks(self):
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute('DELETE FROM tasks')
+            conn.commit()

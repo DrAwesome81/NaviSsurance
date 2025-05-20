@@ -13,7 +13,8 @@ class ChatManager(QObject):  # Inherit QObject for signals
         self.chat_handler.task_added_signal.connect(self.task_added_signal.emit)
 
     def start_briefing(self):
-        self.chat_handler.start_briefing()
+        # Daily briefing disabled - only runs when explicitly requested
+        pass
 
     def get_response(self, message, session_id, conversation_history):
         return self.response_handler.get_response(message, session_id, conversation_history)

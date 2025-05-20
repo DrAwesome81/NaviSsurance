@@ -7,7 +7,12 @@ import os
 from google.auth.transport.requests import Request
 import imaplib
 import email
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from exchangelib import Account, Configuration, OAuth2Credentials, DELEGATE
+from oauthlib.oauth2.rfc6749.tokens import OAuth2Token
+from pathlib import Path
+from dotenv import load_dotenv
+import json
 
 class DataFetcher:
     def __init__(self):
@@ -25,9 +30,17 @@ class DataFetcher:
             'user': 'adamodeh81@yahoo.com',
             'pwd': os.getenv('YAHOO_APP_PASSWORD', '')
         }
+        # Outlook/Office365 accounts
+        env_path = Path('config') / '.env'
+        load_dotenv(env_path)
+        self.outlook_accounts = [
+            os.getenv('MSN_EMAIL_1'),
+            os.getenv('MSN_EMAIL_2')
+        ]
+        self.mailbird_token_path = Path('config/mailbird_tokens.json')
         # Conversation tracking
-        self.conversation_map = {}  # Maps message IDs to conversation IDs
-        self.conversation_threads = {}  # Maps conversation IDs to lists of message IDs
+        self.conversation_map = {}
+        self.conversation_threads = {}
 
     def get_services(self):
         creds = None
@@ -54,15 +67,130 @@ class DataFetcher:
         calendar = build('calendar', 'v3', credentials=creds)
         return gmail, calendar
 
+    def get_available_calendars(self):
+        """
+        Get a list of all available calendars, including shared calendars.
+        Returns a list of calendar objects with id, summary, and description.
+        """
+        try:
+            calendar_list = self.calendar.calendarList().list().execute()
+            return calendar_list.get('items', [])
+        except Exception as e:
+            print(f"Error fetching calendar list: {e}")
+            return []
+
     def get_calendar_events(self, time_min, time_max):
-        return self.calendar.events().list(calendarId='primary', timeMin=time_min, timeMax=time_max, singleEvents=True).execute().get('items', [])
+        """
+        Get events from primary calendar and all shared calendars.
+        Returns a list of events with their calendar source.
+        """
+        all_events = []
+        
+        # Get all available calendars
+        calendars = self.get_available_calendars()
+        
+        for cal in calendars:
+            try:
+                # Skip calendars that are hidden or not selected
+                if cal.get('selected', False) and not cal.get('hidden', False):
+                    events = self.calendar.events().list(
+                        calendarId=cal['id'],
+                        timeMin=time_min,
+                        timeMax=time_max,
+                        singleEvents=True
+                    ).execute().get('items', [])
+                    
+                    # Add calendar info to each event
+                    for event in events:
+                        event['calendarName'] = cal.get('summary', 'Unknown Calendar')
+                        event['calendarColor'] = cal.get('backgroundColor', '#000000')
+                    
+                    all_events.extend(events)
+            except Exception as e:
+                print(f"Error fetching events from calendar {cal.get('summary', 'Unknown')}: {e}")
+                continue
+        
+        # Sort events by start time
+        all_events.sort(key=lambda x: x['start'].get('dateTime', x['start'].get('date')))
+        return all_events
+
+    def get_mailbird_token(self, email):
+        """Get OAuth token from Mailbird's stored configuration for a specific email address"""
+        try:
+            if not self.mailbird_token_path.exists():
+                print("No token file found. Please run read_mailbird_config.py first.")
+                return None
+            with open(self.mailbird_token_path, 'r') as f:
+                tokens = json.load(f)
+            for token in tokens:
+                if str(token.get('email', '')).strip().lower() != email.strip().lower():
+                    continue
+                expires_at = datetime.fromisoformat(token['expires_at'].replace('Z', '+00:00'))
+                current_time = datetime.now(timezone.utc)
+                if expires_at > current_time:
+                    return token
+            return None
+        except Exception as e:
+            print(f"Error getting Mailbird token: {e}")
+            return None
+
+    def fetch_recent_ews_emails(self, email, hours=24):
+        """Fetch recent emails using Mailbird's OAuth token via EWS"""
+        token_data = self.get_mailbird_token(email)
+        if not token_data:
+            print(f"Could not get valid token for {email}")
+            return []
+        try:
+            token_obj = OAuth2Token({
+                'access_token': token_data['access_token'],
+                'token_type': 'Bearer',
+                'expires_in': 3600,
+            })
+            oauth2_creds = OAuth2Credentials(
+                client_id=None,
+                client_secret=None,
+                tenant_id=None,
+                access_token=token_obj,
+            )
+            config = Configuration(
+                credentials=oauth2_creds,
+                server='outlook.office365.com',
+            )
+            account = Account(
+                primary_smtp_address=email,
+                config=config,
+                autodiscover=False,
+                access_type=DELEGATE,
+            )
+            end_time = datetime.now(timezone.utc)
+            start_time = end_time - timedelta(hours=hours)
+            messages = list(account.inbox.filter(datetime_received__gte=start_time).order_by('-datetime_received')[:10])
+            results = []
+            for msg in messages:
+                results.append({
+                    'id': msg.message_id,
+                    'source': 'outlook',
+                    'subject': msg.subject,
+                    'from': msg.sender.email_address if msg.sender else 'Unknown',
+                    'received': msg.datetime_received.isoformat() if msg.datetime_received else '',
+                    'snippet': msg.text_body[:100] if msg.text_body else '',
+                    'folder': 'INBOX',
+                })
+            return results
+        except Exception as e:
+            print(f"Error in fetch_recent_ews_emails for {email}: {e}")
+            return []
 
     def get_new_emails(self, last_run):
         emails = []
         # Gmail
-        results = self.gmail.users().messages().list(userId='me', q=f"after:{last_run}").execute()
-        emails.extend({'id': msg['id'], 'source': 'gmail'} for msg in results.get('messages', []))
-
+        folders = ['INBOX', 'News', 'NaviSure Admin']
+        for folder in folders:
+            query = f"after:{last_run}"
+            if folder != 'INBOX':
+                query += f" label:{folder}"
+            results = self.gmail.users().messages().list(userId='me', q=query).execute()
+            emails.extend({'id': msg['id'], 'source': 'gmail', 'folder': folder} for msg in results.get('messages', []))
         # Yahoo IMAP
         try:
             mail = imaplib.IMAP4_SSL('imap.mail.yahoo.com')
@@ -72,12 +200,20 @@ class DataFetcher:
             _, data = mail.search(None, f'SINCE {since_date}')
             for num in data[0].split():
                 _, msg_data = mail.fetch(num, '(RFC822)')
-                emails.append({'id': num.decode(), 'source': 'yahoo', 'raw': msg_data[0][1]})
+                emails.append({'id': num.decode(), 'source': 'yahoo', 'raw': msg_data[0][1], 'folder': 'INBOX'})
             mail.logout()
             print("Successfully fetched new emails from Yahoo")
         except Exception as e:
             print(f"Failed to fetch Yahoo emails: {e}")
-
+        # Outlook/Office365 via EWS
+        for outlook_email in self.outlook_accounts:
+            if not outlook_email:
+                continue
+            try:
+                ews_emails = self.fetch_recent_ews_emails(outlook_email)
+                emails.extend(ews_emails)
+            except Exception as e:
+                print(f"Failed to fetch EWS emails for {outlook_email}: {e}")
         return emails
 
     def get_sent_emails(self, last_run):

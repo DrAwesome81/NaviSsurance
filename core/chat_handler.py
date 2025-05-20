@@ -44,8 +44,10 @@ class ChatHandler(QObject):
         time_min = today.strftime('%Y-%m-%dT%H:%M:%SZ')
         time_max = tomorrow.strftime('%Y-%m-%dT%H:%M:%SZ')
         events = self.data_fetcher.get_calendar_events(time_min, time_max)
-        events_str = "\n".join([f"- {e['summary']} at {e['start'].get('dateTime', e['start'].get('date'))}"
-                              for e in events]) if events else "- No meetings—slacker!"
+        events_str = "\n".join([
+            f"- {e['summary']} at {e['start'].get('dateTime', e['start'].get('date'))} ({e.get('calendarName', 'Primary Calendar')})"
+            for e in events
+        ]) if events else "- No meetings—slacker!"
 
         # Tasks
         with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:

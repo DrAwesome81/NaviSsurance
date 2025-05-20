@@ -226,6 +226,16 @@ def index_dropbox(dbx, db_path="F:/naviSsurance_index.db", progress_callback=Non
 def should_auto_index(db_path="F:/naviSsurance_index.db", weeks=2):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
+    
+    # Create index_metadata table if it doesn't exist
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS index_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    conn.commit()
+    
     c.execute("SELECT value FROM index_metadata WHERE key = 'last_index_time'")
     result = c.fetchone()
     conn.close()
@@ -236,12 +246,14 @@ def should_auto_index(db_path="F:/naviSsurance_index.db", weeks=2):
 
 # Trigger 1: Auto-check on app launch
 def auto_index_on_launch(dbx, db_path="F:/naviSsurance_index.db"):
-    if should_auto_index(db_path):
-        print("Indexing Dropbox—more than 2 weeks since last run.")
-        return index_dropbox(dbx, db_path)
-    else:
-        print("Dropbox index up-to-date (less than 2 weeks old).")
-        return 0
+    print("Auto-indexing temporarily disabled.")
+    return 0
+    # if should_auto_index(db_path):
+    #     print("Indexing Dropbox—more than 2 weeks since last run.")
+    #     return index_dropbox(dbx, db_path)
+    # else:
+    #     print("Dropbox index up-to-date (less than 2 weeks old).")
+    #     return 0
 
 # Trigger 2: Button press (for future UI)
 def manual_index(dbx, db_path="F:/naviSsurance_index.db"):

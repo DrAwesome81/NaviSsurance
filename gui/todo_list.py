@@ -11,6 +11,7 @@ class TodoList:
         self.parent = parent
         self.db = DatabaseManager()
         self.todoList = parent.todoList
+        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")  # Create a unique session ID
 
     def addTask(self):
         task_text = self.parent.taskInput.text().strip()
@@ -30,20 +31,24 @@ class TodoList:
 
     def addTaskFromChat(self, task_text, due_date):
         try:
-            print(f"To-do list adding: {task_text} due {due_date}")
+            print(f"[DEBUG] TodoList: Starting addTaskFromChat with task: {task_text}, date: {due_date}")
             self.insertTaskIntoDB(task_text, due_date)
+            print("[DEBUG] TodoList: Task inserted into database")
             self.loadTasksFromDB()
-            print(f"To-do list refreshed with {self.todoList.count()} items")
+            print(f"[DEBUG] TodoList: Tasks reloaded, current count: {self.todoList.count()}")
         except Exception as e:
-            print(f"Error adding task from chat: {str(e)}")
+            print(f"[DEBUG] TodoList: Error adding task from chat: {str(e)}")
 
     def insertTaskIntoDB(self, task_text, due_date):
         try:
-            self.db.add_task(None, task_text, due_date)
+            print(f"[DEBUG] TodoList: Inserting task into DB: {task_text}, {due_date}")
+            self.db.add_task(self.session_id, task_text, due_date)
+            print("[DEBUG] TodoList: Task successfully added to database")
         except Exception as e:
+            print(f"[DEBUG] TodoList: Database error: {str(e)}")
             raise Exception(f"Database error: {str(e)}")
 
-    def updateUIWithTask(self, task_text, due_date, completed=False):
+    def updateUIWithTask(self, task_text, due_date, completed=False, task_id=None):
         # Check for duplicates
         for i in range(self.todoList.count()):
             item = self.todoList.item(i)
@@ -63,7 +68,7 @@ class TodoList:
 
         # Checkbox
         checkbox = QCheckBox()
-        checkbox.setChecked(completed)
+        checkbox.setChecked(True if completed == 1 else False)
         checkbox.stateChanged.connect(lambda state: self.updateTaskStatus(task_text, state == Qt.CheckState.Checked.value))
         layout.addWidget(checkbox, alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -92,7 +97,7 @@ class TodoList:
         # Delete Button
         delete_button = QPushButton("Delete")
         delete_button.setFixedWidth(60)
-        delete_button.clicked.connect(lambda: self.deleteTask(item_widget))
+        delete_button.clicked.connect(lambda: self.deleteTask(item_widget, task_id))
         delete_button.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
         delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
         layout.addWidget(delete_button)
@@ -108,9 +113,12 @@ class TodoList:
 
     def updateTaskStatus(self, task_text, completed):
         try:
+            print(f"[DEBUG] updateTaskStatus: Updating task '{task_text}' to completed={completed}")
             self.db.update_task_status(task_text, completed)
+            print(f"[DEBUG] updateTaskStatus: Database updated successfully")
             self.loadTasksFromDB()
         except Exception as e:
+            print(f"[DEBUG] updateTaskStatus: Error updating status: {str(e)}")
             QMessageBox.critical(self.parent, "Error", f"Failed to update task status: {str(e)}")
 
     def editTask(self, widget):
@@ -128,14 +136,14 @@ class TodoList:
                     try:
                         datetime.strptime(new_date, "%m-%d-%Y")
                         self.db.delete_task(task_text)
-                        self.db.add_task(None, new_text, new_date)
+                        self.db.add_task(self.session_id, new_text, new_date)
                         self.loadTasksFromDB()
                     except ValueError:
                         QMessageBox.warning(self.parent, "Error", "Invalid date format. Use MM-DD-YYYY")
         except Exception as e:
             QMessageBox.critical(self.parent, "Error", f"Failed to edit task: {str(e)}")
 
-    def deleteTask(self, widget):
+    def deleteTask(self, widget, task_id):
         try:
             reply = QMessageBox.question(self.parent, "Delete Task",
                                        "Are you sure you want to delete this task?",
@@ -143,35 +151,91 @@ class TodoList:
             
             if reply == QMessageBox.StandardButton.Yes:
                 task_text = widget.layout().itemAt(1).widget().text()
-                self.db.delete_task(task_text)
+                self.db.delete_task(task_text)  # The DB method will use the task ID internally
                 self.loadTasksFromDB()
         except Exception as e:
             QMessageBox.critical(self.parent, "Error", f"Failed to delete task: {str(e)}")
 
     def archiveCompletedTasks(self):
         try:
-            for i in reversed(range(self.todoList.count())):
+            print("[DEBUG] archiveCompletedTasks: Starting archive process")
+            archived_count = 0
+            
+            # First, get all completed tasks from UI
+            tasks_to_archive = []
+            
+            for i in range(self.todoList.count()):
                 list_item = self.todoList.item(i)
                 widget = self.todoList.itemWidget(list_item)
-                checkbox = widget.layout().itemAt(0).widget()
-                label = widget.layout().itemAt(1).widget()
-                due_date_label = widget.layout().itemAt(2).widget()
+                if not widget or not widget.layout():
+                    continue
+                    
+                layout = widget.layout()
+                if layout.count() < 3:  # Need at least checkbox, label, and date label
+                    continue
+                    
+                checkbox = layout.itemAt(0).widget()
+                label = layout.itemAt(1).widget()
+                due_date_label = layout.itemAt(3).widget()  # After stretch
+                
+                if not all([checkbox, label, due_date_label]):
+                    continue
 
-                if checkbox.isChecked():
-                    task_text = label.text()
-                    due_date = due_date_label.text()
-                    self.db.archive_task(task_text, due_date, True)
-                    self.todoList.takeItem(i)
+                task_text = label.text()
+                due_date = due_date_label.text()
+                is_completed = checkbox.checkState() == Qt.CheckState.Checked
+                
+                if is_completed:
+                    tasks_to_archive.append((task_text, due_date))
+            
+            # Archive completed tasks
+            for task_text, due_date in tasks_to_archive:
+                # Add to archived_tasks table
+                self.db.archive_task(task_text, due_date, True)
+                archived_count += 1
+                
+                # Remove from UI
+                for i in range(self.todoList.count()):
+                    item = self.todoList.item(i)
+                    widget = self.todoList.itemWidget(item)
+                    if widget and widget.layout():
+                        label = widget.layout().itemAt(1).widget()
+                        if label and label.text() == task_text:
+                            self.todoList.takeItem(i)
+                            break
+            
+            # Only at the end, update the database to match the UI
+            if archived_count > 0:
+                self.db.clear_tasks()
+                # Add all remaining tasks from UI to database
+                for i in range(self.todoList.count()):
+                    item = self.todoList.item(i)
+                    widget = self.todoList.itemWidget(item)
+                    if widget and widget.layout():
+                        label = widget.layout().itemAt(1).widget()
+                        due_date_label = widget.layout().itemAt(3).widget()
+                        if label and due_date_label:
+                            self.db.add_task(self.session_id, label.text(), due_date_label.text())
+                QMessageBox.information(self.parent, "Success", f"Archived {archived_count} completed task(s)")
+            else:
+                QMessageBox.information(self.parent, "Info", "No completed tasks to archive")
+                
         except Exception as e:
+            print(f"[DEBUG] Error in archiveCompletedTasks: {str(e)}")
             QMessageBox.critical(self.parent, "Error", f"Failed to archive tasks: {str(e)}")
 
     def loadTasksFromDB(self):
         try:
+            print("[DEBUG] loadTasksFromDB: Starting to load tasks")
             self.todoList.clear()
             tasks = self.db.get_tasks()
-            for task_text, due_date, completed in tasks:
-                self.updateUIWithTask(task_text, due_date, completed)
+            print(f"[DEBUG] loadTasksFromDB: Retrieved {len(tasks)} tasks from database")
+            for task_id, task_text, due_date, completed in tasks:
+                print(f"[DEBUG] loadTasksFromDB: Task '{task_text}' - completed={completed}")
+                self.updateUIWithTask(task_text, due_date, completed, task_id)
+            print("[DEBUG] loadTasksFromDB: Finished loading tasks")
         except Exception as e:
+            print(f"[DEBUG] loadTasksFromDB: Error loading tasks: {str(e)}")
             QMessageBox.critical(self.parent, "Error", f"Failed to load tasks: {str(e)}")
 
     def updateTaskStyle(self, widget):

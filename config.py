@@ -50,7 +50,7 @@ base_system_message = {
         "require a web search, remember the work that Dr. Odeh and NaviSure do, and judge if the search request "
         "implies that you should use that context. For example, you are asked if there is any news from FDA, "
         "consider that you should maybe restrict your search to topics such as AI/ML, SaMD, etc. If you are asked "
-        " for restaurants in Dallas that serve ramen, consider that it might be incorrect to try to put that search "
+        "for restaurants in Dallas that serve ramen, consider that it might be incorrect to try to put that search "
         "in the context of AI/ML, SaMD, etc. If you are asked for anything indicating a search of local files, "
         "return exactly 'DROPBOX_SEARCH:<search query>'. When responding to DROPBOX_SEARCH results, "
         "format each item as: <b>filename</b> - <a href='url'>Link</a> - snarky description (plain text), "

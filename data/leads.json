@@ -1,28 +1,46 @@
 [
   {
-    "name": "Bob Johnson",
-    "company": "Next Gen Diagnostics",
-    "title": "Chief Executive Officer",
-    "rationale": "Submitted 510k for AI-based LDT 14 months ago using an outside regulatory consultant firm. No updates on clearance status since original submission announcement.",
-    "linkedin_url": "https://www.linkedin.com/in/bob-johnson-nextgendiagnostics/",
+    "name": "Cyril Di Grandi",
+    "company": "Avicenna.AI",
+    "title": "Co-founder and CEO",
+    "rationale": "As the co-founder and CEO of Avicenna.AI, Di Grandi oversees the company's development of AI solutions for stroke assessment and other critical conditions. The company's recent FDA clearances suggest expertise in navigating the regulatory process, making him a valuable contact in the current regulatory landscape.",
+    "linkedin_url": "https://www.linkedin.com/in/cyril-di-grandi-1954a82/",
     "contacted": false,
     "contact_date": null
   },
   {
-    "name": "Jane Doe",
-    "company": "MedTech Innovators Ltd",
-    "title": "President & CEO",
-    "rationale": "Announced plans for FDA submission of AI SaMD product in early 2022 but no clearance announced yet. Company has had two rounds of layoffs in past 6 months.",
-    "linkedin_url": "https://www.linkedin.com/in/jane-doe-medtech/",
+    "name": "Suchi Saria",
+    "company": "Bayesian Health",
+    "title": "CEO",
+    "rationale": "Bayesian Health is developing AI for clinical deterioration prediction and likely faces complex regulatory pathways due to their use of patient data and predictive algorithms. The company would have to navigate the FDA's evolving approach to AI/ML in healthcare in an environment affected by recent regulatory staffing changes.",
+    "linkedin_url": "https://www.linkedin.com/in/suchisaria/",
     "contacted": false,
     "contact_date": null
   },
   {
-    "name": "John Smith",
-    "company": "Acme Medical Devices",
-    "title": "Chief Executive Officer",
-    "rationale": "Announced pursuit of FDA clearance for AI-based IVD software 18 months ago with no updates since. Recently had departure of VP of Regulatory Affairs.",
-    "linkedin_url": "https://www.linkedin.com/in/john-smith-acme-md/",
+    "name": "Alexander Sardi\u00f1a",
+    "company": "Whiterabbit",
+    "title": "CEO",
+    "rationale": "Whiterabbit emerged from stealth with FDA clearance for WRDensity but has additional AI products in development that will require FDA review. As a radiologist who became CEO, Sardi\u00f1a would have valuable insights into the current regulatory landscape.",
+    "linkedin_url": "https://www.linkedin.com/in/alexander-sardi%C3%B1a-md-fache-a8339614/",
+    "contacted": false,
+    "contact_date": null
+  },
+  {
+    "name": "Brandon Suh",
+    "company": "Lunit",
+    "title": "CEO",
+    "rationale": "Lunit has secured FDA clearances for their AI imaging products but may be working on additional clearances in a regulatory environment affected by recent FDA staffing changes and layoffs in the AI review division. Their experience with multiple clearance processes makes them a valuable resource.",
+    "linkedin_url": "https://www.linkedin.com/in/brandon-suh-md-mba-89615617/",
+    "contacted": false,
+    "contact_date": null
+  },
+  {
+    "name": "St\u00e9phane Berger",
+    "company": "Avicenna.AI",
+    "title": "Regulatory and Quality Manager",
+    "rationale": "Avicenna.AI successfully secured multiple FDA clearances in March 2024 after a lengthy regulatory process, with Berger playing a key role in navigating the complex CADx approval process for their CINA-ASPECTS product. The successful clearance after dealing with regulatory challenges makes them valuable for insights into recent FDA processes.",
+    "linkedin_url": "https://www.linkedin.com/in/stephane-berger-78a01516/",
     "contacted": false,
     "contact_date": null
   }
