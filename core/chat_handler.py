@@ -56,7 +56,9 @@ class ChatHandler(QObject):
         tasks_str = "\n".join([f"- {t[0]} (due {t[1]})" for t in tasks]) if tasks else "- No tasks—living the dream!"
 
         # Emails
+        print("Fetching new emails...")
         emails = self.data_fetcher.get_new_emails(last_run)
+        print(f"Found {len(emails)} new emails")
         email_summaries = []
         with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
             for msg in emails[:5]:  # Limit to 5 most recent emails
@@ -191,3 +193,16 @@ class ChatHandler(QObject):
         for email in sent_emails:
             self.update_replied_status(email['id'], email['source'])
         print(f"Checked {len(sent_emails)} sent emails for replied status updates.")
+
+    def search_conversations(self, search_terms, date_range=None):
+        """
+        Search conversations using the database manager.
+        
+        Args:
+            search_terms (str): The search query
+            date_range (tuple, optional): (start_date, end_date) for filtering results
+            
+        Returns:
+            list: List of tuples (role, content, timestamp) matching the search
+        """
+        return self.db.search_conversations(search_terms, date_range)

@@ -9,13 +9,16 @@ class DatabaseManager:
 
     def setup_db(self):
         with sqlite3.connect(self.db_name) as conn:
-            conn.execute('''CREATE TABLE IF NOT EXISTS conversation (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT,
-                role TEXT,
-                content TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )''')
+            # Create conversation table with FTS5 support if it doesn't exist
+            conn.execute('''CREATE VIRTUAL TABLE IF NOT EXISTS conversation
+                USING fts5 (
+                    session_id,
+                    role,
+                    content,
+                    timestamp,
+                    tokenize='porter'
+                )''')
+            
             conn.execute('''CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT,
@@ -24,6 +27,7 @@ class DatabaseManager:
                 completed INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
+            
             # Drop and recreate archived_tasks table
             conn.execute('DROP TABLE IF EXISTS archived_tasks')
             conn.execute('''CREATE TABLE archived_tasks (
@@ -56,36 +60,36 @@ class DatabaseManager:
 
     def save_message(self, session_id, role, content):
         with sqlite3.connect(self.db_name) as conn:
-            conn.execute('INSERT INTO conversation (session_id, role, content) VALUES (?, ?, ?)',
-                        (session_id, role, content))
+            conn.execute('INSERT INTO conversation (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)',
+                        (session_id, role, content, datetime.now()))
             conn.commit()
 
-    def get_chat_history(self, session_id):
+    def search_conversations(self, search_terms, date_range=None):
+        """
+        Search conversations using full-text search.
+        
+        Args:
+            search_terms (str): The search query
+            date_range (tuple, optional): (start_date, end_date) for filtering results
+            
+        Returns:
+            list: List of tuples (role, content, timestamp) matching the search
+        """
         with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('SELECT role, content, timestamp FROM conversation WHERE session_id = ? ORDER BY timestamp DESC LIMIT 50',
-                                 (session_id,))
-            return cursor.fetchall()
-
-    def get_chat_history_by_date_range(self, session_id, start_date, end_date):
-        with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('''
+            query = '''
                 SELECT role, content, timestamp 
                 FROM conversation 
-                WHERE session_id = ? 
-                AND timestamp BETWEEN ? AND ?
-                ORDER BY timestamp ASC
-            ''', (session_id, start_date, end_date))
-            return cursor.fetchall()
-
-    def get_recent_conversations(self, limit=10):
-        with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('''
-                SELECT DISTINCT session_id, MAX(timestamp) as last_message
-                FROM conversation
-                GROUP BY session_id
-                ORDER BY last_message DESC
-                LIMIT ?
-            ''', (limit,))
+                WHERE conversation MATCH ?
+            '''
+            params = [search_terms]
+            
+            if date_range:
+                query += ' AND timestamp BETWEEN ? AND ?'
+                params.extend(date_range)
+            
+            query += ' ORDER BY timestamp DESC'
+            
+            cursor = conn.execute(query, params)
             return cursor.fetchall()
 
     def add_task(self, session_id, task_text, due_date):
@@ -101,7 +105,6 @@ class DatabaseManager:
 
     def delete_task(self, task_text):
         with sqlite3.connect(self.db_name) as conn:
-            # First get the task ID
             cursor = conn.execute('SELECT id FROM tasks WHERE task = ? ORDER BY created_at DESC LIMIT 1', (task_text,))
             task_id = cursor.fetchone()
             if task_id:
@@ -110,7 +113,6 @@ class DatabaseManager:
 
     def update_task_status(self, task_text, completed):
         with sqlite3.connect(self.db_name) as conn:
-            # First get the task ID
             cursor = conn.execute('SELECT id FROM tasks WHERE task = ? ORDER BY created_at DESC LIMIT 1', (task_text,))
             task_id = cursor.fetchone()
             if task_id:
@@ -119,7 +121,6 @@ class DatabaseManager:
 
     def archive_task(self, task_text, due_date, completed):
         with sqlite3.connect(self.db_name) as conn:
-            # Add to archived_tasks with all required fields
             conn.execute('''INSERT INTO archived_tasks 
                           (task, due_date, completed, session_id, created_at) 
                           VALUES (?, ?, ?, ?, ?)''',

@@ -8,10 +8,19 @@ from core.index_dropbox import auto_index_on_launch
 from core.api import get_dropbox_client
 from dotenv import load_dotenv
 
+# Create logs directory if it doesn't exist
+logs_dir = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(logs_dir, exist_ok=True)
+
 # Set up logging
-logging.basicConfig(level=logging.DEBUG,
-                   format='%(asctime)s - %(levelname)s - %(message)s',
-                   handlers=[logging.StreamHandler()])
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(logs_dir, 'app.log')),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))

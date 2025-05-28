@@ -2,11 +2,11 @@ import sqlite3
 import logging
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QSplashScreen, 
                             QTextBrowser, QLineEdit, QPushButton, QListWidget, QDateEdit, QTableWidget, 
-                            QTableWidgetItem, QCheckBox, QComboBox, QLabel, QSplitter, QTextEdit, QDialog, QDialogButtonBox, QHeaderView, QMessageBox)
+                            QTableWidgetItem, QCheckBox, QComboBox, QLabel, QSplitter, QTextEdit, QDialog, QDialogButtonBox, QHeaderView, QMessageBox, QFileDialog, QMenu)
 from PyQt6.QtCore import Qt, QDate, QTimer, pyqtSlot, QUrl
 from PyQt6.QtGui import QPixmap, QAction, QDesktopServices, QColor
 from core.db import DatabaseManager
-from gui.chat_window import ChatThread, onResponseReceived, sendMessage, saveChat, loadChat
+from gui.chat_window import ChatThread, ResponseHandler, sendMessage, saveChat, loadChat
 from gui.todo_list import TodoList
 from core.chat import ChatManager
 import os
@@ -15,6 +15,10 @@ from anthropic import Anthropic, AnthropicError
 from anthropic.types import ToolUseBlock
 from datetime import datetime
 from PyQt6.QtWidgets import QApplication
+import PyPDF2
+from bs4 import BeautifulSoup
+import requests
+import markdown
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +106,9 @@ class ChatWindow(QMainWindow):
         logger.info("Setting up UI...")
         self.initUI()
         
+        # Initialize response handler
+        self.response_handler = ResponseHandler(self.chatDisplay, self.userInput, self.sendButton, self.chat_handler, self.session_id, self.conversation_history)
+        
         # Connect the task signal
         self.chat_handler.task_added_signal.connect(self.addTaskFromChat)
         
@@ -133,11 +140,10 @@ class ChatWindow(QMainWindow):
             system_message = f"""{user_system_message}
 
 IMPORTANT: When processing search results:
-1. First, use the web_search tool to find relevant information about medical device companies
-2. Verify each company's current status and leadership team
-3. Include a clear rationale for why each lead is relevant
-4. Generate a personalized LinkedIn message for each lead based on your research
-5. Return results as a JSON array with the following fields for each lead:
+1. Verify each company's current status and leadership team
+2. Include a clear rationale for why each lead is relevant
+3. Generate a personalized LinkedIn message for each lead based on your research
+4. Return results as a JSON array with the following fields for each lead:
    - name: Full name of the key decision maker
    - company: Company name
    - title: Their current title
@@ -146,7 +152,7 @@ IMPORTANT: When processing search results:
    - message: A personalized LinkedIn message referencing their specific regulatory needs and how NaviSure can help
 Only include leads that have been verified through the search results.
 
-Your response must be a valid JSON array, starting with [ and ending with ]. Do not include any other text or thinking process. Do not explain your process or add any commentary - just return the JSON array."""
+"""
 
             # Initialize Claude client
             api_key = os.getenv('ANTHROPIC_API_KEY', '')
@@ -155,11 +161,11 @@ Your response must be a valid JSON array, starting with [ and ending with ]. Do 
                 return
             client = Anthropic(api_key=api_key)
 
-            # Start the conversation
+            # Start the conversation with the system message
             messages = [
                 {
                     "role": "user",
-                    "content": "Search for medical device companies in the AI SaMD and/or IVD/LDT space that announced FDA clearance pursuits over a year ago but haven't announced clearance yet. Return the results as a JSON array."
+                    "content": user_system_message
                 }
             ]
 
@@ -167,7 +173,7 @@ Your response must be a valid JSON array, starting with [ and ending with ]. Do 
             try:
                 response = client.messages.create(
                     model="claude-3-7-sonnet-20250219",
-                    max_tokens=1000,
+                    max_tokens=10000,
                     system=system_message,
                     messages=messages,
                     tools=[{
@@ -186,6 +192,18 @@ Your response must be a valid JSON array, starting with [ and ending with ]. Do 
             logger.info("Initial Claude API Response:")
             logger.info(f"Response type: {type(response)}")
             logger.info(f"Response content: {response.content}")
+
+            # Write raw response to file for inspection
+            response_file = os.path.join(self.data_dir, 'claude_response.txt')
+            with open(response_file, 'w', encoding='utf-8') as f:
+                f.write("Response type: " + str(type(response)) + "\n\n")
+                f.write("Response content:\n")
+                for block in response.content:
+                    if hasattr(block, 'text'):
+                        f.write(block.text + "\n")
+                    else:
+                        f.write(str(block) + "\n")
+            logger.info(f"Raw response written to {response_file}")
 
             # Add the response to the conversation
             messages.append({
@@ -211,31 +229,42 @@ Your response must be a valid JSON array, starting with [ and ending with ]. Do 
                 logger.info(f"Response type: {type(response)}")
                 logger.info(f"Response content: {response.content}")
 
-                # Try to find JSON array in the final response
-                json_str = None
+            # Write raw response to file for inspection
+            response_file = os.path.join(self.data_dir, 'claude_response.txt')
+            with open(response_file, 'w', encoding='utf-8') as f:
+                f.write("Response type: " + str(type(response)) + "\n\n")
+                f.write("Response content:\n")
                 for block in response.content:
                     if hasattr(block, 'text'):
-                        text = block.text.strip()
-                        start_idx = text.find('[')
-                        end_idx = text.rfind(']') + 1
-                        if start_idx != -1 and end_idx > 0:
-                            json_str = text[start_idx:end_idx]
-                            break
-            else:
-                # Try to find JSON array in the initial response
-                json_str = None
-                for block in response.content:
-                    if hasattr(block, 'text'):
-                        text = block.text.strip()
-                        start_idx = text.find('[')
-                        end_idx = text.rfind(']') + 1
-                        if start_idx != -1 and end_idx > 0:
-                            json_str = text[start_idx:end_idx]
-                            break
-            
+                        f.write(block.text + "\n")
+                    else:
+                        f.write(str(block) + "\n")
+            logger.info(f"Raw response written to {response_file}")
+
+            # Try to find JSON array in the response
+            json_str = None
+            for block in response.content:
+                if hasattr(block, 'text'):
+                    text = block.text.strip()
+                    logger.info(f"Processing block text: {text}")
+                    # Look for JSON array pattern
+                    start_idx = text.find('[')
+                    end_idx = text.rfind(']') + 1
+                    if start_idx != -1 and end_idx > 0:
+                        json_str = text[start_idx:end_idx]
+                        logger.info(f"Found JSON string: {json_str}")
+                        break
+
             if json_str:
                 try:
+                    # Clean up the JSON string
+                    json_str = json_str.strip()
+                    # Remove any markdown code block markers
+                    json_str = json_str.replace('```json', '').replace('```', '')
+                    logger.info(f"Cleaned JSON string: {json_str}")
+                    
                     new_leads = json.loads(json_str)
+                    logger.info(f"Parsed leads: {new_leads}")
                     
                     if isinstance(new_leads, list):
                         # Successfully parsed JSON array
@@ -264,6 +293,7 @@ Your response must be a valid JSON array, starting with [ and ending with ]. Do 
                             if (lead['name'], lead['company']) not in existing_identifiers:
                                 existing_leads.insert(0, lead)
                                 existing_identifiers.add((lead['name'], lead['company']))
+                                logger.info(f"Added new lead: {lead['name']} from {lead['company']}")
                         
                         # Save updated leads
                         with open(leads_file, 'w') as f:
@@ -277,7 +307,7 @@ Your response must be a valid JSON array, starting with [ and ending with ]. Do 
                     logger.error(f"Failed to parse JSON: {e}")
                     logger.error(f"Raw JSON string: {json_str}")
             else:
-                logger.error("No JSON array found in any response block")
+                logger.error("No JSON array found in response blocks")
                 logger.error(f"Raw response blocks: {[block.text if hasattr(block, 'text') else str(block) for block in response.content]}")
                 
         except AnthropicError as e:
@@ -770,7 +800,31 @@ Your response must be a valid JSON array, starting with [ and ending with ]. Do 
 
     @pyqtSlot(str)  
     def onResponseReceived(self, response):
-        self.chatDisplay.append(f"<b>Navi:</b> {response}<br><br>")
+        print("[DEBUG] onResponseReceived in interface.py called")
+        print(f"[DEBUG] Response received in interface: {response}")
+        
+        # First try markdown processing for HTML-formatted content
+        print("[DEBUG] Attempting markdown processing")
+        html_content = markdown.markdown(response, extensions=['extra'])
+        print(f"[DEBUG] After markdown: {html_content}")
+        
+        # If the content doesn't contain any HTML tags, replace newlines with br tags
+        if not any(tag in html_content for tag in ['<ul>', '<li>', '<p>', '<h']):
+            print("[DEBUG] No HTML tags found, replacing newlines with br tags")
+            html_content = response.replace('\n', '<br>')
+        else:
+            print("[DEBUG] HTML tags found, keeping markdown processing")
+        
+        # Ensure the response ends with proper HTML to close any open lists
+        if html_content.endswith('<li>'):
+            print("[DEBUG] Adding closing list tags")
+            html_content += '</li></ul>'  # Close last list item and the list itself
+        elif '<li>' in html_content and not html_content.endswith('</ul>'):
+            print("[DEBUG] Adding closing ul tag")
+            html_content += '</ul>'  # If there's an <li> but no closing </ul>
+        
+        print(f"[DEBUG] Final HTML content: {html_content}")
+        self.chatDisplay.append(f"<b>Navi:</b> {html_content}")
         self.conversation_history.append({"role": "assistant", "content": response})
         self.chat_handler.save_message(self.session_id, "assistant", response)
         self.sendButton.setEnabled(True)
@@ -795,7 +849,7 @@ Your response must be a valid JSON array, starting with [ and ending with ]. Do 
 
     def initUI(self):
         self.setWindowTitle('NaviSsurance')
-        self.setGeometry(300, 300, 1400, 800)  # Increased window size
+        self.setGeometry(300, 300, 1600, 900)  # Increased window size for Compliance Tab
         
         # Center the window on the screen
         screen = QApplication.primaryScreen().geometry()
@@ -830,15 +884,15 @@ Your response must be a valid JSON array, starting with [ and ending with ]. Do 
         self.sendButton.clicked.connect(self.sendMessage)
         chat_input_layout.addWidget(self.sendButton)
         chat_layout.addLayout(chat_input_layout)
-        main_layout.addWidget(chat_widget, stretch=30)  # Reduced from 40 to 30
+        main_layout.addWidget(chat_widget, stretch=30)
 
         # Right side - Tab Widget
         tabs = QTabWidget()
         tabs.setStyleSheet("QTabBar::tab { color: white; background-color: rgb(20, 20, 22); } "
                           "QTabBar::tab:selected { background-color: rgba(253, 98, 98, 0.8); }")
-        main_layout.addWidget(tabs, stretch=70)  # Increased from 60 to 70
+        main_layout.addWidget(tabs, stretch=70)
 
-        # Tasks Tab (unchanged)
+        # Tasks Tab
         tasks_tab = QWidget()
         tasks_layout = QVBoxLayout(tasks_tab)
         self.todoList.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
@@ -991,3 +1045,274 @@ Your response must be a valid JSON array, starting with [ and ending with ]. Do 
         self.saveTranscriptButton.setEnabled(False)
         meetings_layout.addWidget(self.saveTranscriptButton)
         tabs.addTab(meetings_tab, "Meetings")
+
+        # Compliance Tab (moved to last position)
+        compliance_tab = QWidget()
+        self.setup_compliance_tab(compliance_tab)
+        tabs.addTab(compliance_tab, "Compliance")
+
+    def setup_compliance_tab(self, tab):
+        layout = QHBoxLayout(tab)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        layout.addWidget(splitter)
+
+        # Column 1: Reference Documents
+        ref_widget = QWidget()
+        ref_layout = QVBoxLayout(ref_widget)
+        ref_label = QLabel("Reference Documents (Regulations/Standards)")
+        ref_label.setStyleSheet("color: white;")
+        ref_layout.addWidget(ref_label)
+
+        self.ref_url_input = QLineEdit()
+        self.ref_url_input.setPlaceholderText("Enter URL (e.g., https://www.ecfr.gov/21-cfr-820.3)")
+        self.ref_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        self.ref_url_input.returnPressed.connect(self.add_ref_url)
+        ref_layout.addWidget(self.ref_url_input)
+
+        ref_upload_btn = QPushButton("Upload Reference")
+        ref_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        ref_upload_btn.clicked.connect(self.upload_ref_file)
+        ref_layout.addWidget(ref_upload_btn)
+
+        self.ref_list = QListWidget()
+        self.ref_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # Add context menu for removing items
+        self.ref_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.ref_list.customContextMenuRequested.connect(self.show_ref_context_menu)
+        ref_layout.addWidget(self.ref_list)
+        splitter.addWidget(ref_widget)
+
+        # Column 2: Documents to Assess
+        assess_widget = QWidget()
+        assess_layout = QVBoxLayout(assess_widget)
+        assess_label = QLabel("Documents to Assess (e.g., SOPs)")
+        assess_label.setStyleSheet("color: white;")
+        assess_layout.addWidget(assess_label)
+
+        self.assess_url_input = QLineEdit()
+        self.assess_url_input.setPlaceholderText("Enter URL (e.g., https://navisure.com/sop.pdf)")
+        self.assess_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        self.assess_url_input.returnPressed.connect(self.add_assess_url)
+        assess_layout.addWidget(self.assess_url_input)
+
+        assess_upload_btn = QPushButton("Upload Document")
+        assess_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        assess_upload_btn.clicked.connect(self.upload_assess_file)
+        assess_layout.addWidget(assess_upload_btn)
+
+        self.assess_list = QListWidget()
+        self.assess_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # Add context menu for removing items
+        self.assess_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.assess_list.customContextMenuRequested.connect(self.show_assess_context_menu)
+        assess_layout.addWidget(self.assess_list)
+        splitter.addWidget(assess_widget)
+
+        # Column 3: Results
+        results_widget = QWidget()
+        results_layout = QVBoxLayout(results_widget)
+        results_label = QLabel("Compliance Results")
+        results_label.setStyleSheet("color: white;")
+        results_layout.addWidget(results_label)
+
+        self.results_text = QTextEdit()
+        self.results_text.setReadOnly(True)
+        self.results_text.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        results_layout.addWidget(self.results_text)
+
+        run_btn = QPushButton("Run Compliance Check")
+        run_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        run_btn.clicked.connect(self.run_compliance_check)
+        results_layout.addWidget(run_btn)
+
+        save_btn = QPushButton("Save Report")
+        save_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        save_btn.clicked.connect(self.save_compliance_report)
+        results_layout.addWidget(save_btn)
+
+        crm_btn = QPushButton("Link to CRM")
+        crm_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        crm_btn.clicked.connect(self.link_to_crm)
+        results_layout.addWidget(crm_btn)
+        splitter.addWidget(results_widget)
+
+        # Load existing documents
+        self.load_document_lists()
+
+    def add_ref_url(self):
+        url = self.ref_url_input.text().strip()
+        if url:
+            self.ref_list.addItem(url)
+            self.save_document_lists()
+            self.ref_url_input.clear()
+
+    def upload_ref_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Reference File", "", "Documents (*.pdf *.docx *.txt);;All Files (*)"
+        )
+        if file_path:
+            self.ref_list.addItem(file_path)
+            self.save_document_lists()
+
+    def add_assess_url(self):
+        url = self.assess_url_input.text().strip()
+        if url:
+            self.assess_list.addItem(url)
+            self.save_document_lists()
+            self.assess_url_input.clear()
+
+    def upload_assess_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Document to Assess", "", "Documents (*.pdf *.docx *.txt);;All Files (*)"
+        )
+        if file_path:
+            self.assess_list.addItem(file_path)
+            self.save_document_lists()
+
+    def save_document_lists(self):
+        """Save the current state of document lists to persist them."""
+        ref_items = [self.ref_list.item(i).text() for i in range(self.ref_list.count())]
+        assess_items = [self.assess_list.item(i).text() for i in range(self.assess_list.count())]
+        data = {
+            "reference_documents": ref_items,
+            "assessed_documents": assess_items
+        }
+        config_path = os.path.join(self.data_dir, "compliance_documents.json")
+        with open(config_path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def load_document_lists(self):
+        """Load saved document lists when the application starts."""
+        config_path = os.path.join(self.data_dir, "compliance_documents.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                data = json.load(f)
+            for item in data.get("reference_documents", []):
+                self.ref_list.addItem(item)
+            for item in data.get("assessed_documents", []):
+                self.assess_list.addItem(item)
+
+    def show_ref_context_menu(self, position):
+        """Show context menu for reference documents list."""
+        menu = QMenu()
+        remove_action = menu.addAction("Remove")
+        action = menu.exec(self.ref_list.mapToGlobal(position))
+        if action == remove_action:
+            item = self.ref_list.itemAt(position)
+            if item:
+                self.ref_list.takeItem(self.ref_list.row(item))
+                self.save_document_lists()
+
+    def show_assess_context_menu(self, position):
+        """Show context menu for assessment documents list."""
+        menu = QMenu()
+        remove_action = menu.addAction("Remove")
+        action = menu.exec(self.assess_list.mapToGlobal(position))
+        if action == remove_action:
+            item = self.assess_list.itemAt(position)
+            if item:
+                self.assess_list.takeItem(self.assess_list.row(item))
+                self.save_document_lists()
+
+    def run_compliance_check(self):
+        ref_items = [self.ref_list.item(i).text() for i in range(self.ref_list.count())]
+        assess_items = [self.assess_list.item(i).text() for i in range(self.assess_list.count())]
+        if not ref_items or not assess_items:
+            self.results_text.setText("Error: Please add at least one reference and one assessed document.")
+            return
+
+        self.results_text.setText("Running compliance check...")
+        documents = []
+        for item in ref_items + assess_items:
+            if item.startswith("http"):
+                try:
+                    response = requests.get(item, timeout=10)
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    text = soup.get_text()
+                    documents.append({"type": "url", "content": text, "source": item})
+                except Exception as e:
+                    self.results_text.setText(f"Error fetching URL {item}: {str(e)}")
+                    return
+            else:
+                try:
+                    with open(item, "rb") as f:
+                        pdf = PyPDF2.PdfReader(f)
+                        text = "".join(page.extract_text() for page in pdf.pages)
+                        documents.append({"type": "file", "content": text, "source": item})
+                except Exception as e:
+                    self.results_text.setText(f"Error reading file {item}: {str(e)}")
+                    return
+
+        ref_docs = [d for d in documents if d["source"] in ref_items]
+        assess_docs = [d for d in documents if d["source"] in assess_items]
+        prompt = (
+            f"Compare the following assessed documents against the reference documents. "
+            f"Identify non-compliant sections or areas for improvement, citing specific clauses. "
+            f"Return a JSON array: [{{\"section\": str, \"issue\": str, \"fix\": str, \"reference\": str}}].\n\n"
+            f"Reference Documents:\n"
+        )
+        
+        # Add reference document content
+        for doc in ref_docs:
+            prompt += f"\nDocument: {doc['source']}\nContent:\n{doc['content']}\n"
+        
+        prompt += f"\nAssessed Documents:\n"
+        
+        # Add assessed document content
+        for doc in assess_docs:
+            prompt += f"\nDocument: {doc['source']}\nContent:\n{doc['content']}\n"
+        
+        prompt += "\nIMPORTANT: Do not perform any Dropbox searches. Only analyze the documents provided above."
+
+        # Call Grok via chat.py
+        response = self.chat_handler.get_response(prompt, self.session_id, self.conversation_history)
+        try:
+            results = json.loads(response)
+            if isinstance(results, dict):
+                if 'non_compliances' in results:
+                    results = results['non_compliances']
+                elif 'issues' in results:
+                    results = results['issues']
+            if not isinstance(results, list):
+                raise ValueError("Response is not a JSON array")
+            
+            formatted_results = []
+            for r in results:
+                formatted_results.append(
+                    f"<b>Section {r['section']}:</b> {r['issue']}<br>"
+                    f"<b>Fix:</b> {r['fix']}<br>"
+                    f"<b>Reference:</b> {r['reference']}<br><br>"
+                )
+            self.results_text.setHtml("".join(formatted_results))
+        except Exception as e:
+            self.results_text.setText(f"Error processing results: {str(e)}")
+            logger.error(f"Error processing results: {e}")
+            logger.error(f"Raw response: {response}")
+
+    def save_compliance_report(self):
+        if not self.results_text.toPlainText():
+            self.results_text.setText("No results to save.")
+            return
+        timestamp = QDate.currentDate().toString("yyyyMMdd")
+        default_filename = f"compliance_report_{timestamp}.json"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Compliance Report", default_filename, "JSON Files (*.json);;All Files (*)"
+        )
+        if file_path:
+            results = []
+            for i in range(self.results_text.document().blockCount()):
+                block = self.results_text.document().findBlockByNumber(i).text()
+                if block:
+                    results.append(block)
+            try:
+                with open(file_path, "w") as f:
+                    json.dump(results, f, indent=2)
+                self.results_text.append(f"Saved to {file_path}")
+            except Exception as e:
+                self.results_text.setText(f"Error saving report: {str(e)}")
+
+    def link_to_crm(self):
+        # Placeholder: Integrate with crm.py (SQLite)
+        self.results_text.append("CRM integration TBD: Save compliance issues to leads.")
+        # Example: Save to crm.py with schema {lead: str, issue: str, action: str}
+        # Use DatabaseManager to insert results

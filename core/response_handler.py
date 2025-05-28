@@ -3,12 +3,35 @@ import json
 import re
 from dateutil import parser
 from datetime import datetime
-from config import headers, API_ENDPOINT, base_system_message
+from config import headers, API_ENDPOINT, base_system_message, CLAUDE_API_KEY
 from core.file_handler import search_dropbox_index
+from anthropic import Anthropic
 
 class ResponseHandler:
     def __init__(self, chat_handler):
         self.chat_handler = chat_handler
+        self.claude_client = Anthropic(api_key=CLAUDE_API_KEY)
+
+    def perform_web_search(self, query):
+        """Perform a web search using Claude 3.7 Sonnet."""
+        try:
+            response = self.claude_client.messages.create(
+                model="claude-3-7-sonnet-20250219",
+                max_tokens=1000,
+                system="You are a research assistant. Search the web for accurate, up-to-date information about the query. Return a detailed, factual response with relevant information. Include sources when possible.",
+                messages=[{
+                    "role": "user",
+                    "content": f"Please search for information about: {query}"
+                }],
+                tools=[{
+                    "type": "web_search_20250305",
+                    "name": "web_search"
+                }]
+            )
+            return response.content[0].text
+        except Exception as e:
+            print(f"Error performing web search: {e}")
+            return None
 
     def get_response(self, message, session_id, conversation_history):
         conversation_history.append({"role": "user", "content": message})
@@ -29,6 +52,25 @@ class ResponseHandler:
                     print(f"Error processing history request: {e}")
                     return "I had trouble retrieving that history. Try being more specific about the date."
 
+            # Check for conversation search
+            if message.lower().startswith("!search"):
+                try:
+                    # Example: !search Genesys press release
+                    search_terms = message[7:].strip()
+                    # Get messages matching the search terms
+                    search_results = self.chat_handler.search_conversations(search_terms)
+                    if search_results:
+                        formatted_results = []
+                        for role, content, timestamp in search_results:
+                            date_str = datetime.fromisoformat(timestamp).strftime("%Y-%m-%d %H:%M")
+                            formatted_results.append(f"[{date_str}] {role}: {content}")
+                        return f"Here are the conversations about '{search_terms}':\n" + "\n".join(formatted_results)
+                    else:
+                        return f"I couldn't find any conversations about '{search_terms}'."
+                except Exception as e:
+                    print(f"Error processing search request: {e}")
+                    return "I had trouble searching the conversations. Please try again."
+
             if "daily briefing" in message.lower():
                 print("Manual briefing requested")
                 briefing = self.chat_handler.daily_briefing()
@@ -38,6 +80,7 @@ class ResponseHandler:
                     "content": f"Here's your daily briefing data, Dr. Odeh:\n{briefing}\n"
                             f"Turn this into a snarky, conversational rundown—use <br><br> between sections, keep it punchy. "
                             f"For unreplied emails or scheduling hints, suggest replies or calls—flag urgent ones (e.g., 'urgent', 'ASAP')."
+                            f"Be sure to consider NaviSure's business sector and function when determining what to present."
                 }
                 formatted_briefing = self.chat_with_grok([briefing_message], "daily_briefing_session")
                 # Post-process formatting (from chat_handler.py:daily_briefing)
@@ -62,8 +105,22 @@ class ResponseHandler:
                 return formatted_briefing  # Return it for ChatThread to emit
 
             # For regular messages, only use recent context
-            grok_response = self.chat_with_grok(conversation_history[-5:], session_id)  # Only last 5 messages
+            grok_response = self.chat_with_grok(conversation_history[-5:], session_id)
             print(f"Grok response: {grok_response}")
+            
+            # Check if Grok requested a web search
+            if "WEB_SEARCH:" in grok_response:
+                search_query = grok_response.split("WEB_SEARCH:")[1].strip()
+                search_results = self.perform_web_search(search_query)
+                if search_results:
+                    # Add search results to conversation history
+                    conversation_history.append({
+                        "role": "system",
+                        "content": f"Here are the search results for your query:\n{search_results}\n\nPlease summarize these results in a conversational way, maintaining your personality and tone."
+                    })
+                    # Get Grok's response to the search results
+                    grok_response = self.chat_with_grok(conversation_history[-5:], session_id)
+
             task_segments = [seg for seg in grok_response.split("ADD_TASK:") if seg.strip()]
             added_tasks = []
             if task_segments and "ADD_TASK:" in grok_response:
@@ -88,11 +145,10 @@ class ResponseHandler:
             return "I encountered an issue—try again, doc!"
 
     def chat_with_grok(self, messages, session_id):
-        # Only use recent context for regular messages
         all_messages = [base_system_message] + messages
         data = {
             "messages": all_messages,
-            "model": "grok-2-latest",
+            "model": "grok-3-latest",
             "stream": False
         }
         try:

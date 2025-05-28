@@ -45,24 +45,48 @@ class ChatThread(QThread):
             print(f"[DEBUG] ChatThread: Exception occurred: {e}")
             self.response_signal.emit(f"Error: {str(e)}")
 
-@pyqtSlot(str)
-def onResponseReceived(self, response):
+class ResponseHandler:
+    def __init__(self, chat_display, user_input, send_button, chat_handler, session_id, conversation_history):
+        self.chatDisplay = chat_display
+        self.userInput = user_input
+        self.sendButton = send_button
+        self.chat_handler = chat_handler
+        self.session_id = session_id
+        self.conversation_history = conversation_history
 
-    html_content = markdown.markdown(response, extensions=['extra'])
-    
-    # Ensure the response ends with proper HTML to close any open lists
-    if html_content.endswith('<li>'):
-        html_content += '</li></ul>'  # Close last list item and the list itself
-    elif '<li>' in html_content and not html_content.endswith('</ul>'):
-        html_content += '</ul>'  # If there's an <li> but no closing </ul>
-    print(f"HTML content: {html_content}")
-    self.chatDisplay.append(f"<b>Navi:</b> {html_content}")
-    self.conversation_history.append({"role": "assistant", "content": response})
-    self.chat_handler.save_message(self.session_id, "assistant", response)
-    self.sendButton.setEnabled(True)
-    self.userInput.setEnabled(True)
-    self.userInput.clear()
-    self.userInput.setFocus()
+    @pyqtSlot(str)
+    def onResponseReceived(self, response):
+        print("[DEBUG] onResponseReceived in chat_window.py called")
+        print(f"[DEBUG] Raw response: {response}")
+        
+        # First try markdown processing for HTML-formatted content
+        print("[DEBUG] Attempting markdown processing")
+        html_content = markdown.markdown(response, extensions=['extra'])
+        print(f"[DEBUG] After markdown: {html_content}")
+        
+        # If the content doesn't contain any HTML tags, replace newlines with br tags
+        if not any(tag in html_content for tag in ['<ul>', '<li>', '<p>', '<h']):
+            print("[DEBUG] No HTML tags found, replacing newlines with br tags")
+            html_content = response.replace('\n', '<br>')
+        else:
+            print("[DEBUG] HTML tags found, keeping markdown processing")
+        
+        # Ensure the response ends with proper HTML to close any open lists
+        if html_content.endswith('<li>'):
+            print("[DEBUG] Adding closing list tags")
+            html_content += '</li></ul>'  # Close last list item and the list itself
+        elif '<li>' in html_content and not html_content.endswith('</ul>'):
+            print("[DEBUG] Adding closing ul tag")
+            html_content += '</ul>'  # If there's an <li> but no closing </ul>
+        
+        print(f"[DEBUG] Final HTML content: {html_content}")
+        self.chatDisplay.append(f"<b>Navi: {html_content}")
+        self.conversation_history.append({"role": "assistant", "content": response})
+        self.chat_handler.save_message(self.session_id, "assistant", response)
+        self.sendButton.setEnabled(True)
+        self.userInput.setEnabled(True)
+        self.userInput.clear()
+        self.userInput.setFocus()
 
 def sendMessage(self):
     user_message = self.userInput.text()

@@ -1,5 +1,55 @@
 [
   {
+    "name": "Melissa Walker",
+    "company": "Innolitics",
+    "title": "Director of Regulatory Affairs",
+    "rationale": "Innolitics helps companies commercialize and FDA-clear medical device AI, but recent FDA staffing cuts have particularly affected AI expertise at the agency. As a regulatory professional supporting multiple clients with AI clearances, Melissa faces the challenge of navigating FDA submissions with reduced agency resources specifically in AI/ML expertise.",
+    "linkedin_url": "https://www.linkedin.com/in/melissa-walker-regulatory/",
+    "message": "Hello Melissa, I noticed your work helping medical device companies navigate AI regulatory submissions at Innolitics. With the recent FDA staffing cuts specifically affecting AI expertise, I wanted to connect about NaviSure's specialized regulatory support services. Our team includes former FDA reviewers who worked specifically in AI/ML device review and understand the current constraints affecting clearance timelines. Would you be interested in exploring how we might complement your expertise to help clients navigate the changing regulatory landscape more effectively?",
+    "contacted": false,
+    "contact_date": null
+  },
+  {
+    "name": "Dan Vahdat",
+    "company": "Huma Therapeutics",
+    "title": "CEO & Founder",
+    "rationale": "Huma received FDA Class II clearance for their configurable SaMD disease management platform in June 2023, but they have additional AI modules and capabilities in development. As one of the first companies to use the FDA's eSTAR program, they're navigating complex regulatory pathways while the FDA experiences staffing challenges specifically in AI expertise.",
+    "linkedin_url": "https://www.linkedin.com/in/danvahdat/",
+    "message": "Hello Dan, congratulations on Huma's FDA Class II clearance last year through the eSTAR program. As you continue developing advanced AI capabilities for your platform, I wanted to connect about NaviSure's specialized regulatory consulting services. With recent FDA staffing changes specifically affecting AI expertise, we can help navigate the increasingly complex regulatory landscape. Our team includes former FDA reviewers with direct experience in AI SaMD submissions using the eSTAR program. Would you be interested in discussing how we might support your continued regulatory success?",
+    "contacted": false,
+    "contact_date": null
+  },
+  {
+    "name": "Chris Mansi",
+    "company": "Viz.ai",
+    "title": "CEO & Co-founder",
+    "rationale": "Viz.ai received early De Novo clearance for their stroke detection algorithm but has an expanding portfolio of AI solutions in various stages of development. Recent FDA staffing changes have specifically impacted AI expertise at the agency, potentially affecting their regulatory timeline for newer products in their pipeline.",
+    "linkedin_url": "https://www.linkedin.com/in/chrismansi/",
+    "message": "Hello Chris, I've been impressed with Viz.ai's pioneering work in AI stroke detection and your expanding product portfolio. With the recent FDA staffing changes affecting AI expertise at the agency, I wanted to connect about NaviSure's specialized regulatory consulting services. Our team includes former FDA reviewers with specific AI SaMD experience who understand the current challenges in the regulatory review process. Would you be open to discussing how we've helped companies navigate these challenges and secure timely clearances despite the agency's resource constraints?",
+    "contacted": false,
+    "contact_date": null
+  },
+  {
+    "name": "Elad Walach",
+    "company": "Aidoc",
+    "title": "CEO & Co-founder",
+    "rationale": "Aidoc has received multiple 510(k) clearances for AI imaging solutions but continues to develop new algorithms. With recent FDA layoffs specifically affecting AI experts (as reported in February 2025), their regulatory pathway for newer solutions may be impacted. According to database research, they've used a mix of in-house and consultant correspondents for their FDA submissions.",
+    "linkedin_url": "https://www.linkedin.com/in/elad-walach/",
+    "message": "Hello Elad, I've been following Aidoc's impressive growth in the AI imaging space. With the recent FDA staffing changes specifically impacting AI expertise at the agency, I wanted to connect about NaviSure's specialized regulatory consulting. Our team includes former FDA reviewers who worked specifically on AI SaMD submissions and understand the current challenges in the clearance process. Would you be interested in learning how we've helped companies like yours successfully navigate regulatory pathways despite the current FDA resource constraints?",
+    "contacted": false,
+    "contact_date": null
+  },
+  {
+    "name": "Erez Meltzer",
+    "company": "Nanox Imaging",
+    "title": "Chief Executive Officer",
+    "rationale": "Nanox acquired Zebra Medical Vision in 2021 for $110M+ with plans for rapid FDA approvals of AI algorithms. While they've secured some clearances, their ambitious AI pipeline still has products awaiting FDA clearance. Recent FDA staffing cuts in AI expertise are likely affecting their regulatory timeline, as the FDA has been particularly impacted in staff who specialize in AI as noted in recent reports about layoffs.",
+    "linkedin_url": "https://www.linkedin.com/in/erez-meltzer-93775417/",
+    "message": "Hello Erez, I noticed Nanox's continued expansion in the AI medical imaging space following your acquisition of Zebra Medical. With recent FDA staffing changes specifically affecting AI expertise at the agency, I wanted to connect about NaviSure's specialized regulatory consulting services. Our team includes former FDA reviewers with specific AI SaMD experience who can help navigate the current regulatory environment and accelerate your clearance timeline. Would you be open to discussing how we've helped similar companies secure clearances despite the current FDA resource constraints?",
+    "contacted": false,
+    "contact_date": null
+  },
+  {
     "name": "Cyril Di Grandi",
     "company": "Avicenna.AI",
     "title": "Co-founder and CEO",

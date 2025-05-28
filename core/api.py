@@ -17,7 +17,7 @@ DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
 BRAVE_API_URL = os.getenv("BRAVE_API_URL")
 BRAVE_TOKEN = os.getenv("BRAVE_TOKEN")
 
-# Path to the .env file (assumes it’s in the root directory)
+# Path to the .env file (assumes it's in the root directory)
 ENV_FILE = os.path.join(os.path.dirname(__file__), "..", ".env")
 
 class DropboxClient:
@@ -64,14 +64,15 @@ def get_dropbox_client() -> Dropbox:
     """Creates a Dropbox client with the current or refreshed access token."""
     return dropbox_client.get_client()
 
-def brave_search(query: str) -> dict | None:
-    """Perform a search using the Brave Search API."""
-    headers = {"Accept": "application/json", "X-Subscription-Token": BRAVE_TOKEN}
-    params = {"q": query, "count": 10}
-    try:
-        response = requests.get(BRAVE_API_URL, headers=headers, params=params)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        logger.error(f"Brave search failed for query '{query}': {str(e)}")
-        raise RuntimeError(f"Search failed: {str(e)}")
+# Comment out Brave search function
+# def brave_search(query: str) -> dict | None:
+#     """Perform a search using the Brave Search API."""
+#     headers = {"Accept": "application/json", "X-Subscription-Token": BRAVE_TOKEN}
+#     params = {"q": query, "count": 10}
+#     try:
+#         response = requests.get(BRAVE_API_URL, headers=headers, params=params)
+#         response.raise_for_status()
+#         return response.json()
+#     except requests.RequestException as e:
+#         logger.error(f"Brave search failed for query '{query}': {str(e)}")
+#         raise RuntimeError(f"Search failed: {str(e)}")
