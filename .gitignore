@@ -5,3 +5,9 @@ navissurance.db
 navissurance_documents.db
 Get_Tokens
 cuda_env/ 
+config/
+data/
+logs/
+models/
+.vscode/
+
