@@ -245,7 +245,7 @@ class TodoList:
             layout = widget.layout()
             checkbox = layout.itemAt(0).widget()
             label = layout.itemAt(1).widget()
-            due_date_label = layout.itemAt(2).widget()
+            due_date_label = layout.itemAt(3).widget()  # Fixed index from 2 to 3
 
             if checkbox and label and due_date_label:
                 if checkbox.isChecked():
