@@ -1267,14 +1267,38 @@ Only include leads that have been verified through the search results.
         # Call Grok via chat.py
         response = self.chat_handler.get_response(prompt, self.session_id, self.conversation_history)
         try:
-            results = json.loads(response)
-            if isinstance(results, dict):
-                if 'non_compliances' in results:
-                    results = results['non_compliances']
-                elif 'issues' in results:
-                    results = results['issues']
-            if not isinstance(results, list):
-                raise ValueError("Response is not a JSON array")
+            # Original JSON parsing code - commented out
+            # results = json.loads(response)
+            # if isinstance(results, dict):
+            #     if 'non_compliances' in results:
+            #         results = results['non_compliances']
+            #     elif 'issues' in results:
+            #         results = results['issues']
+            # if not isinstance(results, list):
+            #     raise ValueError("Response is not a JSON array")
+
+            # New JSON extraction and parsing code
+            json_str = None
+            # Look for JSON array pattern
+            start_idx = response.find('[')
+            end_idx = response.rfind(']') + 1
+            if start_idx != -1 and end_idx > 0:
+                json_str = response[start_idx:end_idx]
+                logger.info(f"Found JSON string: {json_str}")
+                
+                # Clean up the JSON string
+                json_str = json_str.strip()
+                # Remove any markdown code block markers
+                json_str = json_str.replace('```json', '').replace('```', '')
+                logger.info(f"Cleaned JSON string: {json_str}")
+                
+                results = json.loads(json_str)
+                logger.info(f"Parsed results: {results}")
+                
+                if not isinstance(results, list):
+                    raise ValueError("Response is not a JSON array")
+            else:
+                raise ValueError("No JSON array found in response")
             
             formatted_results = []
             for r in results:
