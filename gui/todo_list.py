@@ -66,6 +66,9 @@ class TodoList:
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
 
+        # Set minimum height for consistent row spacing
+        item_widget.setMinimumHeight(40)
+
         # Checkbox
         checkbox = QCheckBox()
         checkbox.setChecked(True if completed == 1 else False)
@@ -75,15 +78,16 @@ class TodoList:
         # Task Label
         label = QLabel(task_text)
         label.setWordWrap(True)
-        label.setStyleSheet("max-width: 300px; color: white;")
-        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        label.setStyleSheet("max-width: 300px; color: white; padding: 5px;")
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(label)
 
         layout.addStretch(1)
 
         # Due Date Label
         due_date_label = QLabel(due_date)
-        due_date_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+        due_date_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        due_date_label.setStyleSheet("padding: 5px;")
         layout.addWidget(due_date_label)
 
         # Edit Button

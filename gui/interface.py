@@ -903,6 +903,7 @@ Only include leads that have been verified through the search results.
         tasks_tab = QWidget()
         tasks_layout = QVBoxLayout(tasks_tab)
         self.todoList.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
+        self.todoList.setSpacing(5)  # Add consistent spacing between list items
         tasks_layout.addWidget(self.todoList)
         add_task_layout = QHBoxLayout()
         self.taskInput = QLineEdit(self)
