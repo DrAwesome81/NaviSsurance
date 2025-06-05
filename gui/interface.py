@@ -546,11 +546,10 @@ Only include leads that have been verified through the search results.
     def refresh_leads(self):
         print("Weekly lead refresh TBD (Grok 3 API pending)")
 
-    def generate_document(self):
-        print("Doc generation TBD")
-
     def save_document(self):
-        print("Doc save TBD")
+        # Example: Save to crm.py with schema {lead: str, issue: str, action: str}
+        # Use DatabaseManager to insert results
+        pass
 
     def start_recording(self):
         import sounddevice as sd
@@ -1030,10 +1029,85 @@ Only include leads that have been verified through the search results.
             except Exception as e:
                 logger.error(f"Error loading leads: {e}")
 
-        # Docs Tab (unchanged)
+        # Docs Tab
         docs_tab = QWidget()
-        docs_layout = QVBoxLayout(docs_tab)
-        docs_layout.addWidget(QLabel("Document generation coming soon!"))
+        docs_layout = QHBoxLayout(docs_tab)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        docs_layout.addWidget(splitter)
+
+        # Column 1: Information Reference
+        info_widget = QWidget()
+        info_layout = QVBoxLayout(info_widget)
+        info_label = QLabel("Information Reference")
+        info_label.setStyleSheet("color: white;")
+        info_layout.addWidget(info_label)
+
+        self.info_url_input = QLineEdit()
+        self.info_url_input.setPlaceholderText("Enter URL for reference information")
+        self.info_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        self.info_url_input.returnPressed.connect(self.add_info_url)
+        info_layout.addWidget(self.info_url_input)
+
+        info_upload_btn = QPushButton("Upload Reference")
+        info_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        info_upload_btn.clicked.connect(self.upload_info_file)
+        info_layout.addWidget(info_upload_btn)
+
+        self.info_list = QListWidget()
+        self.info_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        self.info_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.info_list.customContextMenuRequested.connect(self.show_info_context_menu)
+        info_layout.addWidget(self.info_list)
+        splitter.addWidget(info_widget)
+
+        # Column 2: Document Reference
+        doc_widget = QWidget()
+        doc_layout = QVBoxLayout(doc_widget)
+        doc_label = QLabel("Document Reference")
+        doc_label.setStyleSheet("color: white;")
+        doc_layout.addWidget(doc_label)
+
+        self.doc_url_input = QLineEdit()
+        self.doc_url_input.setPlaceholderText("Enter URL for document template")
+        self.doc_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        self.doc_url_input.returnPressed.connect(self.add_doc_url)
+        doc_layout.addWidget(self.doc_url_input)
+
+        doc_upload_btn = QPushButton("Upload Document")
+        doc_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        doc_upload_btn.clicked.connect(self.upload_doc_file)
+        doc_layout.addWidget(doc_upload_btn)
+
+        self.doc_list = QListWidget()
+        self.doc_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        self.doc_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.doc_list.customContextMenuRequested.connect(self.show_doc_context_menu)
+        doc_layout.addWidget(self.doc_list)
+        splitter.addWidget(doc_widget)
+
+        # Column 3: Generated Document
+        output_widget = QWidget()
+        output_layout = QVBoxLayout(output_widget)
+        output_label = QLabel("Generated Document")
+        output_label.setStyleSheet("color: white;")
+        output_layout.addWidget(output_label)
+
+        self.doc_output = QTextEdit()
+        self.doc_output.setReadOnly(True)
+        self.doc_output.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        output_layout.addWidget(self.doc_output)
+
+        generate_btn = QPushButton("Generate Document")
+        generate_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        generate_btn.clicked.connect(self.generate_document)
+        output_layout.addWidget(generate_btn)
+
+        save_btn = QPushButton("Save Document")
+        save_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        save_btn.clicked.connect(self.save_generated_document)
+        output_layout.addWidget(save_btn)
+
+        splitter.addWidget(output_widget)
         tabs.addTab(docs_tab, "Docs")
 
         # Meetings Tab (unchanged)
@@ -1362,3 +1436,76 @@ Only include leads that have been verified through the search results.
         self.results_text.append("CRM integration TBD: Save compliance issues to leads.")
         # Example: Save to crm.py with schema {lead: str, issue: str, action: str}
         # Use DatabaseManager to insert results
+
+    def add_info_url(self):
+        url = self.info_url_input.text().strip()
+        if url:
+            self.info_list.addItem(url)
+            self.info_url_input.clear()
+
+    def add_doc_url(self):
+        url = self.doc_url_input.text().strip()
+        if url:
+            self.doc_list.addItem(url)
+            self.doc_url_input.clear()
+
+    def upload_info_file(self):
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Information Reference File",
+            "",
+            "All Files (*.*)"
+        )
+        if file_name:
+            self.info_list.addItem(file_name)
+
+    def upload_doc_file(self):
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Document Template",
+            "",
+            "All Files (*.*)"
+        )
+        if file_name:
+            self.doc_list.addItem(file_name)
+
+    def show_info_context_menu(self, position):
+        menu = QMenu()
+        remove_action = menu.addAction("Remove")
+        action = menu.exec(self.info_list.mapToGlobal(position))
+        if action == remove_action:
+            item = self.info_list.itemAt(position)
+            if item:
+                self.info_list.takeItem(self.info_list.row(item))
+
+    def show_doc_context_menu(self, position):
+        menu = QMenu()
+        remove_action = menu.addAction("Remove")
+        action = menu.exec(self.doc_list.mapToGlobal(position))
+        if action == remove_action:
+            item = self.doc_list.itemAt(position)
+            if item:
+                self.doc_list.takeItem(self.doc_list.row(item))
+
+    def generate_document(self):
+        # Placeholder for document generation
+        self.doc_output.setText("Document generation will be implemented here.")
+
+    def save_generated_document(self):
+        if not self.doc_output.toPlainText():
+            QMessageBox.warning(self, "Warning", "No document to save.")
+            return
+
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Generated Document",
+            "",
+            "Text Files (*.txt);;All Files (*.*)"
+        )
+        if file_name:
+            try:
+                with open(file_name, 'w') as f:
+                    f.write(self.doc_output.toPlainText())
+                QMessageBox.information(self, "Success", "Document saved successfully.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save document: {str(e)}")
