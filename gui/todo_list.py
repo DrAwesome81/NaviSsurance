@@ -88,7 +88,7 @@ class TodoList:
 
         # Edit Button
         edit_button = QPushButton("Edit")
-        edit_button.setFixedWidth(60)
+        edit_button.setFixedWidth(80)
         edit_button.clicked.connect(lambda: self.editTask(item_widget))
         edit_button.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
         edit_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -96,7 +96,7 @@ class TodoList:
 
         # Delete Button
         delete_button = QPushButton("Delete")
-        delete_button.setFixedWidth(60)
+        delete_button.setFixedWidth(80)
         delete_button.clicked.connect(lambda: self.deleteTask(item_widget, task_id))
         delete_button.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
         delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
