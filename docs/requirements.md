@@ -1,33 +1,35 @@
 NaviSsurance Requirements
 Functional Requirements
+
 Compliance Tab
 
 User Story: As a consultant, I want to upload SOPs, PDFs, or URLs to check compliance with standards like ISO 13485 or 21 CFR 820, so I can provide actionable client recommendations.
 Acceptance Criteria:
-Upload PDF files or enter URLs in a three-column UI (interface.py).
+Upload PDF files or enter URLs as either reference standards or for comparison to reference standards.
 Grok API analyzes documents, returning JSON ([{section, issue, fix, reference}]).
-Display results in the third column, with options to save to crm.py or export as PDF.
+Display results with options to save to crm.py or export as PDF.
 Handle invalid files/URLs with error messages.
 
 
 
 Lead Generation
 
-User Story: As a consultant, I want to generate leads for AI SaMD, IVD, or non-AI MedTech companies, so I can initiate outreach via LinkedIn.
+User Story: As a consultant, I want to generate leads for AI SaMD, IVD, or non-AI MedTech companies, so I can initiate outreach via LinkedIn or other methods.
 Acceptance Criteria:
-Claude 3.7 Sonnet outputs JSON ({name, company, title, LinkedIn_url, rationale}) in Leads Tab (interface.py).
+Claude 3.7 Sonnet outputs JSON ({name, company, title, LinkedIn_url, rationale}) in Leads Tab.
 Display leads with copy/paste personalized LinkedIn messages.
 Allow marking leads as contacted, saving status to crm.py.
+Send LinkedIn messages directly from the UI, or schedule them to be sent for later.
+
 
 
 
 Clinical Study Design Optimizer
 
-User Story: As a consultant, I want to design 510(k), IDE, or PMCF protocols for diagnostics or CRO clients, so I can deliver cost-effective study plans.
+User Story: As a consultant, I want to design 510(k), IDE, PMCF or other protocols for clients, so I can deliver cost-effective study plans.
 Acceptance Criteria:
 Input device specs and regulatory goals via UI (interface.py).
 Grok generates protocol ({protocol_id, endpoints, sample_size, rationale}) in JSON/PDF, costing $3,000–$12,000.
-Deliver results in 1–3 days, saving to crm.py.
 Support Class I-II devices (e.g., SaMD, diagnostics).
 
 
