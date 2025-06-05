@@ -879,7 +879,14 @@ Only include leads that have been verified through the search results.
         self.userInput.returnPressed.connect(self.sendMessage)
         chat_input_layout.addWidget(self.userInput)
         self.sendButton = QPushButton("Send", self)
-        self.sendButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
+        self.sendButton.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(253, 98, 98, 0.8);
+            }
+            QPushButton:hover {
+                background-color: rgba(253, 98, 98, 1.0);
+            }
+        """)
         self.sendButton.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sendButton.clicked.connect(self.sendMessage)
         chat_input_layout.addWidget(self.sendButton)
@@ -909,13 +916,27 @@ Only include leads that have been verified through the search results.
         add_task_layout.addWidget(self.dueDateInput)
         self.addTaskButton = QPushButton("Add Task", self)
         self.addTaskButton.clicked.connect(self.addTask)
-        self.addTaskButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
+        self.addTaskButton.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(253, 98, 98, 0.8);
+            }
+            QPushButton:hover {
+                background-color: rgba(253, 98, 98, 1.0);
+            }
+        """)
         self.addTaskButton.setCursor(Qt.CursorShape.PointingHandCursor)
         add_task_layout.addWidget(self.addTaskButton)
         tasks_layout.addLayout(add_task_layout)
         self.archiveButton = QPushButton("Archive Completed Tasks", self)
         self.archiveButton.clicked.connect(self.archiveCompletedTasks)
-        self.archiveButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
+        self.archiveButton.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(253, 98, 98, 0.8);
+            }
+            QPushButton:hover {
+                background-color: rgba(253, 98, 98, 1.0);
+            }
+        """)
         self.archiveButton.setCursor(Qt.CursorShape.PointingHandCursor)
         tasks_layout.addWidget(self.archiveButton)
         tabs.addTab(tasks_tab, "Tasks")
