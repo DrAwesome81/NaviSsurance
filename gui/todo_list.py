@@ -123,8 +123,10 @@ class TodoList:
 
     def editTask(self, widget):
         try:
+            # Get task text from the label (item 1)
             task_text = widget.layout().itemAt(1).widget().text()
-            due_date = widget.layout().itemAt(2).widget().text()
+            # Get due date from the label (item 3, after stretch)
+            due_date = widget.layout().itemAt(3).widget().text()
             
             new_text, ok = QInputDialog.getText(self.parent, "Edit Task", 
                                               "Task:", text=task_text)
