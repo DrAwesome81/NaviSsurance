@@ -800,12 +800,18 @@ Only include leads that have been verified through the search results.
     @pyqtSlot(str)  
     def onResponseReceived(self, response):
         print("[DEBUG] onResponseReceived in interface.py called")
-        print(f"[DEBUG] Response received in interface: {response}")
+        #print(f"[DEBUG] Response received in interface: {response}")
+        
+        # Strip leading newlines to prevent extra spacing after "Navi:"
+        response = response.lstrip('\n')
         
         # First try markdown processing for HTML-formatted content
         print("[DEBUG] Attempting markdown processing")
         html_content = markdown.markdown(response, extensions=['extra'])
-        print(f"[DEBUG] After markdown: {html_content}")
+        #print(f"[DEBUG] After markdown: {html_content}")
+        
+        # Remove leading p tag to prevent block-level formatting
+        html_content = html_content[3:]  # Remove <p>
         
         # If the content doesn't contain any HTML tags, replace newlines with br tags
         if not any(tag in html_content for tag in ['<ul>', '<li>', '<p>', '<h']):
@@ -823,7 +829,7 @@ Only include leads that have been verified through the search results.
             html_content += '</ul>'  # If there's an <li> but no closing </ul>
         
         print(f"[DEBUG] Final HTML content: {html_content}")
-        self.chatDisplay.append(f"<b>Navi:</b> {html_content}")
+        self.chatDisplay.append(f"<b>Navi:</b> {html_content}<br><br>")
         self.conversation_history.append({"role": "assistant", "content": response})
         self.chat_handler.save_message(self.session_id, "assistant", response)
         self.sendButton.setEnabled(True)
