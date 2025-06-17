@@ -51,9 +51,11 @@ class ChatHandler(QObject):
 
         # Tasks
         with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
-            cursor = conn.execute("SELECT task, due_date FROM tasks WHERE date(due_date) <= date('now')")
+            cursor = conn.execute("SELECT task, due_date FROM tasks WHERE due_date <= strftime('%m-%d-%Y', 'now')")
             tasks = cursor.fetchall()
+            print(f"[DEBUG] Raw tasks from query: {tasks}")
         tasks_str = "\n".join([f"- {t[0]} (due {t[1]})" for t in tasks]) if tasks else "- No tasks—living the dream!"
+        print(f"[DEBUG] tasks_str: '{tasks_str}'")
 
         # Emails
         print("Fetching new emails...")
