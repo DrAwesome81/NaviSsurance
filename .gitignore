@@ -10,4 +10,9 @@ data/
 logs/
 models/
 .vscode/
+config/mailbird_tokens.json
+config/navi_token.pkl
+data/compliance_documents.json
+gui/temp_recording.wav
+logs/app.log
 
