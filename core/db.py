@@ -100,7 +100,7 @@ class DatabaseManager:
 
     def get_tasks(self):
         with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('SELECT id, task, due_date, completed FROM tasks ORDER BY date(due_date) ASC')
+            cursor = conn.execute('SELECT id, task, due_date, completed FROM tasks ORDER BY due_date ASC')
             return cursor.fetchall()
 
     def delete_task(self, task_text):
