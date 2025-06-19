@@ -78,6 +78,50 @@ class SettingsDialog(QDialog):
         
         self.setLayout(layout)
 
+class WorkspaceTab(QWidget):
+    def __init__(self, db):
+        super().__init__()
+        self.db = db  # DatabaseManager instance
+        layout = QVBoxLayout()
+        self.chat_input = QLineEdit()
+        self.chat_input.setPlaceholderText("Enter workspace chat message...")
+        self.chat_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        
+        self.doc_list_standards = QListWidget()
+        self.doc_list_standards.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        
+        self.doc_list_client = QListWidget()
+        self.doc_list_client.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        
+        self.doc_list_reference = QListWidget()
+        self.doc_list_reference.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        
+        self.folder_input = QLineEdit("data/clients/Abbott")
+        self.folder_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        
+        self.upload_std_btn = QPushButton("Upload Standard")
+        self.upload_std_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        
+        self.remove_std_btn = QPushButton("Remove Standard")
+        self.remove_std_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        
+        self.upload_ref_btn = QPushButton("Upload Reference")
+        self.upload_ref_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        
+        self.remove_ref_btn = QPushButton("Remove Reference")
+        self.remove_ref_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        
+        layout.addWidget(self.chat_input)
+        layout.addWidget(self.doc_list_standards)
+        layout.addWidget(self.upload_std_btn)
+        layout.addWidget(self.remove_std_btn)
+        layout.addWidget(self.folder_input)
+        layout.addWidget(self.doc_list_client)
+        layout.addWidget(self.doc_list_reference)
+        layout.addWidget(self.upload_ref_btn)
+        layout.addWidget(self.remove_ref_btn)
+        self.setLayout(layout)
+
 class ChatWindow(QMainWindow):
     def __init__(self):
         logger.info("Initializing ChatWindow...")
@@ -97,6 +141,9 @@ class ChatWindow(QMainWindow):
         self.chat_handler = ChatManager(self)
         self.session_id = f"SESSION_GUI_{hash(str(self))}"
         self.conversation_history = []
+        
+        # Create workspace tables
+        self.chat_handler.chat_handler.db.create_workspace_tables()
         
         logger.info("Initializing todo list...")
         self.todoList = QListWidget(self)
@@ -1152,6 +1199,10 @@ Only include leads that have been verified through the search results.
         compliance_tab = QWidget()
         self.setup_compliance_tab(compliance_tab)
         tabs.addTab(compliance_tab, "Compliance")
+
+        # Workspace Tab
+        workspace_tab = WorkspaceTab(self.chat_handler.chat_handler.db)
+        tabs.addTab(workspace_tab, "Workspace")
 
     def setup_compliance_tab(self, tab):
         layout = QHBoxLayout(tab)
