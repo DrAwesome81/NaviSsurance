@@ -186,3 +186,24 @@ class DatabaseManager:
         with sqlite3.connect(self.db_name) as conn:
             conn.execute('DELETE FROM tasks')
             conn.commit()
+
+    def create_workspace_tables(self):
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS workspaces (
+                    workspace_id INTEGER PRIMARY KEY,
+                    client_name TEXT UNIQUE,
+                    client_folder TEXT  -- e.g., data/clients/Abbott
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS documents (
+                    doc_id INTEGER PRIMARY KEY,
+                    workspace_id INTEGER,
+                    category TEXT,  -- standards, reference
+                    path TEXT,     -- file path or URL
+                    name TEXT,     -- display name
+                    FOREIGN KEY (workspace_id) REFERENCES workspaces (workspace_id)
+                )
+            """)
+            conn.commit()
