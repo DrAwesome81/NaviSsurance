@@ -34,7 +34,6 @@ class ResponseHandler:
             return None
 
     def get_response(self, message, session_id, conversation_history):
-        conversation_history.append({"role": "user", "content": message})
         try:
             # Check for history lookup command
             if message.lower().startswith("!history"):
@@ -104,8 +103,8 @@ class ResponseHandler:
                 formatted_briefing = re.sub(r'^<br><br>', '', formatted_briefing.strip())
                 return formatted_briefing  # Return it for ChatThread to emit
 
-            # For regular messages, only use recent context
-            grok_response = self.chat_with_grok(conversation_history[-5:], session_id)
+            # For regular messages, use full conversation history
+            grok_response = self.chat_with_grok(conversation_history, session_id)
             print(f"Grok response: {grok_response}")
             
             # Check if Grok requested a web search
@@ -119,7 +118,7 @@ class ResponseHandler:
                         "content": f"Here are the search results for your query:\n{search_results}\n\nPlease summarize these results in a conversational way, maintaining your personality and tone."
                     })
                     # Get Grok's response to the search results
-                    grok_response = self.chat_with_grok(conversation_history[-5:], session_id)
+                    grok_response = self.chat_with_grok(conversation_history, session_id)
 
             task_segments = [seg for seg in grok_response.split("ADD_TASK:") if seg.strip()]
             added_tasks = []
