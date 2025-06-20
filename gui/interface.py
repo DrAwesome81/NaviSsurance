@@ -19,6 +19,7 @@ import PyPDF2
 from bs4 import BeautifulSoup
 import requests
 import markdown
+from core.compliance import ComplianceChecker, DocumentGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -1136,6 +1137,31 @@ Only include leads that have been verified through the search results.
         self.doc_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.doc_list.customContextMenuRequested.connect(self.show_doc_context_menu)
         doc_layout.addWidget(self.doc_list)
+        splitter.addWidget(info_widget)
+
+        # Column 2: Document Reference
+        doc_widget = QWidget()
+        doc_layout = QVBoxLayout(doc_widget)
+        doc_label = QLabel("Document Reference")
+        doc_label.setStyleSheet("color: white;")
+        doc_layout.addWidget(doc_label)
+
+        self.doc_url_input = QLineEdit()
+        self.doc_url_input.setPlaceholderText("Enter URL for document template")
+        self.doc_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        self.doc_url_input.returnPressed.connect(self.add_doc_url)
+        doc_layout.addWidget(self.doc_url_input)
+
+        doc_upload_btn = QPushButton("Upload Document")
+        doc_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        doc_upload_btn.clicked.connect(self.upload_doc_file)
+        doc_layout.addWidget(doc_upload_btn)
+
+        self.doc_list = QListWidget()
+        self.doc_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        self.doc_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.doc_list.customContextMenuRequested.connect(self.show_doc_context_menu)
+        doc_layout.addWidget(self.doc_list)
         splitter.addWidget(doc_widget)
 
         # Column 3: Generated Document
@@ -1370,101 +1396,30 @@ Only include leads that have been verified through the search results.
     def run_compliance_check(self):
         ref_items = [self.ref_list.item(i).text() for i in range(self.ref_list.count())]
         assess_items = [self.assess_list.item(i).text() for i in range(self.assess_list.count())]
-        if not ref_items or not assess_items:
-            self.results_text.setText("Error: Please add at least one reference and one assessed document.")
-            return
-
+        
         self.results_text.setText("Running compliance check...")
-        documents = []
-        for item in ref_items + assess_items:
-            if item.startswith("http"):
-                try:
-                    response = requests.get(item, timeout=10)
-                    soup = BeautifulSoup(response.text, "html.parser")
-                    text = soup.get_text()
-                    documents.append({"type": "url", "content": text, "source": item})
-                except Exception as e:
-                    self.results_text.setText(f"Error fetching URL {item}: {str(e)}")
-                    return
-            else:
-                try:
-                    with open(item, "rb") as f:
-                        pdf = PyPDF2.PdfReader(f)
-                        text = "".join(page.extract_text() for page in pdf.pages)
-                        documents.append({"type": "file", "content": text, "source": item})
-                except Exception as e:
-                    self.results_text.setText(f"Error reading file {item}: {str(e)}")
-                    return
-
-        ref_docs = [d for d in documents if d["source"] in ref_items]
-        assess_docs = [d for d in documents if d["source"] in assess_items]
-        prompt = (
-            f"Compare the following assessed documents against the reference documents. "
-            f"Identify non-compliant sections or areas for improvement, citing specific clauses. "
-            f"Return a JSON array: [{{\"section\": str, \"issue\": str, \"fix\": str, \"reference\": str}}].\n\n"
-            f"Reference Documents:\n"
+        
+        # Use the ComplianceChecker class
+        compliance_checker = ComplianceChecker(self.chat_handler)
+        result = compliance_checker.run_compliance_check(
+            ref_items, assess_items, self.session_id, self.conversation_history
         )
         
-        # Add reference document content
-        for doc in ref_docs:
-            prompt += f"\nDocument: {doc['source']}\nContent:\n{doc['content']}\n"
-        
-        prompt += f"\nAssessed Documents:\n"
-        
-        # Add assessed document content
-        for doc in assess_docs:
-            prompt += f"\nDocument: {doc['source']}\nContent:\n{doc['content']}\n"
-        
-        prompt += "\nIMPORTANT: Do not perform any Dropbox searches. Only analyze the documents provided above."
-
-        # Call Grok via chat.py
-        response = self.chat_handler.get_response(prompt, self.session_id, self.conversation_history)
-        try:
-            # Original JSON parsing code - commented out
-            # results = json.loads(response)
-            # if isinstance(results, dict):
-            #     if 'non_compliances' in results:
-            #         results = results['non_compliances']
-            #     elif 'issues' in results:
-            #         results = results['issues']
-            # if not isinstance(results, list):
-            #     raise ValueError("Response is not a JSON array")
-
-            # New JSON extraction and parsing code
-            json_str = None
-            # Look for JSON array pattern
-            start_idx = response.find('[')
-            end_idx = response.rfind(']') + 1
-            if start_idx != -1 and end_idx > 0:
-                json_str = response[start_idx:end_idx]
-                logger.info(f"Found JSON string: {json_str}")
-                
-                # Clean up the JSON string
-                json_str = json_str.strip()
-                # Remove any markdown code block markers
-                json_str = json_str.replace('```json', '').replace('```', '')
-                logger.info(f"Cleaned JSON string: {json_str}")
-                
-                results = json.loads(json_str)
-                logger.info(f"Parsed results: {results}")
-                
-                if not isinstance(results, list):
-                    raise ValueError("Response is not a JSON array")
-            else:
-                raise ValueError("No JSON array found in response")
-            
+        if result["success"]:
+            # Format and display results
             formatted_results = []
-            for r in results:
+            for r in result["data"]:
                 formatted_results.append(
                     f"<b>Section {r['section']}:</b> {r['issue']}<br>"
                     f"<b>Fix:</b> {r['fix']}<br>"
                     f"<b>Reference:</b> {r['reference']}<br><br>"
                 )
             self.results_text.setHtml("".join(formatted_results))
-        except Exception as e:
-            self.results_text.setText(f"Error processing results: {str(e)}")
-            logger.error(f"Error processing results: {e}")
-            logger.error(f"Raw response: {response}")
+        else:
+            # Display error
+            self.results_text.setText(f"Error: {result['error']}")
+            if 'raw_response' in result:
+                logger.error(f"Raw response: {result['raw_response']}")
 
     def save_compliance_report(self):
         if not self.results_text.toPlainText():
@@ -1545,8 +1500,19 @@ Only include leads that have been verified through the search results.
                 self.doc_list.takeItem(self.doc_list.row(item))
 
     def generate_document(self):
-        # Placeholder for document generation
-        self.doc_output.setText("Document generation will be implemented here.")
+        # Get template and context from UI
+        template_text = "Document template placeholder"  # This would come from UI
+        context_docs = []  # This would come from UI lists
+        parameters = {}  # This would come from UI inputs
+        
+        # Use the DocumentGenerator class
+        doc_generator = DocumentGenerator(self.chat_handler)
+        result = doc_generator.generate_document(template_text, context_docs, parameters)
+        
+        if result["success"]:
+            self.doc_output.setText(result["data"])
+        else:
+            self.doc_output.setText(f"Error: {result['error']}")
 
     def save_generated_document(self):
         if not self.doc_output.toPlainText():
