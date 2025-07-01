@@ -1,11 +1,14 @@
 import requests
 import json
 import re
+import logging
 from dateutil import parser
 from datetime import datetime
 from config import headers, API_ENDPOINT, base_system_message, CLAUDE_API_KEY
 from core.file_handler import search_dropbox_index
 from anthropic import Anthropic
+
+logger = logging.getLogger(__name__)
 
 class ResponseHandler:
     def __init__(self, chat_handler):
@@ -34,6 +37,7 @@ class ResponseHandler:
             return None
 
     def get_response(self, message, session_id, conversation_history):
+        conversation_history.append({"role": "user", "content": message})
         try:
             # Check for history lookup command
             if message.lower().startswith("!history"):
