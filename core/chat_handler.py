@@ -101,8 +101,8 @@ class ChatHandler(QObject):
                         # Emit signal to show confirmation dialog
                         self.task_added_signal.emit(
                             f"Reply to {sender} re: {subject}",
-                            today.strftime('%Y-%m-%d'),
-                            "Would you like to add this as a task?"
+                            today.strftime('%Y-%m-%d')
+                            # "Would you like to add this as a task?"  # Commented out for now
                         )
                         
         emails_str = "\n".join(email_summaries) if email_summaries else "- No new emails—quiet day!"
