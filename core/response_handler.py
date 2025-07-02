@@ -151,13 +151,13 @@ class ResponseHandler:
         all_messages = [base_system_message] + messages
         data = {
             "messages": all_messages,
-            "model": "grok-3-latest",
+            "model": "deepseek-r1:32b",
             "stream": False
         }
         try:
-            response = requests.post(API_ENDPOINT, headers=headers, data=json.dumps(data))
+            response = requests.post("http://localhost:11434/api/chat", json=data)
             response.raise_for_status()
-            return response.json()['choices'][0]['message']['content']
+            return response.json()['message']['content']
         except requests.exceptions.RequestException as e:
             print(f"API call failed: {e}")
             return "Server's sulking—try again later."
