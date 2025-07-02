@@ -157,7 +157,14 @@ class ResponseHandler:
         try:
             response = requests.post("http://localhost:11434/api/chat", json=data)
             response.raise_for_status()
-            return response.json()['message']['content']
+            content = response.json()['message']['content']
+            
+            # Remove thinking tags and content
+            import re
+            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+            content = content.strip()
+            
+            return content
         except requests.exceptions.RequestException as e:
             print(f"API call failed: {e}")
             return "Server's sulking—try again later."
