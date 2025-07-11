@@ -19,7 +19,7 @@ class ResponseHandler:
         """Perform a web search using Claude 3.7 Sonnet."""
         try:
             response = self.claude_client.messages.create(
-                model="claude-3-7-sonnet-20250219",
+                model="claude-3-7-sonnet-latest",
                 max_tokens=1000,
                 system="You are a research assistant. Search the web for accurate, up-to-date information about the query. Return a detailed, factual response with relevant information. Include sources when possible.",
                 messages=[{
@@ -151,7 +151,7 @@ class ResponseHandler:
         all_messages = [base_system_message] + messages
         data = {
             "messages": all_messages,
-            "model": "grok-3-latest",
+            "model": "grok-4-latest",
             "stream": False
         }
         try:
