@@ -20,3 +20,4 @@ data/compliance_documents.json
 config/navi_token.pkl
 logs/app.log
 config/mailbird_tokens.json
+codebase_export.txt
