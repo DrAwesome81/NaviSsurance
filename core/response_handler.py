@@ -1,11 +1,14 @@
 import requests
 import json
 import re
+import logging
 from dateutil import parser
 from datetime import datetime
 from config import headers, API_ENDPOINT, base_system_message, CLAUDE_API_KEY
 from core.file_handler import search_dropbox_index
 from anthropic import Anthropic
+
+logger = logging.getLogger(__name__)
 
 class ResponseHandler:
     def __init__(self, chat_handler):
@@ -34,6 +37,7 @@ class ResponseHandler:
             return None
 
     def get_response(self, message, session_id, conversation_history):
+        conversation_history.append({"role": "user", "content": message})
         try:
             # Check for history lookup command
             if message.lower().startswith("!history"):
@@ -147,13 +151,20 @@ class ResponseHandler:
         all_messages = [base_system_message] + messages
         data = {
             "messages": all_messages,
-            "model": "grok-3-latest",
+            "model": "deepseek-r1:32b",
             "stream": False
         }
         try:
-            response = requests.post(API_ENDPOINT, headers=headers, data=json.dumps(data))
+            response = requests.post("http://localhost:11434/api/chat", json=data)
             response.raise_for_status()
-            return response.json()['choices'][0]['message']['content']
+            content = response.json()['message']['content']
+            
+            # Remove thinking tags and content
+            import re
+            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+            content = content.strip()
+            
+            return content
         except requests.exceptions.RequestException as e:
             print(f"API call failed: {e}")
             return "Server's sulking—try again later."
