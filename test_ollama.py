@@ -54,7 +54,7 @@ def test_deepseek_model():
         response = requests.post(
             "http://localhost:11434/api/chat",
             json=test_payload,
-            timeout=30
+            timeout=120
         )
         response.raise_for_status()
         

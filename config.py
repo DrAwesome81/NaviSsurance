@@ -5,6 +5,9 @@ import requests
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "config", ".env"))
 
+OLLAMA_ENDPOINT = "http://localhost:11434/api/chat"
+USE_DEEPSEEK = True
+
 API_KEY = os.getenv('GROK_API_KEY')
 if API_KEY is None:
     raise ValueError("GROK_API_KEY is not set in the environment")
@@ -59,7 +62,8 @@ base_system_message = {
         "indicating a search of local files, return exactly 'DROPBOX_SEARCH:<search query>'. When responding to "
         "DROPBOX_SEARCH results, format each item as: <b>filename</b> - <a href='url'>Link</a> - snarky description "
         "(plain text), use <br><br> between items, limit to 5 files max, keep it conversational—don't add extra "
-        "bolding or formatting beyond filenames unless I ask. For all other chat messages, respond normally.".format(current_date=current_date)
+        "bolding or formatting beyond filenames unless I ask. For all other chat messages, respond normally."
+        "Use <think> tags for reasoning if needed, but keep responses clean".format(current_date=current_date)
     }
 
 def refresh_dropbox_token():
