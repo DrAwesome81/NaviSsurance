@@ -30,7 +30,7 @@ def test_chat_integration():
     print(f"📝 Sending test message: {test_message}")
     
     try:
-        response = response_handler.chat_with_grok([{
+        response = response_handler.chat_with_deepseek([{
             "role": "user",
             "content": test_message
         }], session_id)
