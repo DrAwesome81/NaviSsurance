@@ -4,37 +4,37 @@ import re
 import logging
 from dateutil import parser
 from datetime import datetime
-from config import headers, API_ENDPOINT, base_system_message, CLAUDE_API_KEY
+from config import headers, API_ENDPOINT, base_system_message #CLAUDE_API_KEY
 from core.file_handler import search_dropbox_index
-from anthropic import Anthropic
+#from anthropic import Anthropic
 
 logger = logging.getLogger(__name__)
 
 class ResponseHandler:
     def __init__(self, chat_handler):
         self.chat_handler = chat_handler
-        self.claude_client = Anthropic(api_key=CLAUDE_API_KEY)
+        #self.claude_client = Anthropic(api_key=CLAUDE_API_KEY)
 
-    def perform_web_search(self, query):
-        """Perform a web search using Claude 3.7 Sonnet."""
-        try:
-            response = self.claude_client.messages.create(
-                model="claude-3-7-sonnet-20250219",
-                max_tokens=1000,
-                system="You are a research assistant. Search the web for accurate, up-to-date information about the query. Return a detailed, factual response with relevant information. Include sources when possible.",
-                messages=[{
-                    "role": "user",
-                    "content": f"Please search for information about: {query}"
-                }],
-                tools=[{
-                    "type": "web_search_20250305",
-                    "name": "web_search"
-                }]
-            )
-            return response.content[0].text
-        except Exception as e:
-            print(f"Error performing web search: {e}")
-            return None
+    # def perform_web_search(self, query):
+    #     """Perform a web search using Claude 3.7 Sonnet."""
+    #     try:
+    #         response = self.claude_client.messages.create(
+    #             model="claude-3-7-sonnet-20250219",
+    #             max_tokens=1000,
+    #             system="You are a research assistant. Search the web for accurate, up-to-date information about the query. Return a detailed, factual response with relevant information. Include sources when possible.",
+    #             messages=[{
+    #                 "role": "user",
+    #                 "content": f"Please search for information about: {query}"
+    #             }],
+    #             tools=[{
+    #                 "type": "web_search_20250305",
+    #                 "name": "web_search"
+    #             }]
+    #         )
+    #         return response.content[0].text
+    #     except Exception as e:
+    #         print(f"Error performing web search: {e}")
+    #         return None
 
     def get_response(self, message, session_id, conversation_history):
         conversation_history.append({"role": "user", "content": message})
@@ -108,11 +108,14 @@ class ResponseHandler:
                 return formatted_briefing  # Return it for ChatThread to emit
 
             # For regular messages, use full conversation history
-            grok_response = self.chat_with_grok(conversation_history, session_id)
+            grok_response = self.chat_with_deepseek(conversation_history, session_id)
             print(f"Grok response: {grok_response}")
             
             # Check if Grok requested a web search
             if "WEB_SEARCH:" in grok_response:
+                format_prompt = [{"role": "user", "content": f"Refine this as a precise web search query: {grok_response.split('WEB_SEARCH:')[1].strip()}"}]
+                formatted_query = self.chat_with_deepseek(format_prompt, session_id)
+                search_query = formatted_query.strip()
                 search_query = grok_response.split("WEB_SEARCH:")[1].strip()
                 search_results = self.perform_web_search(search_query)
                 if search_results:
@@ -122,7 +125,7 @@ class ResponseHandler:
                         "content": f"Here are the search results for your query:\n{search_results}\n\nPlease summarize these results in a conversational way, maintaining your personality and tone."
                     })
                     # Get Grok's response to the search results
-                    grok_response = self.chat_with_grok(conversation_history, session_id)
+                    grok_response = self.chat_with_deepseek(conversation_history, session_id)
 
             task_segments = [seg for seg in grok_response.split("ADD_TASK:") if seg.strip()]
             added_tasks = []
@@ -147,24 +150,19 @@ class ResponseHandler:
             print(f"Error in get_response: {e}")
             return "I encountered an issue—try again, doc!"
 
-    def chat_with_grok(self, messages, session_id):
+    def chat_with_deepseek(self, messages, session_id):
         all_messages = [base_system_message] + messages
         data = {
-            "messages": all_messages,
             "model": "deepseek-r1:32b",
+            "messages": all_messages,
             "stream": False
         }
         try:
-            response = requests.post("http://localhost:11434/api/chat", json=data)
+            response = requests.post("http://localhost:11434/api/chat", json=data, timeout=120)
             response.raise_for_status()
             content = response.json()['message']['content']
-            
-            # Remove thinking tags and content
-            import re
-            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
-            content = content.strip()
-            
+            content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
             return content
         except requests.exceptions.RequestException as e:
-            print(f"API call failed: {e}")
-            return "Server's sulking—try again later."
+            print(f"DeepSeek call failed: {e}")
+            return "Local AI's acting up—try again."
