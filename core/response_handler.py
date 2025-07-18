@@ -4,38 +4,38 @@ import re
 import logging
 from dateutil import parser
 from datetime import datetime
-from config import headers, API_ENDPOINT, base_system_message #CLAUDE_API_KEY
+from config import headers, API_ENDPOINT, base_system_message
 from core.file_handler import search_dropbox_index
-#from anthropic import Anthropic
+from core.deepseek_query_formatter import format_query
 
 logger = logging.getLogger(__name__)
 
 class ResponseHandler:
     def __init__(self, chat_handler):
         self.chat_handler = chat_handler
-        #self.claude_client = Anthropic(api_key=CLAUDE_API_KEY)
 
-    # def perform_web_search(self, query):
-    #     """Perform a web search using Claude 3.7 Sonnet."""
-    #     try:
-    #         response = self.claude_client.messages.create(
-    #             model="claude-3-7-sonnet-20250219",
-    #             max_tokens=1000,
-    #             system="You are a research assistant. Search the web for accurate, up-to-date information about the query. Return a detailed, factual response with relevant information. Include sources when possible.",
-    #             messages=[{
-    #                 "role": "user",
-    #                 "content": f"Please search for information about: {query}"
-    #             }],
-    #             tools=[{
-    #                 "type": "web_search_20250305",
-    #                 "name": "web_search"
-    #             }]
-    #         )
-    #         return response.content[0].text
-    #     except Exception as e:
-    #         print(f"Error performing web search: {e}")
-    #         return None
+    def perform_grok_search(self, query):
+        """Perform a web search using Grok API."""
+        try:
+            data = {
+                "messages": [{"role": "user", "content": f"Search web and summarize: {query}"}],
+                "model": "grok-4-latest",
+                "stream": False
+            }
+            response = requests.post(API_ENDPOINT, headers=headers, json=data)
+            response.raise_for_status()
+            return response.json()['choices'][0]['message']['content']
+        except Exception as e:
+            print(f"Error performing Grok search: {e}")
+            return None
 
+    def hybrid_wrapper(self, messages, session_id, needs_search=False):
+        if needs_search:
+            query = format_query(messages[-1]["content"])  # From new file
+            results = self.perform_grok_search(query)
+            messages.append({"role": "system", "content": f"Results: {results}"})
+        return self.chat_with_deepseek(messages, session_id)
+    
     def get_response(self, message, session_id, conversation_history):
         conversation_history.append({"role": "user", "content": message})
         try:
@@ -77,16 +77,9 @@ class ResponseHandler:
             if "daily briefing" in message.lower():
                 print("Manual briefing requested")
                 briefing = self.chat_handler.daily_briefing()
-                # Format it with snark via Grok, like startup
-                briefing_message = {
-                    "role": "user",
-                    "content": f"Here's your daily briefing data, Dr. Odeh:\n{briefing}\n"
-                            f"Turn this into a snarky, conversational rundown—use <br><br> between sections, keep it punchy. "
-                            f"For unreplied emails or scheduling hints, suggest replies or calls—flag urgent ones (e.g., 'urgent', 'ASAP')."
-                            f"Be sure to consider NaviSure's business sector and function when determining what to present."
-                }
-                formatted_briefing = self.chat_with_grok([briefing_message], "daily_briefing_session")
-                # Post-process formatting (from chat_handler.py:daily_briefing)
+                
+                formatted_briefing = self.hybrid_wrapper([{"role": "user", "content": f"Turn this briefing into snarky rundown: {briefing} Use <br><br> sections, punchy. Suggest actions for unreplied (flag urgent). MedTech focus."}], "briefing_session")
+                
                 formatted_briefing = re.sub(r'\n+', '\n', formatted_briefing)
                 formatted_briefing = re.sub(
                     r'(\*\*([A-Za-z\s]+):?\*\*|\[SECTION:([A-Za-z\s]+)\])',
@@ -105,19 +98,28 @@ class ResponseHandler:
                 formatted_briefing = '\n'.join(formatted_lines)
                 formatted_briefing = formatted_briefing.replace('\n\n', '<br><br>').replace('\n', '<br>')
                 formatted_briefing = re.sub(r'^<br><br>', '', formatted_briefing.strip())
-                return formatted_briefing  # Return it for ChatThread to emit
+                
+                # Hybrid for news
+                news_query_prompt = [{"role": "user", "content": "Create a query for up-to-date MedTech news since yesterday, focused on AI/ML, IVDs, SaMD, DTC devices."}]
+                news_query = self.hybrid_wrapper(news_query_prompt, "news_session").strip()
+                news_results = self.perform_grok_search(news_query)  # Grok search
+                if news_results:
+                    news_summary_prompt = [{"role": "user", "content": f"Summarize these news results snarkily, keeping MedTech focus: {news_results}"}]
+                    news_summary = self.hybrid_wrapper(news_summary_prompt, "news_session")
+                    formatted_briefing += f"<br><br><b>Relevant News:</b><br>{news_summary.replace('\n', '<br>')}"
+                
+                return formatted_briefing
 
             # For regular messages, use full conversation history
-            grok_response = self.chat_with_deepseek(conversation_history, session_id)
+            grok_response = self.hybrid_wrapper(conversation_history, session_id)
             print(f"Grok response: {grok_response}")
             
             # Check if Grok requested a web search
             if "WEB_SEARCH:" in grok_response:
                 format_prompt = [{"role": "user", "content": f"Refine this as a precise web search query: {grok_response.split('WEB_SEARCH:')[1].strip()}"}]
-                formatted_query = self.chat_with_deepseek(format_prompt, session_id)
+                formatted_query = self.hybrid_wrapper(format_prompt, session_id)
                 search_query = formatted_query.strip()
-                search_query = grok_response.split("WEB_SEARCH:")[1].strip()
-                search_results = self.perform_web_search(search_query)
+                search_results = self.perform_grok_search(search_query)
                 if search_results:
                     # Add search results to conversation history
                     conversation_history.append({
@@ -125,7 +127,7 @@ class ResponseHandler:
                         "content": f"Here are the search results for your query:\n{search_results}\n\nPlease summarize these results in a conversational way, maintaining your personality and tone."
                     })
                     # Get Grok's response to the search results
-                    grok_response = self.chat_with_deepseek(conversation_history, session_id)
+                    grok_response = self.hybrid_wrapper(conversation_history, session_id)
 
             task_segments = [seg for seg in grok_response.split("ADD_TASK:") if seg.strip()]
             added_tasks = []
@@ -158,7 +160,7 @@ class ResponseHandler:
             "stream": False
         }
         try:
-            response = requests.post("http://localhost:11434/api/chat", json=data, timeout=120)
+            response = requests.post("http://localhost:11434/api/chat", json=data, timeout=600)
             response.raise_for_status()
             content = response.json()['message']['content']
             content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
