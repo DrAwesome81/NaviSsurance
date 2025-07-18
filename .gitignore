@@ -21,3 +21,5 @@ config/navi_token.pkl
 logs/app.log
 config/mailbird_tokens.json
 codebase_export.txt
+data/leads.json
+data/claude_response.txt
