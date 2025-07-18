@@ -1,6 +1,8 @@
 # db.py
 import sqlite3
 from datetime import datetime, UTC
+import json
+from core.file_handler import extract_for_dataset
 
 class DatabaseManager:
     def __init__(self):
@@ -207,3 +209,8 @@ class DatabaseManager:
                 )
             """)
             conn.commit()
+
+    def store_dataset_entry(self, file_path, jsonl_path="data/fine_tune.jsonl"):
+        entry = extract_for_dataset(file_path)  # From file_handler
+        with open(jsonl_path, 'a') as f:  # Append to JSONL
+            f.write(json.dumps(entry) + '\n')
