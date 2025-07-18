@@ -2,8 +2,8 @@ import sqlite3
 import logging
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QSplashScreen, 
                             QTextBrowser, QLineEdit, QPushButton, QListWidget, QDateEdit, QTableWidget, 
-                            QTableWidgetItem, QCheckBox, QComboBox, QLabel, QSplitter, QTextEdit, QDialog, QDialogButtonBox, QHeaderView, QMessageBox, QFileDialog, QMenu)
-from PyQt6.QtCore import Qt, QDate, QTimer, pyqtSlot, QUrl
+                            QTableWidgetItem, QCheckBox, QComboBox, QLabel, QSplitter, QTextEdit, QDialog, QDialogButtonBox, QHeaderView, QMessageBox, QFileDialog, QMenu, QProgressBar)
+from PyQt6.QtCore import Qt, QDate, QTimer, pyqtSlot, QUrl, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QAction, QDesktopServices, QColor
 from core.db import DatabaseManager
 from gui.chat_window import ChatThread, ResponseHandler, sendMessage, saveChat, loadChat
@@ -161,6 +161,23 @@ class ChatWindow(QMainWindow):
         self.chat_handler.task_added_signal.connect(self.addTaskFromChat)
         
         logger.info("ChatWindow initialization complete")
+
+        class ComplianceThread(QThread):
+            result_signal = pyqtSignal(dict)  # Emits results dict
+
+            def __init__(self, compliance_checker, ref_items, assess_items, session_id, conversation_history):
+                super().__init__()
+                self.compliance_checker = compliance_checker
+                self.ref_items = ref_items
+                self.assess_items = assess_items
+                self.session_id = session_id
+                self.conversation_history = conversation_history
+
+            def run(self):
+                result = self.compliance_checker.run_compliance_check(
+                    self.ref_items, self.assess_items, self.session_id, self.conversation_history
+                )
+                self.result_signal.emit(result)
 
     def show_main_window(self):
         logger.info("Showing main window...")
@@ -1295,6 +1312,10 @@ Only include leads that have been verified through the search results.
         results_layout.addWidget(results_label)
 
         self.results_text = QTextEdit()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)  # Indeterminate mode (spinning)
+        self.progress_bar.hide()  # Hidden initially
+        results_layout.addWidget(self.progress_bar)
         self.results_text.setReadOnly(True)
         self.results_text.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         results_layout.addWidget(self.results_text)
@@ -1399,16 +1420,27 @@ Only include leads that have been verified through the search results.
         ref_items = [self.ref_list.item(i).text() for i in range(self.ref_list.count())]
         assess_items = [self.assess_list.item(i).text() for i in range(self.assess_list.count())]
         
+        if not ref_items or not assess_items:
+            self.results_text.setText("Error: Add at least one reference and assessed document.")
+            return
+
+        # Show progress and disable button
+        self.progress_bar.show()
         self.results_text.setText("Running compliance check...")
-        
-        # Use the ComplianceChecker class
+        run_btn = self.sender()  # The button that triggered this
+        run_btn.setEnabled(False)
+
+        # Start thread
         compliance_checker = ComplianceChecker(self.chat_handler)
-        result = compliance_checker.run_compliance_check(
-            ref_items, assess_items, self.session_id, self.conversation_history
+        self.compliance_thread = self.ComplianceThread(
+            compliance_checker, ref_items, assess_items, self.session_id, self.conversation_history
         )
-        
+        self.compliance_thread.result_signal.connect(self.on_compliance_complete)
+        self.compliance_thread.start()
+
+    def on_compliance_complete(self, result):
+        self.progress_bar.hide()  # Hide progress
         if result["success"]:
-            # Format and display results
             formatted_results = []
             for r in result["data"]:
                 formatted_results.append(
@@ -1418,11 +1450,13 @@ Only include leads that have been verified through the search results.
                 )
             self.results_text.setHtml("".join(formatted_results))
         else:
-            # Display error
             self.results_text.setText(f"Error: {result['error']}")
-            if 'raw_response' in result:
-                logger.error(f"Raw response: {result['raw_response']}")
-
+        
+        # Re-enable button (find it via parent widget)
+        run_btn = self.findChild(QPushButton, "Run Compliance Check")  # Name it if needed
+        if run_btn:
+            run_btn.setEnabled(True)
+    
     def save_compliance_report(self):
         if not self.results_text.toPlainText():
             self.results_text.setText("No results to save.")
