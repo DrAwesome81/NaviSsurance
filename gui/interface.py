@@ -1331,6 +1331,7 @@ Only include leads that have been verified through the search results.
         )
         if file_path:
             self.ref_list.addItem(file_path)
+            self.db.store_dataset_entry(file_path)
             self.save_document_lists()
 
     def add_assess_url(self):
@@ -1346,6 +1347,7 @@ Only include leads that have been verified through the search results.
         )
         if file_path:
             self.assess_list.addItem(file_path)
+            self.db.store_dataset_entry(file_path)
             self.save_document_lists()
 
     def save_document_lists(self):
