@@ -45,3 +45,17 @@ def search_dropbox_index(db_manager, query):
     except Exception as e:
         print(f"Search error: {e}")
         return []
+    
+def extract_for_dataset(file_path, prompt_template="Generate draft from this:"):
+    text = extract_text_from_file(file_path)  # Use your existing extract functions
+    return {"prompt": f"{prompt_template} {text}", "completion": ""}  # Completion can be filled later (e.g., manual/AI drafts)
+
+def extract_text_from_file(file_path):
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == '.pdf':
+        return extract_text_from_pdf(file_path)
+    elif ext == '.docx':
+        return extract_text_from_docx(file_path)
+    elif ext == '.txt':
+        return extract_text_from_txt(file_path)
+    return ""  # Fallback for unsupported types
