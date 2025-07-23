@@ -124,6 +124,24 @@ class WorkspaceTab(QWidget):
         self.setLayout(layout)
 
 class ChatWindow(QMainWindow):
+
+    class ComplianceThread(QThread):
+        result_signal = pyqtSignal(dict)  # Emits results dict
+
+        def __init__(self, compliance_checker, ref_items, assess_items, session_id, conversation_history):
+            super().__init__()
+            self.compliance_checker = compliance_checker
+            self.ref_items = ref_items
+            self.assess_items = assess_items
+            self.session_id = session_id
+            self.conversation_history = conversation_history
+
+        def run(self):
+            result = self.compliance_checker.run_compliance_check(
+                self.ref_items, self.assess_items, self.session_id, self.conversation_history
+            )
+            self.result_signal.emit(result)
+
     def __init__(self):
         logger.info("Initializing ChatWindow...")
         super().__init__()
@@ -140,6 +158,8 @@ class ChatWindow(QMainWindow):
 
         logger.info("Initializing chat handler...")
         self.chat_handler = ChatManager(self)
+        self.db = self.chat_handler.db
+        os.makedirs('data', exist_ok=True)
         self.session_id = f"SESSION_GUI_{hash(str(self))}"
         self.conversation_history = []
         
@@ -161,23 +181,6 @@ class ChatWindow(QMainWindow):
         self.chat_handler.task_added_signal.connect(self.addTaskFromChat)
         
         logger.info("ChatWindow initialization complete")
-
-        class ComplianceThread(QThread):
-            result_signal = pyqtSignal(dict)  # Emits results dict
-
-            def __init__(self, compliance_checker, ref_items, assess_items, session_id, conversation_history):
-                super().__init__()
-                self.compliance_checker = compliance_checker
-                self.ref_items = ref_items
-                self.assess_items = assess_items
-                self.session_id = session_id
-                self.conversation_history = conversation_history
-
-            def run(self):
-                result = self.compliance_checker.run_compliance_check(
-                    self.ref_items, self.assess_items, self.session_id, self.conversation_history
-                )
-                self.result_signal.emit(result)
 
     def show_main_window(self):
         logger.info("Showing main window...")
@@ -1330,6 +1333,11 @@ Only include leads that have been verified through the search results.
         save_btn.clicked.connect(self.save_compliance_report)
         results_layout.addWidget(save_btn)
 
+        clear_dataset_btn = QPushButton("Clear Dataset")
+        clear_dataset_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        clear_dataset_btn.clicked.connect(self.clear_dataset)
+        results_layout.addWidget(clear_dataset_btn)
+        
         crm_btn = QPushButton("Link to CRM")
         crm_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
         crm_btn.clicked.connect(self.link_to_crm)
@@ -1352,8 +1360,9 @@ Only include leads that have been verified through the search results.
         )
         if file_path:
             self.ref_list.addItem(file_path)
-            self.db.store_dataset_entry(file_path)
             self.save_document_lists()
+            print("Storing dataset for reference: ", file_path)
+            self.db.store_dataset_entry(file_path)  # Add for fine-tuning dataset
 
     def add_assess_url(self):
         url = self.assess_url_input.text().strip()
@@ -1368,8 +1377,9 @@ Only include leads that have been verified through the search results.
         )
         if file_path:
             self.assess_list.addItem(file_path)
-            self.db.store_dataset_entry(file_path)
             self.save_document_lists()
+            print("Storing dataset for assessed: ", file_path)
+            self.db.store_dataset_entry(file_path)  # Add for fine-tuning dataset
 
     def save_document_lists(self):
         """Save the current state of document lists to persist them."""
@@ -1441,21 +1451,42 @@ Only include leads that have been verified through the search results.
     def on_compliance_complete(self, result):
         self.progress_bar.hide()  # Hide progress
         if result["success"]:
+            data = result["data"]
             formatted_results = []
-            for r in result["data"]:
-                formatted_results.append(
-                    f"<b>Section {r['section']}:</b> {r['issue']}<br>"
-                    f"<b>Fix:</b> {r['fix']}<br>"
-                    f"<b>Reference:</b> {r['reference']}<br><br>"
-                )
-            self.results_text.setHtml("".join(formatted_results))
+            
+            # Overview (if present or from fallback)
+            if 'overview' in data and data['overview'].strip():
+                overview = data['overview'].strip().replace('\n', '<br>')
+                formatted_results.append(f"<b>Overview:</b><br>{overview}<br><br>")
+            
+            # Key Alignments
+            if 'key_alignments' in data and data['key_alignments'].strip():
+                alignments = data['key_alignments'].strip().replace('\n', '<br>')
+                formatted_results.append(f"<b>Key Alignments:</b><br>{alignments}<br><br>")
+            
+            # Improvements (main list, from JSON or fallback)
+            if 'improvements' in data:
+                for r in data['improvements']:
+                    issue = r['issue'].strip().replace('\n', '<br>')
+                    fix = r['fix'].strip().replace('\n', '<br>')
+                    ref = r['reference'].strip().replace('\n', '<br>')
+                    formatted_results.append(
+                        f"<b>Section {r['section']}:</b> {issue}<br>"
+                        f"<b>Fix:</b> {fix}<br>"
+                        f"<b>Reference:</b> {ref}<br><br>"
+                    )
+            
+            # Recommendations
+            if 'recommendations' in data and data['recommendations'].strip():
+                recs = data['recommendations'].strip().replace('\n', '<br>')
+                formatted_results.append(f"<b>Recommendations:</b><br>{recs}<br><br>")
+            
+            if formatted_results:
+                self.results_text.setHtml("".join(formatted_results))
+            else:
+                self.results_text.setText("No results found.")
         else:
             self.results_text.setText(f"Error: {result['error']}")
-        
-        # Re-enable button (find it via parent widget)
-        run_btn = self.findChild(QPushButton, "Run Compliance Check")  # Name it if needed
-        if run_btn:
-            run_btn.setEnabled(True)
     
     def save_compliance_report(self):
         if not self.results_text.toPlainText():
@@ -1479,6 +1510,14 @@ Only include leads that have been verified through the search results.
             except Exception as e:
                 self.results_text.setText(f"Error saving report: {str(e)}")
 
+    def clear_dataset(self):
+        jsonl_path = "data/fine_tune.jsonl"
+        if os.path.exists(jsonl_path):
+            os.remove(jsonl_path)
+            self.results_text.append("Dataset cleared.")
+        else:
+            self.results_text.append("No dataset to clear.")
+    
     def link_to_crm(self):
         # Placeholder: Integrate with crm.py (SQLite)
         self.results_text.append("CRM integration TBD: Save compliance issues to leads.")
