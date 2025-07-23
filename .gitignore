@@ -23,3 +23,5 @@ config/mailbird_tokens.json
 codebase_export.txt
 data/leads.json
 data/claude_response.txt
+data/compliance_documents.json
+data/leads.json
