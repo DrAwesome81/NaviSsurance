@@ -8,6 +8,7 @@ class ChatManager(QObject):  # Inherit QObject for signals
     def __init__(self, chat_window=None):
         super().__init__()
         self.chat_handler = ChatHandler(chat_window)
+        self.db = self.chat_handler.db
         self.response_handler = ResponseHandler(self.chat_handler)
         # Connect ChatHandler's signal to ChatManager's
         self.chat_handler.task_added_signal.connect(self.task_added_signal.emit)
