@@ -11,8 +11,7 @@ from gui.todo_list import TodoList
 from core.chat import ChatManager
 import os
 import json
-from anthropic import Anthropic, AnthropicError
-from anthropic.types import ToolUseBlock
+import requests
 from datetime import datetime
 from PyQt6.QtWidgets import QApplication
 import PyPDF2
@@ -22,6 +21,74 @@ import markdown
 from core.compliance import ComplianceChecker, DocumentGenerator
 
 logger = logging.getLogger(__name__)
+
+class EnhancedSplashScreen(QSplashScreen):
+    """Enhanced splash screen with progress bar and status updates."""
+    
+    def __init__(self, pixmap):
+        super().__init__(pixmap)
+        self.setStyleSheet("""
+            QSplashScreen {
+                background-color: rgb(27, 28, 30);
+                color: white;
+                font-size: 12px;
+            }
+        """)
+        
+        # Create progress bar
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setGeometry(50, pixmap.height() - 80, pixmap.width() - 100, 20)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid rgba(253, 98, 98, 0.8);
+                border-radius: 5px;
+                text-align: center;
+                background-color: rgba(27, 28, 30, 0.8);
+            }
+            QProgressBar::chunk {
+                background-color: rgba(253, 98, 98, 0.8);
+                border-radius: 3px;
+            }
+        """)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        
+        # Create status label
+        self.status_label = QLabel(self)
+        self.status_label.setGeometry(50, pixmap.height() - 50, pixmap.width() - 100, 30)
+        self.status_label.setStyleSheet("""
+            QLabel {
+                color: white;
+                font-size: 10px;
+                background-color: transparent;
+            }
+        """)
+        self.status_label.setText("Initializing...")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # Create log display
+        self.log_display = QTextBrowser(self)
+        self.log_display.setGeometry(50, 50, pixmap.width() - 100, pixmap.height() - 150)
+        self.log_display.setStyleSheet("""
+            QTextBrowser {
+                background-color: rgba(27, 28, 30, 0.9);
+                color: white;
+                border: 1px solid rgba(253, 98, 98, 0.5);
+                border-radius: 5px;
+                font-size: 9px;
+            }
+        """)
+        self.log_display.setMaximumHeight(200)
+        
+    def update_progress(self, value, status_text, log_message=None):
+        """Update progress bar and status text."""
+        self.progress_bar.setValue(value)
+        self.status_label.setText(status_text)
+        if log_message:
+            self.log_display.append(f"[{datetime.now().strftime('%H:%M:%S')}] {log_message}")
+            # Auto-scroll to bottom
+            scrollbar = self.log_display.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
@@ -58,7 +125,7 @@ class SettingsDialog(QDialog):
                 logger.error(f"Error loading system message: {e}")
                 self.system_message_input.setText("")  # Default empty if load fails
         
-        layout.addWidget(QLabel("Claude System Message:"))
+        layout.addWidget(QLabel("Grok System Message:"))
         layout.addWidget(self.system_message_input)
         
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -150,46 +217,90 @@ class ChatWindow(QMainWindow):
         self.data_dir = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/data'
         os.makedirs(self.data_dir, exist_ok=True)
         
-        logger.info("Loading splash screen...")
+        logger.info("Loading enhanced splash screen...")
         pixmap = QPixmap("assets/logo v2.png")
-        self.splash = QSplashScreen(pixmap)
+        self.splash = EnhancedSplashScreen(pixmap)
         self.splash.show()
-        QTimer.singleShot(2000, self.show_main_window)
+        
+        # Start initialization with progress tracking
+        self.initialize_with_progress()
 
+    def initialize_with_progress(self):
+        """Initialize the application with progress tracking on the splash screen."""
+        self.splash.update_progress(5, "Starting initialization...", "Application startup initiated")
+        
+        # Initialize chat handler
+        self.splash.update_progress(15, "Initializing chat handler...", "Setting up chat management system")
         logger.info("Initializing chat handler...")
         self.chat_handler = ChatManager(self)
         self.db = self.chat_handler.db
+        
+        # Create data directories
+        self.splash.update_progress(25, "Creating data directories...", "Setting up data storage structure")
         os.makedirs('data', exist_ok=True)
         self.session_id = f"SESSION_GUI_{hash(str(self))}"
         self.conversation_history = []
         
         # Create workspace tables
+        self.splash.update_progress(35, "Setting up database tables...", "Initializing workspace database")
         self.chat_handler.chat_handler.db.create_workspace_tables()
         
+        # Initialize todo list
+        self.splash.update_progress(45, "Loading todo list...", "Initializing task management system")
         logger.info("Initializing todo list...")
         self.todoList = QListWidget(self)
         self.todo_list = TodoList(self)
         self.todo_list.loadTasksFromDB()  # Load existing tasks
         
+        # Setup UI
+        self.splash.update_progress(55, "Building user interface...", "Creating application interface")
         logger.info("Setting up UI...")
         self.initUI()
         
         # Initialize response handler
+        self.splash.update_progress(65, "Setting up response handling...", "Configuring chat response system")
         self.response_handler = ResponseHandler(self.chatDisplay, self.userInput, self.sendButton, self.chat_handler, self.session_id, self.conversation_history)
         
         # Connect the task signal
+        self.splash.update_progress(75, "Connecting signals...", "Setting up event handlers")
         self.chat_handler.task_added_signal.connect(self.addTaskFromChat)
         
+        # Load existing data
+        self.splash.update_progress(85, "Loading existing data...", "Loading saved leads and documents")
+        self.load_existing_data()
+        
+        # Final setup
+        self.splash.update_progress(95, "Finalizing setup...", "Completing initialization")
         logger.info("ChatWindow initialization complete")
+        
+        # Show main window after a brief delay
+        self.splash.update_progress(100, "Ready!", "Application initialization complete")
+        QTimer.singleShot(1000, self.show_main_window)
+
+    def load_existing_data(self):
+        """Load existing data with error handling."""
+        try:
+            # Load existing leads
+            leads_file = os.path.join(self.data_dir, 'leads.json')
+            if os.path.exists(leads_file):
+                with open(leads_file, 'r') as f:
+                    leads = json.load(f)
+                self.update_leads_table(leads)
+                logger.info(f"Loaded {len(leads)} existing leads")
+                self.splash.update_progress(90, "Loading existing data...", f"Loaded {len(leads)} existing leads")
+        except Exception as e:
+            logger.error(f"Error loading existing data: {e}")
+            self.splash.update_progress(90, "Loading existing data...", f"Warning: Error loading some data: {str(e)}")
 
     def show_main_window(self):
         logger.info("Showing main window...")
+        self.splash.update_progress(100, "Launching application...", "Displaying main interface")
         self.splash.finish(self)
         self.show()
         logger.info("Main window shown")
 
     def search_leads(self):
-        """Run Claude API search for leads based on system message."""
+        """Run Grok 4 API search for leads based on system message."""
         try:
             # Load system message from config
             config_path = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/lead_gen_config.json'
@@ -204,7 +315,7 @@ class ChatWindow(QMainWindow):
             if not user_system_message:
                 user_system_message = "You are a lead generation assistant for a medical device regulatory consulting firm. Focus on companies in the AI SaMD and/or IVD/LDT space."
 
-            # Append required format and verification instructions
+            # Create the system message for Grok
             system_message = f"""{user_system_message}
 
 IMPORTANT: When processing search results:
@@ -222,164 +333,124 @@ Only include leads that have been verified through the search results.
 
 """
 
-            # Initialize Claude client
-            api_key = os.getenv('ANTHROPIC_API_KEY', '')
+            # Initialize Grok API call
+            api_key = os.getenv('GROK_API_KEY', '')
             if not api_key:
-                logger.error("Anthropic API key not found.")
+                logger.error("Grok API key not found.")
                 return
-            client = Anthropic(api_key=api_key)
 
-            # Start the conversation with the system message
-            messages = [
-                {
-                    "role": "user",
-                    "content": user_system_message
-                }
-            ]
+            # Prepare the API request
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "messages": [
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": user_system_message}
+                ],
+                "model": "grok-4-latest",
+                "stream": False
+            }
 
-            # Make the initial API call
+            # Make the API call
             try:
-                response = client.messages.create(
-                    model="claude-3-7-sonnet-20250219",
-                    max_tokens=10000,
-                    system=system_message,
-                    messages=messages,
-                    tools=[{
-                        "type": "web_search_20250305",
-                        "name": "web_search"
-                    }]
+                response = requests.post(
+                    "https://api.x.ai/v1/chat/completions",
+                    headers=headers,
+                    json=data,
+                    timeout=120
                 )
-            except AnthropicError as e:
-                if "overloaded_error" in str(e):
-                    logger.error("API is currently overloaded. Please try again in a few minutes.")
-                    QMessageBox.warning(self, "API Overloaded", "The API is currently experiencing high load. Please try again in 5-10 minutes.")
-                    return
-                raise e
-
-            # Log the initial response
-            logger.info("Initial Claude API Response:")
-            logger.info(f"Response type: {type(response)}")
-            logger.info(f"Response content: {response.content}")
-
-            # Write raw response to file for inspection
-            response_file = os.path.join(self.data_dir, 'claude_response.txt')
-            with open(response_file, 'w', encoding='utf-8') as f:
-                f.write("Response type: " + str(type(response)) + "\n\n")
-                f.write("Response content:\n")
-                for block in response.content:
-                    if hasattr(block, 'text'):
-                        f.write(block.text + "\n")
-                    else:
-                        f.write(str(block) + "\n")
-            logger.info(f"Raw response written to {response_file}")
-
-            # Add the response to the conversation
-            messages.append({
-                "role": "assistant",
-                "content": response.content
-            })
-
-            # Check if there's a tool use in the response
-            if response.content and any(isinstance(block, ToolUseBlock) for block in response.content):
-                # Find the tool use block
-                tool_use = next(block for block in response.content if isinstance(block, ToolUseBlock))
+                response.raise_for_status()
+                response_data = response.json()
                 
-                # Make another API call to get the final response after tool use
-                response = client.messages.create(
-                    model="claude-3-7-sonnet-20250219",
-                    max_tokens=1000,
-                    system=system_message,
-                    messages=messages
-                )
+                # Extract the response content
+                response_content = response_data['choices'][0]['message']['content']
+                
+                # Log the response
+                logger.info("Grok API Response:")
+                logger.info(f"Response content: {response_content}")
 
-                # Log the final response
-                logger.info("Final Claude API Response:")
-                logger.info(f"Response type: {type(response)}")
-                logger.info(f"Response content: {response.content}")
+                # Write raw response to file for inspection
+                response_file = os.path.join(self.data_dir, 'grok_response.txt')
+                with open(response_file, 'w', encoding='utf-8') as f:
+                    f.write("Response content:\n")
+                    f.write(response_content + "\n")
+                logger.info(f"Raw response written to {response_file}")
 
-            # Write raw response to file for inspection
-            response_file = os.path.join(self.data_dir, 'claude_response.txt')
-            with open(response_file, 'w', encoding='utf-8') as f:
-                f.write("Response type: " + str(type(response)) + "\n\n")
-                f.write("Response content:\n")
-                for block in response.content:
-                    if hasattr(block, 'text'):
-                        f.write(block.text + "\n")
-                    else:
-                        f.write(str(block) + "\n")
-            logger.info(f"Raw response written to {response_file}")
+                # Try to find JSON array in the response
+                json_str = None
+                text = response_content.strip()
+                logger.info(f"Processing response text: {text}")
+                
+                # Look for JSON array pattern
+                start_idx = text.find('[')
+                end_idx = text.rfind(']') + 1
+                if start_idx != -1 and end_idx > 0:
+                    json_str = text[start_idx:end_idx]
+                    logger.info(f"Found JSON string: {json_str}")
 
-            # Try to find JSON array in the response
-            json_str = None
-            for block in response.content:
-                if hasattr(block, 'text'):
-                    text = block.text.strip()
-                    logger.info(f"Processing block text: {text}")
-                    # Look for JSON array pattern
-                    start_idx = text.find('[')
-                    end_idx = text.rfind(']') + 1
-                    if start_idx != -1 and end_idx > 0:
-                        json_str = text[start_idx:end_idx]
-                        logger.info(f"Found JSON string: {json_str}")
-                        break
-
-            if json_str:
-                try:
-                    # Clean up the JSON string
-                    json_str = json_str.strip()
-                    # Remove any markdown code block markers
-                    json_str = json_str.replace('```json', '').replace('```', '')
-                    logger.info(f"Cleaned JSON string: {json_str}")
-                    
-                    new_leads = json.loads(json_str)
-                    logger.info(f"Parsed leads: {new_leads}")
-                    
-                    if isinstance(new_leads, list):
-                        # Successfully parsed JSON array
-                        logger.info(f"Successfully parsed JSON array with {len(new_leads)} leads")
+                if json_str:
+                    try:
+                        # Clean up the JSON string
+                        json_str = json_str.strip()
+                        # Remove any markdown code block markers
+                        json_str = json_str.replace('```json', '').replace('```', '')
+                        logger.info(f"Cleaned JSON string: {json_str}")
                         
-                        # Load existing leads
-                        leads_file = os.path.join(self.data_dir, 'leads.json')
-                        existing_leads = []
-                        if os.path.exists(leads_file):
-                            with open(leads_file, 'r') as f:
-                                existing_leads = json.load(f)
+                        new_leads = json.loads(json_str)
+                        logger.info(f"Parsed leads: {new_leads}")
                         
-                        # Create a set of existing lead identifiers (name + company)
-                        existing_identifiers = {(lead['name'], lead['company']) for lead in existing_leads}
-                        
-                        # Add new leads to the beginning of the list, avoiding duplicates
-                        for lead in new_leads:
-                            if not all(k in lead for k in ['name', 'company', 'title', 'rationale', 'message']):
-                                logger.warning(f"Skipping lead with missing required fields: {lead}")
-                                continue
-                            lead['contacted'] = False
-                            lead['contact_date'] = None
-                            lead['linkedin_url'] = lead.get('linkedin_url', '')
+                        if isinstance(new_leads, list):
+                            # Successfully parsed JSON array
+                            logger.info(f"Successfully parsed JSON array with {len(new_leads)} leads")
                             
-                            # Check for duplicates
-                            if (lead['name'], lead['company']) not in existing_identifiers:
-                                existing_leads.insert(0, lead)
-                                existing_identifiers.add((lead['name'], lead['company']))
-                                logger.info(f"Added new lead: {lead['name']} from {lead['company']}")
-                        
-                        # Save updated leads
-                        with open(leads_file, 'w') as f:
-                            json.dump(existing_leads, f, indent=2)
-                        
-                        # Update table
-                        self.update_leads_table(existing_leads)
-                        logger.info(f"Successfully loaded {len(new_leads)} new leads")
-                        return
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse JSON: {e}")
-                    logger.error(f"Raw JSON string: {json_str}")
-            else:
-                logger.error("No JSON array found in response blocks")
-                logger.error(f"Raw response blocks: {[block.text if hasattr(block, 'text') else str(block) for block in response.content]}")
-                
-        except AnthropicError as e:
-            logger.error(f"Claude API error: {e}")
+                            # Load existing leads
+                            leads_file = os.path.join(self.data_dir, 'leads.json')
+                            existing_leads = []
+                            if os.path.exists(leads_file):
+                                with open(leads_file, 'r') as f:
+                                    existing_leads = json.load(f)
+                            
+                            # Create a set of existing lead identifiers (name + company)
+                            existing_identifiers = {(lead['name'], lead['company']) for lead in existing_leads}
+                            
+                            # Add new leads to the beginning of the list, avoiding duplicates
+                            for lead in new_leads:
+                                if not all(k in lead for k in ['name', 'company', 'title', 'rationale', 'message']):
+                                    logger.warning(f"Skipping lead with missing required fields: {lead}")
+                                    continue
+                                lead['contacted'] = False
+                                lead['contact_date'] = None
+                                lead['linkedin_url'] = lead.get('linkedin_url', '')
+                                
+                                # Check for duplicates
+                                if (lead['name'], lead['company']) not in existing_identifiers:
+                                    existing_leads.insert(0, lead)
+                                    existing_identifiers.add((lead['name'], lead['company']))
+                                    logger.info(f"Added new lead: {lead['name']} from {lead['company']}")
+                            
+                            # Save updated leads
+                            with open(leads_file, 'w') as f:
+                                json.dump(existing_leads, f, indent=2)
+                            
+                            # Update table
+                            self.update_leads_table(existing_leads)
+                            logger.info(f"Successfully loaded {len(new_leads)} new leads")
+                            return
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse JSON: {e}")
+                        logger.error(f"Raw JSON string: {json_str}")
+                else:
+                    logger.error("No JSON array found in response")
+                    logger.error(f"Raw response: {response_content}")
+                    
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Grok API error: {e}")
+                QMessageBox.warning(self, "API Error", "The Grok API is currently experiencing issues. Please try again in a few minutes.")
+            except Exception as e:
+                logger.error(f"Search leads error: {e}")
         except Exception as e:
             logger.error(f"Search leads error: {e}")
 
@@ -597,7 +668,7 @@ Only include leads that have been verified through the search results.
             QMessageBox.critical(self, "Error", f"Failed to show message: {str(e)}")
 
     def open_settings(self):
-        """Open settings dialog to edit Claude system message."""
+        """Open settings dialog to edit Grok system message."""
         dialog = SettingsDialog(self)
         if dialog.exec():
             try:
@@ -844,19 +915,43 @@ Only include leads that have been verified through the search results.
                 self.meetingTranscript.append(f"<i>Error saving transcript: {e}</i>")
 
     def sendMessage(self):
+        if self.is_sending:
+            print("[DEBUG]: sendMessage: Already processing, skipping duplicate")
+            return
         user_message = self.userInput.text()
         if not user_message.strip():
+            print(f"[DEBUG]: sendMessage: Empty message, ignoring")
             return
-        self.chatDisplay.append(f"<b>You:</b> {user_message}<br><br>")
-        self.sendButton.setEnabled(False)
-        self.userInput.setEnabled(False)
-        self.conversation_history.append({"role": "user", "content": user_message})
-        self.chat_handler.save_message(self.session_id, "user", user_message)
-        self.chatThread = ChatThread(self.chat_handler, user_message, self.session_id, self.conversation_history)
-        self.chatThread.response_signal.connect(self.onResponseReceived)
-        self.chatThread.start()
-        self.chatThread.finished.connect(lambda: print("Thread finished"))
+        self.is_sending = True
+        print(f"[DEBUG]: sendMessage: Processing message: {user_message}")
+        try:            
+            self.chatDisplay.append(f"<b>You:</b> {user_message}<br><br>")
+            self.sendButton.setEnabled(False)
+            self.userInput.setEnabled(False)
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.chat_handler.save_message(self.session_id, "user", user_message)
+            self.chatThread = ChatThread(self.chat_handler, user_message, self.session_id, self.conversation_history)
+            self.chatThread.response_signal.connect(self.onResponseReceived)
+            try:
+                self.chatThread.finished.disconnect()
+            except:
+                pass
+            self.chatThread.finished.connect(self.onThreadFinished)
+            self.chatThread.start()
+        except Exception as e:
+            print(f"[DEBUG]: sendMessage: Error: {e}")
+            self.is_sending = False
+            self.sendButton.setEnabled(True)
+            self.userInput.setEnabled(True)
+            
 
+    def onThreadFinished(self):
+        print("[DEBUG] onThreadFinished: Thread completed, resetting is_sending")
+        self.is_sending = False
+        self.sendButton.setEnabled(True)
+        self.userInput.setEnabled(True)
+        self.userInput.setFocus()
+    
     def addTaskFromChat(self, task_text, due_date):
         print(f"[DEBUG] ChatWindow: Signal received with task: {task_text}, date: {due_date}")
         self.todo_list.addTaskFromChat(task_text, due_date)
@@ -949,10 +1044,15 @@ Only include leads that have been verified through the search results.
         self.userInput = QLineEdit(self)
         self.userInput.setPlaceholderText("Type your message here...")
         self.userInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
+        try:
+            self.userInput.returnPressed.connect(self.sendMessage)
+        except:
+            pass
         self.userInput.returnPressed.connect(self.sendMessage)
         chat_input_layout.addWidget(self.userInput)
         self.sendButton = QPushButton("Send", self)
         self.sendButton.setStyleSheet("""
+        
             QPushButton {
                 background-color: rgba(253, 98, 98, 0.8);
             }
@@ -961,8 +1061,13 @@ Only include leads that have been verified through the search results.
             }
         """)
         self.sendButton.setCursor(Qt.CursorShape.PointingHandCursor)
+        try:
+            self.sendButton.clicked.disconnect()
+        except:
+            pass
         self.sendButton.clicked.connect(self.sendMessage)
         chat_input_layout.addWidget(self.sendButton)
+        self.is_sending = False
         chat_layout.addLayout(chat_input_layout)
         main_layout.addWidget(chat_widget, stretch=30)
 
@@ -1157,7 +1262,7 @@ Only include leads that have been verified through the search results.
         self.doc_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.doc_list.customContextMenuRequested.connect(self.show_doc_context_menu)
         doc_layout.addWidget(self.doc_list)
-        splitter.addWidget(info_widget)
+        splitter.addWidget(doc_widget)
 
         # Column 2: Document Reference
         doc_widget = QWidget()
