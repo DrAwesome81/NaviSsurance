@@ -8,6 +8,7 @@ from core.index_dropbox import auto_index_on_launch
 from core.api import get_dropbox_client
 from dotenv import load_dotenv
 
+
 # Create logs directory if it doesn't exist
 logs_dir = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(logs_dir, exist_ok=True)
@@ -35,14 +36,23 @@ except Exception as e:
 
 if __name__ == "__main__":
     try:
-        logger.info("Starting application...")
+        logger.info("Starting NaviSsurance application...")
         app = QApplication(sys.argv)
         
         logger.info("Initializing Dropbox client...")
-        dbx = get_dropbox_client()
+        try:
+            dbx = get_dropbox_client()
+            logger.info("Dropbox client initialized successfully")
+        except Exception as e:
+            logger.error(f"Error initializing Dropbox client: {e}")
+            dbx = None
         
         logger.info("Running auto index...")
-        auto_index_on_launch(dbx)
+        try:
+            auto_index_on_launch(dbx)
+            logger.info("Auto index completed successfully")
+        except Exception as e:
+            logger.error(f"Error during auto index: {e}")
         
         logger.info("Setting up application window...")
         app.setWindowIcon(QIcon("assets/logo v2.png"))
@@ -54,13 +64,10 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"Error loading stylesheet: {e}")
         
-        logger.info("Creating main window...")
+        logger.info("Creating main window with enhanced splash screen...")
         chatWindow = ChatWindow()
         
-        logger.info("Showing main window...")
-        chatWindow.show()
-        
-        logger.info("Entering application event loop...")
+        logger.info("Application initialization complete, entering event loop...")
         sys.exit(app.exec())
     except Exception as e:
         logger.error(f"Critical error in main: {e}", exc_info=True)
