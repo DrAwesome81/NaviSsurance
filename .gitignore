@@ -15,3 +15,4 @@ codebase_export.txt
 *.json
 *.wav
 
+llama_cpp_python-0.3.8+cu128.gemma3-cp312-cp312-win_amd64.whl
