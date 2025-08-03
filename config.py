@@ -5,8 +5,8 @@ import requests
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "config", ".env"))
 
-OLLAMA_ENDPOINT = "http://localhost:11434/api/chat"
-USE_DEEPSEEK = True
+# Deepseek usage removed - now using Llama model directly via llama_cpp
+USE_DEEPSEEK = False
 
 API_KEY = os.getenv('GROK_API_KEY')
 if API_KEY is None:
@@ -20,10 +20,7 @@ API_ENDPOINT = 'https://api.x.ai/v1/chat/completions'
 #     print("Warning: BRAVE_API_KEY not set. Web search functionality may be limited")
 # BRAVE_API_URL = "https://api.search.brave.com/res/v1/web/search"
 
-# Add Claude configuration
-CLAUDE_API_KEY = os.getenv('ANTHROPIC_API_KEY')
-if CLAUDE_API_KEY is None:
-    raise ValueError("ANTHROPIC_API_KEY is not set in the environment")
+# Claude configuration removed - now using Grok 4 API for all functionality
 
 DROPBOX_APP_KEY = os.getenv('DROPBOX_APP_KEY')
 DROPBOX_APP_SECRET = os.getenv('DROPBOX_APP_SECRET')
@@ -46,7 +43,7 @@ current_date = datetime.now().strftime("%B %d, %Y")
 
 base_system_message = {
         "role": "system",
-        "content": f"Today is {current_date} You are Navi, an advanced AI model powering NaviSsurance, "
+        "content": f"Today is {current_date}. You are Navi, an advanced AI model powering NaviSsurance, "
         "a software used at NaviSure Consulting, a medical device consultancy focused on "
         "startups in the fields of AI/ML, IVDs, SaMD, DTC devices, and other cutting edge tech. Your "
         "personality is similar to Jarvis, with sarcasm used sparingly and occasional skepticism and "
@@ -62,8 +59,8 @@ base_system_message = {
         "indicating a search of local files, return exactly 'DROPBOX_SEARCH:<search query>'. When responding to "
         "DROPBOX_SEARCH results, format each item as: <b>filename</b> - <a href='url'>Link</a> - snarky description "
         "(plain text), use <br><br> between items, limit to 5 files max, keep it conversational—don't add extra "
-        "bolding or formatting beyond filenames unless I ask. For all other chat messages, respond normally."
-        "Use <think> tags for reasoning if needed, but keep responses clean".format(current_date=current_date)
+        "bolding or formatting beyond filenames unless I ask. For all other chat messages, respond normally. "
+        "Use <think> tags for reasoning if needed, but keep responses clean."
     }
 
 def refresh_dropbox_token():
