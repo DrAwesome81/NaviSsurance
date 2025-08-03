@@ -5,7 +5,7 @@ NaviSsurance is an AI-powered medical device regulatory consulting platform, ser
 
 ## Features
 - **Compliance Checking**: Grok-powered three-column UI (`interface.py`) for analyzing SOPs, PDFs, or URLs against standards (e.g., ISO 13485, 21 CFR 801), outputting JSON results (`[{section, issue, fix, reference}]`) for client recommendations.
-- **Lead Generation**: Claude 3.7 Sonnet generates JSON-backed leads (name, company, title, LinkedIn URL, rationale) in the Leads Tab (`interface.py`), with personalized LinkedIn messages for manual outreach.
+- **Lead Generation**: Grok 4 API generates JSON-backed leads (name, company, title, LinkedIn URL, rationale) in the Leads Tab (`interface.py`), with personalized LinkedIn messages for manual outreach.
 - **Clinical Study Design (Planned)**: AI optimizer for 510(k), IDE, or PMCF protocols, costing $3,000–$12,000 versus $10,000–$40,000, targeting diagnostics (e.g., Abbott) and CROs, with 1–3 day delivery.
 - **Email Fetching**: Fetches Gmail, MSN/Outlook, and custom IMAP inboxes (`fetch_all_emails.py`); planned folder access (e.g., “Clients,” “Leads”) for DistilBERT training to filter emails (8-class: Response Needed, Personal, etc.).
 - **Meeting Transcription**: AssemblyAI processes speaker-separated transcripts (`interface.py`, lines 248–312).
@@ -14,7 +14,7 @@ NaviSsurance is an AI-powered medical device regulatory consulting platform, ser
 
 ## Tech Stack
 - **Core**: Python 3.12.7, PyQt6 (UI), SQLite (`crm.py` for data storage).
-- **APIs**: xAI Grok (compliance, document generation), Anthropic Claude 3.7 Sonnet (lead generation), LinkedIn (Share, Sign In, Community Management), AssemblyAI (transcription).
+- **APIs**: xAI Grok (compliance, document generation, lead generation), LinkedIn (Share, Sign In, Community Management), AssemblyAI (transcription).
 - **Tools**: Cursor (IDE), Git/GitHub (version control), Dropbox (storage at `C:/Users/adamo/Dropbox/_Consulting/NaviSsurance`).
 
 ## Status

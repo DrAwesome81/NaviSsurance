@@ -16,7 +16,7 @@ Lead Generation
 
 User Story: As a consultant, I want to generate leads for AI SaMD, IVD, or non-AI MedTech companies, so I can initiate outreach via LinkedIn or other methods.
 Acceptance Criteria:
-Claude 3.7 Sonnet outputs JSON ({name, company, title, LinkedIn_url, rationale}) in Leads Tab.
+Grok 4 API outputs JSON ({name, company, title, LinkedIn_url, rationale}) in Leads Tab.
 Display leads with copy/paste personalized LinkedIn messages.
 Allow marking leads as contacted, saving status to crm.py.
 Send LinkedIn messages directly from the UI, or schedule them to be sent for later.

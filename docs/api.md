@@ -1,6 +1,6 @@
 NaviSsurance API Integrations
 Overview
-NaviSsurance uses third-party APIs for core functionality: xAI Grok (compliance, study design), Anthropic Claude 3.7 Sonnet (lead generation), LinkedIn (posting, authentication), and AssemblyAI (transcription). API keys are non-transferable; buyers must register their own accounts.
+NaviSsurance uses third-party APIs for core functionality: xAI Grok (compliance, study design, lead generation), LinkedIn (posting, authentication), and AssemblyAI (transcription). API keys are non-transferable; buyers must register their own accounts.
 API Details
 xAI Grok
 
@@ -16,19 +16,7 @@ Update .env with key.
 Code: chat.py (compliance, study design calls).
 Notes: Commercial use allowed per ToS; verify at https://x.ai/grok.
 
-Anthropic Claude 3.7 Sonnet
-
-Purpose: Generates lead JSON ({name, company, title, LinkedIn_url, rationale}) for AI SaMD/IVD companies.
-Endpoints: https://api.anthropic.com/v1/messages.
-Authentication: API key (ANTHROPIC_API_KEY) in .env.
-Setup:
-Register at https://www.anthropic.com/api.
-Obtain API key (~$50–$200/project).
-Update .env.
-
-
-Code: interface.py (Leads Tab).
-Notes: Non-transferable key; contact support@anthropic.com for ToS.
+# Claude API removed - now using Grok 4 API for lead generation
 
 LinkedIn APIs (Share, Sign In, Community Management)
 
