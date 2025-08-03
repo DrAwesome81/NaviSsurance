@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from core.file_handler import extract_text_from_pdf, extract_text_from_docx  # Your extract functions
+from file_handler import extract_text_from_pdf, extract_text_from_docx  # Your extract functions
 
 # Define file paths for SOPs and standards (update these to match your actual paths)
 reports = [
@@ -256,7 +256,7 @@ def load_text(path):
 
 # Read fine_tune.jsonl (your provided dataset)
 input_reports = []
-with open("fine_tune.jsonl", "r") as f:
+with open("data/fine_tune.jsonl", "r") as f:
     for line in f:
         input_reports.append(json.loads(line.strip()))
 
