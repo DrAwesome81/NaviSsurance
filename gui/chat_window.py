@@ -51,7 +51,7 @@ class ChatThread(QThread):
 class ResponseHandler:
     def __init__(self, chat_display, user_input, send_button, chat_handler, session_id, conversation_history):
         self.chatDisplay = chat_display
-        self.userInput = user_input
+        self.chatInput = user_input
         self.sendButton = send_button
         self.chat_handler = chat_handler
         self.session_id = session_id
@@ -87,18 +87,18 @@ class ResponseHandler:
         self.conversation_history.append({"role": "assistant", "content": response})
         self.chat_handler.save_message(self.session_id, "assistant", response)
         self.sendButton.setEnabled(True)
-        self.userInput.setEnabled(True)
-        self.userInput.clear()
-        self.userInput.setFocus()
+        self.chatInput.setEnabled(True)
+        self.chatInput.clear()
+        self.chatInput.setFocus()
 
 def sendMessage(self):
-    user_message = self.userInput.text()
+    user_message = self.chatInput.text()
     if not user_message.strip():
         return
 
     self.chatDisplay.append(f"<b>You:</b> {user_message}")
     self.sendButton.setEnabled(False)
-    self.userInput.setEnabled(False)
+    self.chatInput.setEnabled(False)
     self.conversation_history.append({"role": "user", "content": user_message})
     self.chat_handler.save_message(self.session_id, "user", user_message)
 
