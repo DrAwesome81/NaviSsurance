@@ -57,13 +57,6 @@ if __name__ == "__main__":
         logger.info("Setting up application window...")
         app.setWindowIcon(QIcon("assets/logo v2.png"))
         
-        try:
-            with open("styles.qss", "r") as f:
-                app.setStyleSheet(f.read())
-            logger.info("Stylesheet loaded successfully")
-        except Exception as e:
-            logger.error(f"Error loading stylesheet: {e}")
-        
         logger.info("Creating main window with enhanced splash screen...")
         chatWindow = ChatWindow()
         
