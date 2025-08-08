@@ -78,7 +78,7 @@ class TodoList:
         # Task Label
         label = QLabel(task_text)
         label.setWordWrap(True)
-        label.setStyleSheet("max-width: 300px; color: white; padding: 5px;")
+        # label.setStyleSheet("max-width: 300px; color: white; padding: 5px;")
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(label)
 
@@ -87,21 +87,21 @@ class TodoList:
         # Due Date Label
         due_date_label = QLabel(due_date)
         due_date_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
-        due_date_label.setStyleSheet("padding: 5px;")
+        # due_date_label.setStyleSheet("padding: 5px;")
         layout.addWidget(due_date_label)
 
         # Edit Button
         edit_button = QPushButton("Edit")
         edit_button.setFixedWidth(80)
         edit_button.clicked.connect(lambda: self.editTask(item_widget))
-        edit_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(253, 98, 98, 0.8);
-            }
-            QPushButton:hover {
-                background-color: rgba(253, 98, 98, 1.0);
-            }
-        """)
+        # edit_button.setStyleSheet("""
+        #     QPushButton {
+        #         background-color: rgba(253, 98, 98, 0.8);
+        #     }
+        #     QPushButton:hover {
+        #         background-color: rgba(253, 98, 98, 1.0);
+        #     }
+        # """)
         edit_button.setCursor(Qt.CursorShape.PointingHandCursor)
         layout.addWidget(edit_button)
 
@@ -109,14 +109,14 @@ class TodoList:
         delete_button = QPushButton("Delete")
         delete_button.setFixedWidth(80)
         delete_button.clicked.connect(lambda: self.deleteTask(item_widget, task_id))
-        delete_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(253, 98, 98, 0.8);
-            }
-            QPushButton:hover {
-                background-color: rgba(253, 98, 98, 1.0);
-            }
-        """)
+        # delete_button.setStyleSheet("""
+        #     QPushButton {
+        #         background-color: rgba(253, 98, 98, 0.8);
+        #     }
+        #     QPushButton:hover {
+        #         background-color: rgba(253, 98, 98, 1.0);
+        #     }
+        # """)
         delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
         layout.addWidget(delete_button)
 
