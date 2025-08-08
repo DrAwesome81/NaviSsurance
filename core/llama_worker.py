@@ -15,7 +15,7 @@ def main():
         llm = Llama(
             model_path=model_path,
             n_gpu_layers=33,
-            n_ctx=2048,
+            n_ctx=8192,
             n_threads=4,
             verbose=True,
             chat_format="llama-3"
