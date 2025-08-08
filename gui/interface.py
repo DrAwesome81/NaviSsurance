@@ -37,13 +37,17 @@ class EnhancedSplashScreen(QSplashScreen):
         
         # Create progress bar
         self.progress_bar = QProgressBar(self)
-        self.progress_bar.setGeometry(50, pixmap.height() - 80, pixmap.width() - 100, 20)
+        # Position progress bar at bottom center with some margin
+        progress_width = min(300, pixmap.width() - 100)
+        progress_x = (pixmap.width() - progress_width) // 2
+        self.progress_bar.setGeometry(progress_x, pixmap.height() - 80, progress_width, 20)
         self.progress_bar.setStyleSheet("""
             QProgressBar {
                 border: 2px solid rgba(253, 98, 98, 0.8);
                 border-radius: 5px;
                 text-align: center;
                 background-color: rgba(27, 28, 30, 0.8);
+                color: white;
             }
             QProgressBar::chunk {
                 background-color: rgba(253, 98, 98, 0.8);
@@ -55,7 +59,10 @@ class EnhancedSplashScreen(QSplashScreen):
         
         # Create status label
         self.status_label = QLabel(self)
-        self.status_label.setGeometry(50, pixmap.height() - 50, pixmap.width() - 100, 30)
+        # Center the status label
+        label_width = min(400, pixmap.width() - 100)
+        label_x = (pixmap.width() - label_width) // 2
+        self.status_label.setGeometry(label_x, pixmap.height() - 50, label_width, 30)
         self.status_label.setStyleSheet("""
             QLabel {
                 color: white;
@@ -97,20 +104,20 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout()
         
         # Style for the dialog
-        self.setStyleSheet("""
-            QDialog {
-                background-color: rgb(27, 28, 30);
-                color: white;
-            }
-            QTextEdit {
-                background-color: rgba(27, 28, 30, 0.8);
-                color: white;
-                border: 1px solid rgba(253, 98, 98, 0.8);
-            }
-            QLabel {
-                color: white;
-            }
-        """)
+        # self.setStyleSheet("""
+        #     QDialog {
+        #         background-color: rgb(27, 28, 30);
+        #         color: white;
+        #     }
+        #     QTextEdit {
+        #         background-color: rgba(27, 28, 30, 0.8);
+        #         color: white;
+        #         border: 1px solid rgba(253, 98, 98, 0.8);
+        #     }
+        #     QLabel {
+        #         color: white;
+        #     }
+        # """)
         
         self.system_message_input = QTextEdit(self)
         
@@ -129,17 +136,17 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.system_message_input)
         
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(253, 98, 98, 0.8);
-                color: white;
-                border: none;
-                padding: 5px 15px;
-            }
-            QPushButton:hover {
-                background-color: rgba(253, 98, 98, 1);
-            }
-        """)
+        # buttons.setStyleSheet("""
+        #     QPushButton {
+        #         background-color: rgba(253, 98, 98, 0.8);
+        #         color: white;
+        #         border: none;
+        #         padding: 5px 15px;
+        #     }
+        #     QPushButton:hover {
+        #         background-color: rgba(253, 98, 98, 1);
+        #     }
+        # """)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -149,46 +156,244 @@ class SettingsDialog(QDialog):
 class WorkspaceTab(QWidget):
     def __init__(self, db):
         super().__init__()
-        self.db = db  # DatabaseManager instance
-        layout = QVBoxLayout()
-        self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText("Enter workspace chat message...")
-        self.chat_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        self.db = db
+        self.setup_ui()
+    
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
         
-        self.doc_list_standards = QListWidget()
-        self.doc_list_standards.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # Add workspace content here
+        workspace_label = QLabel("Workspace - Coming Soon")
+        workspace_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(workspace_label)
+
+class NoteTakingSystem(QWidget):
+    def __init__(self, chat_handler):
+        super().__init__()
+        self.chat_handler = chat_handler
+        self.db = DatabaseManager()
+        self.db.init_notes_table()
+        self.dropbox_client = None  # Will be initialized if needed
+        self.setup_ui()
+        self.notify_navi()
+
+    def setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
         
-        self.doc_list_client = QListWidget()
-        self.doc_list_client.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # Left: Chat Window
+        chat_widget = QWidget()
+        chat_layout = QVBoxLayout(chat_widget)
+        chat_layout.setContentsMargins(5, 5, 5, 5)
+        chat_layout.setSpacing(5)
         
-        self.doc_list_reference = QListWidget()
-        self.doc_list_reference.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # Create a custom QTextEdit subclass for proper key event handling
+        class CustomTextEdit(QTextEdit):
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                self.parent_widget = parent
+            
+            def keyPressEvent(self, event):
+                from PyQt6.QtCore import Qt
+                from PyQt6.QtGui import QKeyEvent
+                
+                if event.key() == Qt.Key.Key_Return and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    # Enter key pressed (without Shift)
+                    if hasattr(self.parent_widget, 'process_note'):
+                        self.parent_widget.process_note()
+                        self.clear()
+                    event.accept()
+                else:
+                    # Let the default QTextEdit handle other keys
+                    super().keyPressEvent(event)
         
-        self.folder_input = QLineEdit("data/clients/Abbott")
-        self.folder_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        self.chat_input = CustomTextEdit(self)
+        self.chat_input.setPlaceholderText("Enter thoughts (e.g., 'Section 5 should be in the protocol; not this report')")
+        chat_layout.addWidget(self.chat_input)
+        layout.addWidget(chat_widget, stretch=1)
+
+        # Right: Notes Pane
+        notes_widget = QWidget()
+        notes_layout = QVBoxLayout(notes_widget)
+        notes_layout.setContentsMargins(5, 5, 5, 5)
+        notes_layout.setSpacing(5)
         
-        self.upload_std_btn = QPushButton("Upload Standard")
-        self.upload_std_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        self.notes_display = QTextEdit()
+        self.notes_display.setReadOnly(True)
+        notes_layout.addWidget(self.notes_display)
         
-        self.remove_std_btn = QPushButton("Remove Standard")
-        self.remove_std_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        # Buttons
+        save_btn = QPushButton("Save Note")
+        save_btn.clicked.connect(self.save_note)
+        save_btn.setToolTip("Save current note and clear input")
+        notes_layout.addWidget(save_btn)
         
-        self.upload_ref_btn = QPushButton("Upload Reference")
-        self.upload_ref_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        organize_btn = QPushButton("Update Categories")
+        organize_btn.clicked.connect(self.organize_notes)
+        organize_btn.setToolTip("Reorganize all notes by category")
+        notes_layout.addWidget(organize_btn)
         
-        self.remove_ref_btn = QPushButton("Remove Reference")
-        self.remove_ref_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        export_btn = QPushButton("Export Notes")
+        export_btn.clicked.connect(self.export_notes)
+        export_btn.setToolTip("Export notes to TXT, DOCX, and PDF")
+        notes_layout.addWidget(export_btn)
         
-        layout.addWidget(self.chat_input)
-        layout.addWidget(self.doc_list_standards)
-        layout.addWidget(self.upload_std_btn)
-        layout.addWidget(self.remove_std_btn)
-        layout.addWidget(self.folder_input)
-        layout.addWidget(self.doc_list_client)
-        layout.addWidget(self.doc_list_reference)
-        layout.addWidget(self.upload_ref_btn)
-        layout.addWidget(self.remove_ref_btn)
+        layout.addWidget(notes_widget, stretch=1)
         self.setLayout(layout)
+
+    def notify_navi(self):
+        prompt = """You are Navi, an AI for NaviSure Consulting. Your user, Dr. Adam Odeh, is reviewing large documents and typing thoughts into a chat window. Format each thought for clarity (e.g., 'Section 5 should be in the protocol, not this report' → 'Section 5: Move to Protocol document from Report'). Categorize notes by document type (e.g., 'Protocol', 'Report', 'Unnecessary') based on content. Store and display categorized notes in real-time, updating as new thoughts are added."""
+        self.chat_handler.get_response(prompt, session_id="notes_session", conversation_history=[])
+
+
+
+    def extract_json_from_response(self, response):
+        """Extract JSON object from AI response that may contain extra text."""
+        import re
+        
+        # Try to find JSON object in the response
+        json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        matches = re.findall(json_pattern, response)
+        
+        if matches:
+            # Try each match to see if it's valid JSON
+            for match in matches:
+                try:
+                    return json.loads(match)
+                except json.JSONDecodeError:
+                    continue
+        
+        # If no valid JSON found, try to extract content between curly braces
+        start = response.find('{')
+        end = response.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(response[start:end+1])
+            except json.JSONDecodeError:
+                pass
+        
+        return None
+
+    def process_note(self):
+        content = self.chat_input.toPlainText().strip()
+        if not content or len(content) < 3:  # Reduced minimum length since we're not auto-processing
+            return
+        prompt = f"""Format this thought for clarity and categorize it by document type (e.g., Protocol, Report, Unnecessary): '{content}'.
+        Return JSON: {{"formatted": "<formatted_note>", "category": "<document_type>"}}"""
+        response = self.chat_handler.get_response(
+            prompt, session_id="notes_session", conversation_history=[]
+        )
+        
+        # Extract JSON from response
+        note_data = self.extract_json_from_response(response)
+        if note_data and "formatted" in note_data and "category" in note_data:
+            formatted = note_data["formatted"]
+            category = note_data["category"]
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.db.save_note(formatted, category, timestamp)
+            self.update_notes_display()
+        else:
+            self.notes_display.append(f"Error: Could not parse response. Raw response: {response[:200]}...")
+
+    def save_note(self):
+        content = self.chat_input.toPlainText().strip()
+        if not content:
+            return
+        self.process_note()
+        self.chat_input.clear()
+
+    def organize_notes(self):
+        notes = self.db.get_notes()
+        if not notes:
+            return
+        prompt = f"""Organize these notes into categories (e.g., Protocol, Report, Unnecessary). Return a JSON object with categories as keys and lists of formatted notes as values. Notes: {json.dumps(notes)}"""
+        response = self.chat_handler.get_response(
+            prompt, session_id="notes_session", conversation_history=[]
+        )
+        
+        # Extract JSON from response
+        organized_notes = self.extract_json_from_response(response)
+        if organized_notes and isinstance(organized_notes, dict):
+            self.db.save_organized_notes(organized_notes)
+            self.update_notes_display()
+        else:
+            self.notes_display.append(f"Error: Could not parse organization response. Raw response: {response[:200]}...")
+
+    def update_notes_display(self):
+        self.notes_display.clear()
+        organized_notes = self.db.get_organized_notes()
+        if not organized_notes:
+            self.notes_display.append("No notes available.")
+            return
+        for category, notes in organized_notes.items():
+            self.notes_display.append(f"<b>{category}</b>:<br>")
+            for note in notes:
+                self.notes_display.append(f"{note}<br>")
+            self.notes_display.append("<br>")
+
+    def export_notes(self):
+        organized_notes = self.db.get_organized_notes()
+        if not organized_notes:
+            self.notes_display.append("No notes to export.")
+            return
+        
+        # Export as TXT
+        txt_path = "notes_export.txt"
+        with open(txt_path, "w") as f:
+            for category, notes in organized_notes.items():
+                f.write(f"{category}:\n")
+                for note in notes:
+                    f.write(f"- {note}\n")
+                f.write("\n")
+        
+        # Export as Word (.docx) - if python-docx is available
+        try:
+            from docx import Document
+            doc = Document()
+            for category, notes in organized_notes.items():
+                doc.add_heading(category, level=1)
+                for note in notes:
+                    doc.add_paragraph(note, style='ListBullet')
+            docx_path = "notes_export.docx"
+            doc.save(docx_path)
+            self.notes_display.append(f"Exported to {txt_path} and {docx_path}")
+        except ImportError:
+            self.notes_display.append(f"Exported to {txt_path} (python-docx not available for DOCX export)")
+
+        # Export as PDF - if fpdf is available
+        try:
+            from fpdf import FPDF
+            pdf = FPDF()
+            pdf.set_auto_page_break(auto=True, margin=15)
+            pdf.add_page()
+            pdf.set_font("Arial", size=12)
+            for category, notes in organized_notes.items():
+                pdf.set_font("Arial", "B", 16)
+                pdf.cell(0, 10, category, ln=True)
+                pdf.set_font("Arial", size=12)
+                for note in notes:
+                    pdf.cell(0, 10, f"- {note}", ln=True)
+                pdf.ln(5)
+            pdf_path = "notes_export.pdf"
+            pdf.output(pdf_path)
+            self.notes_display.append(f"Also exported to {pdf_path}")
+        except ImportError:
+            self.notes_display.append("(FPDF not available for PDF export - install with: pip install fpdf)")
+        except Exception as e:
+            self.notes_display.append(f"(PDF export failed: {str(e)})")
+
+        # Dropbox upload - if dropbox client is available
+        if hasattr(self, 'dropbox_client') and self.dropbox_client:
+            try:
+                self.dropbox_client.get_client().files_upload(
+                    open(txt_path, "rb").read(), "/notes_export.txt"
+                )
+                self.notes_display.append("Uploaded to Dropbox")
+            except Exception as e:
+                self.notes_display.append(f"Dropbox upload failed: {e}")
 
 class ChatWindow(QMainWindow):
 
@@ -212,6 +417,9 @@ class ChatWindow(QMainWindow):
     def __init__(self):
         logger.info("Initializing ChatWindow...")
         super().__init__()
+        
+        # Load stylesheet early to ensure splash screen styling works
+        self.loadStylesheet("styles.qss")
         
         # Create data directory if it doesn't exist
         self.data_dir = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/data'
@@ -259,7 +467,7 @@ class ChatWindow(QMainWindow):
         
         # Initialize response handler
         self.splash.update_progress(65, "Setting up response handling...", "Configuring chat response system")
-        self.response_handler = ResponseHandler(self.chatDisplay, self.userInput, self.sendButton, self.chat_handler, self.session_id, self.conversation_history)
+        self.response_handler = ResponseHandler(self.chatDisplay, self.chatInput, self.sendButton, self.chat_handler, self.session_id, self.conversation_history)
         
         # Connect the task signal
         self.splash.update_progress(75, "Connecting signals...", "Setting up event handlers")
@@ -458,6 +666,9 @@ Only include leads that have been verified through the search results.
         """Update the leads table with the provided leads data."""
         self.leadsTable.setRowCount(len(leads))
         for row, lead in enumerate(leads):
+            # Set row height to accommodate buttons - increased for better spacing
+            self.leadsTable.setRowHeight(row, 40)  # Increased row height for better vertical centering
+            
             # Name (as hyperlink if LinkedIn URL exists)
             name_item = QTableWidgetItem(lead.get('name', ''))
             if lead.get('linkedin_url'):
@@ -485,21 +696,78 @@ Only include leads that have been verified through the search results.
             date_item = QTableWidgetItem(contact_date if contact_date else '')
             self.leadsTable.setItem(row, 4, date_item)
             
-            # Message button
+            # Message button - with container for vertical centering
             message_button = QPushButton("View Message")
             message_button.clicked.connect(lambda _, r=row: self.generate_message(r))
-            self.leadsTable.setCellWidget(row, 5, message_button)
+            message_button.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(253, 98, 98, 0.8);
+                    color: white;
+                    border: none;
+                    padding: 0px;
+                    font-size: 10px;
+                    border-radius: 3px;
+                    min-width: 80px; /* Increased from 60px to make buttons wider */
+                    min-height: 28px; /* Increased from 20px to make buttons taller */
+                    max-height: 32px; /* Increased from 24px to allow taller buttons */
+                }
+            """)
+            # Create container widget with layout for vertical centering
+            message_container = QWidget()
+            message_layout = QVBoxLayout(message_container)
+            message_layout.addWidget(message_button, alignment=Qt.AlignmentFlag.AlignCenter)
+            message_layout.setContentsMargins(0, 0, 0, 0)
+            message_layout.setSpacing(0)
+            self.leadsTable.setCellWidget(row, 5, message_container)
             
-            # Delete button
+            # Delete button - with container for vertical centering
             delete_button = QPushButton("Delete")
             delete_button.clicked.connect(lambda _, r=row: self.delete_lead(r))
-            self.leadsTable.setCellWidget(row, 6, delete_button)
+            delete_button.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(253, 98, 98, 0.8);
+                    color: white;
+                    border: none;
+                    padding: 0px;
+                    font-size: 10px;
+                    border-radius: 3px;
+                    min-width: 80px; /* Increased from 60px to make buttons wider */
+                    min-height: 28px; /* Increased from 20px to make buttons taller */
+                    max-height: 32px; /* Increased from 24px to allow taller buttons */
+                }
+            """)
+            # Create container widget with layout for vertical centering
+            delete_container = QWidget()
+            delete_layout = QVBoxLayout(delete_container)
+            delete_layout.addWidget(delete_button, alignment=Qt.AlignmentFlag.AlignCenter)
+            delete_layout.setContentsMargins(0, 0, 0, 0)
+            delete_layout.setSpacing(0)
+            self.leadsTable.setCellWidget(row, 6, delete_container)
             
-            # Rationale (with view button)
+            # Rationale (with view button) - with container for vertical centering
             view_rationale_button = QPushButton("View")
             view_rationale_button.clicked.connect(lambda _, r=row: self.show_rationale(r))
-            self.leadsTable.setCellWidget(row, 7, view_rationale_button)
-            
+            view_rationale_button.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(253, 98, 98, 0.8);
+                    color: white;
+                    border: none;
+                    padding: 0px;
+                    font-size: 10px;
+                    border-radius: 3px;
+                    min-width: 80px; /* Increased from 60px to make buttons wider */
+                    min-height: 28px; /* Increased from 20px to make buttons taller */
+                    max-height: 32px; /* Increased from 24px to allow taller buttons */
+                }
+            """)
+            # Create container widget with layout for vertical centering
+            view_container = QWidget()
+            view_layout = QVBoxLayout(view_container)
+            view_layout.addWidget(view_rationale_button, alignment=Qt.AlignmentFlag.AlignCenter)
+            view_layout.setContentsMargins(0, 0, 0, 0)
+            view_layout.setSpacing(0)
+            self.leadsTable.setCellWidget(row, 7, view_container)
+        
         # Connect cell click event for LinkedIn links
         self.leadsTable.cellClicked.connect(self.handle_cell_click)
 
@@ -530,18 +798,18 @@ Only include leads that have been verified through the search results.
                 dialog.setWindowTitle("Lead Rationale")
                 dialog.setMinimumWidth(500)
                 dialog.setMinimumHeight(300)
-                dialog.setStyleSheet("""
-                    QDialog {
-                        background-color: rgb(27, 28, 30);
-                        color: white;
-                    }
-                    QTextEdit {
-                        background-color: rgba(27, 28, 30, 0.8);
-                        color: white;
-                        border: 1px solid rgba(253, 98, 98, 0.8);
-                        padding: 10px;
-                    }
-                """)
+                # dialog.setStyleSheet("""
+                #     QDialog {
+                #         background-color: rgb(27, 28, 30);
+                #         color: white;
+                #     }
+                #     QTextEdit {
+                #         background-color: rgba(27, 28, 30, 0.8);
+                #         color: white;
+                #         border: 1px solid rgba(253, 98, 98, 0.8);
+                #         padding: 10px;
+                #     }
+                # """)
                 
                 layout = QVBoxLayout()
                 text_edit = QTextEdit()
@@ -550,17 +818,17 @@ Only include leads that have been verified through the search results.
                 layout.addWidget(text_edit)
                 
                 close_button = QPushButton("Close")
-                close_button.setStyleSheet("""
-                    QPushButton {
-                        background-color: rgba(253, 98, 98, 0.8);
-                        color: white;
-                        border: none;
-                        padding: 5px 15px;
-                    }
-                    QPushButton:hover {
-                        background-color: rgba(253, 98, 98, 1);
-                    }
-                """)
+                # close_button.setStyleSheet("""
+                #     QPushButton {
+                #         background-color: rgba(253, 98, 98, 0.8);
+                #         color: white;
+                #         border: none;
+                #         padding: 5px 15px;
+                #     }
+                #     QPushButton:hover {
+                #         background-color: rgba(253, 98, 98, 1);
+                #     }
+                # """)
                 close_button.clicked.connect(dialog.accept)
                 layout.addWidget(close_button)
                 
@@ -628,17 +896,17 @@ Only include leads that have been verified through the search results.
             # Show message in a dialog
             dialog = QDialog(self)
             dialog.setWindowTitle(f"Message for {lead['name']}")
-            dialog.setStyleSheet("""
-                QDialog {
-                    background-color: rgb(27, 28, 30);
-                    color: white;
-                }
-                QTextEdit {
-                    background-color: rgba(27, 28, 30, 0.8);
-                    color: white;
-                    border: 1px solid rgba(253, 98, 98, 0.8);
-                }
-            """)
+            # dialog.setStyleSheet("""
+            #     QDialog {
+            #         background-color: rgb(27, 28, 30);
+            #         color: white;
+            #     }
+            #     QTextEdit {
+            #         background-color: rgba(27, 28, 30, 0.8);
+            #         color: white;
+            #         border: 1px solid rgba(253, 98, 98, 0.8);
+            #     }
+            # """)
             layout = QVBoxLayout()
             text_edit = QTextEdit()
             text_edit.setPlainText(message)
@@ -646,17 +914,17 @@ Only include leads that have been verified through the search results.
             layout.addWidget(text_edit)
             
             buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-            buttons.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(253, 98, 98, 0.8);
-                    color: white;
-                    border: none;
-                    padding: 5px 15px;
-                }
-                QPushButton:hover {
-                    background-color: rgba(253, 98, 98, 1);
-                }
-            """)
+            # buttons.setStyleSheet("""
+            #     QPushButton {
+            #         background-color: rgba(253, 98, 98, 0.8);
+            #         color: white;
+            #         border: none;
+            #         padding: 5px 15px;
+            #     }
+            #     QPushButton:hover {
+            #         background-color: rgba(253, 98, 98, 1);
+            #     }
+            # """)
             buttons.rejected.connect(dialog.reject)
             layout.addWidget(buttons)
             
@@ -915,42 +1183,39 @@ Only include leads that have been verified through the search results.
                 self.meetingTranscript.append(f"<i>Error saving transcript: {e}</i>")
 
     def sendMessage(self):
+        """Send a message to the chat."""
         if self.is_sending:
-            print("[DEBUG]: sendMessage: Already processing, skipping duplicate")
             return
-        user_message = self.userInput.text()
-        if not user_message.strip():
-            print(f"[DEBUG]: sendMessage: Empty message, ignoring")
-            return
-        self.is_sending = True
-        print(f"[DEBUG]: sendMessage: Processing message: {user_message}")
-        try:            
-            self.chatDisplay.append(f"<b>You:</b> {user_message}<br><br>")
-            self.sendButton.setEnabled(False)
-            self.userInput.setEnabled(False)
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.chat_handler.save_message(self.session_id, "user", user_message)
-            self.chatThread = ChatThread(self.chat_handler, user_message, self.session_id, self.conversation_history)
-            self.chatThread.response_signal.connect(self.onResponseReceived)
-            try:
-                self.chatThread.finished.disconnect()
-            except:
-                pass
-            self.chatThread.finished.connect(self.onThreadFinished)
-            self.chatThread.start()
-        except Exception as e:
-            print(f"[DEBUG]: sendMessage: Error: {e}")
-            self.is_sending = False
-            self.sendButton.setEnabled(True)
-            self.userInput.setEnabled(True)
             
+        message = self.chatInput.text().strip()
+        if not message:
+            return
+            
+        self.is_sending = True
+        self.sendButton.setEnabled(False)
+        self.sendButton.setText("Sending...")
+        self.update_status("Sending message...")
+        
+        # Display user message
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        user_html = f'<div style="text-align: right; margin: 5px;"><span style="background-color: #FD6262; color: white; padding: 8px; border-radius: 8px; display: inline-block;">{message}</span><br><small style="color: #888;">{timestamp}</small></div>'
+        self.chatDisplay.append(user_html)
+        
+        # Clear input
+        self.chatInput.clear()
+        
+        # Start chat thread
+        self.chat_thread = ChatThread(message)
+        self.chat_thread.response_received.connect(self.onResponseReceived)
+        self.chat_thread.finished.connect(self.onThreadFinished)
+        self.chat_thread.start()
 
     def onThreadFinished(self):
-        print("[DEBUG] onThreadFinished: Thread completed, resetting is_sending")
+        """Handle thread completion."""
         self.is_sending = False
         self.sendButton.setEnabled(True)
-        self.userInput.setEnabled(True)
-        self.userInput.setFocus()
+        self.sendButton.setText("Send")
+        self.update_status("Message sent successfully")
     
     def addTaskFromChat(self, task_text, due_date):
         print(f"[DEBUG] ChatWindow: Signal received with task: {task_text}, date: {due_date}")
@@ -996,9 +1261,9 @@ Only include leads that have been verified through the search results.
         self.conversation_history.append({"role": "assistant", "content": response})
         self.chat_handler.save_message(self.session_id, "assistant", response)
         self.sendButton.setEnabled(True)
-        self.userInput.setEnabled(True)
-        self.userInput.clear()
-        self.userInput.setFocus()
+        self.chatInput.setEnabled(True)
+        self.chatInput.clear()
+        self.chatInput.setFocus()
 
     def archiveCompletedTasks(self):
         self.todo_list.archiveCompletedTasks()
@@ -1016,6 +1281,20 @@ Only include leads that have been verified through the search results.
         super().closeEvent(event)
 
     def initUI(self):
+        """Initialize the user interface."""
+        # Load stylesheet early to ensure splash screen styling works
+        self.loadStylesheet("styles.qss")
+        
+        # Create data directory if it doesn't exist
+        self.data_dir = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/data'
+        os.makedirs(self.data_dir, exist_ok=True)
+        
+        # Set up keyboard shortcuts
+        self.setup_shortcuts()
+        
+        # Create status bar
+        self.setup_status_bar()
+        
         self.setWindowTitle('NaviSsurance')
         self.setGeometry(300, 300, 1600, 900)  # Increased window size for Compliance Tab
         
@@ -1025,8 +1304,6 @@ Only include leads that have been verified through the search results.
         x = (screen.width() - window_size.width()) // 2
         y = (screen.height() - window_size.height()) // 2
         self.move(x, y)
-        
-        self.loadStylesheet("styles.qss")
 
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
@@ -1035,102 +1312,115 @@ Only include leads that have been verified through the search results.
         # Left side - Chat Panel
         chat_widget = QWidget()
         chat_layout = QVBoxLayout(chat_widget)
-        self.chatDisplay = QTextBrowser(self)
-        self.chatDisplay.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
-        self.chatDisplay.setOpenExternalLinks(True)
-        self.chatDisplay.setReadOnly(True)
-        chat_layout.addWidget(self.chatDisplay)
-        chat_input_layout = QHBoxLayout()
-        self.userInput = QLineEdit(self)
-        self.userInput.setPlaceholderText("Type your message here...")
-        self.userInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
-        try:
-            self.userInput.returnPressed.connect(self.sendMessage)
-        except:
-            pass
-        self.userInput.returnPressed.connect(self.sendMessage)
-        chat_input_layout.addWidget(self.userInput)
-        self.sendButton = QPushButton("Send", self)
-        self.sendButton.setStyleSheet("""
+        chat_layout.setContentsMargins(5, 5, 5, 5)  # Consistent margins with other tabs
+        chat_layout.setSpacing(0)  # No spacing to allow header to touch chat display
         
-            QPushButton {
-                background-color: rgba(253, 98, 98, 0.8);
-            }
-            QPushButton:hover {
-                background-color: rgba(253, 98, 98, 1.0);
+        # Add header to match tab bar height
+        chat_header = QLabel("Navi Chat")
+        chat_header.setStyleSheet("""
+            QLabel {
+                background-color: rgb(20, 20, 22);
+                color: white;
+                padding: 8px;
+                font-size: 12px;
+                font-weight: bold;
+                border-bottom: 1px solid #404040;
             }
         """)
-        self.sendButton.setCursor(Qt.CursorShape.PointingHandCursor)
-        try:
-            self.sendButton.clicked.disconnect()
-        except:
-            pass
+        chat_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        chat_layout.addWidget(chat_header)
+        
+        self.chatDisplay = QTextBrowser(self)
+        # self.chatDisplay.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
+        self.chatDisplay.setOpenExternalLinks(True)
+        self.chatDisplay.setReadOnly(True)
+        # Set document margins to 0 to remove internal spacing
+        self.chatDisplay.document().setDocumentMargin(0)
+        chat_layout.addWidget(self.chatDisplay)
+        
+        # Add spacing between chat display and input area
+        chat_layout.addSpacing(5)
+        
+        chat_input_layout = QHBoxLayout()
+        chat_input_layout.setContentsMargins(0, 0, 0, 0)  # No extra margins for input area
+        chat_input_layout.setSpacing(5)  # Consistent spacing between input and button
+        
+        self.chatInput = QLineEdit(self)
+        self.chatInput.setPlaceholderText("Type your message here...")
+        self.chatInput.returnPressed.connect(self.sendMessage)
+        self.chatInput.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.chatInput.customContextMenuRequested.connect(self.show_chat_context_menu)
+        chat_input_layout.addWidget(self.chatInput)
+        
+        self.sendButton = QPushButton("Send", self)
         self.sendButton.clicked.connect(self.sendMessage)
+        self.sendButton.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.sendButton.customContextMenuRequested.connect(self.show_button_context_menu)
+        self.sendButton.setToolTip("Send your message (Ctrl+Return)")
         chat_input_layout.addWidget(self.sendButton)
+        
+        # Add context menu to chat display
+        self.chatDisplay.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.chatDisplay.customContextMenuRequested.connect(self.show_chat_display_context_menu)
+        
         self.is_sending = False
         chat_layout.addLayout(chat_input_layout)
-        main_layout.addWidget(chat_widget, stretch=30)
+        
+        # Add spacer at bottom to shrink chat content area vertically
+        chat_layout.addSpacing(4)
+        
+        main_layout.addWidget(chat_widget, stretch=25)  # Reverted from 20 to 25
 
         # Right side - Tab Widget
         tabs = QTabWidget()
-        tabs.setStyleSheet("QTabBar::tab { color: white; background-color: rgb(20, 20, 22); } "
-                          "QTabBar::tab:selected { background-color: rgba(253, 98, 98, 0.8); }")
-        main_layout.addWidget(tabs, stretch=70)
+        # tabs.setStyleSheet("QTabBar::tab { color: white; background-color: rgb(20, 20, 22); } "
+        #                   "QTabBar::tab:selected { background-color: rgba(253, 98, 98, 0.8); }")
+        main_layout.addWidget(tabs, stretch=75)  # Reverted from 80 to 75
 
         # Tasks Tab
         tasks_tab = QWidget()
         tasks_layout = QVBoxLayout(tasks_tab)
-        self.todoList.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
+        tasks_layout.setContentsMargins(5, 5, 5, 5)  # Consistent margins with chat widget
+        tasks_layout.setSpacing(5)  # Consistent spacing with chat widget
+        
+        # self.todoList.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
         self.todoList.setSpacing(5)  # Add consistent spacing between list items
         tasks_layout.addWidget(self.todoList)
         add_task_layout = QHBoxLayout()
         self.taskInput = QLineEdit(self)
         self.taskInput.setPlaceholderText("Enter a task...")
-        self.taskInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
+        # self.taskInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8);")
         add_task_layout.addWidget(self.taskInput)
         self.dueDateInput = QDateEdit(self)
         self.dueDateInput.setCalendarPopup(True)
         self.dueDateInput.setDate(QDate.currentDate())
-        self.dueDateInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.dueDateInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         add_task_layout.addWidget(self.dueDateInput)
         self.addTaskButton = QPushButton("Add Task", self)
         self.addTaskButton.clicked.connect(self.addTask)
-        self.addTaskButton.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(253, 98, 98, 0.8);
-            }
-            QPushButton:hover {
-                background-color: rgba(253, 98, 98, 1.0);
-            }
-        """)
-        self.addTaskButton.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.addTaskButton.setToolTip("Add a new task to your list (Ctrl+T)")
         add_task_layout.addWidget(self.addTaskButton)
         tasks_layout.addLayout(add_task_layout)
         self.archiveButton = QPushButton("Archive Completed Tasks", self)
         self.archiveButton.clicked.connect(self.archiveCompletedTasks)
-        self.archiveButton.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(253, 98, 98, 0.8);
-            }
-            QPushButton:hover {
-                background-color: rgba(253, 98, 98, 1.0);
-            }
-        """)
-        self.archiveButton.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.archiveButton.setToolTip("Move completed tasks to archive")
         tasks_layout.addWidget(self.archiveButton)
         tabs.addTab(tasks_tab, "Tasks")
 
         # Leads Tab (modified)
         leads_tab = QWidget()
         leads_layout = QVBoxLayout(leads_tab)
+        leads_layout.setContentsMargins(5, 5, 5, 5)  # Consistent margins with chat widget
+        leads_layout.setSpacing(5)  # Consistent spacing with chat widget
+        
         leads_button_layout = QHBoxLayout()
         self.settingsButton = QPushButton("Settings", self)
         self.settingsButton.clicked.connect(self.open_settings)
-        self.settingsButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
+        self.settingsButton.setToolTip("Open application settings (Ctrl+,)")
         leads_button_layout.addWidget(self.settingsButton)
         self.runSearchButton = QPushButton("Run Search", self)
         self.runSearchButton.clicked.connect(self.search_leads)
-        self.runSearchButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
+        self.runSearchButton.setToolTip("Search for new leads (F5)")
         leads_button_layout.addWidget(self.runSearchButton)
         leads_layout.addLayout(leads_button_layout)
         
@@ -1139,42 +1429,42 @@ Only include leads that have been verified through the search results.
         self.leadsTable.setHorizontalHeaderLabels([
             "Name", "Company", "Title", "Contacted", "Contact Date", "Message", "Delete", "Rationale"
         ])
-        self.leadsTable.setStyleSheet("""
-            QTableWidget {
-                background-color: rgba(27, 28, 30, 0.8);
-                color: white;
-                gridline-color: rgba(253, 98, 98, 0.3);
-            }
-            QTableWidget::item {
-                padding: 5px;
-            }
-            QHeaderView::section {
-                background-color: rgba(253, 98, 98, 0.8);
-                color: white;
-                padding: 5px;
-                border: none;
-            }
-            QPushButton {
-                background-color: rgba(253, 98, 98, 0.8);
-                color: white;
-                border: none;
-                padding: 5px 10px;
-            }
-            QPushButton:hover {
-                background-color: rgba(253, 98, 98, 1);
-            }
-            QCheckBox {
-                color: white;
-            }
-            QTableWidget::item[linkedin="true"] {
-                color: #0077B5;
-                text-decoration: underline;
-                cursor: pointer;
-            }
-            QTableWidget::item[linkedin="true"]:hover {
-                color: #005582;
-            }
-        """)
+        # self.leadsTable.setStyleSheet("""
+        #     QTableWidget {
+        #         background-color: rgba(27, 28, 30, 0.8);
+        #         color: white;
+        #         gridline-color: rgba(253, 98, 98, 0.3);
+        #     }
+        #     QTableWidget::item {
+        #         padding: 5px;
+        #     }
+        #     QHeaderView::section {
+        #         background-color: rgba(253, 98, 98, 0.8);
+        #         color: white;
+        #         padding: 5px;
+        #         border: none;
+        #     }
+        #     QPushButton {
+        #         background-color: rgba(253, 98, 98, 0.8);
+        #         color: white;
+        #         border: none;
+        #         padding: 5px 10px;
+        #     }
+        #     QPushButton:hover {
+        #         background-color: rgba(253, 98, 98, 1);
+        #     }
+        #     QCheckBox {
+        #         color: white;
+        #     }
+        #     QTableWidget::item[linkedin="true"] {
+        #         color: #0077B5;
+        #         text-decoration: underline;
+        #         cursor: pointer;
+        #     }
+        #     QTableWidget::item[linkedin="true"]:hover {
+        #         color: #005582;
+        #     }
+        # """)
         
         # Set column widths and behavior
         self.leadsTable.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -1189,7 +1479,7 @@ Only include leads that have been verified through the search results.
         self.leadsTable.setColumnWidth(3, 80)  # Contacted
         self.leadsTable.setColumnWidth(4, 100)  # Contact Date
         self.leadsTable.setColumnWidth(5, 120)  # Message
-        self.leadsTable.setColumnWidth(6, 80)  # Delete
+        self.leadsTable.setColumnWidth(6, 90)  # Delete - increased to prevent button overlap
         
         # Enable word wrap for cells
         self.leadsTable.setWordWrap(True)
@@ -1211,6 +1501,9 @@ Only include leads that have been verified through the search results.
         # Docs Tab
         docs_tab = QWidget()
         docs_layout = QHBoxLayout(docs_tab)
+        docs_layout.setContentsMargins(5, 5, 5, 5)  # Consistent margins with chat widget
+        docs_layout.setSpacing(5)  # Consistent spacing with chat widget
+        
         splitter = QSplitter(Qt.Orientation.Horizontal)
         docs_layout.addWidget(splitter)
 
@@ -1218,22 +1511,22 @@ Only include leads that have been verified through the search results.
         info_widget = QWidget()
         info_layout = QVBoxLayout(info_widget)
         info_label = QLabel("Information Reference")
-        info_label.setStyleSheet("color: white;")
+        # info_label.setStyleSheet("color: white;")
         info_layout.addWidget(info_label)
 
         self.info_url_input = QLineEdit()
         self.info_url_input.setPlaceholderText("Enter URL for reference information")
-        self.info_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.info_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         self.info_url_input.returnPressed.connect(self.add_info_url)
         info_layout.addWidget(self.info_url_input)
 
         info_upload_btn = QPushButton("Upload Reference")
-        info_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        # info_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
         info_upload_btn.clicked.connect(self.upload_info_file)
         info_layout.addWidget(info_upload_btn)
 
         self.info_list = QListWidget()
-        self.info_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.info_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         self.info_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.info_list.customContextMenuRequested.connect(self.show_info_context_menu)
         info_layout.addWidget(self.info_list)
@@ -1243,22 +1536,22 @@ Only include leads that have been verified through the search results.
         doc_widget = QWidget()
         doc_layout = QVBoxLayout(doc_widget)
         doc_label = QLabel("Document Reference")
-        doc_label.setStyleSheet("color: white;")
+        # doc_label.setStyleSheet("color: white;")
         doc_layout.addWidget(doc_label)
 
         self.doc_url_input = QLineEdit()
         self.doc_url_input.setPlaceholderText("Enter URL for document template")
-        self.doc_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.doc_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         self.doc_url_input.returnPressed.connect(self.add_doc_url)
         doc_layout.addWidget(self.doc_url_input)
 
         doc_upload_btn = QPushButton("Upload Document")
-        doc_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        # doc_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
         doc_upload_btn.clicked.connect(self.upload_doc_file)
         doc_layout.addWidget(doc_upload_btn)
 
         self.doc_list = QListWidget()
-        self.doc_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.doc_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         self.doc_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.doc_list.customContextMenuRequested.connect(self.show_doc_context_menu)
         doc_layout.addWidget(self.doc_list)
@@ -1268,22 +1561,22 @@ Only include leads that have been verified through the search results.
         doc_widget = QWidget()
         doc_layout = QVBoxLayout(doc_widget)
         doc_label = QLabel("Document Reference")
-        doc_label.setStyleSheet("color: white;")
+        # doc_label.setStyleSheet("color: white;")
         doc_layout.addWidget(doc_label)
 
         self.doc_url_input = QLineEdit()
         self.doc_url_input.setPlaceholderText("Enter URL for document template")
-        self.doc_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.doc_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         self.doc_url_input.returnPressed.connect(self.add_doc_url)
         doc_layout.addWidget(self.doc_url_input)
 
         doc_upload_btn = QPushButton("Upload Document")
-        doc_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        # doc_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
         doc_upload_btn.clicked.connect(self.upload_doc_file)
         doc_layout.addWidget(doc_upload_btn)
 
         self.doc_list = QListWidget()
-        self.doc_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.doc_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         self.doc_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.doc_list.customContextMenuRequested.connect(self.show_doc_context_menu)
         doc_layout.addWidget(self.doc_list)
@@ -1293,21 +1586,21 @@ Only include leads that have been verified through the search results.
         output_widget = QWidget()
         output_layout = QVBoxLayout(output_widget)
         output_label = QLabel("Generated Document")
-        output_label.setStyleSheet("color: white;")
+        # output_label.setStyleSheet("color: white;")
         output_layout.addWidget(output_label)
 
         self.doc_output = QTextEdit()
         self.doc_output.setReadOnly(True)
-        self.doc_output.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.doc_output.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         output_layout.addWidget(self.doc_output)
 
         generate_btn = QPushButton("Generate Document")
-        generate_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        # generate_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
         generate_btn.clicked.connect(self.generate_document)
         output_layout.addWidget(generate_btn)
 
         save_btn = QPushButton("Save Document")
-        save_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        # save_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
         save_btn.clicked.connect(self.save_generated_document)
         output_layout.addWidget(save_btn)
 
@@ -1317,31 +1610,34 @@ Only include leads that have been verified through the search results.
         # Meetings Tab (unchanged)
         meetings_tab = QWidget()
         meetings_layout = QVBoxLayout(meetings_tab)
+        meetings_layout.setContentsMargins(5, 5, 5, 5)  # Consistent margins with chat widget
+        meetings_layout.setSpacing(5)  # Consistent spacing with chat widget
+        
         self.recordButton = QPushButton("Start Recording", self)
         self.recordButton.clicked.connect(self.start_recording)
-        self.recordButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
+        # self.recordButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
         meetings_layout.addWidget(self.recordButton)
         self.stopButton = QPushButton("Stop Recording", self)
         self.stopButton.clicked.connect(self.stop_recording)
-        self.stopButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
+        # self.stopButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
         self.stopButton.setEnabled(False)
         meetings_layout.addWidget(self.stopButton)
         self.transcribeButton = QPushButton("Generate Transcript", self)
         self.transcribeButton.clicked.connect(self.transcribe_meeting)
-        self.transcribeButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
+        # self.transcribeButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
         self.transcribeButton.setEnabled(False)
         meetings_layout.addWidget(self.transcribeButton)
         self.selectFileButton = QPushButton("Load File", self)
         self.selectFileButton.clicked.connect(self.select_file)
-        self.selectFileButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
+        # self.selectFileButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
         meetings_layout.addWidget(self.selectFileButton)
         self.meetingTranscript = QTextEdit(self)
-        self.meetingTranscript.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.meetingTranscript.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         self.meetingTranscript.setReadOnly(True)
         meetings_layout.addWidget(self.meetingTranscript)
         self.saveTranscriptButton = QPushButton("Save Transcript", self)
         self.saveTranscriptButton.clicked.connect(self.save_transcript)
-        self.saveTranscriptButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
+        # self.saveTranscriptButton.setStyleSheet("background-color: rgba(253, 98, 98, 0.8);")
         self.saveTranscriptButton.setEnabled(False)
         meetings_layout.addWidget(self.saveTranscriptButton)
         tabs.addTab(meetings_tab, "Meetings")
@@ -1355,8 +1651,15 @@ Only include leads that have been verified through the search results.
         workspace_tab = WorkspaceTab(self.chat_handler.chat_handler.db)
         tabs.addTab(workspace_tab, "Workspace")
 
+        # Notes Tab
+        notes_tab = NoteTakingSystem(self.chat_handler)
+        tabs.addTab(notes_tab, "Notes")
+
     def setup_compliance_tab(self, tab):
         layout = QHBoxLayout(tab)
+        layout.setContentsMargins(5, 5, 5, 5)  # Consistent margins with chat widget
+        layout.setSpacing(5)  # Consistent spacing with chat widget
+        
         splitter = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(splitter)
 
@@ -1364,22 +1667,22 @@ Only include leads that have been verified through the search results.
         ref_widget = QWidget()
         ref_layout = QVBoxLayout(ref_widget)
         ref_label = QLabel("Reference Documents (Regulations/Standards)")
-        ref_label.setStyleSheet("color: white;")
+        # ref_label.setStyleSheet("color: white;")
         ref_layout.addWidget(ref_label)
 
         self.ref_url_input = QLineEdit()
         self.ref_url_input.setPlaceholderText("Enter URL (e.g., https://www.ecfr.gov/21-cfr-820.3)")
-        self.ref_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.ref_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         self.ref_url_input.returnPressed.connect(self.add_ref_url)
         ref_layout.addWidget(self.ref_url_input)
 
         ref_upload_btn = QPushButton("Upload Reference")
-        ref_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        # ref_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
         ref_upload_btn.clicked.connect(self.upload_ref_file)
         ref_layout.addWidget(ref_upload_btn)
 
         self.ref_list = QListWidget()
-        self.ref_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.ref_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         # Add context menu for removing items
         self.ref_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.ref_list.customContextMenuRequested.connect(self.show_ref_context_menu)
@@ -1390,22 +1693,22 @@ Only include leads that have been verified through the search results.
         assess_widget = QWidget()
         assess_layout = QVBoxLayout(assess_widget)
         assess_label = QLabel("Documents to Assess (e.g., SOPs)")
-        assess_label.setStyleSheet("color: white;")
+        # assess_label.setStyleSheet("color: white;")
         assess_layout.addWidget(assess_label)
 
         self.assess_url_input = QLineEdit()
         self.assess_url_input.setPlaceholderText("Enter URL (e.g., https://navisure.com/sop.pdf)")
-        self.assess_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.assess_url_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         self.assess_url_input.returnPressed.connect(self.add_assess_url)
         assess_layout.addWidget(self.assess_url_input)
 
         assess_upload_btn = QPushButton("Upload Document")
-        assess_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        # assess_upload_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
         assess_upload_btn.clicked.connect(self.upload_assess_file)
         assess_layout.addWidget(assess_upload_btn)
 
         self.assess_list = QListWidget()
-        self.assess_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.assess_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         # Add context menu for removing items
         self.assess_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.assess_list.customContextMenuRequested.connect(self.show_assess_context_menu)
@@ -1416,7 +1719,7 @@ Only include leads that have been verified through the search results.
         results_widget = QWidget()
         results_layout = QVBoxLayout(results_widget)
         results_label = QLabel("Compliance Results")
-        results_label.setStyleSheet("color: white;")
+        # results_label.setStyleSheet("color: white;")
         results_layout.addWidget(results_label)
 
         self.results_text = QTextEdit()
@@ -1425,26 +1728,26 @@ Only include leads that have been verified through the search results.
         self.progress_bar.hide()  # Hidden initially
         results_layout.addWidget(self.progress_bar)
         self.results_text.setReadOnly(True)
-        self.results_text.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        # self.results_text.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         results_layout.addWidget(self.results_text)
 
         run_btn = QPushButton("Run Compliance Check")
-        run_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        # run_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
         run_btn.clicked.connect(self.run_compliance_check)
         results_layout.addWidget(run_btn)
 
         save_btn = QPushButton("Save Report")
-        save_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        # save_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
         save_btn.clicked.connect(self.save_compliance_report)
         results_layout.addWidget(save_btn)
 
         clear_dataset_btn = QPushButton("Clear Dataset")
-        clear_dataset_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        # clear_dataset_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
         clear_dataset_btn.clicked.connect(self.clear_dataset)
         results_layout.addWidget(clear_dataset_btn)
         
         crm_btn = QPushButton("Link to CRM")
-        crm_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        # crm_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
         crm_btn.clicked.connect(self.link_to_crm)
         results_layout.addWidget(crm_btn)
         splitter.addWidget(results_widget)
@@ -1712,3 +2015,324 @@ Only include leads that have been verified through the search results.
                 QMessageBox.information(self, "Success", "Document saved successfully.")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save document: {str(e)}")
+
+    def setup_shortcuts(self):
+        """Set up keyboard shortcuts for common actions."""
+        # Chat shortcuts
+        send_action = QAction("Send Message", self)
+        send_action.setShortcut("Ctrl+Return")
+        send_action.triggered.connect(self.sendMessage)
+        self.addAction(send_action)
+        
+        # Tab navigation shortcuts
+        next_tab_action = QAction("Next Tab", self)
+        next_tab_action.setShortcut("Ctrl+Tab")
+        next_tab_action.triggered.connect(self.next_tab)
+        self.addAction(next_tab_action)
+        
+        prev_tab_action = QAction("Previous Tab", self)
+        prev_tab_action.setShortcut("Ctrl+Shift+Tab")
+        prev_tab_action.triggered.connect(self.previous_tab)
+        self.addAction(prev_tab_action)
+        
+        # Task shortcuts
+        add_task_action = QAction("Add Task", self)
+        add_task_action.setShortcut("Ctrl+T")
+        add_task_action.triggered.connect(self.addTask)
+        self.addAction(add_task_action)
+        
+        # Search shortcuts
+        search_action = QAction("Search Leads", self)
+        search_action.setShortcut("Ctrl+F")
+        search_action.triggered.connect(self.focus_search)
+        self.addAction(search_action)
+        
+        # Refresh shortcuts
+        refresh_action = QAction("Refresh", self)
+        refresh_action.setShortcut("F5")
+        refresh_action.triggered.connect(self.refresh_leads)
+        self.addAction(refresh_action)
+        
+        # Settings shortcut
+        settings_action = QAction("Settings", self)
+        settings_action.setShortcut("Ctrl+,")
+        settings_action.triggered.connect(self.open_settings)
+        self.addAction(settings_action)
+        
+        # Help shortcut
+        help_action = QAction("Help", self)
+        help_action.setShortcut("F1")
+        help_action.triggered.connect(self.show_help)
+        self.addAction(help_action)
+        
+        # Exit shortcut
+        exit_action = QAction("Exit", self)
+        exit_action.setShortcut("Ctrl+Q")
+        exit_action.triggered.connect(self.close)
+        self.addAction(exit_action)
+    
+    def setup_status_bar(self):
+        """Set up status bar with various indicators."""
+        self.statusBar = self.statusBar()
+        
+        # Main status label
+        self.status_label = QLabel("Ready")
+        self.statusBar.addWidget(self.status_label)
+        
+        # Add spacer
+        self.statusBar.addPermanentWidget(QLabel("|"))
+        
+        # Connection status
+        self.connection_label = QLabel("🟢 Connected")
+        self.connection_label.setStyleSheet("color: #4CAF50;")
+        self.statusBar.addPermanentWidget(self.connection_label)
+        
+        # Add spacer
+        self.statusBar.addPermanentWidget(QLabel("|"))
+        
+        # Task counter
+        self.task_counter = QLabel("Tasks: 0")
+        self.statusBar.addPermanentWidget(self.task_counter)
+        
+        # Add spacer
+        self.statusBar.addPermanentWidget(QLabel("|"))
+        
+        # Leads counter
+        self.leads_counter = QLabel("Leads: 0")
+        self.statusBar.addPermanentWidget(self.leads_counter)
+        
+        # Add spacer
+        self.statusBar.addPermanentWidget(QLabel("|"))
+        
+        # Time display
+        self.time_label = QLabel()
+        self.statusBar.addPermanentWidget(self.time_label)
+        
+        # Update time every second
+        self.time_timer = QTimer()
+        self.time_timer.timeout.connect(self.update_time)
+        self.time_timer.start(1000)
+        self.update_time()
+    
+    def update_time(self):
+        """Update the time display in status bar."""
+        current_time = datetime.now().strftime("%H:%M:%S")
+        self.time_label.setText(current_time)
+    
+    def update_status(self, message, timeout=3000):
+        """Update status bar message with optional timeout."""
+        self.status_label.setText(message)
+        if timeout > 0:
+            QTimer.singleShot(timeout, lambda: self.status_label.setText("Ready"))
+    
+    def update_task_counter(self, count):
+        """Update task counter in status bar."""
+        self.task_counter.setText(f"Tasks: {count}")
+    
+    def update_leads_counter(self, count):
+        """Update leads counter in status bar."""
+        self.leads_counter.setText(f"Leads: {count}")
+    
+    def set_connection_status(self, connected):
+        """Update connection status indicator."""
+        if connected:
+            self.connection_label.setText("🟢 Connected")
+            self.connection_label.setStyleSheet("color: #4CAF50;")
+        else:
+            self.connection_label.setText("🔴 Disconnected")
+            self.connection_label.setStyleSheet("color: #F44336;")
+
+    def next_tab(self):
+        """Navigate to next tab."""
+        current_index = self.tabs.currentIndex()
+        next_index = (current_index + 1) % self.tabs.count()
+        self.tabs.setCurrentIndex(next_index)
+    
+    def previous_tab(self):
+        """Navigate to previous tab."""
+        current_index = self.tabs.currentIndex()
+        prev_index = (current_index - 1) % self.tabs.count()
+        self.tabs.setCurrentIndex(prev_index)
+    
+    def focus_search(self):
+        """Focus on the search input field."""
+        if hasattr(self, 'searchInput'):
+            self.searchInput.setFocus()
+            self.searchInput.selectAll()
+    
+    def show_help(self):
+        """Show help dialog with keyboard shortcuts."""
+        help_text = """
+        <h2>Keyboard Shortcuts</h2>
+        <table>
+            <tr><td><b>Ctrl+Return</b></td><td>Send chat message</td></tr>
+            <tr><td><b>Ctrl+Tab</b></td><td>Next tab</td></tr>
+            <tr><td><b>Ctrl+Shift+Tab</b></td><td>Previous tab</td></tr>
+            <tr><td><b>Ctrl+T</b></td><td>Add new task</td></tr>
+            <tr><td><b>Ctrl+F</b></td><td>Focus search field</td></tr>
+            <tr><td><b>F5</b></td><td>Refresh leads</td></tr>
+            <tr><td><b>Ctrl+,</b></td><td>Open settings</td></tr>
+            <tr><td><b>F1</b></td><td>Show this help</td></tr>
+            <tr><td><b>Ctrl+Q</b></td><td>Exit application</td></tr>
+        </table>
+        
+        <h3>Tips</h3>
+        <ul>
+            <li>Use Tab to navigate between form fields</li>
+            <li>Press Enter to activate buttons</li>
+            <li>Use arrow keys to navigate lists and tables</li>
+            <li>Right-click for context menus</li>
+        </ul>
+        """
+        
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Help - Keyboard Shortcuts")
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(help_text)
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
+
+    def show_chat_context_menu(self, position):
+        """Show context menu for chat input."""
+        menu = QMenu(self)
+        
+        # Standard text editing actions
+        cut_action = menu.addAction("Cut")
+        cut_action.triggered.connect(lambda: self.chatInput.cut())
+        
+        copy_action = menu.addAction("Copy")
+        copy_action.triggered.connect(lambda: self.chatInput.copy())
+        
+        paste_action = menu.addAction("Paste")
+        paste_action.triggered.connect(lambda: self.chatInput.paste())
+        
+        menu.addSeparator()
+        
+        # Chat-specific actions
+        clear_action = menu.addAction("Clear")
+        clear_action.triggered.connect(lambda: self.chatInput.clear())
+        
+        select_all_action = menu.addAction("Select All")
+        select_all_action.triggered.connect(lambda: self.chatInput.selectAll())
+        
+        menu.exec(self.chatInput.mapToGlobal(position))
+    
+    def show_button_context_menu(self, position):
+        """Show context menu for send button."""
+        menu = QMenu(self)
+        
+        # Button-specific actions
+        send_action = menu.addAction("Send Message")
+        send_action.triggered.connect(self.sendMessage)
+        
+        menu.addSeparator()
+        
+        # Quick message templates
+        templates_menu = menu.addMenu("Quick Messages")
+        
+        template1 = templates_menu.addAction("Hello, how can I help you today?")
+        template1.triggered.connect(lambda: self.insert_template("Hello, how can I help you today?"))
+        
+        template2 = templates_menu.addAction("Thank you for your inquiry.")
+        template2.triggered.connect(lambda: self.insert_template("Thank you for your inquiry."))
+        
+        template3 = templates_menu.addAction("I'll get back to you shortly.")
+        template3.triggered.connect(lambda: self.insert_template("I'll get back to you shortly."))
+        
+        menu.exec(self.sendButton.mapToGlobal(position))
+    
+    def show_chat_display_context_menu(self, position):
+        """Show context menu for chat display."""
+        menu = QMenu(self)
+        
+        # Text actions
+        copy_action = menu.addAction("Copy Selected Text")
+        copy_action.triggered.connect(lambda: self.chatDisplay.copy())
+        
+        select_all_action = menu.addAction("Select All")
+        select_all_action.triggered.connect(lambda: self.chatDisplay.selectAll())
+        
+        menu.addSeparator()
+        
+        # Chat history actions
+        save_chat_action = menu.addAction("Save Chat History")
+        save_chat_action.triggered.connect(self.save_chat_history)
+        
+        clear_chat_action = menu.addAction("Clear Chat")
+        clear_chat_action.triggered.connect(self.clear_chat_history)
+        
+        menu.addSeparator()
+        
+        # Export actions
+        export_menu = menu.addMenu("Export")
+        
+        export_text_action = export_menu.addAction("Export as Text")
+        export_text_action.triggered.connect(self.export_chat_as_text)
+        
+        export_html_action = export_menu.addAction("Export as HTML")
+        export_html_action.triggered.connect(self.export_chat_as_html)
+        
+        menu.exec(self.chatDisplay.mapToGlobal(position))
+    
+    def insert_template(self, template_text):
+        """Insert a template message into the chat input."""
+        self.chatInput.setText(template_text)
+        self.chatInput.setFocus()
+        self.chatInput.selectAll()
+    
+    def save_chat_history(self):
+        """Save current chat history to file."""
+        try:
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "Save Chat History", "", "Text Files (*.txt);;HTML Files (*.html)"
+            )
+            if filename:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(self.chatDisplay.toPlainText())
+                QMessageBox.information(self, "Success", "Chat history saved successfully.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save chat history: {str(e)}")
+    
+    def clear_chat_history(self):
+        """Clear the chat display."""
+        reply = QMessageBox.question(
+            self, "Clear Chat", "Are you sure you want to clear the chat history?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.chatDisplay.clear()
+    
+    def export_chat_as_text(self):
+        """Export chat as plain text."""
+        try:
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "Export Chat as Text", "chat_export.txt", "Text Files (*.txt)"
+            )
+            if filename:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(self.chatDisplay.toPlainText())
+                QMessageBox.information(self, "Success", "Chat exported as text successfully.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to export chat: {str(e)}")
+    
+    def export_chat_as_html(self):
+        """Export chat as HTML."""
+        try:
+            filename, _ = QFileDialog.getSaveFileName(
+                self, "Export Chat as HTML", "chat_export.html", "HTML Files (*.html)"
+            )
+            if filename:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(self.chatDisplay.toHtml())
+                QMessageBox.information(self, "Success", "Chat exported as HTML successfully.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to export chat: {str(e)}")
+
+    def loadStylesheet(self, filename):
+        try:
+            with open(filename, "r") as f:
+                self.setStyleSheet(f.read())
+        except FileNotFoundError:
+            print(f"Stylesheet '{filename}' not found.")
+        except Exception as e:
+            print(f"Error loading stylesheet: {e}")
