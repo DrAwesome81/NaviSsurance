@@ -45,24 +45,17 @@ class DataFetcher:
     def get_services(self):
         creds = None
         if os.path.exists(self.TOKEN_FILE):
-            print(f"Loading token from {self.TOKEN_FILE}")
             with open(self.TOKEN_FILE, 'rb') as token:
                 creds = pickle.load(token)
         if creds and creds.expired and creds.refresh_token:
-            print("Token expired, refreshing...")
             creds.refresh(Request())
             with open(self.TOKEN_FILE, 'wb') as token:
                 pickle.dump(creds, token)
-            print("Token refreshed and saved.")
         elif not creds or not creds.valid:
-            print("No valid token, re-authenticating...")
             flow = InstalledAppFlow.from_client_secrets_file(self.CRED_FILE, self.SCOPES)
             creds = flow.run_local_server(port=0)
             with open(self.TOKEN_FILE, 'wb') as token:
                 pickle.dump(creds, token)
-            print("New token saved.")
-        else:
-            print("Token still valid.")
         gmail = build('gmail', 'v1', credentials=creds)
         calendar = build('calendar', 'v3', credentials=creds)
         return gmail, calendar
@@ -186,27 +179,19 @@ class DataFetcher:
         # Gmail
         folders = ['INBOX', 'News', 'NaviSure Admin']
         for folder in folders:
-            print(f"\nChecking Gmail folder: {folder}")
             query = f"after:{last_run}"
             if folder != 'INBOX':
                 query += f' label:"{folder}"'
-            print(f"Executing Gmail API call with query: {query}")
             try:
                 results = self.gmail.users().messages().list(userId='me', q=query).execute()
-                print(f"API call completed. Found {len(results.get('messages', []))} messages")
                 emails.extend({'id': msg['id'], 'source': 'gmail', 'folder': folder} for msg in results.get('messages', []))
             except Exception as e:
-                print(f"Error in Gmail API call for folder {folder}: {e}")
                 continue
 
-        print("\nGmail checks completed, moving to Yahoo...")
         # Yahoo IMAP
         try:
-            print("Connecting to Yahoo IMAP...")
             mail = imaplib.IMAP4_SSL('imap.mail.yahoo.com')
-            print("Logging into Yahoo...")
             mail.login(self.yahoo_account['user'], self.yahoo_account['pwd'])
-            print("Selecting Yahoo inbox...")
             mail.select('inbox')
             
             # Use last 30 days instead of last_run if last_run is too old
@@ -217,32 +202,24 @@ class DataFetcher:
                     search_date = last_run_date
             
             since_date = search_date.strftime('%d-%b-%Y')
-            print(f"Searching Yahoo emails since {since_date}...")
             _, data = mail.search(None, f'SINCE {since_date}')
-            print(f"Found {len(data[0].split())} Yahoo emails")
             for num in data[0].split():
                 _, msg_data = mail.fetch(num, '(RFC822)')
                 emails.append({'id': num.decode(), 'source': 'yahoo', 'raw': msg_data[0][1], 'folder': 'INBOX'})
-            print("Logging out of Yahoo...")
             mail.logout()
-            print("Successfully fetched new emails from Yahoo")
         except Exception as e:
-            print(f"Failed to fetch Yahoo emails: {e}")
+            pass
 
-        print("\nYahoo checks completed, moving to Outlook...")
         # Outlook/Office365 via EWS
         for outlook_email in self.outlook_accounts:
             if not outlook_email:
                 continue
             try:
-                print(f"Fetching EWS emails for {outlook_email}...")
                 ews_emails = self.fetch_recent_ews_emails(outlook_email)
-                print(f"Found {len(ews_emails)} EWS emails")
                 emails.extend(ews_emails)
             except Exception as e:
-                print(f"Failed to fetch EWS emails for {outlook_email}: {e}")
+                pass
 
-        print(f"\nAll email checks completed. Total emails found: {len(emails)}")
         return emails
 
     def get_sent_emails(self, last_run):

@@ -163,32 +163,27 @@ class ResponseHandler:
                     formatted_briefing += f"<br><br><b>Relevant News:</b><br>{news_summary.replace('\n', '<br>')}"
                 return formatted_briefing
             grok_response = self.hybrid_wrapper(conversation_history, session_id)
-            print(f"Grok response: {grok_response}")
             if "WEB_SEARCH:" in grok_response:
                 format_prompt = [{"role": "user", "content": f"Refine this as a precise web search query: {grok_response.split('WEB_SEARCH:')[1].strip()}"}]
                 formatted_query = self.hybrid_wrapper(format_prompt, session_id)
                 search_query = formatted_query.strip()
                 search_results = self.perform_grok_search(search_query)
                 if search_results:
-                    conversation_history.append({
-                        "role": "system",
-                        "content": f"Here are the search results for your query:\n{search_results}\n\nPlease summarize these results in a conversational way, maintaining your personality and tone."
-                    })
-                    grok_response = self.hybrid_wrapper(conversation_history, session_id)
+                    # Create a fresh prompt focused on the search results instead of repeating the conversation
+                    search_prompt = [{"role": "user", "content": f"Based on these search results, provide a helpful and accurate response:\n\n{search_results}\n\nPlease summarize these results in a conversational way, maintaining your personality and tone."}]
+                    grok_response = self.hybrid_wrapper(search_prompt, session_id)
             task_segments = [seg for seg in grok_response.split("ADD_TASK:") if seg.strip()]
             added_tasks = []
             if task_segments and "ADD_TASK:" in grok_response:
                 for segment in task_segments:
                     task_info = segment.split("|", 1)
                     if len(task_info) != 2:
-                        print(f"Skipping malformed segment: {segment}")
                         continue
                     task_description = task_info[0].strip()
                     try:
                         due_date_obj = parser.parse(task_info[1].strip(), default=datetime.now())
                         due_date = due_date_obj.strftime("%m-%d-%Y")
                     except ValueError:
-                        print(f"Failed to parse date: {task_info[1]}")
                         due_date = "unknown"
                     added_tasks.append(f"'{task_description}' due on {due_date}")
             return grok_response if not added_tasks else f"Added {', '.join(added_tasks)}"

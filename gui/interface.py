@@ -1059,15 +1059,12 @@ Only include leads that have been verified through the search results.
 
         self.recordButton.setEnabled(False)
         self.stopButton.setEnabled(True)
-        print("Starting recording...")
         self.recording = True
         self.sample_rate = 44100
         self.audio_data = []
         self.recording_start_time = time.time()
         
         def callback(indata, frames, time, status):
-            if status:
-                print(status)
             if self.recording:
                 self.audio_data.extend(indata.copy())
 
@@ -1084,12 +1081,10 @@ Only include leads that have been verified through the search results.
         self.stream.close()
         self.stopButton.setEnabled(False)
         self.transcribeButton.setEnabled(True)
-        print("Recording stopped")
         
         self.audio_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_recording.wav")
         audio_array = np.array(self.audio_data)
         wavfile.write(self.audio_file_path, self.sample_rate, audio_array)
-        print(f"Audio saved to {self.audio_file_path}")
 
     def select_file(self):
         from PyQt6.QtWidgets import QFileDialog
@@ -1106,7 +1101,6 @@ Only include leads that have been verified through the search results.
             self.selected_file_path = file_path
             self.transcribeButton.setEnabled(True)
             self.meetingTranscript.setText(f"Selected file: {file_path}")
-            print(f"Selected file: {file_path}")
             
             if file_path.lower().endswith(('.mp4', '.m4v')):
                 self.meetingTranscript.append("Extracting audio from video file...")
@@ -1116,7 +1110,6 @@ Only include leads that have been verified through the search results.
                 self.meetingTranscript.append("Audio file selected. Click 'Generate Transcript' to process.")
         else:
             self.meetingTranscript.setText("No file selected.")
-            print("No file selected")
 
     def extract_audio_from_video(self, video_path):
         import os
@@ -1125,11 +1118,9 @@ Only include leads that have been verified through the search results.
 
         try:
             temp_audio_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_audio.mp3")
-            print(f"Extracting audio to {temp_audio_path}")
             self.meetingTranscript.append(f"Saving temporary audio to {temp_audio_path}")
 
             subprocess.run(['ffmpeg', '-i', video_path, '-vn', '-acodec', 'libmp3lame', '-ab', '128k', temp_audio_path], check=True)
-            print("Audio extraction completed")
             self.meetingTranscript.append("Audio extraction completed. Checking file size...")
 
             file_size_mb = os.path.getsize(temp_audio_path) / (1024 * 1024)
@@ -1144,11 +1135,9 @@ Only include leads that have been verified through the search results.
                 self.meetingTranscript.append(f"Audio file size ({file_size_mb:.2f} MB) is within limit. Ready for transcription.")
 
             self.selected_audio_path = temp_audio_path
-            print(f"Audio file ready for transcription: {temp_audio_path}")
         except Exception as e:
             self.meetingTranscript.setText(f"Error extracting audio: {str(e)}")
             self.transcribeButton.setEnabled(False)
-            print(f"Audio extraction error: {e}")
 
     def transcribe_meeting(self):
         import os
@@ -1168,7 +1157,6 @@ Only include leads that have been verified through the search results.
         try:
             if hasattr(self, 'selected_audio_path') and os.path.exists(self.selected_audio_path):
                 self.meetingTranscript.setText("Uploading audio file...")
-                print(f"Transcribing audio file: {self.selected_audio_path}")
                 
                 headers = {'authorization': api_key}
                 with open(self.selected_audio_path, 'rb') as f:
@@ -1223,7 +1211,6 @@ Only include leads that have been verified through the search results.
                         final_transcript = "\n\n".join(formatted_transcript)
                         self.meetingTranscript.setText(final_transcript)
                         self.saveTranscriptButton.setEnabled(True)
-                        print("Transcription completed")
                         self.meetingTranscript.append("\n\nTranscription completed.")
                         break
                     elif status == 'error':
@@ -1239,11 +1226,9 @@ Only include leads that have been verified through the search results.
         except TimeoutError as e:
             self.meetingTranscript.setText(f"Error: {str(e)}\nThe transcription is still processing.")
             self.transcribeButton.setEnabled(True)
-            print(f"Transcription timeout: {e}")
         except Exception as e:
             self.meetingTranscript.setText(f"Error during transcription: {str(e)}")
             self.transcribeButton.setEnabled(True)
-            print(f"Transcription error: {e}")
         finally:
             self.saveTranscriptButton.setEnabled(False)
 
@@ -1254,7 +1239,6 @@ Only include leads that have been verified through the search results.
 
         transcript_text = self.meetingTranscript.toPlainText()
         if not transcript_text or transcript_text.startswith("Error"):
-            print("No valid transcript to save")
             return
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -1268,11 +1252,9 @@ Only include leads that have been verified through the search results.
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(transcript_text)
-                print(f"Transcript saved to {file_path}")
                 self.saveTranscriptButton.setEnabled(False)
                 self.meetingTranscript.append(f"<i>Transcript saved to {file_path}</i>")
             except Exception as e:
-                print(f"Error saving transcript: {e}")
                 self.meetingTranscript.append(f"<i>Error saving transcript: {e}</i>")
 
     def sendMessage(self):
@@ -1290,16 +1272,15 @@ Only include leads that have been verified through the search results.
         self.update_status("Sending message...")
         
         # Display user message
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        user_html = f'<div style="text-align: right; margin: 5px;"><span style="background-color: #FD6262; color: white; padding: 8px; border-radius: 8px; display: inline-block;">{message}</span><br><small style="color: #888;">{timestamp}</small></div>'
+        user_html = f'<div style="text-align: left;"><b>Me:</b> <i>{message}</i></div><br>'
         self.chatDisplay.append(user_html)
         
         # Clear input
         self.chatInput.clear()
         
-        # Start chat thread
-        self.chat_thread = ChatThread(message)
-        self.chat_thread.response_received.connect(self.onResponseReceived)
+        # Start chat thread with all required arguments
+        self.chat_thread = ChatThread(self.chat_handler, message, self.session_id, self.conversation_history)
+        self.chat_thread.response_signal.connect(self.onResponseReceived)
         self.chat_thread.finished.connect(self.onThreadFinished)
         self.chat_thread.start()
 
@@ -1311,46 +1292,34 @@ Only include leads that have been verified through the search results.
         self.update_status("Message sent successfully")
     
     def addTaskFromChat(self, task_text, due_date):
-        print(f"[DEBUG] ChatWindow: Signal received with task: {task_text}, date: {due_date}")
         self.todo_list.addTaskFromChat(task_text, due_date)
-        print("[DEBUG] ChatWindow: Called todo_list.addTaskFromChat")
 
     def addTask(self):
         self.todo_list.addTask()    
 
     @pyqtSlot(str)  
     def onResponseReceived(self, response):
-        print("[DEBUG] onResponseReceived in interface.py called")
-        #print(f"[DEBUG] Response received in interface: {response}")
-        
         # Strip leading newlines to prevent extra spacing after "Navi:"
         response = response.lstrip('\n')
         
         # First try markdown processing for HTML-formatted content
-        print("[DEBUG] Attempting markdown processing")
         html_content = markdown.markdown(response, extensions=['extra'])
-        #print(f"[DEBUG] After markdown: {html_content}")
         
         # Remove leading p tag to prevent block-level formatting
         html_content = html_content[3:]  # Remove <p>
         
         # If the content doesn't contain any HTML tags, replace newlines with br tags
         if not any(tag in html_content for tag in ['<ul>', '<li>', '<p>', '<h']):
-            print("[DEBUG] No HTML tags found, replacing newlines with br tags")
             html_content = response.replace('\n', '<br>')
-        else:
-            print("[DEBUG] HTML tags found, keeping markdown processing")
         
         # Ensure the response ends with proper HTML to close any open lists
         if html_content.endswith('<li>'):
-            print("[DEBUG] Adding closing list tags")
             html_content += '</li></ul>'  # Close last list item and the list itself
         elif '<li>' in html_content and not html_content.endswith('</ul>'):
-            print("[DEBUG] Adding closing ul tag")
             html_content += '</ul>'  # If there's an <li> but no closing </ul>
         
-        print(f"[DEBUG] Final HTML content: {html_content}")
-        self.chatDisplay.append(f"<b>Navi:</b> {html_content}<br><br>")
+        self.chatDisplay.append(f'<div style="text-align: left;"><b>Navi:</b> {html_content}</div>')
+        self.chatDisplay.append('<br>')  # Add spacing after Navi response
         self.conversation_history.append({"role": "assistant", "content": response})
         self.chat_handler.save_message(self.session_id, "assistant", response)
         self.sendButton.setEnabled(True)
@@ -1366,9 +1335,9 @@ Only include leads that have been verified through the search results.
             with open(filename, "r") as f:
                 self.setStyleSheet(f.read())
         except FileNotFoundError:
-            print(f"Stylesheet '{filename}' not found.")
+            pass
         except Exception as e:
-            print(f"Error loading stylesheet: {e}")
+            pass
 
     def closeEvent(self, event):
         super().closeEvent(event)
@@ -1862,7 +1831,6 @@ Only include leads that have been verified through the search results.
         if file_path:
             self.ref_list.addItem(file_path)
             self.save_document_lists()
-            print("Storing dataset for reference: ", file_path)
             self.db.store_dataset_entry(file_path)  # Add for fine-tuning dataset
 
     def add_assess_url(self):
@@ -1879,7 +1847,6 @@ Only include leads that have been verified through the search results.
         if file_path:
             self.assess_list.addItem(file_path)
             self.save_document_lists()
-            print("Storing dataset for assessed: ", file_path)
             self.db.store_dataset_entry(file_path)  # Add for fine-tuning dataset
 
     def save_document_lists(self):
@@ -2426,6 +2393,6 @@ Only include leads that have been verified through the search results.
             with open(filename, "r") as f:
                 self.setStyleSheet(f.read())
         except FileNotFoundError:
-            print(f"Stylesheet '{filename}' not found.")
+            pass
         except Exception as e:
-            print(f"Error loading stylesheet: {e}")
+            pass

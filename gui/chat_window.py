@@ -17,35 +17,26 @@ class ChatThread(QThread):
 
     def run(self):
         try:
-            print("[DEBUG] ChatThread: Starting response processing")
             # This step triggers the task addition logic
             response = self.chat_handler.get_response(self.message, self.session_id, self.history)
-            print(f"[DEBUG] ChatThread: Got response: {response}")
             
             if response:
                 if "Added" in response and "due on" in response:
-                    print("[DEBUG] ChatThread: Task detected in response")
                     # Split the response into individual task entries
                     task_entries = response.replace("Added ", "").split(", ")
                     for entry in task_entries:
                         task_match = re.search(r"'([^']*)'", entry)
                         date_match = re.search(r'due on (\d{2}-\d{2}-\d{4})', entry)
-                        print(f"[DEBUG] ChatThread: Task match: {task_match.group(1) if task_match else 'None'}")
-                        print(f"[DEBUG] ChatThread: Date match: {date_match.group(1) if date_match else 'None'}")
 
                         if task_match and date_match:
                             task_text = task_match.group(1)
                             due_date = date_match.group(1)
-                            print(f"[DEBUG] ChatThread: Emitting task signal with text: {task_text}, date: {due_date}")
                             # Emit the signal through the chat_manager instead of chat_handler
                             self.chat_handler.task_added_signal.emit(task_text, due_date)
-                            print("[DEBUG] ChatThread: Task signal emitted")
                 self.response_signal.emit(response)
             else:
-                print("[DEBUG] ChatThread: No response received.")
                 self.response_signal.emit("Error: No response received.")
         except Exception as e:
-            print(f"[DEBUG] ChatThread: Exception occurred: {e}")
             self.response_signal.emit(f"Error: {str(e)}")
 
 class ResponseHandler:
@@ -59,31 +50,21 @@ class ResponseHandler:
 
     @pyqtSlot(str)
     def onResponseReceived(self, response):
-        print("[DEBUG] onResponseReceived in chat_window.py called")
-        print(f"[DEBUG] Raw response: {response}")
-        
         # First try markdown processing for HTML-formatted content
-        print("[DEBUG] Attempting markdown processing")
         html_content = markdown.markdown(response, extensions=['extra'])
-        print(f"[DEBUG] After markdown: {html_content}")
         
         # If the content doesn't contain any HTML tags, replace newlines with br tags
         if not any(tag in html_content for tag in ['<ul>', '<li>', '<p>', '<h']):
-            print("[DEBUG] No HTML tags found, replacing newlines with br tags")
             html_content = response.replace('\n', '<br>')
-        else:
-            print("[DEBUG] HTML tags found, keeping markdown processing")
         
         # Ensure the response ends with proper HTML to close any open lists
         if html_content.endswith('<li>'):
-            print("[DEBUG] Adding closing list tags")
             html_content += '</li></ul>'  # Close last list item and the list itself
         elif '<li>' in html_content and not html_content.endswith('</ul>'):
-            print("[DEBUG] Adding closing ul tag")
             html_content += '</ul>'  # If there's an <li> but no closing </ul>
         
-        print(f"[DEBUG] Final HTML content: {html_content}")
-        self.chatDisplay.append(f"<b>Navi: {html_content}")
+        self.chatDisplay.append(f'<div style="text-align: left;"><b>Navi:</b> {html_content}</div>')
+        self.chatDisplay.append('<br>')  # Add spacing after Navi response
         self.conversation_history.append({"role": "assistant", "content": response})
         self.chat_handler.save_message(self.session_id, "assistant", response)
         self.sendButton.setEnabled(True)
@@ -96,7 +77,7 @@ def sendMessage(self):
     if not user_message.strip():
         return
 
-    self.chatDisplay.append(f"<b>You:</b> {user_message}")
+    self.chatDisplay.append(f'<div style="text-align: left;"><b>Me:</b> <i>{user_message}</i></div><br>')
     self.sendButton.setEnabled(False)
     self.chatInput.setEnabled(False)
     self.conversation_history.append({"role": "user", "content": user_message})
@@ -119,5 +100,8 @@ def loadChat(self):
                 self.conversation_history = json.load(file)
                 self.chatDisplay.clear()
                 for entry in self.conversation_history:
-                    role = "You" if entry["role"] == "user" else "Navi"
-                    self.chatDisplay.append(f"<b>{role}:</b> {entry['content']}")
+                    role = "Me" if entry["role"] == "user" else "Navi"
+                    if role == "Navi":
+                        self.chatDisplay.append(f'<div style="text-align: left;"><b>{role}:</b> {entry["content"]}</div><br>')
+                    else:
+                        self.chatDisplay.append(f'<div style="text-align: left;"><b>{role}:</b> <i>{entry["content"]}</i></div><br>')

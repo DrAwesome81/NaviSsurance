@@ -31,21 +31,15 @@ class TodoList:
 
     def addTaskFromChat(self, task_text, due_date):
         try:
-            print(f"[DEBUG] TodoList: Starting addTaskFromChat with task: {task_text}, date: {due_date}")
             self.insertTaskIntoDB(task_text, due_date)
-            print("[DEBUG] TodoList: Task inserted into database")
             self.loadTasksFromDB()
-            print(f"[DEBUG] TodoList: Tasks reloaded, current count: {self.todoList.count()}")
         except Exception as e:
-            print(f"[DEBUG] TodoList: Error adding task from chat: {str(e)}")
+            pass
 
     def insertTaskIntoDB(self, task_text, due_date):
         try:
-            print(f"[DEBUG] TodoList: Inserting task into DB: {task_text}, {due_date}")
             self.db.add_task(self.session_id, task_text, due_date)
-            print("[DEBUG] TodoList: Task successfully added to database")
         except Exception as e:
-            print(f"[DEBUG] TodoList: Database error: {str(e)}")
             raise Exception(f"Database error: {str(e)}")
 
     def updateUIWithTask(self, task_text, due_date, completed=False, task_id=None):
@@ -131,12 +125,9 @@ class TodoList:
 
     def updateTaskStatus(self, task_text, completed):
         try:
-            print(f"[DEBUG] updateTaskStatus: Updating task '{task_text}' to completed={completed}")
             self.db.update_task_status(task_text, completed)
-            print(f"[DEBUG] updateTaskStatus: Database updated successfully")
             self.loadTasksFromDB()
         except Exception as e:
-            print(f"[DEBUG] updateTaskStatus: Error updating status: {str(e)}")
             QMessageBox.critical(self.parent, "Error", f"Failed to update task status: {str(e)}")
 
     def editTask(self, widget):
@@ -178,7 +169,6 @@ class TodoList:
 
     def archiveCompletedTasks(self):
         try:
-            print("[DEBUG] archiveCompletedTasks: Starting archive process")
             archived_count = 0
             
             # First, get all completed tasks from UI
@@ -241,21 +231,15 @@ class TodoList:
                 QMessageBox.information(self.parent, "Info", "No completed tasks to archive")
                 
         except Exception as e:
-            print(f"[DEBUG] Error in archiveCompletedTasks: {str(e)}")
             QMessageBox.critical(self.parent, "Error", f"Failed to archive tasks: {str(e)}")
 
     def loadTasksFromDB(self):
         try:
-            print("[DEBUG] loadTasksFromDB: Starting to load tasks")
             self.todoList.clear()
             tasks = self.db.get_tasks()
-            print(f"[DEBUG] loadTasksFromDB: Retrieved {len(tasks)} tasks from database")
             for task_id, task_text, due_date, completed in tasks:
-                print(f"[DEBUG] loadTasksFromDB: Task '{task_text}' - completed={completed}")
                 self.updateUIWithTask(task_text, due_date, completed, task_id)
-            print("[DEBUG] loadTasksFromDB: Finished loading tasks")
         except Exception as e:
-            print(f"[DEBUG] loadTasksFromDB: Error loading tasks: {str(e)}")
             QMessageBox.critical(self.parent, "Error", f"Failed to load tasks: {str(e)}")
 
     def updateTaskStyle(self, widget):
