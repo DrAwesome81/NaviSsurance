@@ -12,6 +12,7 @@ from core.chat import ChatManager
 import os
 import json
 import requests
+import re
 from datetime import datetime
 from PyQt6.QtWidgets import QApplication
 import PyPDF2
@@ -19,6 +20,10 @@ from bs4 import BeautifulSoup
 import requests
 import markdown
 from core.compliance import ComplianceChecker, DocumentGenerator
+from core.api import DropboxClient
+from docx import Document
+from fpdf import FPDF
+from dropbox import files
 
 logger = logging.getLogger(__name__)
 
@@ -175,20 +180,29 @@ class NoteTakingSystem(QWidget):
         self.chat_handler = chat_handler
         self.db = DatabaseManager()
         self.db.init_notes_table()
-        self.dropbox_client = None  # Will be initialized if needed
+        self.dropbox_client = DropboxClient()
+        self.notes = []  # Temporary in-memory storage for notes
+        self.organized = False
+        self.context = None  # Add context attribute
         self.setup_ui()
-        self.notify_navi()
 
     def setup_ui(self):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
         
         # Left: Chat Window
         chat_widget = QWidget()
         chat_layout = QVBoxLayout(chat_widget)
-        chat_layout.setContentsMargins(5, 5, 5, 5)
-        chat_layout.setSpacing(5)
+        
+        # Add context input field
+        context_label = QLabel("Context (what you're working on):")
+        context_label.setStyleSheet("color: white; font-weight: bold;")
+        chat_layout.addWidget(context_label)
+        
+        self.context_input = QLineEdit()
+        self.context_input.setPlaceholderText("Enter context (e.g., 'Working on FDA protocol review')")
+        self.context_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.5); padding: 5px;")
+        self.context_input.returnPressed.connect(self.update_context)
+        chat_layout.addWidget(self.context_input)
         
         # Create a custom QTextEdit subclass for proper key event handling
         class CustomTextEdit(QTextEdit):
@@ -218,182 +232,261 @@ class NoteTakingSystem(QWidget):
         # Right: Notes Pane
         notes_widget = QWidget()
         notes_layout = QVBoxLayout(notes_widget)
-        notes_layout.setContentsMargins(5, 5, 5, 5)
-        notes_layout.setSpacing(5)
-        
         self.notes_display = QTextEdit()
         self.notes_display.setReadOnly(True)
+        self.notes_display.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         notes_layout.addWidget(self.notes_display)
         
         # Buttons
-        save_btn = QPushButton("Save Note")
-        save_btn.clicked.connect(self.save_note)
-        save_btn.setToolTip("Save current note and clear input")
-        notes_layout.addWidget(save_btn)
-        
-        organize_btn = QPushButton("Update Categories")
-        organize_btn.clicked.connect(self.organize_notes)
-        organize_btn.setToolTip("Reorganize all notes by category")
-        notes_layout.addWidget(organize_btn)
-        
         export_btn = QPushButton("Export Notes")
+        export_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
         export_btn.clicked.connect(self.export_notes)
-        export_btn.setToolTip("Export notes to TXT, DOCX, and PDF")
         notes_layout.addWidget(export_btn)
         
         layout.addWidget(notes_widget, stretch=1)
         self.setLayout(layout)
 
-    def notify_navi(self):
-        prompt = """You are Navi, an AI for NaviSure Consulting. Your user, Dr. Adam Odeh, is reviewing large documents and typing thoughts into a chat window. Format each thought for clarity (e.g., 'Section 5 should be in the protocol, not this report' → 'Section 5: Move to Protocol document from Report'). Categorize notes by document type (e.g., 'Protocol', 'Report', 'Unnecessary') based on content. Store and display categorized notes in real-time, updating as new thoughts are added."""
-        self.chat_handler.get_response(prompt, session_id="notes_session", conversation_history=[])
+    def update_context(self):
+        """Update the context and notify Navi."""
+        self.context = self.context_input.text().strip()
+        if self.context:
+            self.context_input.clear()
+            self.notes_display.append(f"<b>Context set:</b> {self.context}<br>")
+            # Clear organized notes when context changes to allow fresh categorization
+            self.organized = False
+            self.db.clear_organized_notes()
 
 
-
-    def extract_json_from_response(self, response):
-        """Extract JSON object from AI response that may contain extra text."""
-        import re
-        
-        # Try to find JSON object in the response
-        json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-        matches = re.findall(json_pattern, response)
-        
-        if matches:
-            # Try each match to see if it's valid JSON
-            for match in matches:
-                try:
-                    return json.loads(match)
-                except json.JSONDecodeError:
-                    continue
-        
-        # If no valid JSON found, try to extract content between curly braces
-        start = response.find('{')
-        end = response.rfind('}')
-        if start != -1 and end != -1 and end > start:
-            try:
-                return json.loads(response[start:end+1])
-            except json.JSONDecodeError:
-                pass
-        
-        return None
 
     def process_note(self):
         content = self.chat_input.toPlainText().strip()
-        if not content or len(content) < 3:  # Reduced minimum length since we're not auto-processing
+        if not content or len(content) < 10:
             return
-        prompt = f"""Format this thought for clarity and categorize it by document type (e.g., Protocol, Report, Unnecessary): '{content}'.
-        Return JSON: {{"formatted": "<formatted_note>", "category": "<document_type>"}}"""
+        
+        context_info = f"Context: {self.context}" if self.context else "No context set"
+        prompt = f"""{context_info}. 
+
+TASK: Take the user's note and format it into a clear, professional note.
+
+USER'S NOTE: '{content}'
+
+INSTRUCTIONS:
+- Format the note to be clear and professional
+- Keep the original meaning and intent
+- Make it more readable and well-structured
+- Do NOT add commentary about categorization or other notes
+- Do NOT respond with meta-comments about the process
+
+RESPONSE FORMAT: You must respond with ONLY valid JSON in this exact format:
+{{"formatted": "Your formatted note text here"}}
+
+Example: If user writes "need to check section 5", you should respond:
+{{"formatted": "Need to review and verify Section 5 of the document"}}
+
+IMPORTANT: Respond with ONLY the JSON. No other text or explanations."""
         response = self.chat_handler.get_response(
             prompt, session_id="notes_session", conversation_history=[]
         )
-        
-        # Extract JSON from response
-        note_data = self.extract_json_from_response(response)
-        if note_data and "formatted" in note_data and "category" in note_data:
-            formatted = note_data["formatted"]
-            category = note_data["category"]
+        try:
+            # Try to extract JSON from the response if it's wrapped in other text
+            response_clean = response.strip()
+            if not response_clean.startswith('{'):
+                # Try to find JSON in the response
+                import re
+                json_match = re.search(r'\{.*\}', response_clean, re.DOTALL)
+                if json_match:
+                    response_clean = json_match.group(0)
+            
+            note_data = json.loads(response_clean)
+            formatted = note_data['formatted']
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.db.save_note(formatted, category, timestamp)
+            self.db.save_note(formatted, timestamp, self.context)
+            self.notes.append(formatted)
             self.update_notes_display()
-        else:
-            self.notes_display.append(f"Error: Could not parse response. Raw response: {response[:200]}...")
+            self.chat_input.clear()
+            
+            # Always try to organize notes when we have 2 or more notes
+            # This allows for dynamic categorization as you add more notes
+            if len(self.notes) >= 2:
+                self.try_organize_notes()
+        except json.JSONDecodeError:
+            self.notes_display.append("Error: Invalid response format")
+            self.notes_display.append(f"Raw response: {response}")
+        except Exception as e:
+            self.notes_display.append(f"Error: {str(e)}")
 
-    def save_note(self):
-        content = self.chat_input.toPlainText().strip()
-        if not content:
+    def try_organize_notes(self):
+        if sum(len(note) for note in self.notes) > 7000:  # Approximate token limit check
+            self.notes_display.append("Warning: Notes may exceed token limit; categorization skipped.")
             return
-        self.process_note()
-        self.chat_input.clear()
+        
+        context_info = f"Context: {self.context}" if self.context else "No context set"
+        prompt = f"""{context_info}. 
 
-    def organize_notes(self):
-        notes = self.db.get_notes()
-        if not notes:
-            return
-        prompt = f"""Organize these notes into categories (e.g., Protocol, Report, Unnecessary). Return a JSON object with categories as keys and lists of formatted notes as values. Notes: {json.dumps(notes)}"""
+TASK: Categorize the existing notes into logical groups.
+
+EXISTING NOTES TO CATEGORIZE:
+{chr(10).join([f"- {note}" for note in self.notes])}
+
+INSTRUCTIONS:
+- These are the actual notes that need to be categorized
+- Look for common themes or topics among these specific notes
+- If you can identify 2 or more clear categories, organize the notes accordingly
+- If the notes are too diverse or no clear patterns emerge, return empty JSON
+- Use the EXACT note text as provided - do not modify or summarize the notes
+- Do NOT add commentary about the categorization process
+- Do NOT respond with meta-comments about the notes
+- Do NOT generate new content - only categorize the existing notes
+- Even with just 2 notes, try to find a logical grouping if possible
+
+RESPONSE FORMAT: You must respond with ONLY valid JSON in one of these formats:
+
+If categories are found:
+{{"categories": {{"Category Name": ["exact note text 1", "exact note text 2"], "Another Category": ["exact note text 3"]}}}}
+
+If no clear patterns (return empty):
+{{}}
+
+Example categories might be: "Protocol Review", "Documentation", "Follow-up Tasks", "Questions", "Data Handling", "Requirements", etc.
+
+IMPORTANT: 
+- Use the exact note text as provided above
+- Respond with ONLY the JSON. No other text or explanations."""
         response = self.chat_handler.get_response(
             prompt, session_id="notes_session", conversation_history=[]
         )
-        
-        # Extract JSON from response
-        organized_notes = self.extract_json_from_response(response)
-        if organized_notes and isinstance(organized_notes, dict):
-            self.db.save_organized_notes(organized_notes)
-            self.update_notes_display()
-        else:
-            self.notes_display.append(f"Error: Could not parse organization response. Raw response: {response[:200]}...")
+        try:
+            # Try to extract JSON from the response if it's wrapped in other text
+            response_clean = response.strip()
+            if not response_clean.startswith('{'):
+                # Try to find JSON in the response
+                import re
+                json_match = re.search(r'\{.*\}', response_clean, re.DOTALL)
+                if json_match:
+                    response_clean = json_match.group(0)
+            
+            # Check if response is truncated (ends with incomplete string)
+            if response_clean.count('"') % 2 != 0 or not response_clean.endswith('}'):
+                self.notes_display.append("Warning: Response appears to be truncated, skipping categorization.")
+                return
+            
+            organized_data = json.loads(response_clean)
+            if 'categories' in organized_data and organized_data['categories']:
+                self.organized = True
+                self.db.save_organized_notes(organized_data['categories'])
+                self.notes_display.append(f"<i>Notes organized into {len(organized_data['categories'])} categories</i><br>")
+                self.update_notes_display(organized=True)
+            else:
+                # No categories found, show unorganized notes
+                self.notes_display.append("<i>No clear categories found, showing unorganized notes</i><br>")
+                self.update_notes_display(organized=False)
+        except json.JSONDecodeError:
+            self.notes_display.append("Error: Invalid organization format")
+            self.notes_display.append(f"Raw response: {response}")
+        except Exception as e:
+            self.notes_display.append(f"Error: {str(e)}")
 
-    def update_notes_display(self):
+    def update_notes_display(self, organized=False):
         self.notes_display.clear()
-        organized_notes = self.db.get_organized_notes()
-        if not organized_notes:
-            self.notes_display.append("No notes available.")
-            return
-        for category, notes in organized_notes.items():
-            self.notes_display.append(f"<b>{category}</b>:<br>")
-            for note in notes:
+        
+        # Display current context if set
+        if self.context:
+            self.notes_display.append(f"<b>Current Context:</b> {self.context}<br><br>")
+        
+        if not organized:
+            for note in self.notes:
                 self.notes_display.append(f"{note}<br>")
-            self.notes_display.append("<br>")
+        else:
+            organized_notes = self.db.get_organized_notes()
+            if organized_notes and len(organized_notes) > 0:
+                for category, notes_list in organized_notes.items():
+                    self.notes_display.append(f"<b>{category}</b>:<br>")
+                    for note in notes_list:
+                        self.notes_display.append(f"  • {note}<br>")
+                    self.notes_display.append("<br>")
+            else:
+                # Fallback to showing unorganized notes if no organized notes found
+                self.notes_display.append("<b>Notes (Unorganized):</b><br>")
+                for note in self.notes:
+                    self.notes_display.append(f"  • {note}<br>")
 
     def export_notes(self):
-        organized_notes = self.db.get_organized_notes()
+        organized_notes = self.db.get_organized_notes() or {"Uncategorized": self.notes}
         if not organized_notes:
             self.notes_display.append("No notes to export.")
             return
         
         # Export as TXT
         txt_path = "notes_export.txt"
-        with open(txt_path, "w") as f:
-            for category, notes in organized_notes.items():
+        with open(txt_path, "w", encoding='utf-8') as f:
+            if self.context:
+                f.write(f"Context: {self.context}\n\n")
+            for category, notes_list in organized_notes.items():
                 f.write(f"{category}:\n")
-                for note in notes:
+                for note in notes_list:
                     f.write(f"- {note}\n")
                 f.write("\n")
         
-        # Export as Word (.docx) - if python-docx is available
-        try:
-            from docx import Document
-            doc = Document()
-            for category, notes in organized_notes.items():
-                doc.add_heading(category, level=1)
-                for note in notes:
-                    doc.add_paragraph(note, style='ListBullet')
-            docx_path = "notes_export.docx"
-            doc.save(docx_path)
-            self.notes_display.append(f"Exported to {txt_path} and {docx_path}")
-        except ImportError:
-            self.notes_display.append(f"Exported to {txt_path} (python-docx not available for DOCX export)")
+        # Export as Word (.docx)
+        doc = Document()
+        if self.context:
+            doc.add_heading(f"Context: {self.context}", level=1)
+            doc.add_paragraph("")  # Add some space
+        for category, notes_list in organized_notes.items():
+            doc.add_heading(category, level=1)
+            for note in notes_list:
+                doc.add_paragraph(note, style='ListBullet')
+        docx_path = "notes_export.docx"
+        doc.save(docx_path)
 
-        # Export as PDF - if fpdf is available
-        try:
-            from fpdf import FPDF
-            pdf = FPDF()
-            pdf.set_auto_page_break(auto=True, margin=15)
-            pdf.add_page()
+        # Export as PDF
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        if self.context:
+            pdf.set_font("Arial", "B", 16)
+            pdf.cell(0, 10, f"Context: {self.context}", ln=True)
+            pdf.ln(5)
+        for category, notes_list in organized_notes.items():
+            pdf.set_font("Arial", "B", 16)
+            pdf.cell(0, 10, category, ln=True)
             pdf.set_font("Arial", size=12)
-            for category, notes in organized_notes.items():
-                pdf.set_font("Arial", "B", 16)
-                pdf.cell(0, 10, category, ln=True)
-                pdf.set_font("Arial", size=12)
-                for note in notes:
-                    pdf.cell(0, 10, f"- {note}", ln=True)
-                pdf.ln(5)
-            pdf_path = "notes_export.pdf"
-            pdf.output(pdf_path)
-            self.notes_display.append(f"Also exported to {pdf_path}")
-        except ImportError:
-            self.notes_display.append("(FPDF not available for PDF export - install with: pip install fpdf)")
-        except Exception as e:
-            self.notes_display.append(f"(PDF export failed: {str(e)})")
+            for note in notes_list:
+                pdf.cell(0, 10, f"- {note}", ln=True)
+            pdf.ln(5)
+        pdf_path = "notes_export.pdf"
+        pdf.output(pdf_path)
 
-        # Dropbox upload - if dropbox client is available
-        if hasattr(self, 'dropbox_client') and self.dropbox_client:
-            try:
+        # Upload to Dropbox
+        try:
+            # Upload TXT file
+            with open(txt_path, "rb") as f:
                 self.dropbox_client.get_client().files_upload(
-                    open(txt_path, "rb").read(), "/notes_export.txt"
+                    f.read(), 
+                    f"/notes_export.txt",
+                    mode=files.WriteMode.overwrite
                 )
-                self.notes_display.append("Uploaded to Dropbox")
-            except Exception as e:
-                self.notes_display.append(f"Dropbox upload failed: {e}")
+            
+            # Upload DOCX file
+            with open(docx_path, "rb") as f:
+                self.dropbox_client.get_client().files_upload(
+                    f.read(), 
+                    f"/notes_export.docx",
+                    mode=files.WriteMode.overwrite
+                )
+            
+            # Upload PDF file
+            with open(pdf_path, "rb") as f:
+                self.dropbox_client.get_client().files_upload(
+                    f.read(), 
+                    f"/notes_export.pdf",
+                    mode=files.WriteMode.overwrite
+                )
+            
+            self.notes_display.append(f"Exported to {txt_path}, {docx_path}, {pdf_path} and uploaded to Dropbox.")
+        except Exception as e:
+            self.notes_display.append(f"Exported to {txt_path}, {docx_path}, {pdf_path} but Dropbox upload failed: {str(e)}")
 
 class ChatWindow(QMainWindow):
 
