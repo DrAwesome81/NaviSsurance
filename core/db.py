@@ -64,9 +64,17 @@ class DatabaseManager:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 formatted_note TEXT NOT NULL,
                 category TEXT NOT NULL,
+                context TEXT,
                 timestamp TEXT NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
+            
+            # Add context column if it doesn't exist (for existing databases)
+            try:
+                conn.execute('ALTER TABLE notes ADD COLUMN context TEXT')
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
             
             # Organized notes table
             conn.execute('''CREATE TABLE IF NOT EXISTS organized_notes (
@@ -238,18 +246,18 @@ class DatabaseManager:
         """Initialize notes table (already done in setup_db, but kept for compatibility)."""
         pass
 
-    def save_note(self, formatted_note, category, timestamp):
+    def save_note(self, formatted_note, timestamp, context=None):
         """Save a formatted note to the database."""
         with sqlite3.connect(self.db_name) as conn:
-            conn.execute('INSERT INTO notes (formatted_note, category, timestamp) VALUES (?, ?, ?)',
-                        (formatted_note, category, timestamp))
+            conn.execute('INSERT INTO notes (formatted_note, category, context, timestamp) VALUES (?, ?, ?, ?)',
+                        (formatted_note, "Uncategorized", context, timestamp))
             conn.commit()
 
     def get_notes(self):
         """Get all notes from the database."""
         with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('SELECT formatted_note, category, timestamp FROM notes ORDER BY created_at DESC')
-            return cursor.fetchall()
+            cursor = conn.execute('SELECT formatted_note, context FROM notes ORDER BY created_at DESC')
+            return [(row[0], row[1]) for row in cursor.fetchall()]
 
     def save_organized_notes(self, organized_notes):
         """Save organized notes as JSON."""
@@ -273,3 +281,9 @@ class DatabaseManager:
                 category, notes_json = row
                 organized_notes[category] = json.loads(notes_json)
             return organized_notes
+
+    def clear_organized_notes(self):
+        """Clear all organized notes from the database."""
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute('DELETE FROM organized_notes')
+            conn.commit()
