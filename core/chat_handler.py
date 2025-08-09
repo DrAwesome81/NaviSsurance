@@ -21,15 +21,11 @@ class ChatHandler(QObject):
         last_run = self.db.get_last_run()
         today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         last_run_date = datetime.fromtimestamp(last_run, UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        print(f"Last run: {last_run} ({last_run_date}), Today: {today}")
         if last_run_date < today:
-            print("Running daily briefing—new day detected")
             briefing = self.daily_briefing()
             # Replace \n with <br> for HTML
             formatted_briefing = briefing.replace('\n', '<br>')
-            self.chat_window.chatDisplay.append(f"<b>Navi:</b> {formatted_briefing}<br><br>")
-        else:
-            print("Skipping daily briefing—already ran today")
+            self.chat_window.chatDisplay.append(f'<div style="text-align: left;"><b>Navi:</b> {formatted_briefing}</div>')
 
     def daily_briefing(self):
         last_run = self.db.get_last_run()
@@ -53,14 +49,10 @@ class ChatHandler(QObject):
         with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
             cursor = conn.execute("SELECT task, due_date FROM tasks WHERE due_date <= strftime('%m-%d-%Y', 'now')")
             tasks = cursor.fetchall()
-            print(f"[DEBUG] Raw tasks from query: {tasks}")
         tasks_str = "\n".join([f"- {t[0]} (due {t[1]})" for t in tasks]) if tasks else "- No tasks—living the dream!"
-        print(f"[DEBUG] tasks_str: '{tasks_str}'")
 
         # Emails
-        print("Fetching new emails...")
         emails = self.data_fetcher.get_new_emails(last_run)
-        print(f"Found {len(emails)} new emails")
         email_summaries = []
         with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
             for msg in emails[:5]:  # Limit to 5 most recent emails
@@ -139,9 +131,7 @@ class ChatHandler(QObject):
         return self.db.get_chat_history(session_id)
 
     def _add_task_from_chat(self, task_text, due_date, session_id):
-        print(f"Adding to DB: {task_text} due {due_date}")
         self.db.add_task(session_id, task_text, due_date)
-        print(f"Emitting signal: {task_text} due {due_date}")
         self.task_added_signal.emit(task_text, due_date)
 
     def update_replied_status(self, sent_email_id, source):
@@ -156,7 +146,6 @@ class ChatHandler(QObject):
                 try:
                     sent_details = self.data_fetcher.get_email_details(sent_email_id, source)
                 except Exception as e:
-                    print(f"Error fetching details for sent email {sent_email_id} from {source}: {e}")
                     return
 
                 # Try to find 'In-Reply-To' header for direct reply matching
@@ -169,7 +158,6 @@ class ChatHandler(QObject):
                         email_id = matching_email[0]
                         conn.execute("UPDATE emails SET replied = 1 WHERE id = ?", (email_id,))
                         conn.commit()
-                        print(f"Updated replied status for email ID {email_id} based on In-Reply-To header of sent email {sent_email_id}")
                         return
 
                 # Fallback to subject matching if In-Reply-To is not available or no match found
@@ -181,11 +169,8 @@ class ChatHandler(QObject):
                     email_id = matching_emails[0][0]
                     conn.execute("UPDATE emails SET replied = 1 WHERE id = ?", (email_id,))
                     conn.commit()
-                    print(f"Updated replied status for email ID {email_id} based on subject match with sent email {sent_email_id}")
-                else:
-                    print(f"No matching email found for sent email {sent_email_id} from {source}")
         except Exception as e:
-            print(f"Error updating replied status for sent email {sent_email_id}: {e}")
+            pass
 
     def update_replied_status_from_sent_emails(self, last_run):
         """
@@ -194,7 +179,6 @@ class ChatHandler(QObject):
         sent_emails = self.data_fetcher.get_sent_emails(last_run)
         for email in sent_emails:
             self.update_replied_status(email['id'], email['source'])
-        print(f"Checked {len(sent_emails)} sent emails for replied status updates.")
 
     def search_conversations(self, search_terms, date_range=None):
         """
