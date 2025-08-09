@@ -1,5 +1,86 @@
 NaviSsurance Testing
 Test Cases
+
+Note-Taking System Tests
+TC-001: Context Setting
+
+Description: Verify the note-taking system allows setting context for note sessions.
+Steps:
+Open NaviSsurance (interface.py).
+Navigate to Note-Taking System.
+Enter context in context input field (e.g., "Working on FDA submission for new diagnostic device").
+Press Enter.
+
+Expected Result: Context is set and displayed in notes pane.
+Actual Result: [Pending: Test not run], 2025-01-XX.
+Status: Pending
+
+TC-002: Note Formatting
+
+Description: Verify AI properly formats user notes for clarity and professionalism.
+Steps:
+Open NaviSsurance (interface.py).
+Navigate to Note-Taking System.
+Enter a raw note (e.g., "need to check section 5").
+Press Enter to process.
+
+Expected Result: Note is formatted professionally and displayed in notes pane.
+Actual Result: [Pending: Test not run], 2025-01-XX.
+Status: Pending
+
+TC-003: Dynamic Categorization
+
+Description: Verify notes are automatically categorized when 2 or more notes exist.
+Steps:
+Open NaviSsurance (interface.py).
+Navigate to Note-Taking System.
+Add first note (e.g., "Review ISO 13485 requirements").
+Add second note (e.g., "Check FDA guidance documents").
+
+Expected Result: Notes are categorized into logical groups and displayed under category headings.
+Actual Result: [Pending: Test not run], 2025-01-XX.
+Status: Pending
+
+TC-004: Export Functionality
+
+Description: Verify notes can be exported in multiple formats with context included.
+Steps:
+Open NaviSsurance (interface.py).
+Navigate to Note-Taking System.
+Add several notes with context.
+Click "Export Notes" button.
+Check generated files.
+
+Expected Result: TXT, DOCX, and PDF files are created with context and categorized notes.
+Actual Result: [Pending: Test not run], 2025-01-XX.
+Status: Pending
+
+TC-005: Dropbox Integration
+
+Description: Verify exported files are automatically uploaded to Dropbox.
+Steps:
+Open NaviSsurance (interface.py).
+Navigate to Note-Taking System.
+Export notes in any format.
+Check Dropbox folder.
+
+Expected Result: Exported files appear in configured Dropbox folder.
+Actual Result: [Pending: Test not run], 2025-01-XX.
+Status: Pending
+
+TC-006: Error Handling
+
+Description: Verify system handles AI response errors gracefully.
+Steps:
+Open NaviSsurance (interface.py).
+Navigate to Note-Taking System.
+Simulate AI model failure or invalid response.
+Attempt to process notes.
+
+Expected Result: Clear error messages displayed, system continues to function.
+Actual Result: [Pending: Test not run], 2025-01-XX.
+Status: Pending
+
 Chat and Task Management Tests
 TC-001: Chat Response
 

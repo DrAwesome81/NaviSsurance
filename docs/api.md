@@ -1,6 +1,27 @@
 NaviSsurance API Integrations
 Overview
-NaviSsurance uses third-party APIs for core functionality: xAI Grok (compliance, study design, lead generation), LinkedIn (posting, authentication), and AssemblyAI (transcription). API keys are non-transferable; buyers must register their own accounts.
+NaviSsurance uses third-party APIs for core functionality: xAI Grok (compliance, study design, lead generation), LinkedIn (posting, authentication), and AssemblyAI (transcription). It also uses a local Llama 3.1-8B-Instruct model for note-taking and chat interactions. API keys are non-transferable; buyers must register their own accounts.
+
+Local AI Model (Llama 3.1-8B-Instruct)
+
+Purpose: Provides AI-powered note formatting, categorization, and chat interactions using a local model for privacy and cost efficiency.
+Model: Llama 3.1-8B-Instruct-GGUF (quantized for efficiency).
+Configuration:
+- Context Window: 8192 tokens
+- Response Limit: 1000 tokens
+- GPU Layers: 33 (for acceleration)
+- Threads: 4 (for CPU processing)
+- Temperature: 0.9 (for creative responses)
+- Top-p: 0.9 (for response diversity)
+
+Setup:
+Download model from Hugging Face: Meta-Llama-3-8B-Instruct-GGUF
+Place in local cache directory
+Configure model path in core/llama_worker.py
+
+Code: core/llama_worker.py, gui/interface.py (NoteTakingSystem)
+Notes: Local processing ensures data privacy; no API costs; requires GPU for optimal performance.
+
 API Details
 xAI Grok
 

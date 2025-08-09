@@ -1,6 +1,18 @@
 NaviSsurance Requirements
 Functional Requirements
 
+Note-Taking System
+
+User Story: As a consultant, I want to take AI-powered notes with context-aware formatting and dynamic categorization, so I can efficiently organize my thoughts and work.
+Acceptance Criteria:
+Set context for note-taking sessions to provide AI with relevant background information.
+Take notes that are automatically formatted for clarity and professionalism by the AI.
+Have notes automatically categorized into logical groups when 2 or more notes are present.
+Export notes in multiple formats (TXT, DOCX, PDF) with context included.
+Upload exported files to Dropbox for cloud storage and sharing.
+Handle AI response errors gracefully with fallback mechanisms and user feedback.
+Support dynamic re-categorization as new notes are added to existing categories.
+
 Compliance Tab
 
 User Story: As a consultant, I want to upload SOPs, PDFs, or URLs to check compliance with standards like ISO 13485 or 21 CFR 820, so I can provide actionable client recommendations.
