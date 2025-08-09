@@ -26,7 +26,7 @@ def main():
             messages = data["messages"]
             response = llm.create_chat_completion(
                 messages=messages,
-                max_tokens=100,
+                max_tokens=1000,
                 temperature=0.9,
                 top_p=0.9
             )

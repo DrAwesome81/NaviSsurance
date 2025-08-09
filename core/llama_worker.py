@@ -41,7 +41,7 @@ def main():
             all_messages = [{"role": "system", "content": system_content}] + messages
             response = llm.create_chat_completion(
                 messages=all_messages,
-                max_tokens=100,
+                max_tokens=1000,
                 temperature=0.9,
                 top_p=0.9
             )

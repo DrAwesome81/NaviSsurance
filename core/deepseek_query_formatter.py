@@ -18,7 +18,7 @@ def format_query(user_input):
                 {"role": "system", "content": "You are a query refinement assistant. Convert user input into precise search queries."},
                 {"role": "user", "content": f"Refine as precise search query: {user_input}"}
             ],
-            max_tokens=100,
+            max_tokens=1000,
             temperature=0.7,
             top_p=0.9
         )

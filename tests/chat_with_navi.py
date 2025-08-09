@@ -50,7 +50,7 @@ def chat_with_navi():
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": "Provide a daily briefing summarizing tasks, emails, or relevant MedTech news."}
                         ],
-                        max_tokens=100,
+                        max_tokens=1000,
                         temperature=0.9,
                         top_p=0.9
                     )
@@ -68,7 +68,7 @@ def chat_with_navi():
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_input}
                     ],
-                    max_tokens=50,
+                    max_tokens=1000,
                     temperature=0.9,
                     top_p=0.9
                 )
