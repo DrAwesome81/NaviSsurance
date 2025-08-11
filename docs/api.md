@@ -25,7 +25,7 @@ Notes: Local processing ensures data privacy; no API costs; requires GPU for opt
 API Details
 xAI Grok
 
-Purpose: Analyzes SOPs for compliance (ISO 13485, 21 CFR 820) and generates study protocols, outputting JSON ([{section, issue, fix, reference}]).
+Purpose: Analyzes SOPs for compliance (ISO 13485, 21 CFR 820), generates study protocols, and provides lead generation, outputting JSON ([{section, issue, fix, reference}]) for compliance and structured data for leads.
 Endpoints: https://api.x.ai/grok (REST API).
 Authentication: API key (GROK_API_KEY) in .env.
 Setup:
@@ -33,20 +33,21 @@ Register at https://x.ai/api.
 Obtain SuperGrok subscription (~$20–$100/month, higher quotas).
 Update .env with key.
 
+Features:
+- Compliance Analysis: Document analysis against regulatory standards
+- Lead Generation: Company and contact research for MedTech companies
+- News Search: AI-powered query generation for MedTech industry news
 
-Code: chat.py (compliance, study design calls).
+Code: core/chat.py (compliance, study design calls), gui/interface.py (lead generation, news search).
 Notes: Commercial use allowed per ToS; verify at https://x.ai/grok.
-
-# Claude API removed - now using Grok 4 API for lead generation
 
 LinkedIn APIs (Share, Sign In, Community Management)
 
-Purpose: Posts content, authenticates users, manages NaviSure’s LinkedIn page.
+Purpose: Posts content, authenticates users, manages NaviSure's LinkedIn page.
 Endpoints:
 Share: https://api.linkedin.com/v2/ugcPosts (w_member_social).
 Sign In: https://api.linkedin.com/v2/me (r_liteprofile).
 Community: https://api.linkedin.com/v2/socialActions (r_organization_social).
-
 
 Authentication: OAuth token (LINKEDIN_ACCESS_TOKEN) in .env.
 Setup:
@@ -54,9 +55,8 @@ Apply at https://www.linkedin.com/developers.
 Create app, request Marketing Developer Platform access.
 Update .env with token.
 
-
-Code: interface.py (Leads Tab, page posts).
-Notes: US accounts can’t use Member Data Portability; buyer must reapply for access.
+Code: gui/interface.py (Leads Tab, page posts).
+Notes: US accounts can't use Member Data Portability; buyer must reapply for access.
 
 AssemblyAI
 
@@ -68,9 +68,35 @@ Register at https://www.assemblyai.com.
 Obtain API key (~$0.10–$0.50/hour audio).
 Update .env.
 
-
-Code: interface.py (lines 248–312).
+Code: gui/interface.py (Meeting Transcription Tab).
 Notes: ToS allows commercial use; verify at https://www.assemblyai.com/terms.
+
+Google Calendar API
+
+Purpose: Fetches calendar events for dashboard schedule display.
+Endpoints: https://www.googleapis.com/calendar/v3.
+Authentication: OAuth2 credentials via client_secret.json and token files.
+Setup:
+Configure Google Cloud Console project
+Enable Calendar API
+Download credentials to config/client_secret.json
+Generate token via OAuth2 flow
+
+Code: core/data_fetch.py (get_calendar_events)
+Notes: Used for dashboard schedule display with auto-refresh functionality.
+
+Dropbox API
+
+Purpose: File storage, indexing, and management for workspace documents.
+Endpoints: https://api.dropboxapi.com/2.
+Authentication: Access token (DROPBOX_ACCESS_TOKEN) in .env.
+Setup:
+Create Dropbox app at https://www.dropbox.com/developers
+Generate access token
+Update .env with token
+
+Code: core/api.py, core/index_dropbox.py
+Notes: Used for document workspace, file preview, and storage integration.
 
 Notes
 
@@ -78,4 +104,5 @@ API keys are stored in .env, not hardcoded, ensuring GDPR/HIPAA compliance.
 Buyers must secure their own API keys due to non-transferable ToS.
 Transition support (30–60 days) recommended for buyer setup.
 Review ToS for commercial use and transfer policies before sale.
+All API integrations are currently functional and tested in the application.
 
