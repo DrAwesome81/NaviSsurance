@@ -2,6 +2,7 @@ import sys
 import os
 import logging
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QRect
 from gui.interface import ChatWindow
 from PyQt6.QtGui import QIcon
 from core.index_dropbox import auto_index_on_launch
@@ -59,6 +60,9 @@ if __name__ == "__main__":
         
         logger.info("Creating main window with enhanced splash screen...")
         chatWindow = ChatWindow()
+        
+        # Set default geometry to fullscreen-like dimensions
+        chatWindow.setGeometry(QRect(0, 0, 1920, 1080))
         
         logger.info("Application initialization complete, entering event loop...")
         sys.exit(app.exec())
