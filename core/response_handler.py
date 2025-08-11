@@ -154,7 +154,7 @@ class ResponseHandler:
                 formatted_briefing = '\n'.join(formatted_lines)
                 formatted_briefing = formatted_briefing.replace('\n\n', '<br><br>').replace('\n', '<br>')
                 formatted_briefing = re.sub(r'^<br><br>', '', formatted_briefing.strip())
-                news_query_prompt = [{"role": "user", "content": "Create a query for up-to-date MedTech news since yesterday, focused on AI/ML, IVDs, SaMD, DTC devices."}]
+                news_query_prompt = [{"role": "user", "content": "Create a query for up-to-date MedTech news within the past 7 days, focused on AI/ML, IVDs, SaMD, DTC devices."}]
                 news_query = self.hybrid_wrapper(news_query_prompt, "news_session").strip()
                 news_results = self.perform_grok_search(news_query)
                 if news_results:
