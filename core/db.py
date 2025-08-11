@@ -42,6 +42,18 @@ class DatabaseManager:
                 archived_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
             
+            # News table for storing news items with URLs and duplicate checking
+            conn.execute('''CREATE TABLE IF NOT EXISTS news_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                url TEXT,
+                source TEXT,
+                published_date TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(title, url)
+            )''')
+            
             # Dropbox index tables
             conn.execute('''CREATE TABLE IF NOT EXISTS dropbox_files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -286,4 +298,43 @@ class DatabaseManager:
         """Clear all organized notes from the database."""
         with sqlite3.connect(self.db_name) as conn:
             conn.execute('DELETE FROM organized_notes')
+            conn.commit()
+
+    # News methods for dashboard news feed
+    def store_news_item(self, title, content, url=None, source=None, published_date=None):
+        """Store a news item in the database, avoiding duplicates."""
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                conn.execute('''INSERT OR IGNORE INTO news_items 
+                    (title, content, url, source, published_date) 
+                    VALUES (?, ?, ?, ?, ?)''',
+                    (title, content, url, source, published_date))
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Error storing news item: {e}")
+            return False
+
+    def get_recent_news(self, days=7):
+        """Get news items from the last N days."""
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.execute('''SELECT title, content, url, source, published_date, created_at 
+                FROM news_items 
+                WHERE created_at >= datetime('now', '-{} days')
+                ORDER BY created_at DESC'''.format(days))
+            return cursor.fetchall()
+
+    def check_news_exists(self, title, url=None):
+        """Check if a news item already exists in the database."""
+        with sqlite3.connect(self.db_name) as conn:
+            if url:
+                cursor = conn.execute('SELECT id FROM news_items WHERE title = ? OR url = ?', (title, url))
+            else:
+                cursor = conn.execute('SELECT id FROM news_items WHERE title = ?', (title,))
+            return cursor.fetchone() is not None
+
+    def cleanup_old_news(self, days=7):
+        """Remove news items older than N days."""
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute('DELETE FROM news_items WHERE created_at < datetime("now", "-{} days")'.format(days))
             conn.commit()
