@@ -55,7 +55,12 @@ def count_dropbox_files(dbx):
     print(f"Total files: {total}")
     return total
 
-def index_dropbox(dbx, db_path="F:/naviSsurance_index.db", progress_callback=None):
+
+# Import config for database path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import DATABASE_PATH
+
+def index_dropbox(dbx, db_path=DATABASE_PATH, progress_callback=None):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     
@@ -223,7 +228,7 @@ def index_dropbox(dbx, db_path="F:/naviSsurance_index.db", progress_callback=Non
     finally:
         conn.close()
 
-def should_auto_index(db_path="F:/naviSsurance_index.db", weeks=2):
+def should_auto_index(db_path=DATABASE_PATH, weeks=2):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     
@@ -245,7 +250,7 @@ def should_auto_index(db_path="F:/naviSsurance_index.db", weeks=2):
     return datetime.now() - last_dt > timedelta(weeks=weeks)
 
 # Trigger 1: Auto-check on app launch
-def auto_index_on_launch(dbx, db_path="F:/naviSsurance_index.db"):
+def auto_index_on_launch(dbx, db_path=DATABASE_PATH):
     print("Auto-indexing temporarily disabled.")
     return 0
     # if should_auto_index(db_path):
@@ -256,17 +261,17 @@ def auto_index_on_launch(dbx, db_path="F:/naviSsurance_index.db"):
     #     return 0
 
 # Trigger 2: Button press (for future UI)
-def manual_index(dbx, db_path="F:/naviSsurance_index.db"):
+def manual_index(dbx, db_path=DATABASE_PATH):
     print("Manual Dropbox index update triggered.")
     return index_dropbox(dbx, db_path)
 
 # Trigger 3: Chat command (for local AI detection)
-def chat_index(dbx, db_path="F:/naviSsurance_index.db"):
+def chat_index(dbx, db_path=DATABASE_PATH):
     """Called by local AI when 'index Dropbox' intent is detected."""
     updated_count = index_dropbox(dbx, db_path)
     return f"ADD_TASK:Confirm Dropbox index updated with {updated_count} files|{datetime.now().strftime('%m-%d-%Y')}"
 
-def log_unreadable_pdfs(db_path="F:/naviSsurance_index.db", csv_path="F:/unreadable_files.csv"):
+def log_unreadable_pdfs(db_path=DATABASE_PATH, csv_path="F:/unreadable_files.csv"):
     import time
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
