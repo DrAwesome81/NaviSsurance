@@ -59,13 +59,36 @@ if __name__ == "__main__":
         app.setWindowIcon(QIcon("assets/logo v2.png"))
         
         logger.info("Creating main window with enhanced splash screen...")
-        chatWindow = ChatWindow()
+        try:
+            chatWindow = ChatWindow()
+            logger.info("ChatWindow created successfully")
+        except Exception as e:
+            logger.error(f"Error creating ChatWindow: {e}", exc_info=True)
+            sys.exit(1)
         
         # Set default geometry to fullscreen-like dimensions
-        chatWindow.setGeometry(QRect(0, 0, 1920, 1080))
+        try:
+            chatWindow.setGeometry(QRect(0, 0, 1920, 1080))
+            logger.info("Window geometry set successfully")
+        except Exception as e:
+            logger.error(f"Error setting window geometry: {e}", exc_info=True)
+        
+        logger.info("Showing main window...")
+        try:
+            chatWindow.show()
+            logger.info("Main window shown successfully")
+        except Exception as e:
+            logger.error(f"Error showing main window: {e}", exc_info=True)
         
         logger.info("Application initialization complete, entering event loop...")
-        sys.exit(app.exec())
+        try:
+            logger.info("Starting PyQt event loop...")
+            result = app.exec()
+            logger.info(f"Event loop exited with code: {result}")
+            sys.exit(result)
+        except Exception as e:
+            logger.error(f"Error in event loop: {e}", exc_info=True)
+            sys.exit(1)
     except Exception as e:
         logger.error(f"Critical error in main: {e}", exc_info=True)
         sys.exit(1)
