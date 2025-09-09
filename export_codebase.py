@@ -54,4 +54,4 @@ def export_codebase_to_txt(root_dir, output_file='codebase_export.txt', extensio
 
 # Replace '/path/to/your/project/folder' with your actual directory (e.g., r'C:\Users\YourName\Documents\NaviSurance')
 # Specify the subfolders you want
-export_codebase_to_txt(r'C:\Users\adamo\Dropbox\_Consulting\NaviSsurance', subfolders=['core', 'gui', 'docs'])
+export_codebase_to_txt(r'C:\Users\adamo\Dropbox\_Consulting\NaviSsurance', subfolders=['core', 'gui'])
