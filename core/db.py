@@ -2,11 +2,17 @@
 import sqlite3
 from datetime import datetime, UTC
 import json
+import sys
+import os
 from core.file_handler import extract_for_dataset
+
+# Add parent directory to path to import config
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import DATABASE_PATH
 
 class DatabaseManager:
     def __init__(self):
-        self.db_name = r"F:\naviSsurance_index.db"  # Switch to your indexed DB
+        self.db_name = DATABASE_PATH
         self.setup_db()
 
     def setup_db(self):
@@ -305,11 +311,18 @@ class DatabaseManager:
         """Store a news item in the database, avoiding duplicates."""
         try:
             with sqlite3.connect(self.db_name) as conn:
-                conn.execute('''INSERT OR IGNORE INTO news_items 
-                    (title, content, url, source, published_date) 
-                    VALUES (?, ?, ?, ?, ?)''',
+                # Check if item already exists before inserting
+                cursor = conn.execute('SELECT id FROM news_items WHERE title = ? OR (url IS NOT NULL AND url = ?)', (title, url))
+                if cursor.fetchone():
+                    print(f"News item already exists: {title[:50]}...")
+                    return False
+                
+                conn.execute('''INSERT INTO news_items 
+                    (title, content, url, source, published_date, created_at) 
+                    VALUES (?, ?, ?, ?, ?, datetime('now'))''',
                     (title, content, url, source, published_date))
                 conn.commit()
+                print(f"Successfully stored news item: {title[:50]}...")
                 return True
         except Exception as e:
             print(f"Error storing news item: {e}")
@@ -334,7 +347,60 @@ class DatabaseManager:
             return cursor.fetchone() is not None
 
     def cleanup_old_news(self, days=7):
-        """Remove news items older than N days."""
+        """Remove news items older than N days and malformed items."""
         with sqlite3.connect(self.db_name) as conn:
-            conn.execute('DELETE FROM news_items WHERE created_at < datetime("now", "-{} days")'.format(days))
+            # Count items before cleanup
+            cursor = conn.execute('SELECT COUNT(*) FROM news_items')
+            before_count = cursor.fetchone()[0]
+            
+            # Delete old items based on created_at
+            cursor = conn.execute('DELETE FROM news_items WHERE created_at < datetime("now", "-{} days")'.format(days))
+            deleted_old_count = cursor.rowcount
+            
+            # Delete malformed items (titles that start with ``` or are clearly not news titles)
+            cursor = conn.execute("DELETE FROM news_items WHERE title LIKE '```%' OR title LIKE '* %' OR title = '' OR title IS NULL")
+            deleted_malformed_count = cursor.rowcount
+            
+            # Delete items with very old published dates (older than 30 days) if we can parse them
+            # This is a more aggressive cleanup for items that might have been stored recently but are old news
+            cursor = conn.execute("""
+                DELETE FROM news_items 
+                WHERE published_date IS NOT NULL 
+                AND (
+                    published_date LIKE '%2023%' OR 
+                    published_date LIKE '%2024%' OR
+                    published_date LIKE '%2022%' OR
+                    published_date LIKE '%2021%' OR
+                    published_date LIKE '%2020%'
+                )
+            """)
+            deleted_old_published_count = cursor.rowcount
+            
+            total_deleted = deleted_old_count + deleted_malformed_count + deleted_old_published_count
+            
+            # Count items after cleanup
+            cursor = conn.execute('SELECT COUNT(*) FROM news_items')
+            after_count = cursor.fetchone()[0]
+            
             conn.commit()
+            print(f"Cleanup: {before_count} items before, deleted {total_deleted} items ({deleted_old_count} old by created_at, {deleted_malformed_count} malformed, {deleted_old_published_count} old by published_date), {after_count} items remaining")
+
+    def get_chat_history(self, session_id="main_session", limit=50):
+        """Get chat history from the conversation table."""
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                cursor = conn.execute('''SELECT role, content 
+                    FROM conversation 
+                    WHERE session_id = ? 
+                    ORDER BY timestamp DESC 
+                    LIMIT ?''', (session_id, limit))
+                history = cursor.fetchall()
+                # Return in reverse order (oldest first) and format for display
+                return [(role, content) for role, content in reversed(history)]
+        except Exception as e:
+            print(f"Error getting chat history: {e}")
+            return []
+
+    def close(self):
+        """Close database connection."""
+        pass  # SQLite connections are automatically closed
