@@ -23,7 +23,12 @@ class DataFetcher:
         ]
         self.CRED_FILE = r"C:\Users\adamo\Dropbox\_Consulting\NaviSsurance\config\client_secret.json"
         self.TOKEN_FILE = r"C:\Users\adamo\Dropbox\_Consulting\NaviSsurance\config\navi_token.pkl"
-        self.DB_FILE = r"F:\naviSsurance_index.db"
+        # Import config for database path
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from config import DATABASE_PATH
+        self.DB_FILE = DATABASE_PATH
         self.gmail, self.calendar = self.get_services()
         # Yahoo account with IMAP credentials
         self.yahoo_account = {
