@@ -80,3 +80,9 @@ def refresh_dropbox_token():
     else:
         raise Exception(f"Failed to refresh access token: {response.text}")
         #return None, DROPBOX_REFRESH_TOKEN
+
+# Database configuration
+DATABASE_PATH = "naviSsurance_index.db"  # Local path in project root
+
+# Alternative: Use absolute path if needed
+# DATABASE_PATH = r"F:\naviSsurance_index.db"  # F: drive path
