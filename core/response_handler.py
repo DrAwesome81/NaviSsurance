@@ -82,16 +82,39 @@ class ResponseHandler:
             return "Local AI's acting up—try again."
 
     def perform_grok_search(self, query):
-        """Perform a web search using Grok API."""
+        """Perform a web search using Grok API with live search."""
         try:
+            from datetime import datetime, timedelta
+            current_date = datetime.now()
+            week_ago = current_date - timedelta(days=7)
+            
+            # Format dates for Grok live search
+            current_date_str = current_date.strftime("%Y-%m-%d")
+            week_ago_str = week_ago.strftime("%Y-%m-%d")
+            
             data = {
-                "messages": [{"role": "user", "content": f"Search web and summarize: {query}"}],
+                "messages": [{"role": "user", "content": f"Find specific MedTech news articles about: {query}. For each article, provide the exact URL to the full article, not just the website homepage."}],
                 "model": "grok-4-latest",
-                "stream": False
+                "stream": False,
+                "search_parameters": {
+                    "mode": "on",
+                    "from_date": week_ago_str,
+                    "to_date": current_date_str,
+                    "sources": [
+                        {"type": "web"},
+                        {"type": "news"}
+                    ],
+                    "return_citations": True
+                }
             }
             response = requests.post(API_ENDPOINT, headers=headers, json=data)
             response.raise_for_status()
-            return response.json()['choices'][0]['message']['content']
+            result = response.json()['choices'][0]['message']['content']
+            print(f"DEBUG: Grok live search query: {query}")
+            print(f"DEBUG: Date range: {week_ago_str} to {current_date_str}")
+            print(f"DEBUG: Grok search result length: {len(result)}")
+            print(f"DEBUG: Grok search result preview: {result[:200]}...")
+            return result
         except Exception as e:
             print(f"Error performing Grok search: {e}")
             return None
@@ -154,24 +177,35 @@ class ResponseHandler:
                 formatted_briefing = '\n'.join(formatted_lines)
                 formatted_briefing = formatted_briefing.replace('\n\n', '<br><br>').replace('\n', '<br>')
                 formatted_briefing = re.sub(r'^<br><br>', '', formatted_briefing.strip())
-                news_query_prompt = [{"role": "user", "content": "Create a query for up-to-date MedTech news within the past 7 days, focused on AI/ML, IVDs, SaMD, DTC devices."}]
-                news_query = self.hybrid_wrapper(news_query_prompt, "news_session").strip()
-                news_results = self.perform_grok_search(news_query)
-                if news_results:
-                    news_summary_prompt = [{"role": "user", "content": f"Summarize these news results snarkily, keeping MedTech focus: {news_results}"}]
-                    news_summary = self.hybrid_wrapper(news_summary_prompt, "news_session")
-                    formatted_briefing += f"<br><br><b>Relevant News:</b><br>{news_summary.replace('\n', '<br>')}"
+                # News is handled separately by the news widget, no need to duplicate here
                 return formatted_briefing
-            grok_response = self.hybrid_wrapper(conversation_history, session_id)
-            if "WEB_SEARCH:" in grok_response:
-                format_prompt = [{"role": "user", "content": f"Refine this as a precise web search query: {grok_response.split('WEB_SEARCH:')[1].strip()}"}]
-                formatted_query = self.hybrid_wrapper(format_prompt, session_id)
-                search_query = formatted_query.strip()
+            
+            # Handle news queries specifically - ALWAYS require web search
+            if "WEB_SEARCH:" in message or ("medtech" in message.lower() and "news" in message.lower()):
+                print("News query detected - forcing web search")
+                # Extract search query from WEB_SEARCH: prefix or use the message directly
+                if "WEB_SEARCH:" in message:
+                    search_query = message.split("WEB_SEARCH:")[1].strip()
+                else:
+                    search_query = message
+                
+                # Always perform web search for news using Grok live search
                 search_results = self.perform_grok_search(search_query)
                 if search_results:
-                    # Create a fresh prompt focused on the search results instead of repeating the conversation
-                    search_prompt = [{"role": "user", "content": f"Based on these search results, provide a helpful and accurate response:\n\n{search_results}\n\nPlease summarize these results in a conversational way, maintaining your personality and tone."}]
-                    grok_response = self.hybrid_wrapper(search_prompt, session_id)
+                    # Grok live search returns real-time results with citations
+                    # Format them into JSON for the news widget
+                    from datetime import datetime, timedelta
+                    current_date = datetime.now()
+                    week_ago = current_date - timedelta(days=7)
+                    current_date_str = current_date.strftime("%Y-%m-%d")
+                    week_ago_str = week_ago.strftime("%Y-%m-%d")
+                    
+                    news_prompt = [{"role": "user", "content": f"Based on these REAL live search results from {week_ago_str} to {current_date_str}, create a JSON array of up-to-5 MedTech news items. Each item should have: title, content (summary), url, source, published_date. CRITICAL: Extract the FULL article URLs (like https://example.com/article-title) not just homepage URLs. Look for specific article links in the search results. Results: {search_results}"}]
+                    grok_response = self.hybrid_wrapper(news_prompt, session_id)
+                    return grok_response
+                else:
+                    return "Unable to fetch current news. Please try again."
+            grok_response = self.hybrid_wrapper(conversation_history, session_id)
             task_segments = [seg for seg in grok_response.split("ADD_TASK:") if seg.strip()]
             added_tasks = []
             if task_segments and "ADD_TASK:" in grok_response:
