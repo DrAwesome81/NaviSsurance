@@ -1,4 +1,7 @@
 import sqlite3
+import sys
+import os
+
 from sentence_transformers import SentenceTransformer
 import torch
 
@@ -11,7 +14,12 @@ query_emb = model.encode(query, convert_to_tensor=True).cpu().numpy()
 
 # Search full index
 print("Embedding all files—might take 5-10 mins...")
-conn = sqlite3.connect('F:/naviSsurance_index.db')
+
+# Import config for database path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import DATABASE_PATH
+
+conn = sqlite3.connect('DATABASE_PATH')
 cursor = conn.cursor()
 cursor.execute("SELECT name, content FROM dropbox_index")
 results = cursor.fetchall()
