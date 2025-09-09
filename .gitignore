@@ -16,3 +16,15 @@ codebase_export.txt
 *.wav
 
 llama_cpp_python-0.3.8+cu128.gemma3-cp312-cp312-win_amd64.whl
+chroma_index_test/
+chroma_index/
+indexing.log
+search.log
+test_folder/
+naviSsurance_index.db
+gui/interface_backup.py
+gui/interface_duplicated_backup.py
+gui/interface_backup_refactor.py
+.gitignore
+gui/interface_backup_final.py
+
