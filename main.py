@@ -16,7 +16,7 @@ os.makedirs(logs_dir, exist_ok=True)
 
 # Set up logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(os.path.join(logs_dir, 'app.log')),
@@ -48,10 +48,9 @@ if __name__ == "__main__":
             logger.error(f"Error initializing Dropbox client: {e}")
             dbx = None
         
-        logger.info("Running auto index...")
+        # Auto-indexing disabled for cleaner startup
         try:
             auto_index_on_launch(dbx)
-            logger.info("Auto index completed successfully")
         except Exception as e:
             logger.error(f"Error during auto index: {e}")
         
