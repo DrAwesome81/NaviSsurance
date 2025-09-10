@@ -771,6 +771,27 @@ class DashboardTab(QWidget):
                 print("News widget not yet created, skipping load_news")
                 return
             
+            # Check if news was updated within the last hour
+            from datetime import datetime, timezone, timedelta
+            last_news_update = self.db.get_last_news_update()
+            current_time = datetime.now(timezone.utc).timestamp()
+            one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()
+            
+            
+            # If no timestamp exists (first run), proceed with update
+            if last_news_update == 0:
+                print("First run detected - proceeding with news update.")
+            elif last_news_update > one_hour_ago:
+                print(f"News was last updated {int((current_time - last_news_update) / 60)} minutes ago. Skipping update.")
+                # Just display existing news instead of loading new
+                self.display_stored_news()
+                return
+            else:
+                print(f"News is older than 1 hour ({int((current_time - last_news_update) / 60)} minutes ago). Proceeding with update.")
+            
+            # Update timestamp immediately when starting news fetch
+            self.db.update_last_news_update()
+            
             # Show loading message
             self.news_display.setHtml("<div style='color: white; text-align: center; padding: 20px;'>Loading latest news...</div>")
             
