@@ -8,7 +8,7 @@ import re
 from dateutil import parser
 os.environ["TORCH_DYNAMO_DISABLE"] = "1"
 from config import headers, API_ENDPOINT, base_system_message
-from core.file_handler import search_dropbox_index
+# Dropbox indexing removed - using RAG index instead
 
 logger = logging.getLogger(__name__)
 
