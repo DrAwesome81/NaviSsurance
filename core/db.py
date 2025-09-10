@@ -60,22 +60,7 @@ class DatabaseManager:
                 UNIQUE(title, url)
             )''')
             
-            # Dropbox index tables
-            conn.execute('''CREATE TABLE IF NOT EXISTS dropbox_files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                path TEXT UNIQUE NOT NULL,
-                link TEXT,
-                modified_time TEXT,
-                size INTEGER
-            )''')
-            conn.execute('''CREATE VIRTUAL TABLE IF NOT EXISTS dropbox_index
-                USING fts5 (name, content, tokenize='porter')
-            ''')
-            conn.execute('''CREATE TABLE IF NOT EXISTS index_metadata (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )''')
+            # Dropbox index tables removed - using RAG index instead
             
             # Notes table for the NoteTakingSystem
             conn.execute('''CREATE TABLE IF NOT EXISTS notes (
