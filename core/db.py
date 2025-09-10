@@ -399,7 +399,7 @@ class DatabaseManager:
             after_count = cursor.fetchone()[0]
             
             conn.commit()
-            print(f"Cleanup: {before_count} items before, deleted {total_deleted} items ({deleted_old_count} old by created_at, {deleted_malformed_count} malformed, {deleted_old_published_count} old by published_date), {after_count} items remaining")
+            # Cleanup completed
 
     def get_chat_history(self, session_id="main_session", limit=50):
         """Get chat history from the conversation table."""
