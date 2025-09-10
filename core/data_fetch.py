@@ -98,12 +98,15 @@ class DataFetcher:
                         singleEvents=True
                     ).execute().get('items', [])
                     
-                    # Add calendar info to each event
+                    # Add calendar info to each event and filter out "free" events
                     for event in events:
+                        # Skip events marked as "show as free" (transparency = "transparent")
+                        if event.get('transparency') == 'transparent':
+                            continue
+                            
                         event['calendarName'] = cal.get('summary', 'Unknown Calendar')
                         event['calendarColor'] = cal.get('backgroundColor', '#000000')
-                    
-                    all_events.extend(events)
+                        all_events.append(event)
             except Exception as e:
                 print(f"Error fetching events from calendar {cal.get('summary', 'Unknown')}: {e}")
                 continue
