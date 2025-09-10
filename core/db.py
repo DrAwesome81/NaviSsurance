@@ -228,6 +228,22 @@ class DatabaseManager:
             result = cursor.fetchone()
             return result[0] if result else 0
 
+    def get_last_news_update(self):
+        """Get the timestamp of the last news update."""
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.execute("SELECT timestamp FROM last_run WHERE id = 2")
+            result = cursor.fetchone()
+            return result[0] if result else 0
+
+    def update_last_news_update(self):
+        """Update the timestamp of the last news update."""
+        timestamp = int(datetime.now(UTC).timestamp())
+        with sqlite3.connect(self.db_name) as conn:
+            # Ensure the news update record exists
+            conn.execute("INSERT OR IGNORE INTO last_run (id, timestamp) VALUES (2, 0)")
+            conn.execute("UPDATE last_run SET timestamp = ? WHERE id = 2", (timestamp,))
+            conn.commit()
+
     def clear_tasks(self):
         with sqlite3.connect(self.db_name) as conn:
             conn.execute('DELETE FROM tasks')
