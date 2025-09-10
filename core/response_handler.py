@@ -9,7 +9,6 @@ from dateutil import parser
 os.environ["TORCH_DYNAMO_DISABLE"] = "1"
 from config import headers, API_ENDPOINT, base_system_message
 from core.file_handler import search_dropbox_index
-from core.deepseek_query_formatter import format_query
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +120,7 @@ class ResponseHandler:
 
     def hybrid_wrapper(self, messages, session_id, needs_search=False):
         if needs_search:
-            query = format_query(messages[-1]["content"])
+            query = messages[-1]["content"]
             results = self.perform_grok_search(query)
             messages.append({"role": "system", "content": f"Results: {results}"})
         return self.chat_with_llama(messages, session_id)
@@ -158,7 +157,7 @@ class ResponseHandler:
             if "daily briefing" in message.lower():
                 print("Manual briefing requested")
                 briefing = self.chat_handler.daily_briefing()
-                formatted_briefing = self.hybrid_wrapper([{"role": "user", "content": f"Turn this briefing into snarky rundown: {briefing} Use <br><br> sections, punchy. Suggest actions for unreplied (flag urgent). MedTech focus."}], "briefing_session")
+                formatted_briefing = self.hybrid_wrapper([{"role": "user", "content": f"Turn this briefing into snarky rundown: {briefing} Use <br><br> sections, punchy. The emails have already been intelligently filtered by AI - focus on presenting them well and suggesting actions for urgent items. MedTech focus. For any empty sections, generate appropriate snarky commentary instead of leaving them blank."}], "briefing_session")
                 formatted_briefing = re.sub(r'\n+', '\n', formatted_briefing)
                 formatted_briefing = re.sub(
                     r'(\*\*([A-Za-z\s]+):?\*\*|\[SECTION:([A-Za-z\s]+)\])',
