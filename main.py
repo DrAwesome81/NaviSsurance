@@ -5,7 +5,6 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QRect
 from gui.interface import ChatWindow
 from PyQt6.QtGui import QIcon
-from core.index_dropbox import auto_index_on_launch
 from core.api import get_dropbox_client
 from dotenv import load_dotenv
 
@@ -48,11 +47,7 @@ if __name__ == "__main__":
             logger.error(f"Error initializing Dropbox client: {e}")
             dbx = None
         
-        # Auto-indexing disabled for cleaner startup
-        try:
-            auto_index_on_launch(dbx)
-        except Exception as e:
-            logger.error(f"Error during auto index: {e}")
+        # Dropbox indexing removed - using RAG index instead
         
         logger.info("Setting up application window...")
         app.setWindowIcon(QIcon("assets/logo v2.png"))
