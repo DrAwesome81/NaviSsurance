@@ -43,19 +43,19 @@ class ChatHandler(QObject):
         events_str = "\n".join([
             f"- {e['summary']} at {e['start'].get('dateTime', e['start'].get('date'))} ({e.get('calendarName', 'Primary Calendar')})"
             for e in events
-        ]) if events else "- No meetings—slacker!"
+        ]) if events else ""
 
         # Tasks
         with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
             cursor = conn.execute("SELECT task, due_date FROM tasks WHERE due_date <= strftime('%m-%d-%Y', 'now')")
             tasks = cursor.fetchall()
-        tasks_str = "\n".join([f"- {t[0]} (due {t[1]})" for t in tasks]) if tasks else "- No tasks—living the dream!"
+        tasks_str = "\n".join([f"- {t[0]} (due {t[1]})" for t in tasks]) if tasks else ""
 
-        # Emails
+        # Emails - collect all emails for LLM analysis
         emails = self.data_fetcher.get_new_emails(last_run)
-        email_summaries = []
+        all_email_data = []
         with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
-            for msg in emails[:5]:  # Limit to 5 most recent emails
+            for msg in emails[:10]:  # Increased limit to give LLM more data to work with
                 details = self.data_fetcher.get_email_details(msg['id'], msg['source'])
                 if not details:
                     continue
@@ -65,39 +65,68 @@ class ChatHandler(QObject):
                 timestamp = int(details['internalDate']) // 1000
                 snippet = details.get('snippet', '')
                 
-                # Filter out marketing and non-essential emails
-                if any(kw in subject.lower() or kw in str(snippet).lower() for kw in [
-                    'unsubscribe', 'newsletter', 'promotion', 'sale', 'discount',
-                    'marketing', 'advertisement', 'spam', 'junk', 'notification',
-                    'alert', 'update', 'digest', 'summary', 'report'
-                ]):
-                    continue
-                    
-                # Check if email is from a client or potential client
-                is_client = any(domain in sender.lower() for domain in [
-                    'goldbugstrategies.com', 'dovahealth.ca', 'navisure.co'
-                ])
-                is_potential = any(kw in subject.lower() or kw in str(snippet).lower() for kw in [
-                    'consulting', 'project', 'proposal', 'quote', 'estimate',
-                    'opportunity', 'partnership', 'collaboration'
-                ])
+                # Store all email data for LLM analysis
+                email_data = {
+                    'sender': sender,
+                    'subject': subject,
+                    'snippet': snippet,
+                    'timestamp': timestamp,
+                    'source': msg['source']
+                }
+                all_email_data.append(email_data)
                 
-                email_summaries.append(f"- {sender} - {subject} - {snippet}")
+                # Still store in database for tracking
                 conn.execute("INSERT OR IGNORE INTO emails (id, sender, subject, timestamp, content, source, is_client, is_potential)"
                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                            (msg['id'], sender, subject, timestamp, snippet, msg['source'], is_client, is_potential))
+                            (msg['id'], sender, subject, timestamp, snippet, msg['source'], 0, 0))
+        
+        # Let LLM analyze and filter emails intelligently
+        if all_email_data:
+            email_analysis_prompt = f"""Analyze these emails and determine which ones are relevant for Dr. Odeh's daily briefing. 
+
+Context: Dr. Odeh is a MedTech consultant focused on AI/ML, IVDs, SaMD, DTC devices. He works with startups and needs to stay on top of:
+- Client communications (goldbugstrategies.com, dovahealth.ca)
+- Business opportunities and partnerships
+- Industry news and regulatory updates
+- Urgent matters requiring immediate attention
+
+Email data:
+{chr(10).join([f"From: {email['sender']} | Subject: {email['subject']} | Content: {email['snippet']}" for email in all_email_data])}
+
+Instructions:
+1. Filter out obvious spam, marketing, newsletters, and irrelevant emails
+2. Identify emails that are important for a MedTech consultant
+3. Flag urgent emails that need immediate attention
+4. Group related emails if any
+5. Return ONLY the relevant emails in this format:
+RELEVANT_EMAILS:
+- [Sender] - [Subject] - [Brief summary of why it's relevant]
+- [Next relevant email...]
+
+URGENT_EMAILS:
+- [Urgent email details if any]
+
+Return only the relevant emails, nothing else."""
+
+            # Get LLM analysis
+            try:
+                from core.response_handler import ResponseHandler
+                response_handler = ResponseHandler(None, None, None, self, "briefing_analysis", [])
+                email_analysis = response_handler.chat_with_llama([{"role": "user", "content": email_analysis_prompt}], "email_analysis")
                 
-                # Only suggest tasks for client or potential client emails
-                if is_client or is_potential:
-                    if any(kw in subject.lower() or kw in str(snippet).lower() for kw in ['urgent', 'asap', 'meeting', 'follow up', 'action required']):
-                        # Emit signal to show confirmation dialog
-                        self.task_added_signal.emit(
-                            f"Reply to {sender} re: {subject}",
-                            today.strftime('%Y-%m-%d')
-                            # "Would you like to add this as a task?"  # Commented out for now
-                        )
-                        
-        emails_str = "\n".join(email_summaries) if email_summaries else "- No new emails—quiet day!"
+                # Extract relevant emails from LLM response
+                if "RELEVANT_EMAILS:" in email_analysis:
+                    relevant_section = email_analysis.split("RELEVANT_EMAILS:")[1]
+                    if "URGENT_EMAILS:" in relevant_section:
+                        relevant_section = relevant_section.split("URGENT_EMAILS:")[0]
+                    emails_str = relevant_section.strip()
+                else:
+                    emails_str = ""
+            except Exception as e:
+                print(f"Error in LLM email analysis: {e}")
+                emails_str = ""
+        else:
+            emails_str = ""
 
         # Unreplied
         with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
@@ -110,10 +139,10 @@ class ChatHandler(QObject):
             """, (cutoff,))
             unreplied = cursor.fetchall()
         unreplied_str = "\n".join([f"- {u[0]} - \"{u[1]}\" (sent {datetime.fromtimestamp(u[2]).strftime('%Y-%m-%d %H:%M')})"
-                                for u in unreplied]) if unreplied else "- No ignored emails—caught up, huh?"
+                                for u in unreplied]) if unreplied else ""
 
         # Scheduling
-        scheduling_str = "- No scheduling nudges today—lazy day!"
+        scheduling_str = ""
 
         briefing = f"Daily Briefing for {today.strftime('%Y-%m-%d')}:\n" \
                   f"[SECTION:Meetings]\n{events_str}\n\n" \
