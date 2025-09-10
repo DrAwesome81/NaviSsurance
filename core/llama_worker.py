@@ -17,7 +17,7 @@ def main():
             n_gpu_layers=33,
             n_ctx=8192,
             n_threads=4,
-            verbose=True,
+            verbose=False,
             chat_format="llama-3"
         )
         print("Worker: After Llama init", file=sys.stderr)
