@@ -515,37 +515,17 @@ class DashboardTab(QWidget):
             
             # Use the same database path as the main application
             db_name = DATABASE_PATH
-            print(f"Loading tasks from database: {db_name}")
             
             # Check if database file exists
             import os
-            if os.path.exists(db_name):
-                print(f"Database file exists, size: {os.path.getsize(db_name)} bytes")
-            else:
-                print("Database file does not exist!")
+            if not os.path.exists(db_name):
                 self.task_list.addItem("Database file not found")
                 return
             
             with sqlite3.connect(db_name) as conn:
-                # Check what tables exist
-                cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
-                tables = cursor.fetchall()
-                print(f"Database tables: {[table[0] for table in tables]}")
-                
                 # Check if tasks table exists and has data
-                if ('tasks',) in tables:
-                    cursor = conn.execute("SELECT COUNT(*) FROM tasks")
-                    total_tasks = cursor.fetchone()[0]
-                    print(f"Total tasks in database: {total_tasks}")
-                    
-                    cursor = conn.execute("SELECT COUNT(*) FROM tasks WHERE completed = 0")
-                    active_tasks = cursor.fetchone()[0]
-                    print(f"Active tasks (not completed): {active_tasks}")
-                    
-                    cursor = conn.execute("SELECT COUNT(*) FROM tasks WHERE completed = 1")
-                    completed_tasks = cursor.fetchone()[0]
-                    print(f"Completed tasks: {completed_tasks}")
-                    
+                cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks';")
+                if cursor.fetchone():
                     # Get all tasks (both complete and incomplete) ordered by due date (nearest first), then by creation date
                     cursor = conn.execute("""
                         SELECT task, due_date, completed, session_id FROM tasks 
@@ -558,7 +538,6 @@ class DashboardTab(QWidget):
                             created_at DESC
                     """)
                     tasks = cursor.fetchall()
-                    print(f"Found {len(tasks)} total tasks")
                     
                     if tasks:
                         for task, due_date, completed, session_id in tasks:
@@ -975,13 +954,7 @@ class DashboardTab(QWidget):
         # Sort by the key (newest first)
         sorted_items = sorted(news_items, key=get_sort_key)
         
-        # Print sorting debug info
-        print("News items sorted by date (newest first):")
-        for i, item in enumerate(sorted_items[:5]):  # Show first 5
-            title, content, url, source, published_date, created_at = item
-            parsed_date = self.parse_published_date(published_date) if published_date else None
-            date_str = parsed_date.strftime('%Y-%m-%d') if parsed_date else published_date or "No date"
-            print(f"  {i+1}. {title[:50]}... - {date_str}")
+        # News items sorted by date (newest first)
         
         return sorted_items
 
@@ -1018,7 +991,7 @@ class DashboardTab(QWidget):
         return True
 
     def process_and_store_news(self, news_results):
-        print(f"Processing news results: {len(news_results)} characters")
+        # Processing news results
         
         stored_count = 0
         
@@ -1070,7 +1043,7 @@ class DashboardTab(QWidget):
                                 else:
                                     print(f"News item already exists: '{title[:50]}...'")
                     
-                    print(f"Total news items stored: {stored_count}")
+                    # News items stored successfully
                     return
                     
                 except json.JSONDecodeError as e:
@@ -1082,9 +1055,8 @@ class DashboardTab(QWidget):
             # Fall back to text parsing
             
         # Fallback: Parse as text (original method)
-        print("Falling back to text parsing...")
+        # Falling back to text parsing
         news_items = news_results.split('\n\n')
-        print(f"Found {len(news_items)} news items")
         
         for item in news_items:
             if item.strip():
@@ -1111,16 +1083,14 @@ class DashboardTab(QWidget):
                     else:
                         print(f"News item already exists: '{title[:50]}...'")
         
-        print(f"Total news items stored: {stored_count}")
-        print("Now calling display_stored_news()...")
+        # News items stored successfully
 
     def display_stored_news(self):
         try:
-            print("Displaying stored news...")
             
             # Check if news widget exists before using it
             if not hasattr(self, 'news_display'):
-                print("News widget not yet created, skipping display_stored_news")
+                # News widget not yet created, skipping display_stored_news
                 return
             
             # Clean up old news items first
@@ -1143,34 +1113,23 @@ class DashboardTab(QWidget):
                         # If we successfully parsed a date, check if it's recent
                         if parsed_date >= cutoff_date:
                             should_include = True
-                            print(f"Including item with parsed date {parsed_date.strftime('%Y-%m-%d')}: {title[:50]}...")
-                        else:
-                            print(f"Excluding old item with date {parsed_date.strftime('%Y-%m-%d')}: {title[:50]}...")
+                            # Including item with parsed date
                     else:
                         # If we can't parse the date, use heuristics
                         should_include = self.is_likely_recent_by_heuristics(published_date)
-                        if should_include:
-                            print(f"Including item by heuristics: {title[:50]}... (date: {published_date})")
-                        else:
-                            print(f"Excluding item by heuristics: {title[:50]}... (date: {published_date})")
                 else:
                     # If no published date, keep the item (it was recently created)
                     should_include = True
-                    print(f"Including item with no published date: {title[:50]}...")
                 
                 if should_include:
                     filtered_news.append(item)
             
             recent_news = filtered_news
-            print(f"Retrieved {len(recent_news)} news items from database")
+            # Retrieved news items from database
             
             if recent_news:
                 # Sort news items by published date (newest first)
                 display_news = self.sort_news_by_date(recent_news)
-                
-                # Show the first few items for debugging
-                for i, (title, content, url, source, published_date, created_at) in enumerate(display_news):
-                    print(f"News item {i+1}: '{title[:50]}...' - Created: {created_at}")
                 
                 news_text = "<div style='color: white; font-family: Arial, sans-serif;'>"
                 news_text += "<h3 style='color: #fd6262; margin-bottom: 15px;'>Latest News</h3>"
@@ -1194,10 +1153,10 @@ class DashboardTab(QWidget):
                 
                 news_text += "</div>"
                 self.news_display.setHtml(news_text)
-                print("News display updated successfully")
+                # News display updated successfully
             else:
                 self.news_display.setPlainText("No recent news available. Check back later.")
-                print("No recent news found in database")
+                # No recent news found in database
         except Exception as e:
             print(f"Error in display_stored_news: {e}")
             self.news_display.setPlainText(f"Error displaying news: {str(e)}")
