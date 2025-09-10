@@ -76,30 +76,6 @@ def setup_status_bar(window: 'ChatWindow') -> None:
     window.status_label = QLabel("Ready")
     window.statusBar.addWidget(window.status_label)
     
-    # Add spacer
-    window.statusBar.addPermanentWidget(QLabel("|"))
-    
-    # Connection status
-    window.connection_label = QLabel("🟢 Connected")
-    window.connection_label.setStyleSheet("color: #4CAF50;")
-    window.statusBar.addPermanentWidget(window.connection_label)
-    
-    # Add spacer
-    window.statusBar.addPermanentWidget(QLabel("|"))
-    
-    # Task counter
-    window.task_counter = QLabel("Tasks: 0")
-    window.statusBar.addPermanentWidget(window.task_counter)
-    
-    # Add spacer
-    window.statusBar.addPermanentWidget(QLabel("|"))
-    
-    # Leads counter
-    window.leads_counter = QLabel("Leads: 0")
-    window.statusBar.addPermanentWidget(window.leads_counter)
-    
-    # Add spacer
-    window.statusBar.addPermanentWidget(QLabel("|"))
     
     # Time display
     window.time_label = QLabel()
@@ -122,22 +98,7 @@ def update_status(window: 'ChatWindow', message: str, timeout: int = 3000) -> No
     if timeout > 0:
         QTimer.singleShot(timeout, lambda: window.status_label.setText("Ready"))
 
-def update_task_counter(window: 'ChatWindow', count: int) -> None:
-    """Update task counter in status bar."""
-    window.task_counter.setText(f"Tasks: {count}")
 
-def update_leads_counter(window: 'ChatWindow', count: int) -> None:
-    """Update leads counter in status bar."""
-    window.leads_counter.setText(f"Leads: {count}")
-
-def set_connection_status(window: 'ChatWindow', connected: bool) -> None:
-    """Update connection status indicator."""
-    if connected:
-        window.connection_label.setText("🟢 Connected")
-        window.connection_label.setStyleSheet("color: #4CAF50;")
-    else:
-        window.connection_label.setText("🔴 Disconnected")
-        window.connection_label.setStyleSheet("color: #F44336;")
 
 def next_tab(window: 'ChatWindow') -> None:
     """Navigate to next tab."""
