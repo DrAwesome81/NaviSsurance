@@ -52,8 +52,7 @@ def refresh_dropbox_token():
         "client_id": DROPBOX_APP_KEY,
         "client_secret": DROPBOX_APP_SECRET
     })
-    print(f"Request Data: {response.request.body}")
-    print(f"Status: {response.status_code}, Response: {response.text}")
+    # Removed verbose logging of sensitive data
     if response.status_code == 200:
         data = response.json()
         return data["access_token"], data.get("refresh_token", DROPBOX_REFRESH_TOKEN)
