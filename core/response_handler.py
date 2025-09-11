@@ -179,6 +179,10 @@ class ResponseHandler:
                 # News is handled separately by the news widget, no need to duplicate here
                 return formatted_briefing
             
+            # Handle task queries - natural language task list access
+            if self._is_task_query(message):
+                return self._handle_task_query(message)
+            
             # Handle news queries specifically - ALWAYS require web search
             if "WEB_SEARCH:" in message or ("medtech" in message.lower() and "news" in message.lower()):
                 print("News query detected - forcing web search")
@@ -227,3 +231,97 @@ class ResponseHandler:
     def _load_llama_model(self):
         """Deprecated: Use subprocess worker instead."""
         return None
+
+    def _is_task_query(self, message):
+        """Use LLM to intelligently detect if the message is asking about tasks."""
+        try:
+            # Use the local LLM to determine if this is a task-related query
+            detection_prompt = [
+                {"role": "system", "content": "You are a task detection assistant. Determine if the user's message is asking about their task list, todos, deadlines, or assignments. Respond with only 'YES' if it's task-related, or 'NO' if it's not."},
+                {"role": "user", "content": f"Is this message asking about tasks, todos, deadlines, or assignments? Message: '{message}'"}
+            ]
+            
+            response = self.chat_with_llama(detection_prompt, "task_detection")
+            return response.strip().upper() == "YES"
+        except Exception as e:
+            print(f"Error in task detection: {e}")
+            # Fallback to simple keyword detection
+            task_keywords = ['task', 'todo', 'due', 'deadline', 'assignment']
+            return any(keyword in message.lower() for keyword in task_keywords)
+
+    def _handle_task_query(self, message):
+        """Use LLM to intelligently handle task queries with natural responses."""
+        try:
+            # Get all tasks from database
+            all_tasks = self.chat_handler.db.get_tasks()
+            
+            if not all_tasks:
+                return "You don't have any tasks in your list right now."
+            
+            # Format task data for the LLM
+            task_data = self._format_tasks_for_llm(all_tasks)
+            
+            # Use LLM to generate a natural response based on the user's query and actual task data
+            task_prompt = [
+                {"role": "system", "content": f"""You are Navi, a helpful AI assistant. The user is asking about their task list. 
+
+Here is their current task data:
+{task_data}
+
+Respond naturally and conversationally to their question. Be helpful, specific, and use the actual task information provided. If they're asking about specific days, dates, or timeframes, calculate and provide accurate information. Be concise but informative."""},
+                {"role": "user", "content": message}
+            ]
+            
+            response = self.chat_with_llama(task_prompt, "task_query")
+            return response
+            
+        except Exception as e:
+            print(f"Error handling task query: {e}")
+            return "I had trouble accessing your task list. Please try again."
+
+    def _format_tasks_for_llm(self, all_tasks):
+        """Format task data for LLM consumption."""
+        from datetime import datetime
+        
+        if not all_tasks:
+            return "No tasks found."
+        
+        today = datetime.now().strftime('%m-%d-%Y')
+        task_info = []
+        
+        for task in all_tasks:
+            task_id, task_name, due_date, completed = task
+            status = "completed" if completed else "pending"
+            
+            # Calculate if overdue
+            is_overdue = due_date and due_date < today and not completed
+            
+            task_info.append({
+                "id": task_id,
+                "name": task_name,
+                "due_date": due_date,
+                "status": status,
+                "overdue": is_overdue
+            })
+        
+        # Create a structured summary for the LLM
+        pending_tasks = [t for t in task_info if t["status"] == "pending"]
+        completed_tasks = [t for t in task_info if t["status"] == "completed"]
+        overdue_tasks = [t for t in task_info if t["overdue"]]
+        
+        summary = f"""Task Summary:
+- Total tasks: {len(all_tasks)}
+- Pending: {len(pending_tasks)}
+- Completed: {len(completed_tasks)}
+- Overdue: {len(overdue_tasks)}
+
+Current date: {today}
+
+All Tasks:
+"""
+        
+        for task in task_info:
+            overdue_indicator = " (OVERDUE)" if task["overdue"] else ""
+            summary += f"- {task['name']} (due: {task['due_date']}, status: {task['status']}{overdue_indicator})\n"
+        
+        return summary
