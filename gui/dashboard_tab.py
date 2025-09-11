@@ -24,7 +24,7 @@ class NewsWorker(QThread):
             print(f"NewsWorker: Loading news... chat_handler type: {type(self.chat_handler)}")
             
             # Use a direct search query to avoid multiple API calls
-            direct_search_query = "recent MedTech news AI machine learning IVD SaMD FDA regulations medical devices"
+            direct_search_query = "recent MedTech news AI machine learning IVD SaMD FDA regulations guidances medical devices EHR electronic health records clinical decision support generative AI"
             
             # Use the chat handler to get news
             if hasattr(self.chat_handler, 'get_response'):
@@ -805,7 +805,18 @@ class DashboardTab(QWidget):
         """Called when there's an error loading news in the worker thread."""
         print(f"News error: {error_message}")
         if hasattr(self, 'news_display'):
-            self.news_display.setHtml(f"<div style='color: white;'>{error_message}</div>")
+            # Check if it's a credit limit error
+            if "credit" in error_message.lower() or "spending limit" in error_message.lower():
+                self.news_display.setHtml(
+                    "<div style='color: #ffcc00; text-align: center; padding: 20px;'>"
+                    "⚠️ Grok API credits exhausted<br>"
+                    "Please add credits to your xAI account to continue fetching news.<br>"
+                    "<small>Showing cached news below...</small></div>"
+                )
+                # Still try to show cached news
+                self.display_stored_news()
+            else:
+                self.news_display.setHtml(f"<div style='color: white;'>{error_message}</div>")
 
     def parse_published_date(self, date_str):
         """Parse published date string into datetime object."""
