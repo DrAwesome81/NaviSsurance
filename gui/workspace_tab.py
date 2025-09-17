@@ -1,15 +1,22 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QListWidget, QListWidgetItem, QTextEdit, QSplitter, QFileDialog
-from PyQt6.QtCore import Qt
-import os
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
+                            QListWidget, QListWidgetItem, QTextEdit, QSplitter, 
+                            QFileDialog, QProgressBar, QMenu, QCheckBox)
+from PyQt6.QtCore import Qt, QMimeData
+from PyQt6.QtGui import QDropEvent, QDragEnterEvent
 from core.api import DropboxClient
 from dropbox import files
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
+import json
+import os
+from datetime import datetime
 
 class WorkspaceTab(QWidget):
-    def __init__(self, db):
+    def __init__(self, db, chat_handler):
         super().__init__()
         self.db = db
+        self.chat_handler = chat_handler
         self.dropbox_client = DropboxClient()
-        self.selected_file = None
+        self.selected_files = []
         self.setup_ui()
 
     def setup_ui(self):
@@ -17,346 +24,355 @@ class WorkspaceTab(QWidget):
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
         
-        # Create main splitter for the workspace
+        # Main splitter
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(main_splitter)
         
-        # Left: Folder Tree View (Dropbox/Google Drive files)
-        self.setup_folder_tree(main_splitter)
+        # Left: File Selection Area
+        self.setup_file_selection(main_splitter)
         
-        # Center: Document Preview Pane
+        # Right: Preview/Results Pane
         self.setup_preview_pane(main_splitter)
         
-        # Right: Generation/Compliance Tools Sidebar
-        self.setup_tools_sidebar(main_splitter)
+        # Set proportions (20% files, 80% preview)
+        main_splitter.setSizes([384, 1536])
         
-        # Set splitter proportions (30% left, 50% center, 20% right)
-        main_splitter.setSizes([576, 960, 384])  # 1920 * 0.3, 0.5, 0.2
+        self.setLayout(layout)
+
+    def setup_file_selection(self, parent_splitter):
+        file_widget = QWidget()
+        file_widget.setAcceptDrops(True)
+        file_layout = QVBoxLayout(file_widget)
+        file_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Add status bar at bottom
+        file_header = QLabel("Files")
+        file_header.setStyleSheet("color: white; font-weight: bold; padding: 8px; background-color: rgba(253, 98, 98, 0.8); border-radius: 3px;")
+        file_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        file_layout.addWidget(file_header)
+        
+        # Status and progress
         status_layout = QHBoxLayout()
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("color: white; padding: 5px;")
         status_layout.addWidget(self.status_label)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        status_layout.addWidget(self.progress_bar)
         status_layout.addStretch()
+        file_layout.addLayout(status_layout)
         
-        # Add refresh button
-        refresh_btn = QPushButton("Refresh Files")
-        refresh_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white; border: none; padding: 5px 10px; border-radius: 3px;")
-        refresh_btn.clicked.connect(self.refresh_files)
-        status_layout.addWidget(refresh_btn)
+        # Select and Actions buttons
+        btn_layout = QHBoxLayout()
+        select_btn = QPushButton("Select File/Folder")
+        select_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white; border: none; padding: 8px; border-radius: 3px;")
+        select_btn.clicked.connect(self.select_files)
+        btn_layout.addWidget(select_btn)
         
-        layout.addLayout(status_layout)
+        actions_btn = QPushButton("Actions")
+        actions_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white; border: none; padding: 8px; border-radius: 3px;")
+        self.actions_menu = QMenu()
+        self.actions_menu.addAction("Generate Document", self.generate_document)
+        self.actions_menu.addAction("Compliance Analysis", self.run_compliance_analysis)
+        self.actions_menu.addAction("Summarize", self.summarize_files)
+        self.actions_menu.addAction("Save Results", self.save_results)
+        actions_btn.setMenu(self.actions_menu)
+        btn_layout.addWidget(actions_btn)
+        file_layout.addLayout(btn_layout)
         
-        # Load initial files after UI is fully set up
-        self.load_dropbox_files()
-
-    def setup_folder_tree(self, parent_splitter):
-        """Setup the left folder tree view for Dropbox files."""
-        tree_widget = QWidget()
-        tree_layout = QVBoxLayout(tree_widget)
-        tree_layout.setContentsMargins(0, 0, 0, 0)
+        self.file_list = QListWidget()
+        self.file_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.3); border-radius: 3px;")
+        self.file_list.setToolTip("Drag and drop files here or mark RAG results")
+        self.file_list.itemClicked.connect(self.on_file_selected)
+        file_layout.addWidget(self.file_list)
         
-        # Header
-        tree_header = QLabel("File Explorer")
-        tree_header.setStyleSheet("color: white; font-weight: bold; padding: 8px; background-color: rgba(253, 98, 98, 0.8); border-radius: 3px;")
-        tree_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tree_layout.addWidget(tree_header)
+        file_widget.dragEnterEvent = self.dragEnterEvent
+        file_widget.dropEvent = self.dropEvent
         
-        # Search box
-        self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText("Search files...")
-        self.search_box.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.5); padding: 5px; border-radius: 3px;")
-        self.search_box.textChanged.connect(self.filter_files)
-        tree_layout.addWidget(self.search_box)
-        
-        # File tree
-        self.file_tree = QListWidget()
-        self.file_tree.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.3); border-radius: 3px;")
-        self.file_tree.itemClicked.connect(self.on_file_selected)
-        tree_layout.addWidget(self.file_tree)
-        
-        parent_splitter.addWidget(tree_widget)
+        parent_splitter.addWidget(file_widget)
 
     def setup_preview_pane(self, parent_splitter):
-        """Setup the center document preview pane."""
         preview_widget = QWidget()
         preview_layout = QVBoxLayout(preview_widget)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Header
-        preview_header = QLabel("Document Preview")
+        preview_header = QLabel("Results / Preview")
         preview_header.setStyleSheet("color: white; font-weight: bold; padding: 8px; background-color: rgba(253, 98, 98, 0.8); border-radius: 3px;")
         preview_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         preview_layout.addWidget(preview_header)
         
-        # Preview area
         self.preview_text = QTextEdit()
         self.preview_text.setReadOnly(True)
         self.preview_text.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.3); border-radius: 3px;")
-        self.preview_text.setPlaceholderText("Select a file from the left panel to preview its contents...")
+        self.preview_text.setPlaceholderText("Results or file preview will appear here...")
         preview_layout.addWidget(self.preview_text)
-        
-        # Document info
-        info_layout = QHBoxLayout()
-        self.file_info_label = QLabel("No file selected")
-        self.file_info_label.setStyleSheet("color: white; padding: 5px;")
-        info_layout.addWidget(self.file_info_label)
-        info_layout.addStretch()
-        
-        # Download button
-        self.download_btn = QPushButton("Download")
-        self.download_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white; border: none; padding: 5px 10px; border-radius: 3px;")
-        self.download_btn.clicked.connect(self.download_file)
-        self.download_btn.setEnabled(False)
-        info_layout.addWidget(self.download_btn)
-        
-        preview_layout.addLayout(info_layout)
         
         parent_splitter.addWidget(preview_widget)
 
-    def setup_tools_sidebar(self, parent_splitter):
-        """Setup the right sidebar with generation and compliance tools."""
-        tools_widget = QWidget()
-        tools_layout = QVBoxLayout(tools_widget)
-        tools_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Header
-        tools_header = QLabel("Tools & Analysis")
-        tools_header.setStyleSheet("color: white; font-weight: bold; padding: 8px; background-color: rgba(253, 98, 98, 0.8); border-radius: 3px;")
-        tools_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tools_layout.addWidget(tools_header)
-        
-        # Document Analysis Section
-        analysis_group = QLabel("Document Analysis")
-        analysis_group.setStyleSheet("color: white; font-weight: bold; margin-top: 10px;")
-        tools_layout.addWidget(analysis_group)
-        
-        # Analysis buttons
-        self.analyze_btn = QPushButton("Analyze Document")
-        self.analyze_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white; border: none; padding: 8px; border-radius: 3px; margin: 2px;")
-        self.analyze_btn.clicked.connect(self.analyze_document)
-        self.analyze_btn.setEnabled(False)
-        tools_layout.addWidget(self.analyze_btn)
-        
-        self.chunk_btn = QPushButton("Generate Chunks")
-        self.chunk_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white; border: none; padding: 8px; border-radius: 3px; margin: 2px;")
-        self.chunk_btn.clicked.connect(self.generate_chunks)
-        self.chunk_btn.setEnabled(False)
-        tools_layout.addWidget(self.chunk_btn)
-        
-        # Compliance Section
-        compliance_group = QLabel("Compliance Tools")
-        compliance_group.setStyleSheet("color: white; font-weight: bold; margin-top: 15px;")
-        tools_layout.addWidget(compliance_group)
-        
-        self.compliance_btn = QPushButton("Run Compliance Check")
-        self.compliance_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white; border: none; padding: 8px; border-radius: 3px; margin: 2px;")
-        self.compliance_btn.clicked.connect(self.run_compliance_check)
-        self.compliance_btn.setEnabled(False)
-        tools_layout.addWidget(self.compliance_btn)
-        
-        # Results display
-        results_label = QLabel("Results:")
-        results_label.setStyleSheet("color: white; font-weight: bold; margin-top: 15px;")
-        tools_layout.addWidget(results_label)
-        
-        self.results_display = QTextEdit()
-        self.results_display.setReadOnly(True)
-        self.results_display.setMaximumHeight(200)
-        self.results_display.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.3); border-radius: 3px;")
-        self.results_display.setPlaceholderText("Analysis results will appear here...")
-        tools_layout.addWidget(self.results_display)
-        
-        # Add stretch to push everything to the top
-        tools_layout.addStretch()
-        
-        parent_splitter.addWidget(tools_widget)
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
 
-    def load_dropbox_files(self):
-        """Load files from Dropbox into the tree view."""
+    def dropEvent(self, event: QDropEvent):
         try:
-            self.status_label.setText("Loading files from Dropbox...")
-            dbx = self.dropbox_client.get_client()
+            self.status_label.setText("Processing dropped files...")
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
             
-            result = dbx.files_list_folder("", recursive=False)
-            files = []
-            
-            for entry in result.entries:
-                if hasattr(entry, 'path_display'):
-                    files.append({
-                        'name': entry.name,
-                        'path': entry.path_display,
-                        'is_folder': isinstance(entry, files.FolderMetadata),
-                        'size': getattr(entry, 'size', 0),
-                        'modified': getattr(entry, 'server_modified', None)
-                    })
-            
-            files.sort(key=lambda x: (not x['is_folder'], x['name'].lower()))
-            
-            self.file_tree.clear()
-            for file_info in files:
-                icon = "📁" if file_info['is_folder'] else "📄"
-                item_text = f"{icon} {file_info['name']}"
-                item = QListWidgetItem(item_text)
-                item.setData(Qt.ItemDataRole.UserRole, file_info)
-                self.file_tree.addItem(item)
-            
-            self.status_label.setText(f"Loaded {len(files)} items")
-            
+            valid_files_count = 0
+            for url in event.mimeData().urls():
+                path = url.toLocalFile()
+                
+                # Skip if path is empty (e.g., web URLs dragged from browser)
+                if not path:
+                    continue
+                    
+                # Skip if file doesn't exist
+                if not os.path.exists(path):
+                    continue
+                    
+                file_info = {
+                    'name': os.path.basename(path),
+                    'path': path,
+                    'is_folder': os.path.isdir(path),
+                    'size': os.path.getsize(path) if os.path.isfile(path) else 0,
+                    'modified': datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S"),
+                    'marked': False
+                }
+                self.add_file_to_list(file_info)
+                valid_files_count += 1
+                
+            self.status_label.setText(f"Added {valid_files_count} files")
+            self.progress_bar.setVisible(False)
         except Exception as e:
-            self.status_label.setText(f"Error loading files: {str(e)}")
-            self.file_tree.addItem("Error loading files from Dropbox")
+            self.status_label.setText(f"Error processing files: {str(e)}")
+            self.progress_bar.setVisible(False)
 
-    def filter_files(self, search_text):
-        """Filter files based on search text."""
-        for i in range(self.file_tree.count()):
-            item = self.file_tree.item(i)
-            file_info = item.data(Qt.ItemDataRole.UserRole)
-            if file_info and search_text.lower() in file_info['name'].lower():
-                item.setHidden(False)
-            else:
-                item.setHidden(True)
+    def select_files(self):
+        try:
+            dialog = QFileDialog(self)
+            dialog.setFileMode(QFileDialog.FileMode.AnyFile)
+            dialog.setOption(QFileDialog.Option.ShowDirsOnly, False)
+            if dialog.exec():
+                for path in dialog.selectedFiles():
+                    file_info = {
+                        'name': os.path.basename(path),
+                        'path': path,
+                        'is_folder': os.path.isdir(path),
+                        'size': os.path.getsize(path) if os.path.isfile(path) else 0,
+                        'modified': datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S"),
+                        'marked': False
+                    }
+                    self.add_file_to_list(file_info)
+                self.status_label.setText(f"Added {len(dialog.selectedFiles())} files")
+        except Exception as e:
+            self.status_label.setText(f"Error selecting files: {str(e)}")
+
+    def add_file_to_list(self, file_info):
+        if not file_info['is_folder']:
+            icon = "📄"
+            item_text = file_info['name'][:30] + "..." if len(file_info['name']) > 30 else file_info['name']
+            item = QListWidgetItem()
+            widget = QWidget()
+            layout = QHBoxLayout(widget)
+            checkbox = QCheckBox()
+            checkbox.setChecked(file_info['marked'])
+            checkbox.stateChanged.connect(lambda state: self.toggle_mark(file_info, state))
+            layout.addWidget(checkbox)
+            label = QLabel(f"{icon} {item_text}")
+            label.setToolTip(file_info['name'])
+            layout.addWidget(label)
+            layout.addStretch()
+            item.setSizeHint(widget.sizeHint())
+            item.setData(Qt.ItemDataRole.UserRole, file_info)
+            self.file_list.addItem(item)
+            self.file_list.setItemWidget(item, widget)
+            self.selected_files.append(file_info)
+
+    def toggle_mark(self, file_info, state):
+        file_info['marked'] = state == Qt.CheckState.Checked.value
+
+    def add_rag_results(self, results):
+        # Placeholder for RAG search results
+        try:
+            self.status_label.setText("Adding RAG search results...")
+            self.progress_bar.setVisible(True)
+            for doc in results[:5]:
+                file_info = {
+                    'name': doc.metadata.get('source', 'unknown'),
+                    'path': doc.metadata.get('source', ''),
+                    'is_folder': False,
+                    'size': 0,
+                    'modified': None,
+                    'marked': True
+                }
+                self.add_file_to_list(file_info)
+            self.status_label.setText(f"Added {len(results)} RAG results")
+            self.progress_bar.setVisible(False)
+        except Exception as e:
+            self.status_label.setText(f"Error adding RAG results: {str(e)}")
+            self.progress_bar.setVisible(False)
 
     def on_file_selected(self, item):
-        """Handle file selection in the tree."""
         file_info = item.data(Qt.ItemDataRole.UserRole)
-        if not file_info:
+        if not file_info or file_info['is_folder']:
             return
-        
-        self.selected_file = file_info
-        self.file_info_label.setText(f"Selected: {file_info['name']}")
-        
-        # Enable relevant buttons
-        self.analyze_btn.setEnabled(True)
-        self.chunk_btn.setEnabled(True)
-        self.compliance_btn.setEnabled(True)
-        self.download_btn.setEnabled(True)
-        
-        # Load file preview if it's a text-based file
-        if not file_info['is_folder']:
-            self.load_file_preview(file_info)
-
-    def load_file_preview(self, file_info):
-        """Load and display file preview."""
         try:
             self.status_label.setText("Loading file preview...")
-            
+            self.progress_bar.setVisible(True)
             text_extensions = {'.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml', '.csv'}
+            pdf_extensions = {'.pdf'}
+            doc_extensions = {'.docx'}
             file_ext = os.path.splitext(file_info['name'])[1].lower()
             
+            content = ""
             if file_ext in text_extensions:
-                dbx = self.dropbox_client.get_client()
-                temp_path = f"temp_{file_info['name']}"
-                
-                with open(temp_path, 'wb') as f:
-                    metadata, response = dbx.files_download(file_info['path'])
-                    f.write(response.content)
-                
-                with open(temp_path, 'r', encoding='utf-8') as f:
+                with open(file_info['path'], 'r', encoding='utf-8') as f:
                     content = f.read()
-                
-                os.remove(temp_path)
-                
-                preview_content = content[:1000]
-                if len(content) > 1000:
-                    preview_content += f"\n\n... (showing first 1000 characters of {len(content)} total)"
-                
-                self.preview_text.setPlainText(preview_content)
-                self.status_label.setText("File preview loaded")
-            else:
-                self.preview_text.setPlainText(f"Preview not available for {file_ext} files.\nFile size: {file_info['size']} bytes")
-                self.status_label.setText("Preview not available for this file type")
-                
-        except Exception as e:
-            self.preview_text.setPlainText(f"Error loading file preview: {str(e)}")
-            self.status_label.setText(f"Error: {str(e)}")
-
-    def analyze_document(self):
-        """Analyze the selected document."""
-        if not self.selected_file:
-            return
-        
-        try:
-            self.status_label.setText("Analyzing document...")
-            self.results_display.setPlainText("Analysis in progress...")
+            elif file_ext in pdf_extensions:
+                loader = PyPDFLoader(file_info['path'])
+                pages = loader.load()
+                content = "\n\n".join(page.page_content for page in pages[:5])
+            elif file_ext in doc_extensions:
+                loader = Docx2txtLoader(file_info['path'])
+                content = loader.load()[0].page_content
             
-            content = self.preview_text.toPlainText()
-            if content and not content.startswith("Preview not available"):
-                word_count = len(content.split())
-                line_count = len(content.split('\n'))
-                char_count = len(content)
-                
-                analysis_result = f"""Document Analysis Results:
-                
-File: {self.selected_file['name']}
-Size: {self.selected_file['size']} bytes
-Characters: {char_count}
-Words: {word_count}
-Lines: {line_count}
-Average words per line: {word_count/line_count:.1f if line_count > 0 else 0}
-
-Content Summary:
-{content[:200]}..."""
-                
-                self.results_display.setPlainText(analysis_result)
-                self.status_label.setText("Analysis complete")
-            else:
-                self.results_display.setPlainText("Cannot analyze: No text content available")
-                
+            preview_content = content[:5000]
+            if len(content) > 5000:
+                preview_content += f"\n\n... (showing first 5000 characters of {len(content)} total)"
+            self.preview_text.setPlainText(preview_content)
+            self.status_label.setText("File preview loaded")
+            self.progress_bar.setVisible(False)
         except Exception as e:
-            self.results_display.setPlainText(f"Analysis error: {str(e)}")
+            self.preview_text.setPlainText(f"Error loading preview: {str(e)}")
             self.status_label.setText(f"Error: {str(e)}")
+            self.progress_bar.setVisible(False)
 
-    def generate_chunks(self):
-        """Generate text chunks from the document."""
-        if not self.selected_file:
+    def generate_document(self):
+        marked_files = [f for f in self.selected_files if f['marked']]
+        if not marked_files:
+            self.status_label.setText("No files marked")
             return
-        
         try:
-            self.status_label.setText("Generating chunks...")
-            content = self.preview_text.toPlainText()
+            self.status_label.setText("Generating document...")
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
             
-            if content and not content.startswith("Preview not available"):
-                paragraphs = [p.strip() for p in content.split('\n\n') if p.strip()]
-                chunk_result = "Generated Chunks:\n\n"
-                for i, chunk in enumerate(paragraphs[:5], 1):  # Limit to first 5 for preview
-                    chunk_result += f"Chunk {i}: {chunk[:100]}...\n\n"
-                if len(paragraphs) > 5:
-                    chunk_result += f"... and {len(paragraphs) - 5} more chunks"
-                self.results_display.setPlainText(chunk_result)
-                self.status_label.setText("Chunks generated")
-            else:
-                self.results_display.setPlainText("Cannot generate chunks: No text content available")
-                
+            content = ""
+            for file_info in marked_files[:5]:
+                file_ext = os.path.splitext(file_info['name'])[1].lower()
+                if file_ext in {'.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml', '.csv'}:
+                    with open(file_info['path'], 'r', encoding='utf-8') as f:
+                        content += f.read() + "\n\n"
+                elif file_ext in {'.pdf'}:
+                    loader = PyPDFLoader(file_info['path'])
+                    content += "\n\n".join(page.page_content for page in loader.load()[:5]) + "\n\n"
+                elif file_ext in {'.docx'}:
+                    loader = Docx2txtLoader(file_info['path'])
+                    content += loader.load()[0].page_content + "\n\n"
+            
+            # Placeholder RunPod API call
+            response = {"document": "Placeholder: RunPod API call for document generation not implemented yet"}
+            self.preview_text.setHtml(response['document'].replace('\n', '<br>'))
+            self.status_label.setText("Document generated")
+            self.progress_bar.setVisible(False)
         except Exception as e:
-            self.results_display.setPlainText(f"Chunk generation error: {str(e)}")
+            self.preview_text.setPlainText(f"Error generating document: {str(e)}")
             self.status_label.setText(f"Error: {str(e)}")
+            self.progress_bar.setVisible(False)
 
-    def run_compliance_check(self):
-        """Placeholder for compliance check."""
-        self.results_display.setPlainText("Compliance check not implemented yet.")
-
-    def download_file(self):
-        """Download the selected file from Dropbox."""
-        if not self.selected_file or self.selected_file['is_folder']:
+    def run_compliance_analysis(self):
+        marked_files = [f for f in self.selected_files if f['marked']]
+        if not marked_files:
+            self.status_label.setText("No files marked")
             return
-        
         try:
-            self.status_label.setText("Downloading file...")
-            dbx = self.dropbox_client.get_client()
+            self.status_label.setText("Running compliance analysis...")
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            
+            content = ""
+            for file_info in marked_files[:5]:
+                file_ext = os.path.splitext(file_info['name'])[1].lower()
+                if file_ext in {'.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml', '.csv'}:
+                    with open(file_info['path'], 'r', encoding='utf-8') as f:
+                        content += f.read() + "\n\n"
+                elif file_ext in {'.pdf'}:
+                    loader = PyPDFLoader(file_info['path'])
+                    content += "\n\n".join(page.page_content for page in loader.load()[:5]) + "\n\n"
+                elif file_ext in {'.docx'}:
+                    loader = Docx2txtLoader(file_info['path'])
+                    content += loader.load()[0].page_content + "\n\n"
+            
+            # Placeholder RunPod API call
+            response = {"compliance_report": "Placeholder: RunPod API call for compliance analysis not implemented yet"}
+            self.preview_text.setHtml(response['compliance_report'].replace('\n', '<br>'))
+            self.status_label.setText("Compliance analysis complete")
+            self.progress_bar.setVisible(False)
+        except Exception as e:
+            self.preview_text.setPlainText(f"Error running compliance analysis: {str(e)}")
+            self.status_label.setText(f"Error: {str(e)}")
+            self.progress_bar.setVisible(False)
+
+    def summarize_files(self):
+        marked_files = [f for f in self.selected_files if f['marked']]
+        if not marked_files:
+            self.status_label.setText("No files marked")
+            return
+        try:
+            self.status_label.setText("Summarizing files...")
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            
+            content = ""
+            for file_info in marked_files[:5]:
+                file_ext = os.path.splitext(file_info['name'])[1].lower()
+                if file_ext in {'.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml', '.csv'}:
+                    with open(file_info['path'], 'r', encoding='utf-8') as f:
+                        content += f.read() + "\n\n"
+                elif file_ext in {'.pdf'}:
+                    loader = PyPDFLoader(file_info['path'])
+                    content += "\n\n".join(page.page_content for page in loader.load()[:5]) + "\n\n"
+                elif file_ext in {'.docx'}:
+                    loader = Docx2txtLoader(file_info['path'])
+                    content += loader.load()[0].page_content + "\n\n"
+            
+            # Placeholder RunPod API call
+            response = {"summary": "Placeholder: RunPod API call for file summarization not implemented yet"}
+            self.preview_text.setHtml(response['summary'].replace('\n', '<br>'))
+            self.status_label.setText("Files summarized")
+            self.progress_bar.setVisible(False)
+        except Exception as e:
+            self.preview_text.setPlainText(f"Error summarizing files: {str(e)}")
+            self.status_label.setText(f"Error: {str(e)}")
+            self.progress_bar.setVisible(False)
+
+    def save_results(self):
+        try:
+            results = self.preview_text.toPlainText()
+            if not results or results.startswith("Error"):
+                self.status_label.setText("No results to save")
+                return
             
             save_path, _ = QFileDialog.getSaveFileName(
-                self, "Save File As", self.selected_file['name'], "All Files (*)"
+                self, "Save Results", "results.txt", "Text Files (*.txt);;Word Documents (*.docx);;PDF Files (*.pdf)"
             )
             if save_path:
-                with open(save_path, 'wb') as f:
-                    metadata, response = dbx.files_download(self.selected_file['path'])
-                    f.write(response.content)
-                self.status_label.setText("File downloaded successfully")
+                dbx = self.dropbox_client.get_client()
+                if save_path.endswith('.txt'):
+                    with open(save_path, 'w', encoding='utf-8') as f:
+                        f.write(results)
+                elif save_path.endswith('.docx'):
+                    from docx import Document
+                    doc = Document()
+                    doc.add_paragraph(results)
+                    doc.save(save_path)
+                elif save_path.endswith('.pdf'):
+                    from fpdf import FPDF
+                    pdf = FPDF()
+                    pdf.add_page()
+                    pdf.set_font("Arial", size=12)
+                    pdf.multi_cell(0, 10, results)
+                    pdf.output(save_path)
+                self.status_label.setText(f"Results saved to {save_path}")
         except Exception as e:
-            self.status_label.setText(f"Error downloading file: {str(e)}")
-
-    def refresh_files(self):
-        """Refresh the file list."""
-        self.load_dropbox_files()
+            self.status_label.setText(f"Error saving results: {str(e)}")
