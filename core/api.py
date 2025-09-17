@@ -8,7 +8,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Load environment variables
-load_dotenv("C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/.env", override=True)
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", "config", ".env"), override=True)
 
 # Load from environment variables
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
