@@ -30,18 +30,57 @@ class DatabaseManager:
             conn.execute('''CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT,
-                task TEXT,
+                task_text TEXT,
                 due_date TEXT,
+                category TEXT,
+                recurrence TEXT,
                 completed INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
             
-            # Drop and recreate archived_tasks table
+            # Check if the table exists with old schema and migrate it
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(tasks)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            # If task_text doesn't exist, try to migrate from common alternatives
+            if 'task_text' not in columns:
+                if 'task' in columns:
+                    # Rename 'task' to 'task_text'
+                    conn.execute("ALTER TABLE tasks RENAME COLUMN task TO task_text")
+                    print("DEBUG: Migrated 'task' column to 'task_text'")
+                elif 'description' in columns:
+                    # Rename 'description' to 'task_text'
+                    conn.execute("ALTER TABLE tasks RENAME COLUMN description TO task_text")
+                    print("DEBUG: Migrated 'description' column to 'task_text'")
+                elif 'content' in columns:
+                    # Rename 'content' to 'task_text'
+                    conn.execute("ALTER TABLE tasks RENAME COLUMN content TO task_text")
+                    print("DEBUG: Migrated 'content' column to 'task_text'")
+                else:
+                    print("WARNING: Could not find task column to migrate")
+            
+            # Add missing columns if they don't exist
+            if 'category' not in columns:
+                conn.execute("ALTER TABLE tasks ADD COLUMN category TEXT DEFAULT 'Business'")
+                print("DEBUG: Added 'category' column with default 'Business'")
+            
+            if 'recurrence' not in columns:
+                conn.execute("ALTER TABLE tasks ADD COLUMN recurrence TEXT DEFAULT 'None'")
+                print("DEBUG: Added 'recurrence' column with default 'None'")
+            
+            if 'session_id' not in columns:
+                conn.execute("ALTER TABLE tasks ADD COLUMN session_id TEXT")
+                print("DEBUG: Added 'session_id' column")
+            
+            # Update archived_tasks table to match new schema
             conn.execute('DROP TABLE IF EXISTS archived_tasks')
             conn.execute('''CREATE TABLE archived_tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task TEXT,
+                task_text TEXT,
                 due_date TEXT,
+                category TEXT,
+                recurrence TEXT,
                 completed INTEGER,
                 session_id TEXT,
                 created_at DATETIME,
@@ -123,20 +162,53 @@ class DatabaseManager:
             cursor = conn.execute(query, params)
             return cursor.fetchall()
 
-    def add_task(self, session_id, task_text, due_date):
+    def add_task(self, session_id, task_text, due_date, category="Business", recurrence="None", completed=0):
         with sqlite3.connect(self.db_name) as conn:
-            conn.execute('INSERT INTO tasks (session_id, task, due_date) VALUES (?, ?, ?)',
-                        (session_id, task_text, due_date))
+            cursor = conn.execute('INSERT INTO tasks (session_id, task_text, due_date, category, recurrence, completed) VALUES (?, ?, ?, ?, ?, ?)',
+                        (session_id, task_text, due_date, category, recurrence, completed))
             conn.commit()
+            return cursor.lastrowid
 
-    def get_tasks(self):
+    def get_tasks(self, category=None, date_filter=None, specific_date=None):
         with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('SELECT id, task, due_date, completed FROM tasks ORDER BY due_date ASC')
-            return cursor.fetchall()
+            query = "SELECT id, task_text, due_date, category, recurrence, completed FROM tasks WHERE 1=1"
+            params = []
+            if category:
+                query += " AND category = ?"
+                params.append(category)
+            if date_filter == "Today":
+                query += " AND due_date = ?"
+                params.append(datetime.now().strftime("%m-%d-%Y"))
+            elif date_filter == "Overdue":
+                query += " AND due_date IS NOT NULL AND due_date < ?"
+                params.append(datetime.now().strftime("%m-%d-%Y"))
+            elif date_filter == "No Date":
+                query += " AND due_date IS NULL"
+            elif date_filter == "Specific Date" and specific_date:
+                query += " AND due_date = ?"
+                params.append(specific_date)
+            query += " ORDER BY due_date IS NULL, due_date ASC"
+
+            cursor = conn.execute(query, params)
+            results = cursor.fetchall()
+
+            return results
+
+    def get_task_category(self, task_text):
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.execute("SELECT category FROM tasks WHERE task_text = ?", (task_text,))
+            result = cursor.fetchone()
+            return result[0] if result else "Personal"
+
+    def get_task_recurrence(self, task_id):
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.execute("SELECT recurrence FROM tasks WHERE id = ?", (task_id,))
+            result = cursor.fetchone()
+            return result[0] if result else "None"
 
     def delete_task(self, task_text):
         with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('SELECT id FROM tasks WHERE task = ? ORDER BY created_at DESC LIMIT 1', (task_text,))
+            cursor = conn.execute('SELECT id FROM tasks WHERE task_text = ? ORDER BY created_at DESC LIMIT 1', (task_text,))
             task_id = cursor.fetchone()
             if task_id:
                 conn.execute('DELETE FROM tasks WHERE id = ?', (task_id[0],))
@@ -144,18 +216,18 @@ class DatabaseManager:
 
     def update_task_status(self, task_text, completed):
         with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('SELECT id FROM tasks WHERE task = ? ORDER BY created_at DESC LIMIT 1', (task_text,))
+            cursor = conn.execute('SELECT id FROM tasks WHERE task_text = ? ORDER BY created_at DESC LIMIT 1', (task_text,))
             task_id = cursor.fetchone()
             if task_id:
                 conn.execute('UPDATE tasks SET completed = ? WHERE id = ?', (completed, task_id[0]))
                 conn.commit()
 
-    def archive_task(self, task_text, due_date, completed):
+    def archive_task(self, task_text, due_date, category, recurrence, completed):
         with sqlite3.connect(self.db_name) as conn:
-            conn.execute('''INSERT INTO archived_tasks 
-                          (task, due_date, completed, session_id, created_at) 
-                          VALUES (?, ?, ?, ?, ?)''',
-                        (task_text, due_date, completed, None, datetime.now()))
+            conn.execute('''INSERT INTO archived_tasks
+                          (task_text, due_date, category, recurrence, completed, session_id, created_at)
+                          VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                        (task_text, due_date, category, recurrence, completed, None, datetime.now()))
             conn.commit()
 
     def init_email_calendar_tables(self):
@@ -401,6 +473,10 @@ class DatabaseManager:
         except Exception as e:
             print(f"Error getting chat history: {e}")
             return []
+
+    def init_db(self):
+        """Initialize the database with the new schema."""
+        self.setup_db()
 
     def close(self):
         """Close database connection."""
