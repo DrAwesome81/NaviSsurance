@@ -60,36 +60,45 @@ def load_local_files(path):
         logging.warning(f"Path {path} is empty or does not exist")
         return []
     documents = []
-    for loader_class, glob_pattern in [(PyPDFLoader, "**/*.[pP][dD][fF]"), 
-                                    (Docx2txtLoader, "**/*.[dD][oO][cC][xX]"), 
+    
+    # Handle PDFs separately - use PyPDFLoader with page mode to get individual pages
+    import glob
+    pdf_files = glob.glob(os.path.join(path, "**/*.[pP][dD][fF]"), recursive=True)
+    for pdf_file in tqdm(pdf_files, desc="Processing PDF files"):
+        try:
+            # Use PyPDFLoader with mode="page" to get individual pages
+            loader = PyPDFLoader(pdf_file)
+            page_docs = loader.load()  # This loads each page as a separate document
+            for i, page_doc in enumerate(page_docs):
+                page_number = i + 1
+                file_hash = hash_content(page_doc.page_content, pdf_file, page_number)
+                if file_hash:
+                    page_doc.metadata["file_hash"] = file_hash
+                    page_doc.metadata["page_number"] = page_number
+                    logging.info(f"Loaded local PDF page: {pdf_file} (page {page_number}) - Hash: {file_hash}")
+                    documents.append(page_doc)
+                else:
+                    logging.warning(f"Skipping invalid local PDF page: {pdf_file} (page {page_number})")
+        except Exception as e:
+            logging.error(f"Error processing PDF {pdf_file}: {e}")
+    
+    # Handle non-PDF files
+    for loader_class, glob_pattern in [(Docx2txtLoader, "**/*.[dD][oO][cC][xX]"), 
                                     (TextLoader, "**/*.[tT][xX][tT]")]:
         try:
             loader = DirectoryLoader(path, glob=glob_pattern, loader_cls=loader_class, show_progress=True)
             docs = loader.load()
             for doc in tqdm(docs, desc=f"Processing {loader_class.__name__} files"):
                 source = doc.metadata["source"]
-                if loader_class == PyPDFLoader:
-                    try:
-                        pdf_reader = PyPDFLoader(source).load()
-                        for i, page_doc in enumerate(pdf_reader):
-                            file_hash = hash_content(page_doc.page_content, source, i + 1)
-                            if file_hash:
-                                page_doc.metadata["file_hash"] = file_hash
-                                page_doc.metadata["page_number"] = i + 1
-                                logging.info(f"Loaded local PDF page: {source} (page {i + 1}) - Hash: {file_hash}")
-                                documents.append(page_doc)
-                            else:
-                                logging.warning(f"Skipping invalid local PDF page: {source} (page {i + 1})")
-                    except Exception as e:
-                        logging.error(f"Error processing PDF {source}: {e}")
+                file_hash = hash_content(doc.page_content, source)
+                if file_hash:
+                    doc.metadata["file_hash"] = file_hash
+                    # Add consistent metadata for non-PDFs
+                    doc.metadata["page_number"] = None
+                    logging.info(f"Loaded local file: {source} - Hash: {file_hash}")
+                    documents.append(doc)
                 else:
-                    file_hash = hash_content(doc.page_content, source)
-                    if file_hash:
-                        doc.metadata["file_hash"] = file_hash
-                        logging.info(f"Loaded local file: {source} - Hash: {file_hash}")
-                        documents.append(doc)
-                    else:
-                        logging.warning(f"Skipping invalid local file: {source}")
+                    logging.warning(f"Skipping invalid local file: {source}")
         except Exception as e:
             logging.error(f"Error loading files with {loader_class.__name__}: {e}")
     return documents
