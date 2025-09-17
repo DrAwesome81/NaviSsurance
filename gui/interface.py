@@ -490,35 +490,8 @@ IMPORTANT:
         pdf_path = "notes_export.pdf"
         pdf.output(pdf_path)
 
-        # Upload to Dropbox
-        try:
-            # Upload TXT file
-            with open(txt_path, "rb") as f:
-                self.dropbox_client.get_client().files_upload(
-                    f.read(), 
-                    f"/notes_export.txt",
-                    mode=files.WriteMode.overwrite
-                )
-            
-            # Upload DOCX file
-            with open(docx_path, "rb") as f:
-                self.dropbox_client.get_client().files_upload(
-                    f.read(), 
-                    f"/notes_export.docx",
-                    mode=files.WriteMode.overwrite
-                )
-            
-            # Upload PDF file
-            with open(pdf_path, "rb") as f:
-                self.dropbox_client.get_client().files_upload(
-                    f.read(), 
-                    f"/notes_export.pdf",
-                    mode=files.WriteMode.overwrite
-                )
-            
-            self.notes_display.append(f"Exported to {txt_path}, {docx_path}, {pdf_path} and uploaded to Dropbox.")
-        except Exception as e:
-            self.notes_display.append(f"Exported to {txt_path}, {docx_path}, {pdf_path} but Dropbox upload failed: {str(e)}")
+        # Export completed
+        self.notes_display.append(f"Exported to {txt_path}, {docx_path}, {pdf_path}")
 
 class ChatWindow(QMainWindow):
     task_added_signal = pyqtSignal(str, str)
@@ -642,10 +615,10 @@ class ChatWindow(QMainWindow):
 
     def create_tabs(self):
         """Create and add all tabs after the chat handler is fully initialized."""
-        self.dashboard_tab = DashboardTab(self.chat_handler, self.todo_list, self.db)
+        self.dashboard_tab = DashboardTab(self.chat_handler, self.todo_list, self.db, self)
         self.tab_widget.addTab(self.dashboard_tab, "Dashboard")
         
-        self.workspace_tab = WorkspaceTab(self.db)
+        self.workspace_tab = WorkspaceTab(self.db, self.chat_handler)
         self.tab_widget.addTab(self.workspace_tab, "Workspace")
         
         self.compliance_tab = ComplianceTab(self.db, self.chat_handler, [])
