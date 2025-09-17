@@ -28,3 +28,4 @@ gui/interface_backup_refactor.py
 .gitignore
 gui/interface_backup_final.py
 
+test_table_widget.py
