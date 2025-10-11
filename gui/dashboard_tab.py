@@ -1,5 +1,5 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextBrowser, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QCheckBox, QComboBox, QInputDialog, QMessageBox, QDateEdit, QHeaderView, QAbstractItemView
-from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextBrowser, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QCheckBox, QComboBox, QInputDialog, QMessageBox, QDateEdit, QHeaderView, QAbstractItemView, QSizePolicy
+from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal, QMetaObject, Q_ARG
 from datetime import datetime, timedelta
 from dateutil import parser
 import sqlite3
@@ -7,8 +7,7 @@ import sys
 import os
 import time
 
-# Import config for database path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Import centralized database path
 from config import DATABASE_PATH
 
 class NewsWorker(QThread):
@@ -101,7 +100,7 @@ class DashboardTab(QWidget):
         self.filter_layout = filter_layout
 
     def load_tasks_filtered(self):
-        """Load tasks with current filter settings."""
+        """Load tasks with current filter settings using batch optimization."""
         try:
             category_filter = self.category_filter.currentText()
             date_filter = self.date_filter.currentText()
@@ -121,11 +120,41 @@ class DashboardTab(QWidget):
             # Clear current tasks
             self.task_list.setRowCount(0)
 
-            # Load filtered tasks
-            for task_id, task_text, due_date, category, recurrence, completed in tasks:
-                print(f"DEBUG: Adding task: {task_text} (ID: {task_id})")
-                self.add_task_to_table(task_id, task_text, due_date, category, recurrence, completed)
-
+            if tasks:
+                print(f"DEBUG: Loading {len(tasks)} tasks with batch optimization...")
+                
+                # CRITICAL: Disable auto-repaint to prevent widget detachment during loading
+                self.task_list.setUpdatesEnabled(False)
+                
+                try:
+                    # BATCH OPTIMIZATION: Load all rows first, then style in one pass
+                    # Step 1: Create all rows and widgets without styling
+                    styling_data_list = []
+                    for task_id, task_text, due_date, category, recurrence, completed in tasks:
+                        row_position = self.task_list.rowCount()
+                        self.task_list.insertRow(row_position)
+                        print(f"DEBUG: Creating row {row_position} for task {task_id}: {task_text[:30]}...")
+                        
+                        # Create and set widgets without styling
+                        self._create_task_row_widgets(row_position, task_id, task_text, due_date, category, recurrence, completed)
+                        
+                        # Store styling data for batch processing
+                        styling_data_list.append((row_position, due_date, completed))
+                    
+                finally:
+                    # CRITICAL: Re-enable auto-repaint after all operations complete
+                    self.task_list.setUpdatesEnabled(True)
+                    print("DEBUG: Re-enabled table updates")
+                
+                # Step 2: Apply styling to all rows AFTER updates are enabled
+                for row_position, due_date, completed in styling_data_list:
+                    self.apply_task_styling_css(row_position, due_date, completed)
+                
+                # Step 3: Final UI refresh
+                print("DEBUG: Performing final UI refresh...")
+                from PyQt6.QtWidgets import QApplication
+                QApplication.processEvents()
+                    
             print(f"DEBUG: Finished loading {len(tasks)} tasks")
 
         except Exception as e:
@@ -133,15 +162,12 @@ class DashboardTab(QWidget):
             import traceback
             traceback.print_exc()
 
-    def add_task_to_table(self, task_id, task_text, due_date, category, recurrence, completed):
-        """Add an existing task to the table."""
+    def _create_task_row_widgets(self, row_position, task_id, task_text, due_date, category, recurrence, completed):
+        """Create task row widgets without applying styling (for batch loading)."""
         try:
-            print(f"DEBUG: add_task_to_table called with task_id={task_id}, task_text='{task_text}', category='{category}'")
-            row_position = self.task_list.rowCount()
-            self.task_list.insertRow(row_position)
-
             # Create task widget with checkbox and label
             task_widget = QWidget()
+            task_widget.setStyleSheet("QWidget { background-color: white; }")
             task_layout = QHBoxLayout(task_widget)
             task_layout.setContentsMargins(5, 5, 5, 5)
             task_layout.setSpacing(8)
@@ -149,51 +175,82 @@ class DashboardTab(QWidget):
             # Checkbox
             checkbox = QCheckBox()
             checkbox.setChecked(completed)
+            checkbox.setStyleSheet("""
+                QCheckBox {
+                    background-color: white;
+                    color: black;
+                    font-weight: bold;
+                    padding: 2px;
+                }
+                QCheckBox::indicator {
+                    width: 16px;
+                    height: 16px;
+                    background-color: white;
+                    border: 2px solid #666;
+                    border-radius: 3px;
+                }
+                QCheckBox::indicator:checked {
+                    background-color: #333;
+                    border: 2px solid #333;
+                }
+            """)
             checkbox.stateChanged.connect(lambda state, tid=task_id: self.update_task_status(tid, state == Qt.CheckState.Checked.value))
             task_layout.addWidget(checkbox)
 
-            # Task label with left alignment and proper spacing
+            # Task label
             task_label = QLabel(f"  {task_text}")  # Add spaces at the beginning for left alignment
             task_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             task_label.setStyleSheet("""
                 QLabel {
+                    color: black;
+                    font-size: 12px;
                     padding-left: 5px;
+                    text-align: left;
                     margin: 0px;
-                    background-color: transparent;
+                    background-color: white;
+                    font-weight: normal;
                 }
             """)
             task_layout.addWidget(task_label)
 
-            # Set task widget to column 0
+            # CRITICAL: Set parent before adding to table to prevent widget detachment
+            task_widget.setParent(self.task_list)
             self.task_list.setCellWidget(row_position, 0, task_widget)
 
-            # Set category to column 1
-            category_item = QTableWidgetItem(category or "Business")
+            # Category item (column 1)
+            category_item = QTableWidgetItem(category)
+            category_item.setFlags(category_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.task_list.setItem(row_position, 1, category_item)
 
-            # Set due date to column 2
-            due_date_item = QTableWidgetItem(due_date or "No Date")
+            # Due date item (column 2)
+            due_date_display = due_date if due_date else "No due date"
+            due_date_item = QTableWidgetItem(due_date_display)
+            due_date_item.setFlags(due_date_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.task_list.setItem(row_position, 2, due_date_item)
 
-            # Create actions widget with edit and delete buttons
+            # Actions widget (column 3)
             actions_widget = QWidget()
+            actions_widget.setStyleSheet("QWidget { background-color: white; }")
             actions_layout = QHBoxLayout(actions_widget)
             actions_layout.setContentsMargins(0, 0, 0, 0)
             actions_layout.setSpacing(5)
 
             # Edit button
             edit_btn = QPushButton("Edit")
-            edit_btn.setFixedSize(60, 40)
+            edit_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            edit_btn.setMinimumSize(50, 35)
+            edit_btn.setMaximumSize(80, 45)
             edit_btn.setStyleSheet("""
                 QPushButton {
-                    background-color: rgba(253, 98, 98, 0.8);
+                    background-color: black;
                     color: white;
                     border: none;
                     border-radius: 3px;
-                    padding: 10px;
+                    padding: 8px 12px;
                     font-weight: bold;
                     font-size: 11px;
                     margin: 2px;
+                    min-width: 60px;
                 }
                 QPushButton:hover {
                     background-color: rgba(253, 98, 98, 1.0);
@@ -204,17 +261,20 @@ class DashboardTab(QWidget):
 
             # Delete button
             delete_btn = QPushButton("Delete")
-            delete_btn.setFixedSize(70, 40)
+            delete_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            delete_btn.setMinimumSize(60, 35)
+            delete_btn.setMaximumSize(90, 45)
             delete_btn.setStyleSheet("""
                 QPushButton {
-                    background-color: rgba(253, 98, 98, 0.8);
+                    background-color: black;
                     color: white;
                     border: none;
                     border-radius: 3px;
-                    padding: 10px;
+                    padding: 8px 12px;
                     font-weight: bold;
                     font-size: 11px;
                     margin: 2px;
+                    min-width: 60px;
                 }
                 QPushButton:hover {
                     background-color: rgba(253, 98, 98, 1.0);
@@ -223,9 +283,9 @@ class DashboardTab(QWidget):
             delete_btn.clicked.connect(lambda checked, r=row_position, tid=task_id: self.delete_task(r, tid))
             actions_layout.addWidget(delete_btn)
 
-            # Set actions widget to column 3
+            # CRITICAL: Set parent before adding to table to prevent widget detachment
+            actions_widget.setParent(self.task_list)
             self.task_list.setCellWidget(row_position, 3, actions_widget)
-            print(f"DEBUG: Set actions widget for NEW task row {row_position}, task: {task_text}")
 
             # Store task data for later use
             task_widget.task_data = {
@@ -237,7 +297,22 @@ class DashboardTab(QWidget):
                 'completed': completed
             }
 
-            # Apply styling
+            print(f"DEBUG: Created widgets for row {row_position}, task: {task_text[:30]}...")
+
+        except Exception as e:
+            print(f"Error creating task row widgets: {e}")
+
+    def add_task_to_table(self, task_id, task_text, due_date, category, recurrence, completed):
+        """Add an existing task to the table (single task version)."""
+        try:
+            print(f"DEBUG: add_task_to_table called with task_id={task_id}, task_text='{task_text}', category='{category}'")
+            row_position = self.task_list.rowCount()
+            self.task_list.insertRow(row_position)
+
+            # Create widgets without styling
+            self._create_task_row_widgets(row_position, task_id, task_text, due_date, category, recurrence, completed)
+
+            # Apply styling immediately for single task
             self.apply_task_styling_css(row_position, due_date, completed)
 
         except Exception as e:
@@ -354,38 +429,34 @@ class DashboardTab(QWidget):
         task_header.setMaximumHeight(25)
         layout.addWidget(task_header)
         
-        # Task list - converted to QTableWidget with columns
+        # Task list - back to QTableWidget but with custom delegate for row coloring
         self.task_list = QTableWidget()
         self.task_list.setColumnCount(4)
         self.task_list.setHorizontalHeaderLabels(["Task", "Category", "Due Date", "Actions"])
         self.task_list.setAlternatingRowColors(False)  # We'll handle colors manually
         self.task_list.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.task_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.task_list.verticalHeader().setDefaultSectionSize(75)  # Set row height - increased for buttons
+        # Clean, simple white table styling
         self.task_list.setStyleSheet("""
             QTableWidget {
-                background-color: rgba(27, 28, 30, 0.8); 
-                color: white; 
-                border: 1px solid rgba(253, 98, 98, 0.3); 
-                border-radius: 3px;
-                font-size: 13px;
-                gridline-color: rgba(253, 98, 98, 0.2);
-            }
-            QTableWidget::item {
-                padding: 15px 8px;
-                border: none;
-            }
-            QTableWidget::item:selected {
-                background-color: rgba(253, 98, 98, 0.02);
+                background-color: white;
+                color: black;
+                gridline-color: #ddd;
             }
             QHeaderView::section {
-                background-color: rgba(253, 98, 98, 0.8);
-                color: white;
+                background-color: #f0f0f0;
+                color: black;
                 padding: 8px;
-                border: 1px solid rgba(253, 98, 98, 0.3);
+                border: 1px solid #ccc;
                 font-weight: bold;
                 font-size: 13px;
-                min-height: 25px;
+                min-height: 30px;
+            }
+            QTableWidget::item {
+                padding: 8px;
+                border: none;
+                color: black;
+                background-color: white;
             }
         """)
         
@@ -432,7 +503,7 @@ class DashboardTab(QWidget):
         self.taskInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.5); padding: 3px; border-radius: 3px;")
         self.taskInput.returnPressed.connect(self.add_task)
         add_layout.addWidget(self.taskInput)
-
+        
         # Add due date input
         self.dueDateInput = QDateEdit()
         self.dueDateInput.setCalendarPopup(True)
@@ -451,7 +522,7 @@ class DashboardTab(QWidget):
         self.recurrenceInput.addItems(["None", "Daily", "Weekly"])
         self.recurrenceInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.5); padding: 3px; border-radius: 3px;")
         add_layout.addWidget(self.recurrenceInput)
-
+        
         add_btn = QPushButton("Add")
         add_btn.setStyleSheet("""
             QPushButton {
@@ -557,9 +628,9 @@ class DashboardTab(QWidget):
                 }
             """)
             
-            # Set dialog size and center it
-            edit_dialog.resize(400, 320)
-            edit_dialog.setFixedSize(400, 320)
+            # Set responsive dialog size and center it
+            edit_dialog.setMinimumSize(400, 320)
+            edit_dialog.resize(450, 350)
             
             layout = QVBoxLayout(edit_dialog)
             layout.setSpacing(15)
@@ -695,7 +766,7 @@ class DashboardTab(QWidget):
         item = self.task_list.itemAt(position)
         if item is None:
             return
-        
+            
         # Check if it's a valid task item (not error messages)
         task_data = item.data(0, Qt.ItemDataRole.UserRole)
         if not task_data:
@@ -729,17 +800,17 @@ class DashboardTab(QWidget):
                 # Get completed tasks with all fields
                 cursor = conn.execute("SELECT task_text, due_date, category, recurrence, completed, session_id FROM tasks WHERE completed = 1")
                 completed_tasks = cursor.fetchall()
-
+                
                 if completed_tasks:
                     # Archive each task using the database method
                     for task_text, due_date, category, recurrence, completed, session_id in completed_tasks:
                         # Use the database method to archive
                         self.db.archive_task(task_text, due_date, category, recurrence, completed)
-
+                    
                     # Delete from active tasks
                     conn.execute("DELETE FROM tasks WHERE completed = 1")
                     conn.commit()
-
+                    
                     print(f"Archived {len(completed_tasks)} completed tasks")
                     self.load_tasks_filtered()  # Refresh the display
                 else:
@@ -768,7 +839,7 @@ class DashboardTab(QWidget):
             for row in range(self.task_list.rowCount()):
                 task_widget = self.task_list.cellWidget(row, 0)
                 if task_widget and hasattr(task_widget, 'task_data') and task_widget.task_data['id'] == task_id:
-                    due_date_item = self.task_list.item(row, 1)
+                    due_date_item = self.task_list.item(row, 2)  # Column 2 is the due date column
                     if due_date_item:
                         due_date = due_date_item.text()
                         print(f"TIMING: About to call apply_task_styling_css from update_task_status for row {row} at {time.time():.6f}")
@@ -870,10 +941,10 @@ class DashboardTab(QWidget):
                     # Get all tasks (both complete and incomplete) ordered by due date (nearest first), then by creation date
                     cursor = conn.execute("""
                         SELECT id, task_text, due_date, category, recurrence, completed, session_id FROM tasks
-                        ORDER BY
-                            CASE
-                                WHEN due_date IS NULL THEN 1
-                                ELSE 0
+                        ORDER BY 
+                            CASE 
+                                WHEN due_date IS NULL THEN 1 
+                                ELSE 0 
                             END,
                             due_date ASC,
                             created_at DESC
@@ -889,6 +960,7 @@ class DashboardTab(QWidget):
                             
                             # Create task widget with checkbox and text for first column
                             task_widget = QWidget()
+                            task_widget.setStyleSheet("QWidget { background-color: white; }")
                             task_layout = QHBoxLayout(task_widget)
                             task_layout.setContentsMargins(8, 0, 0, 0)
                             task_layout.setSpacing(8)
@@ -903,14 +975,14 @@ class DashboardTab(QWidget):
                             print(f"TIMING: setChecked completed for row {row_position} at {time.time():.6f}")
                             checkbox.setStyleSheet("""
                                 QCheckBox {
-                                    color: white;
-                                                    background-color: transparent;
+                                    color: black;
+                                                    background-color: white;
                                 }
                                 QCheckBox::indicator {
-                                    width: 18px;
-                                    height: 18px;
-                                    background-color: rgba(255, 255, 255, 0.2);
-                                    border: 2px solid rgba(253, 98, 98, 0.8);
+                                    width: 16px;
+                                    height: 16px;
+                                    background-color: white;
+                                    border: 2px solid #666;
                                                 border-radius: 3px;
                                             }
                                 QCheckBox::indicator:checked {
@@ -923,7 +995,7 @@ class DashboardTab(QWidget):
                             
                             # Add task text label
                             task_label = QLabel(f"   {task_text}")
-                            task_label.setStyleSheet("color: white; background-color: transparent; border: none;")
+                            task_label.setStyleSheet("color: black; background-color: white; border: none;")
                             task_layout.addWidget(task_label)
                             task_layout.addStretch()
                             
@@ -939,6 +1011,7 @@ class DashboardTab(QWidget):
                             # Create action buttons widget
                             print(f"DEBUG: Creating actions widget for row {row_position}")
                             actions_widget = QWidget()
+                            actions_widget.setStyleSheet("QWidget { background-color: white; }")
                             actions_widget.setObjectName(f"actions_widget_row_{row_position}_task_{task_id}")
                             actions_layout = QHBoxLayout(actions_widget)
                             actions_layout.setContentsMargins(0, 0, 0, 0)  # Remove all margins
@@ -947,8 +1020,9 @@ class DashboardTab(QWidget):
                             
                             # Edit button
                             edit_btn = QPushButton("Edit")
-                            edit_btn.setFixedWidth(80)
-                            edit_btn.setFixedHeight(40)
+                            edit_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                            edit_btn.setMinimumSize(70, 35)
+                            edit_btn.setMaximumSize(90, 45)
                             edit_btn.setStyleSheet("""
                                 QPushButton {
                                     background-color: rgba(253, 98, 98, 0.8);
@@ -970,8 +1044,9 @@ class DashboardTab(QWidget):
                             
                             # Delete button
                             delete_btn = QPushButton("Delete")
-                            delete_btn.setFixedWidth(100)
-                            delete_btn.setFixedHeight(40)
+                            delete_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                            delete_btn.setMinimumSize(80, 35)
+                            delete_btn.setMaximumSize(110, 45)
                             delete_btn.setStyleSheet("""
                                 QPushButton {
                                     background-color: rgba(253, 98, 98, 0.8);
@@ -1091,220 +1166,21 @@ class DashboardTab(QWidget):
             due_date = due_date_item.text() if due_date_item else "No date"
             print(f"Row {row}: task_widget={task_widget is not None}, actions_widget={actions_widget is not None}, due_date_item={due_date_item is not None}, task_id={task_id}, due_date={due_date} at {time.time():.6f}")
     
-    def apply_task_styling_css(self, row, due_date, completed):
-        """Apply color coding to task rows using programmatic colors."""
-        from PyQt6.QtGui import QColor, QBrush
-        from datetime import datetime
-        
-        start_time = time.time()
-        print(f"TIMING: apply_task_styling_css START for row {row} at {start_time:.6f}")
+    def is_overdue(self, due_date_str):
+        """Check if a due date is overdue."""
+        if not due_date_str or due_date_str == "No due date":
+            return False
         try:
-            # Determine the styling based on due date and completion
-            if completed == 1:
-                bg_color = QColor(80, 80, 80)  # Medium gray
-                fg_color = QColor(200, 200, 200)  # Light gray
-                status = "completed"
-            else:
-                if due_date and due_date != "No due date":
-                    # Parse the due date
-                    due_date_obj = datetime.strptime(due_date, "%m-%d-%Y")
-                    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-                    due_date_start = due_date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
-
-                    if due_date_start < today:
-                        # Overdue - red background with white text
-                        bg_color = QColor(150, 50, 50)  # Red
-                        fg_color = QColor(255, 255, 255)  # White
-                        status = "overdue"
-                    elif due_date_start == today:
-                        # Due today - subtle amber background with white text
-                        bg_color = QColor(120, 90, 60)  # Dark amber/brown
-                        fg_color = QColor(255, 255, 255)  # White
-                        status = "due_today"
-                    else:
-                        # Future date - dark background with white text
-                        bg_color = QColor(50, 50, 50)  # Dark gray
-                        fg_color = QColor(255, 255, 255)  # White
-                        status = "future"
-                else:
-                    # No due date - default styling
-                    bg_color = QColor(50, 50, 50)  # Dark gray
-                    fg_color = QColor(255, 255, 255)  # White
-                    status = "future"
-            
-            # Apply row-based coloring using programmatic approach
-
-            # Convert colors to CSS format for widgets
-            css_bg_color = f"rgb({bg_color.red()}, {bg_color.green()}, {bg_color.blue()})"
-            css_fg_color = f"rgb({fg_color.red()}, {fg_color.green()}, {fg_color.blue()})"
-
-            # Create unified stylesheet for widgets
-            widget_stylesheet = f"""
-                QWidget {{
-                    background-color: {css_bg_color};
-                }}
-                QLabel {{
-                    background-color: transparent;
-                    color: {css_fg_color};
-                }}
-                QCheckBox {{
-                    background-color: transparent;
-                    color: {css_fg_color};
-                }}
-                QCheckBox::indicator {{
-                    background-color: rgba(255, 255, 255, 0.2);
-                    border: 2px solid rgba(253, 98, 98, 0.8);
-                }}
-                QCheckBox::indicator:checked {{
-                    background-color: rgba(253, 98, 98, 0.8);
-                    border: 2px solid rgba(253, 98, 98, 1.0);
-                }}
-                QPushButton {{
-                    background-color: rgba(253, 98, 98, 0.8);
-                    color: white;
-                    border: none;
-                    border-radius: 3px;
-                }}
-                QPushButton:hover {{
-                    background-color: rgba(253, 98, 98, 1.0);
-                }}
-            """
-
-            # Apply to task widget (column 0)
-            task_widget = self.task_list.cellWidget(row, 0)
-            print(f"TIMING: apply_task_styling_css row {row} - task_widget exists: {task_widget is not None} at {time.time():.6f}")
-            if task_widget:
-                task_widget.setStyleSheet(widget_stylesheet)
-                print(f"TIMING: Applied unified styling to task widget for row {row} at {time.time():.6f}")
-
-            # Apply to actions widget (column 3)
-            actions_widget = self.task_list.cellWidget(row, 3)
-            print(f"TIMING: apply_task_styling_css row {row} - actions_widget exists: {actions_widget is not None} at {time.time():.6f}")
-            if actions_widget:
-                actions_widget.setStyleSheet(widget_stylesheet)
-                print(f"TIMING: Applied unified styling to actions widget for row {row} at {time.time():.6f}")
-
-            # Set row background color using table's visual properties
-            # This colors the empty space in the row
-            from PyQt6.QtWidgets import QTableWidgetItem
-            for col in range(self.task_list.columnCount()):
-                # Skip columns with widgets (0 and 3) - only color item columns (1 and 2)
-                if col in [0, 3]:  # Task and Actions columns have widgets
-                    continue
-                    
-                # Create or update items in columns 1 and 2 to have the background color
-                item = self.task_list.item(row, col)
-                if item is None:
-                    # Create a dummy item just to set the background color
-                    item = QTableWidgetItem("")
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
-                    self.task_list.setItem(row, col, item)
-                item.setBackground(QBrush(bg_color))
-                item.setForeground(QBrush(fg_color))
-                print(f"TIMING: Applied background color {bg_color.name()} to column {col}, row {row} at {time.time():.6f}")
-
-            print(f"TIMING: Row {row} styling completed at {time.time():.6f}")
-            
-            # Colors applied successfully
-            
-        except ValueError:
-            # Invalid date format - use default styling
-            bg_color = QColor(50, 50, 50)
-            fg_color = QColor(255, 255, 255)
-            status = "error"
-
-            # Apply fallback styling using programmatic approach
-            css_bg_color = f"rgb({bg_color.red()}, {bg_color.green()}, {bg_color.blue()})"
-            css_fg_color = f"rgb({fg_color.red()}, {fg_color.green()}, {fg_color.blue()})"
-
-            fallback_stylesheet = f"""
-                QWidget {{
-                    background-color: {css_bg_color};
-                }}
-                QLabel {{
-                    background-color: transparent;
-                    color: {css_fg_color};
-                }}
-                QCheckBox {{
-                    background-color: transparent;
-                    color: {css_fg_color};
-                }}
-                QPushButton {{
-                    background-color: rgba(253, 98, 98, 0.8);
-                    color: white;
-                    border: none;
-                    border-radius: 3px;
-                }}
-            """
-
-            task_widget = self.task_list.cellWidget(row, 0)
-            if task_widget:
-                task_widget.setStyleSheet(fallback_stylesheet)
-
-            actions_widget = self.task_list.cellWidget(row, 2)
-            if actions_widget:
-                actions_widget.setStyleSheet(fallback_stylesheet)
-
-            # Set item backgrounds for all table cells
-            from PyQt6.QtWidgets import QTableWidgetItem
-            for col in range(self.task_list.columnCount()):
-                item = self.task_list.item(row, col)
-                if item is None:
-                    item = QTableWidgetItem("")
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
-                    self.task_list.setItem(row, col, item)
-                item.setBackground(QBrush(bg_color))
-                item.setForeground(QBrush(fg_color))
-
-        except Exception as e:
-            print(f"Error applying task styling: {e}")
-            # Fallback to default styling
-            bg_color = QColor(50, 50, 50)
-            fg_color = QColor(255, 255, 255)
-            status = "error"
-
-            # Apply fallback styling using programmatic approach
-            css_bg_color = f"rgb({bg_color.red()}, {bg_color.green()}, {bg_color.blue()})"
-            css_fg_color = f"rgb({fg_color.red()}, {fg_color.green()}, {fg_color.blue()})"
-
-            fallback_stylesheet = f"""
-                QWidget {{
-                    background-color: {css_bg_color};
-                }}
-                QLabel {{
-                    background-color: transparent;
-                    color: {css_fg_color};
-                }}
-                QCheckBox {{
-                    background-color: transparent;
-                    color: {css_fg_color};
-                }}
-                QPushButton {{
-                    background-color: rgba(253, 98, 98, 0.8);
-                    color: white;
-                    border: none;
-                    border-radius: 3px;
-                }}
-            """
-
-            task_widget = self.task_list.cellWidget(row, 0)
-            if task_widget:
-                task_widget.setStyleSheet(fallback_stylesheet)
-
-            actions_widget = self.task_list.cellWidget(row, 2)
-            if actions_widget:
-                actions_widget.setStyleSheet(fallback_stylesheet)
-
-            # Set item backgrounds for all table cells
-            from PyQt6.QtWidgets import QTableWidgetItem
-            for col in range(self.task_list.columnCount()):
-                item = self.task_list.item(row, col)
-                if item is None:
-                    item = QTableWidgetItem("")
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsSelectable)
-                    self.task_list.setItem(row, col, item)
-                item.setBackground(QBrush(bg_color))
-                item.setForeground(QBrush(fg_color))
+            from PyQt6.QtCore import QDate
+            due_date = QDate.fromString(due_date_str, "MM-dd-yyyy")
+            return due_date < QDate.currentDate()
+        except:
+            return False
+    
+    def apply_task_styling_css(self, row, due_date, completed):
+        """Apply minimal styling to ensure proper row spacing."""
+        # Just set row height for proper button and text spacing
+        self.task_list.setRowHeight(row, 50)
 
     def apply_task_styling(self, item, due_date, completed):
         """Apply color coding to task items based on due date and completion status."""
@@ -1459,6 +1335,11 @@ class DashboardTab(QWidget):
     
     def on_news_loaded(self, news_query):
         """Called when news is loaded successfully in the worker thread."""
+        # Use thread-safe UI update
+        QTimer.singleShot(0, lambda: self._on_news_loaded_safe(news_query))
+    
+    def _on_news_loaded_safe(self, news_query):
+        """Thread-safe version of on_news_loaded."""
         try:
             print(f"on_news_loaded: Got news response: {news_query[:100]}...")
             
@@ -1475,6 +1356,11 @@ class DashboardTab(QWidget):
     
     def on_news_error(self, error_message):
         """Called when there's an error loading news in the worker thread."""
+        # Use thread-safe UI update
+        QTimer.singleShot(0, lambda: self._on_news_error_safe(error_message))
+    
+    def _on_news_error_safe(self, error_message):
+        """Thread-safe version of on_news_error."""
         print(f"News error: {error_message}")
         if hasattr(self, 'news_display'):
             # Check if it's a credit limit error

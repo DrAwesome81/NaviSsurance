@@ -50,8 +50,13 @@ class TodoList:
     def insertTaskIntoDB(self, task_text, due_date, category, recurrence):
         try:
             self.db.add_task(self.session_id, task_text, due_date, category, recurrence)
+        except sqlite3.Error as e:
+            QMessageBox.critical(self.parent, "Database Error", f"Database issue while adding task: {str(e)}")
+            return False
         except Exception as e:
-            raise Exception(f"Database error: {str(e)}")
+            QMessageBox.critical(self.parent, "Error", f"Failed to add task: {str(e)}")
+            return False
+        return True
 
     def updateUIWithTask(self, task_text, due_date, category, recurrence, completed=False, task_id=None):
         # Check for duplicates
@@ -103,12 +108,16 @@ class TodoList:
         actions_layout.setContentsMargins(0, 0, 0, 0)
 
         edit_button = QPushButton("Edit")
-        edit_button.setFixedWidth(80)
+        edit_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        edit_button.setMinimumSize(70, 35)
+        edit_button.setMaximumSize(90, 45)
         edit_button.clicked.connect(lambda: self.editTask(item_widget, task_id))
         actions_layout.addWidget(edit_button)
 
         delete_button = QPushButton("Delete")
-        delete_button.setFixedWidth(80)
+        delete_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        delete_button.setMinimumSize(70, 35)
+        delete_button.setMaximumSize(90, 45)
         delete_button.clicked.connect(lambda: self.deleteTask(item_widget, task_id))
         actions_layout.addWidget(delete_button)
 
@@ -140,6 +149,8 @@ class TodoList:
             if completed and recurrence != "None":
                 self.handle_recurrence(task_text, recurrence)
             self.loadTasksFromDB()
+        except sqlite3.Error as e:
+            QMessageBox.critical(self.parent, "Database Error", f"Database issue while updating task: {str(e)}")
         except Exception as e:
             QMessageBox.critical(self.parent, "Error", f"Failed to update task status: {str(e)}")
 
@@ -243,7 +254,19 @@ class TodoList:
                 for i in range(self.todoList.count()):
                     item = self.todoList.item(i)
                     widget = self.todoList.itemWidget(item)
-                    if widget and widget.layout():
+                    if widget and hasattr(widget, 'task_data'):
+                        # Use stored task data to preserve all metadata
+                        task_data = widget.task_data
+                        self.db.add_task(
+                            task_data.get('session_id', self.session_id),
+                            task_data.get('text', ''),
+                            task_data.get('due_date', ''),
+                            task_data.get('category', 'Business'),
+                            task_data.get('recurrence', 'None'),
+                            task_data.get('completed', 0)
+                        )
+                    elif widget and widget.layout():
+                        # Fallback to parsing layout if no task_data stored
                         label = widget.layout().itemAt(1).widget()
                         due_date_label = widget.layout().itemAt(3).widget()
                         category_label = widget.layout().itemAt(2).widget()
@@ -268,10 +291,14 @@ class TodoList:
             for task_id, task_text, due_date, category, recurrence, completed in tasks:
                 self.updateUIWithTask(task_text, due_date, category, recurrence, completed, task_id)
             
-            # Sort tasks by due date
-            self.todoList.sortItems(Qt.SortOrder.AscendingOrder)
+            # Note: No client-side sorting needed - db.get_tasks() already returns tasks 
+            # sorted by due_date ASC (with NULL dates last) via SQL ORDER BY clause
+        except sqlite3.Error as e:
+            QMessageBox.critical(self.parent, "Database Error", f"Database issue while loading tasks: {str(e)}")
+            return []
         except Exception as e:
             QMessageBox.critical(self.parent, "Error", f"Failed to load tasks: {str(e)}")
+            return []
 
     def updateTaskStyle(self, widget):
         try:
@@ -283,11 +310,14 @@ class TodoList:
             if checkbox and label and due_date_label:
                 if checkbox.isChecked():
                     label.setStyleSheet("color: gray; text-decoration: line-through;")
+                    widget.setStyleSheet("QWidget { background-color: lightgray; border: none; }")
                 else:
                     due_date = due_date_label.text()
                     if due_date != "No Date" and QDate.fromString(due_date, "MM-dd-yyyy") < QDate.currentDate():
                         label.setStyleSheet("color: red;")
+                        widget.setStyleSheet("QWidget { background-color: lightcoral; border: none; }")
                     else:
                         label.setStyleSheet("color: white;")
+                        widget.setStyleSheet("QWidget { background-color: lightblue; border: none; }")
         except Exception as e:
             print(f"Error updating task style: {str(e)}")

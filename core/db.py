@@ -6,17 +6,29 @@ import sys
 import os
 from core.file_handler import extract_for_dataset
 
-# Add parent directory to path to import config
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Import centralized database path
 from config import DATABASE_PATH
 
 class DatabaseManager:
     def __init__(self):
         self.db_name = DATABASE_PATH
+        self.current_schema_version = 2  # Increment this when making schema changes
         self.setup_db()
+        self.create_indexes()
 
     def setup_db(self):
         with sqlite3.connect(self.db_name) as conn:
+            # Initialize schema versioning
+            self._initialize_schema_version(conn)
+            
+            # Check if migration is needed
+            current_version = self._get_schema_version(conn)
+            if current_version < self.current_schema_version:
+                print(f"Database schema version {current_version} detected. Migrating to version {self.current_schema_version}...")
+                self._migrate_schema(conn, current_version, self.current_schema_version)
+                self._set_schema_version(conn, self.current_schema_version)
+                print("Schema migration completed.")
+            
             # Create conversation table with FTS5 support if it doesn't exist
             conn.execute('''CREATE VIRTUAL TABLE IF NOT EXISTS conversation
                 USING fts5 (
@@ -125,6 +137,35 @@ class DatabaseManager:
                 notes_json TEXT NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
+            
+            conn.commit()
+
+    def create_indexes(self):
+        """Create database indexes for optimal query performance."""
+        with sqlite3.connect(self.db_name) as conn:
+            # Primary indexes for tasks table
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category)")
+            
+            # Composite indexes for common query patterns
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due_completed ON tasks(due_date, completed)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_category_due ON tasks(category, due_date)")
+            
+            # Session-based queries
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id)")
+            
+            # Indexes for archived_tasks table
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_archived_tasks_due_date ON archived_tasks(due_date)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_archived_tasks_completed ON archived_tasks(completed)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_archived_tasks_category ON archived_tasks(category)")
+            
+            # Note: conversation table is a virtual FTS5 table, so indexes are not supported
+            # FTS5 provides its own internal indexing for full-text search
+            
+            # Indexes for news_items table
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_news_created_at ON news_items(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_news_source ON news_items(source)")
             
             conn.commit()
 
@@ -477,6 +518,69 @@ class DatabaseManager:
     def init_db(self):
         """Initialize the database with the new schema."""
         self.setup_db()
+
+    def _initialize_schema_version(self, conn):
+        """Initialize schema versioning in the database."""
+        # Create a table to track schema version if it doesn't exist
+        conn.execute('''CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY
+        )''')
+        
+        # If no version is set, assume version 0 (pre-versioning)
+        cursor = conn.execute("SELECT version FROM schema_version LIMIT 1")
+        if not cursor.fetchone():
+            conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+            conn.commit()
+
+    def _get_schema_version(self, conn):
+        """Get the current schema version from the database."""
+        cursor = conn.execute("SELECT version FROM schema_version LIMIT 1")
+        result = cursor.fetchone()
+        return result[0] if result else 0
+
+    def _set_schema_version(self, conn, version):
+        """Set the schema version in the database."""
+        conn.execute("UPDATE schema_version SET version = ?", (version,))
+        conn.commit()
+
+    def _migrate_schema(self, conn, from_version, to_version):
+        """Migrate database schema from one version to another."""
+        print(f"Migrating schema from version {from_version} to {to_version}")
+        
+        # Version 0 to 1: Add category and recurrence columns to tasks table
+        if from_version < 1 and to_version >= 1:
+            print("  - Adding category and recurrence columns to tasks table")
+            try:
+                # Check if columns already exist
+                cursor = conn.execute("PRAGMA table_info(tasks)")
+                columns = [col[1] for col in cursor.fetchall()]
+                
+                if 'category' not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN category TEXT DEFAULT 'Business'")
+                    print("    - Added 'category' column")
+                
+                if 'recurrence' not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN recurrence TEXT DEFAULT 'None'")
+                    print("    - Added 'recurrence' column")
+                    
+            except Exception as e:
+                print(f"    - Error adding columns: {e}")
+        
+        # Version 1 to 2: Add session_id column to tasks table
+        if from_version < 2 and to_version >= 2:
+            print("  - Adding session_id column to tasks table")
+            try:
+                cursor = conn.execute("PRAGMA table_info(tasks)")
+                columns = [col[1] for col in cursor.fetchall()]
+                
+                if 'session_id' not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN session_id TEXT")
+                    print("    - Added 'session_id' column")
+                    
+            except Exception as e:
+                print(f"    - Error adding session_id column: {e}")
+        
+        print(f"Schema migration from version {from_version} to {to_version} completed.")
 
     def close(self):
         """Close database connection."""

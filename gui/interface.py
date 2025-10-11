@@ -6,8 +6,8 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QCheckBox, QComboBox, QLabel, QSplitter, QTextEdit, QDialog, QDialogButtonBox,
     QHeaderView, QMessageBox, QFileDialog, QMenu, QProgressBar, QApplication
 )
-from PyQt6.QtCore import Qt, QDate, QTimer, pyqtSlot, QUrl, QThread, pyqtSignal
-from PyQt6.QtGui import QPixmap, QAction, QDesktopServices, QColor
+from PyQt6.QtCore import Qt, QDate, QTimer, pyqtSlot, QUrl, QThread, pyqtSignal, QMetaObject, Q_ARG
+from PyQt6.QtGui import QPixmap, QAction, QDesktopServices, QColor, QPainter
 from core.db import DatabaseManager
 from gui.chat_window import ChatThread, ResponseHandler, sendMessage, saveChat, loadChat
 from gui.todo_list import TodoList
@@ -27,6 +27,108 @@ from dropbox import files
 import re
 import requests
 from gui.notes_tab import NoteTakingSystem, NoteProcessingThread
+
+def robust_json_parse(response_text, logger=None):
+    """
+    Robust JSON parsing that handles various API response formats.
+    
+    Args:
+        response_text: Raw response text from API
+        logger: Optional logger for debug messages
+    
+    Returns:
+        tuple: (parsed_json_data, success_flag)
+    """
+    if logger is None:
+        logger = print  # Fallback to print for debug messages
+    
+    # Step 1: Try direct JSON parsing first
+    try:
+        clean_response = response_text.strip()
+        data = json.loads(clean_response)
+        logger(f"Direct JSON parsing successful")
+        return data, True
+    except json.JSONDecodeError:
+        logger(f"Direct JSON parsing failed, attempting extraction...")
+    
+    # Step 2: Try extracting JSON from markdown code blocks
+    try:
+        # Look for ```json...``` blocks
+        json_pattern = r'```(?:json)?\s*(\{.*?\})\s*```'
+        match = re.search(json_pattern, response_text, re.DOTALL | re.IGNORECASE)
+        if match:
+            json_str = match.group(1).strip()
+            data = json.loads(json_str)
+            logger(f"JSON extraction from code block successful")
+            return data, True
+    except (json.JSONDecodeError, AttributeError):
+        logger(f"Code block extraction failed")
+    
+    # Step 3: Try regex extraction of JSON object
+    try:
+        # Look for first complete JSON object
+        json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        match = re.search(json_pattern, response_text, re.DOTALL)
+        if match:
+            json_str = match.group(0).strip()
+            data = json.loads(json_str)
+            logger(f"Regex JSON extraction successful")
+            return data, True
+    except (json.JSONDecodeError, AttributeError):
+        logger(f"Regex extraction failed")
+    
+    # Step 4: Try fixing common JSON issues
+    try:
+        clean_response = response_text.strip()
+        
+        # Remove common prefixes/suffixes
+        clean_response = re.sub(r'^[^{]*', '', clean_response)  # Remove text before {
+        clean_response = re.sub(r'[^}]*$', '', clean_response)  # Remove text after }
+        
+        # Fix common issues
+        clean_response = re.sub(r',\s*}', '}', clean_response)  # Remove trailing commas
+        clean_response = re.sub(r',\s*]', ']', clean_response)  # Remove trailing commas in arrays
+        clean_response = re.sub(r'"\s*}', '}', clean_response)  # Remove trailing quotes
+        clean_response = re.sub(r'"\s*]', ']', clean_response)  # Remove trailing quotes in arrays
+        clean_response = re.sub(r'\s+', ' ', clean_response)   # Normalize whitespace
+        
+        # Ensure it starts and ends with braces
+        if not clean_response.startswith('{'):
+            clean_response = '{' + clean_response
+        if not clean_response.endswith('}'):
+            clean_response = clean_response + '}'
+        
+        data = json.loads(clean_response)
+        logger(f"Fixed JSON parsing successful")
+        return data, True
+    except (json.JSONDecodeError, AttributeError):
+        logger(f"Fixed JSON parsing failed")
+    
+    # Step 5: Try extracting partial JSON for truncated responses
+    try:
+        clean_response = response_text.strip()
+        
+        # Find the first { and last }
+        start_idx = clean_response.find('{')
+        end_idx = clean_response.rfind('}')
+        
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            json_str = clean_response[start_idx:end_idx + 1]
+            
+            # Try to complete truncated JSON
+            if json_str.count('{') > json_str.count('}'):
+                json_str += '}' * (json_str.count('{') - json_str.count('}'))
+            if json_str.count('"') % 2 != 0:
+                json_str += '"'
+            
+            data = json.loads(json_str)
+            logger(f"Partial JSON extraction successful")
+            return data, True
+    except (json.JSONDecodeError, AttributeError):
+        logger(f"Partial JSON extraction failed")
+    
+    logger(f"All JSON parsing attempts failed")
+    return None, False
 from gui.dashboard_tab import DashboardTab
 from gui.compliance_tab import ComplianceTab, ComplianceThread
 from gui.meetings_tab import MeetingsTab
@@ -200,11 +302,37 @@ class NoteTakingSystem(QWidget):
         self.context_input.returnPressed.connect(self.update_context)
         chat_layout.addWidget(self.context_input)
         
-        # Create a custom QTextEdit subclass for proper key event handling
+        # Create a custom QTextEdit subclass with always-visible placeholder
         class CustomTextEdit(QTextEdit):
             def __init__(self, parent=None):
                 super().__init__(parent)
                 self.parent_widget = parent
+                self._placeholder_text = ""
+                self._placeholder_visible = True
+            
+            def setPlaceholderText(self, text):
+                self._placeholder_text = text
+                self._placeholder_visible = True
+                self.update()
+            
+            def paintEvent(self, event):
+                super().paintEvent(event)
+                if self._placeholder_visible and not self.toPlainText() and not self.hasFocus():
+                    painter = QPainter(self.viewport())
+                    painter.setPen(QColor(128, 128, 128))  # Gray color for placeholder
+                    painter.setFont(self.font())
+                    rect = self.viewport().rect()
+                    painter.drawText(rect.adjusted(8, 8, -8, -8), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, self._placeholder_text)
+            
+            def focusInEvent(self, event):
+                self._placeholder_visible = False
+                super().focusInEvent(event)
+            
+            def focusOutEvent(self, event):
+                if not self.toPlainText():
+                    self._placeholder_visible = True
+                super().focusOutEvent(event)
+                self.update()
             
             def keyPressEvent(self, event):
                 if event.key() == Qt.Key.Key_Return and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
@@ -212,10 +340,13 @@ class NoteTakingSystem(QWidget):
                     if hasattr(self.parent_widget, 'process_note'):
                         self.parent_widget.process_note()
                         self.clear()
+                        self._placeholder_visible = True
                     event.accept()
                 else:
                     # Let the default QTextEdit handle other keys
                     super().keyPressEvent(event)
+                    if self.toPlainText():
+                        self._placeholder_visible = False
         
         self.chat_input = CustomTextEdit(self)
         self.chat_input.setPlaceholderText("Enter thoughts (e.g., 'Section 5 should be in the protocol; not this report')")
@@ -229,6 +360,9 @@ class NoteTakingSystem(QWidget):
         self.notes_display.setReadOnly(True)
         self.notes_display.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
         notes_layout.addWidget(self.notes_display)
+        
+        # Initialize with empty state
+        self.update_notes_display()
         
         # Buttons
         export_btn = QPushButton("Export Notes")
@@ -287,37 +421,47 @@ IMPORTANT: Respond with ONLY the JSON. No other text or explanations."""
         self.notes_display.append("<i>Formatting note...</i><br>")
 
     def handle_note_formatted(self, response):
+        # Use thread-safe UI update
+        QTimer.singleShot(0, lambda: self._handle_note_formatted_safe(response))
+    
+    def _handle_note_formatted_safe(self, response):
+        """Thread-safe version of handle_note_formatted."""
         try:
-            response_clean = response.strip()
-            if not response_clean.startswith('{'):
-                json_match = re.search(r'\\{.*\\}', response_clean, re.DOTALL)
-                if json_match:
-                    response_clean = json_match.group(0)
+            # Use robust JSON parsing
+            note_data, success = robust_json_parse(response, logger=lambda msg: print(f"Note formatting: {msg}"))
             
-            note_data = json.loads(response_clean)
-            formatted = note_data['formatted']
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.db.save_note(formatted, timestamp, self.context)
-            self.notes.append(formatted)
-            self.update_notes_display()
-            
-            # Re-enable input
-            self.chat_input.setEnabled(True)
-            self.chat_input.clear()
-            self.chat_input.setFocus()
-            
-            # Trigger organization if enough notes
-            if len(self.notes) >= 2:
-                self.try_organize_notes()
-        except json.JSONDecodeError:
-            self.notes_display.append("Error: Invalid response format")
-            self.notes_display.append(f"Raw response: {response}")
+            if success and note_data and 'formatted' in note_data:
+                formatted = note_data['formatted']
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.db.save_note(formatted, timestamp, self.context)
+                self.notes.append(formatted)
+                self.update_notes_display()
+                
+                # Re-enable input
+                self.chat_input.setEnabled(True)
+                self.chat_input.clear()
+                self.chat_input.setFocus()
+                
+                # Trigger organization if enough notes
+                if len(self.notes) >= 2:
+                    self.try_organize_notes()
+            else:
+                self.notes_display.append("Error: Could not parse note formatting response")
+                self.notes_display.append(f"Raw response: {response[:500]}...")  # Truncate for display
+                self.chat_input.setEnabled(True)
+                
         except Exception as e:
-            self.notes_display.append(f"Error: {str(e)}")
+            self.notes_display.append(f"Error processing note: {str(e)}")
+            self.notes_display.append(f"Raw response: {response[:500]}...")  # Truncate for display
         finally:
             self.chat_input.setEnabled(True)
 
     def handle_note_error(self, error):
+        # Use thread-safe UI update
+        QTimer.singleShot(0, lambda: self._handle_note_error_safe(error))
+    
+    def _handle_note_error_safe(self, error):
+        """Thread-safe version of handle_note_error."""
         self.notes_display.append(f"Error processing note: {error}")
         self.chat_input.setEnabled(True)
 
@@ -365,56 +509,47 @@ IMPORTANT:
         self.notes_display.append("<i>Organizing notes...</i><br>")
 
     def handle_organization_result(self, response):
+        # Use thread-safe UI update
+        QTimer.singleShot(0, lambda: self._handle_organization_result_safe(response))
+    
+    def _handle_organization_result_safe(self, response):
+        """Thread-safe version of handle_organization_result."""
         try:
-            response_clean = response.strip()
             print(f"DEBUG: Original response length: {len(response)}")
-            print(f"DEBUG: Cleaned response: '{response_clean}'")
+            print(f"DEBUG: Response preview: '{response[:200]}...'")
             
-            if not response_clean.startswith('{'):
-                json_match = re.search(r'\\{.*\\}', response_clean, re.DOTALL)
-                if json_match:
-                    response_clean = json_match.group(0)
-                    print(f"DEBUG: Extracted JSON: '{response_clean}'")
+            # Use robust JSON parsing
+            organized_data, success = robust_json_parse(response, logger=lambda msg: print(f"Organization: {msg}"))
             
-            if response_clean.count('"') % 2 != 0 or not response_clean.endswith('}'):
-                self.notes_display.append("Warning: Response appears to be truncated, skipping categorization.")
-                print(f"DEBUG: Response appears truncated - quote count: {response_clean.count('"')}, ends with '}}': {response_clean.endswith('}')}")
-                self.chat_input.setEnabled(True)
-                return
-            
-            try:
-                organized_data = json.loads(response_clean)
-                print(f"DEBUG: Successfully parsed JSON: {organized_data}")
-            except json.JSONDecodeError as json_err:
-                print(f"DEBUG: JSON decode error: {json_err}")
-                response_clean = response_clean.replace("\n", " ").replace("\r", " ")
-                response_clean = re.sub(r'\s+', ' ', response_clean)
-                response_clean = re.sub(r',\s*}', '}', response_clean)
-                response_clean = re.sub(r'"\s*}', '}', response_clean)
-                response_clean = response_clean.rstrip("'\"")
-                print(f"DEBUG: Attempting to fix JSON: '{response_clean}'")
-                organized_data = json.loads(response_clean)
-                print(f"DEBUG: Successfully parsed fixed JSON: {organized_data}")
-            
-            if 'categories' in organized_data and organized_data['categories']:
-                self.organized = True
-                self.db.save_organized_notes(organized_data['categories'])
-                self.notes_display.append(f"<i>Notes organized into {len(organized_data['categories'])} categories</i><br>")
-                self.update_notes_display(organized=True)
+            if success and organized_data:
+                print(f"DEBUG: Successfully parsed organization JSON: {organized_data}")
+                
+                if 'categories' in organized_data and organized_data['categories']:
+                    self.organized = True
+                    self.db.save_organized_notes(organized_data['categories'])
+                    self.notes_display.append(f"<i>Notes organized into {len(organized_data['categories'])} categories</i><br>")
+                    self.update_notes_display(organized=True)
+                else:
+                    self.notes_display.append("<i>No clear categories found, showing unorganized notes</i><br>")
+                    self.update_notes_display(organized=False)
             else:
-                self.notes_display.append("<i>No clear categories found, showing unorganized notes</i><br>")
+                self.notes_display.append("Warning: Could not parse organization response, showing unorganized notes")
+                self.notes_display.append(f"Raw response preview: {response[:300]}...")  # Truncate for display
                 self.update_notes_display(organized=False)
-        except json.JSONDecodeError as json_err:
-            self.notes_display.append("Error: Invalid organization format")
-            self.notes_display.append(f"Raw response: {response}")
-            print(f"DEBUG: Final JSON decode error: {json_err}")
+                
         except Exception as e:
-            self.notes_display.append(f"Error: {str(e)}")
-            print(f"DEBUG: Unexpected error: {e}")
+            self.notes_display.append(f"Error processing organization: {str(e)}")
+            self.notes_display.append(f"Raw response preview: {response[:300]}...")  # Truncate for display
+            print(f"DEBUG: Unexpected error in organization: {e}")
         finally:
             self.chat_input.setEnabled(True)
 
     def handle_organization_error(self, error):
+        # Use thread-safe UI update
+        QTimer.singleShot(0, lambda: self._handle_organization_error_safe(error))
+    
+    def _handle_organization_error_safe(self, error):
+        """Thread-safe version of handle_organization_error."""
         self.notes_display.append(f"Error organizing notes: {error}")
         self.chat_input.setEnabled(True)
 
@@ -425,22 +560,36 @@ IMPORTANT:
         if self.context:
             self.notes_display.append(f"<b>Current Context:</b> {self.context}<br><br>")
         
+        # Check if we have any notes to display
+        has_notes = False
+        
         if not organized:
-            for note in self.notes:
-                self.notes_display.append(f"{note}<br>")
+            if self.notes:
+                has_notes = True
+                for note in self.notes:
+                    self.notes_display.append(f"{note}<br>")
         else:
             organized_notes = self.db.get_organized_notes()
             if organized_notes and len(organized_notes) > 0:
+                has_notes = True
                 for category, notes_list in organized_notes.items():
                     self.notes_display.append(f"<b>{category}</b>:<br>")
                     for note in notes_list:
                         self.notes_display.append(f"  • {note}<br>")
                     self.notes_display.append("<br>")
-            else:
+            elif self.notes:
                 # Fallback to showing unorganized notes if no organized notes found
+                has_notes = True
                 self.notes_display.append("<b>Notes (Unorganized):</b><br>")
                 for note in self.notes:
                     self.notes_display.append(f"  • {note}<br>")
+        
+        # Show empty state if no notes
+        if not has_notes:
+            self.notes_display.append('<div style="text-align: center; color: #888; font-style: italic; padding: 40px;">')
+            self.notes_display.append('<h3>No notes yet—start typing!</h3>')
+            self.notes_display.append('<p>Use the input field on the left to add your thoughts and ideas.</p>')
+            self.notes_display.append('</div>')
 
     def export_notes(self):
         organized_notes = self.db.get_organized_notes() or {"Uncategorized": self.notes}
@@ -501,6 +650,7 @@ class ChatWindow(QMainWindow):
         self.db = DatabaseManager()
         self.chat_handler = ChatManager(self.db)
         self.todoList = QListWidget()
+        self.todoList.setStyleSheet("QListWidget::item { border: none; padding: 0; }")
         self.todo_list = TodoList(self)
         self.initUI()
         self.response_handler = ResponseHandler(self.chat_display, self.chat_input, self.send_button, self.chat_handler, "main_session", [])
@@ -542,14 +692,17 @@ class ChatWindow(QMainWindow):
 
     def initUI(self):
         self.setWindowTitle('NaviSsurance AI Assistant')
-        self.setGeometry(300, 300, 1600, 900)  # Increased window size for better layout
         
-        # Center the window on the screen
+        # Set minimum size for responsive layout
+        self.setMinimumSize(800, 600)
+        
+        # Use smart geometry based on screen size
         screen = QApplication.primaryScreen().geometry()
-        window_size = self.geometry()
-        x = (screen.width() - window_size.width()) // 2
-        y = (screen.height() - window_size.height()) // 2
-        self.move(x, y)
+        window_width = min(1600, screen.width() - 100)  # Leave margin
+        window_height = min(900, screen.height() - 100)  # Leave margin
+        x = (screen.width() - window_width) // 2
+        y = (screen.height() - window_height) // 2
+        self.setGeometry(x, y, window_width, window_height)
 
         # Load the main application stylesheet
         self.loadStylesheet("styles.qss")
@@ -604,11 +757,12 @@ class ChatWindow(QMainWindow):
         chat_layout.addLayout(input_layout)
         chat_layout.addSpacing(4)
         
-        main_layout.addWidget(chat_panel, stretch=25)  # Chat panel gets 25% width
+        # Use proper stretch factors instead of fixed percentages
+        main_layout.addWidget(chat_panel, 1)  # Chat panel gets 1/4 of space
 
         # Right side - Tab Widget
         self.tab_widget = QTabWidget()
-        main_layout.addWidget(self.tab_widget, stretch=75)  # Tabs get 75% width
+        main_layout.addWidget(self.tab_widget, 3)  # Tabs get 3/4 of space
         
         setup_shortcuts(self)
         setup_status_bar(self)
@@ -644,6 +798,11 @@ class ChatWindow(QMainWindow):
             self.chat_thread.start()
 
     def handle_response(self, response):
+        # Use thread-safe UI update
+        QTimer.singleShot(0, lambda: self._handle_response_safe(response))
+    
+    def _handle_response_safe(self, response):
+        """Thread-safe version of handle_response."""
         self.chat_display.append(f"<b>Navi:</b> {response}<br>")
 
     def load_chat_history(self):

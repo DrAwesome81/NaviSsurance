@@ -3,11 +3,11 @@ from anthropic import Anthropic
 import logging
 from dotenv import load_dotenv
 
-# Load environment variables from config folder
-load_dotenv('config/.env')
+# Load environment variables using centralized paths
+from config import CONFIG_DIR
+load_dotenv(os.path.join(CONFIG_DIR, '.env'))
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+# Setup logging (centralized in main.py)
 logger = logging.getLogger(__name__)
 
 def test_claude_api():

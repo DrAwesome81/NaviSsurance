@@ -226,17 +226,78 @@ def insert_template(window: 'ChatWindow', template_text: str) -> None:
     window.chatInput.setFocus()
     window.chatInput.selectAll()
 
-def save_chat_history(window: 'ChatWindow') -> None:
+def _export_chat(window: 'ChatWindow', path: str, content: str, fmt: str) -> bool:
+    """
+    Helper function to write chat content to file.
+    
+    Args:
+        window: The ChatWindow instance
+        path: File path to write to
+        content: Content to write
+        fmt: Format ('text' or 'html') for success message
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
     try:
-        filename, _ = QFileDialog.getSaveFileName(
-            window, "Save Chat History", "", "Text Files (*.txt);;HTML Files (*.html)"
-        )
-        if filename:
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(window.chatDisplay.toPlainText())
-            QMessageBox.information(window, "Success", "Chat history saved successfully.")
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        success_msg = f"Chat exported as {fmt} successfully."
+        QMessageBox.information(window, "Success", success_msg)
+        return True
     except Exception as e:
-        QMessageBox.critical(window, "Error", f"Failed to save chat history: {str(e)}")
+        QMessageBox.critical(window, "Error", f"Failed to export chat: {str(e)}")
+        return False
+
+
+def export_chat(window: 'ChatWindow', format='text', title="Export Chat", default_filename="chat_export") -> None:
+    """
+    Export chat content in the specified format.
+    
+    Args:
+        window: The ChatWindow instance
+        format: Export format ('text', 'html', or 'both' for user selection)
+        title: Dialog title
+        default_filename: Default filename (without extension)
+    """
+    try:
+        if format == 'text':
+            file_filter = "Text Files (*.txt)"
+            default_file = f"{default_filename}.txt"
+            content = window.chatDisplay.toPlainText()
+            fmt = "text"
+        elif format == 'html':
+            file_filter = "HTML Files (*.html)"
+            default_file = f"{default_filename}.html"
+            content = window.chatDisplay.toHtml()
+            fmt = "HTML"
+        else:  # format == 'both' or any other value
+            file_filter = "Text Files (*.txt);;HTML Files (*.html)"
+            default_file = default_filename
+            content = window.chatDisplay.toPlainText()  # Default to text
+            fmt = "text"
+        
+        filename, _ = QFileDialog.getSaveFileName(
+            window, title, default_file, file_filter
+        )
+        
+        if filename:
+            # Determine format from filename extension if user selected 'both' format
+            if format == 'both' and filename.endswith('.html'):
+                content = window.chatDisplay.toHtml()
+                fmt = "HTML"
+            
+            # Use helper function for file writing
+            _export_chat(window, filename, content, fmt)
+    except Exception as e:
+        QMessageBox.critical(window, "Error", f"Failed to export chat: {str(e)}")
+
+
+def save_chat_history(window: 'ChatWindow') -> None:
+    """Save chat history with format selection."""
+    export_chat(window, format='both', title="Save Chat History", default_filename="chat_history")
+
 
 def clear_chat_history(window: 'ChatWindow') -> None:
     reply = QMessageBox.question(
@@ -246,29 +307,15 @@ def clear_chat_history(window: 'ChatWindow') -> None:
     if reply == QMessageBox.StandardButton.Yes:
         window.chatDisplay.clear()
 
+
 def export_chat_as_text(window: 'ChatWindow') -> None:
-    try:
-        filename, _ = QFileDialog.getSaveFileName(
-            window, "Export Chat as Text", "chat_export.txt", "Text Files (*.txt)"
-        )
-        if filename:
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(window.chatDisplay.toPlainText())
-            QMessageBox.information(window, "Success", "Chat exported as text successfully.")
-    except Exception as e:
-        QMessageBox.critical(window, "Error", f"Failed to export chat: {str(e)}")
+    """Export chat as text format."""
+    export_chat(window, format='text', title="Export Chat as Text", default_filename="chat_export")
+
 
 def export_chat_as_html(window: 'ChatWindow') -> None:
-    try:
-        filename, _ = QFileDialog.getSaveFileName(
-            window, "Export Chat as HTML", "chat_export.html", "HTML Files (*.html)"
-        )
-        if filename:
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(window.chatDisplay.toHtml())
-            QMessageBox.information(window, "Success", "Chat exported as HTML successfully.")
-    except Exception as e:
-        QMessageBox.critical(window, "Error", f"Failed to export chat: {str(e)}")
+    """Export chat as HTML format."""
+    export_chat(window, format='html', title="Export Chat as HTML", default_filename="chat_export")
 
 def loadStylesheet(window: 'ChatWindow', filename: str) -> None:
     try:

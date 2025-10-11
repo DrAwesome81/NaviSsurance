@@ -1,10 +1,11 @@
 import sys
 import os
 import json
-from llama_cpp import Llama
 
-# Add parent directory (root) to sys.path to import config.py
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# Add parent directory to path so we can import config
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from llama_cpp import Llama
 from config import base_system_message
 
 def main():

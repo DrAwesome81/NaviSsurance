@@ -10,16 +10,15 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.document_loaders import GoogleDriveLoader, DropboxLoader
 from dotenv import load_dotenv
 
-# Setup logging
-logging.basicConfig(filename='indexing.log', level=logging.INFO, 
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+# Setup logging (centralized in main.py)
+logger = logging.getLogger(__name__)
 
 # Load credentials from rag_config.json
 try:
     with open("rag_config.json", "r") as f:
         config = json.load(f)
 except Exception as e:
-    logging.error(f"Failed to load rag_config.json: {e}")
+    logger.error(f"Failed to load rag_config.json: {e}")
     raise
 
 # Paths and credentials (leave paths blank for testing)
@@ -34,9 +33,9 @@ GDRIVE2_CREDENTIALS = config.get("gdrive2_credentials_file", "")
 # Initialize embedding model
 try:
     embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-large-en-v1.5")
-    logging.info("Embedding model initialized")
+    logger.info("Embedding model initialized")
 except Exception as e:
-    logging.error(f"Failed to initialize embeddings: {e}")
+    logger.error(f"Failed to initialize embeddings: {e}")
     raise
 
 # Chroma database
@@ -44,20 +43,57 @@ CHROMA_PATH = "chroma_index"
 BATCH_SIZE = 5000  # Chroma batch limit workaround
 
 def hash_content(content, source, page_number=None):
-    """Generate MD5 hash for document content, source, and page number."""
+    """Generate MD5 hash for document content, source, and page number using streaming."""
     try:
         hasher = hashlib.md5()
-        content_str = f"{content}{source}{page_number or ''}".encode("utf-8")
-        hasher.update(content_str)
+        
+        # Stream hash content in chunks to avoid memory issues with large documents
+        chunk_size = 8192  # 8KB chunks
+        
+        # Hash source and page number first
+        source_str = f"{source}{page_number or ''}".encode("utf-8")
+        hasher.update(source_str)
+        
+        # Hash content in chunks if it's a string
+        if isinstance(content, str):
+            content_bytes = content.encode("utf-8")
+            for i in range(0, len(content_bytes), chunk_size):
+                chunk = content_bytes[i:i + chunk_size]
+                hasher.update(chunk)
+        else:
+            # If content is already bytes, hash it directly in chunks
+            for i in range(0, len(content), chunk_size):
+                chunk = content[i:i + chunk_size]
+                hasher.update(chunk)
+        
         return hasher.hexdigest()
     except Exception as e:
-        logging.error(f"Error hashing content for {source} (page {page_number or 'N/A'}): {e}")
+        logger.error(f"Error hashing content for {source} (page {page_number or 'N/A'}): {e}")
         return None
+
+def _process_document(doc, source, page_number=None):
+    """Helper function to process a document with hashing and metadata."""
+    file_hash = hash_content(doc.page_content, source, page_number)
+    if file_hash:
+        doc.metadata["file_hash"] = file_hash
+        doc.metadata["page_number"] = page_number
+        if page_number:
+            logger.info(f"Loaded local PDF page: {source} (page {page_number}) - Hash: {file_hash}")
+        else:
+            logger.info(f"Loaded local file: {source} - Hash: {file_hash}")
+        return doc
+    else:
+        if page_number:
+            logger.warning(f"Skipping invalid local PDF page: {source} (page {page_number})")
+        else:
+            logger.warning(f"Skipping invalid local file: {source}")
+        return None
+
 
 def load_local_files(path):
     """Load and hash local files, splitting PDFs by page."""
     if not path or not os.path.exists(path):
-        logging.warning(f"Path {path} is empty or does not exist")
+        logger.warning(f"Path {path} is empty or does not exist")
         return []
     documents = []
     
@@ -71,16 +107,11 @@ def load_local_files(path):
             page_docs = loader.load()  # This loads each page as a separate document
             for i, page_doc in enumerate(page_docs):
                 page_number = i + 1
-                file_hash = hash_content(page_doc.page_content, pdf_file, page_number)
-                if file_hash:
-                    page_doc.metadata["file_hash"] = file_hash
-                    page_doc.metadata["page_number"] = page_number
-                    logging.info(f"Loaded local PDF page: {pdf_file} (page {page_number}) - Hash: {file_hash}")
-                    documents.append(page_doc)
-                else:
-                    logging.warning(f"Skipping invalid local PDF page: {pdf_file} (page {page_number})")
+                processed_doc = _process_document(page_doc, pdf_file, page_number)
+                if processed_doc:
+                    documents.append(processed_doc)
         except Exception as e:
-            logging.error(f"Error processing PDF {pdf_file}: {e}")
+            logger.error(f"Error processing PDF {pdf_file}: {e}")
     
     # Handle non-PDF files
     for loader_class, glob_pattern in [(Docx2txtLoader, "**/*.[dD][oO][cC][xX]"), 
@@ -90,23 +121,17 @@ def load_local_files(path):
             docs = loader.load()
             for doc in tqdm(docs, desc=f"Processing {loader_class.__name__} files"):
                 source = doc.metadata["source"]
-                file_hash = hash_content(doc.page_content, source)
-                if file_hash:
-                    doc.metadata["file_hash"] = file_hash
-                    # Add consistent metadata for non-PDFs
-                    doc.metadata["page_number"] = None
-                    logging.info(f"Loaded local file: {source} - Hash: {file_hash}")
-                    documents.append(doc)
-                else:
-                    logging.warning(f"Skipping invalid local file: {source}")
+                processed_doc = _process_document(doc, source, page_number=None)
+                if processed_doc:
+                    documents.append(processed_doc)
         except Exception as e:
-            logging.error(f"Error loading files with {loader_class.__name__}: {e}")
+            logger.error(f"Error loading files with {loader_class.__name__}: {e}")
     return documents
 
 def load_dropbox_files(path, token):
     """Load and hash Dropbox files."""
     if not path or not token:
-        logging.warning(f"Dropbox path or token missing: {path}, {token}")
+        logger.warning(f"Dropbox path or token missing: {path}, {token}")
         return []
     try:
         loader = DropboxLoader(dropbox_access_token=token, folder_path=path)
@@ -117,19 +142,19 @@ def load_dropbox_files(path, token):
             file_hash = hash_content(doc.page_content, source)
             if file_hash:
                 doc.metadata["file_hash"] = file_hash
-                logging.info(f"Loaded Dropbox file: {source} - Hash: {file_hash}")
+                logger.info(f"Loaded Dropbox file: {source} - Hash: {file_hash}")
                 documents.append(doc)
             else:
-                logging.warning(f"Skipping invalid Dropbox file: {source}")
+                logger.warning(f"Skipping invalid Dropbox file: {source}")
         return documents
     except Exception as e:
-        logging.error(f"Error loading Dropbox files: {e}")
+        logger.error(f"Error loading Dropbox files: {e}")
         return []
 
 def load_gdrive_files(folder_id, credentials_file):
     """Load and hash Google Drive files."""
     if not folder_id or not credentials_file:
-        logging.warning(f"Google Drive folder ID or credentials missing: {folder_id}, {credentials_file}")
+        logger.warning(f"Google Drive folder ID or credentials missing: {folder_id}, {credentials_file}")
         return []
     try:
         loader = GoogleDriveLoader(folder_id=folder_id, credentials_path=credentials_file, file_types=["document", "pdf"])
@@ -140,20 +165,20 @@ def load_gdrive_files(folder_id, credentials_file):
             file_hash = hash_content(doc.page_content, source)
             if file_hash:
                 doc.metadata["file_hash"] = file_hash
-                logging.info(f"Loaded Google Drive file: {source} - Hash: {file_hash}")
+                logger.info(f"Loaded Google Drive file: {source} - Hash: {file_hash}")
                 documents.append(doc)
             else:
-                logging.warning(f"Skipping invalid Google Drive file: {source}")
+                logger.warning(f"Skipping invalid Google Drive file: {source}")
         return documents
     except Exception as e:
-        logging.error(f"Error loading Google Drive files: {e}")
+        logger.error(f"Error loading Google Drive files: {e}")
         return []
 
 def main():
     # Clear existing Chroma index
     if os.path.exists(CHROMA_PATH):
         shutil.rmtree(CHROMA_PATH)
-        logging.info(f"Cleared existing index at {CHROMA_PATH}")
+        logger.info(f"Cleared existing index at {CHROMA_PATH}")
 
     # Load all documents
     documents = []
@@ -171,25 +196,29 @@ def main():
             if file_hash not in seen_hashes:
                 seen_hashes.add(file_hash)
                 unique_docs.append(doc)
-                logging.info(f"Added file to index: {doc.metadata.get('source', 'unknown')} - Hash: {file_hash}")
+                logger.info(f"Added file to index: {doc.metadata.get('source', 'unknown')} - Hash: {file_hash}")
             else:
-                logging.warning(f"Skipping duplicate file: {doc.metadata.get('source', 'unknown')} - Hash: {file_hash}")
+                logger.warning(f"Skipping duplicate file: {doc.metadata.get('source', 'unknown')} - Hash: {file_hash}")
         else:
-            logging.warning(f"Skipping invalid file: {doc.metadata.get('source', 'unknown')}")
+            logger.warning(f"Skipping invalid file: {doc.metadata.get('source', 'unknown')}")
 
     # Create Chroma index in batches
     if unique_docs:
         try:
+            # Initialize Chroma index once (empty to start)
+            vectorstore = Chroma.from_documents([], embeddings, persist_directory=CHROMA_PATH)
+            
+            # Add documents in batches
             for i in tqdm(range(0, len(unique_docs), BATCH_SIZE), desc="Indexing batches"):
                 batch = unique_docs[i:i + BATCH_SIZE]
-                Chroma.from_documents(batch, embeddings, persist_directory=CHROMA_PATH)
-                logging.info(f"Indexed batch {i//BATCH_SIZE + 1} with {len(batch)} documents")
+                vectorstore.add_documents(batch)
+                logger.info(f"Indexed batch {i//BATCH_SIZE + 1} with {len(batch)} documents")
             print(f"Indexed {len(unique_docs)} documents to {CHROMA_PATH}")
         except Exception as e:
-            logging.error(f"Error creating Chroma index: {e}")
+            logger.error(f"Error creating Chroma index: {e}")
             raise
     else:
-        logging.warning("No valid documents indexed; check paths or file types in rag_config.json")
+        logger.warning("No valid documents indexed; check paths or file types in rag_config.json")
         print("No valid documents indexed; check paths or file types in rag_config.json")
 
 if __name__ == "__main__":

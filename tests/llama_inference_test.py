@@ -1,10 +1,10 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import torch
 import logging
+import os
 import time
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Setup logging (centralized in main.py)
 logger = logging.getLogger(__name__)
 
 def test_inference():
@@ -28,7 +28,7 @@ def test_inference():
         start_time_tokenizer = time.time()
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            token="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"
+            token=os.getenv("HUGGINGFACE_TOKEN", "")
         )
         logger.info(f"Tokenizer loaded in {time.time() - start_time_tokenizer:.2f} seconds")
         
@@ -66,7 +66,7 @@ def test_inference():
             model_name,
             quantization_config=quantization_config,
             device_map=device_map,
-            token="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",
+            token=os.getenv("HUGGINGFACE_TOKEN", ""),
             low_cpu_mem_usage=True  # Optimize CPU memory usage during loading
         )
         load_time = time.time() - start_time_model

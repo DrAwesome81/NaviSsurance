@@ -2,13 +2,45 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushBut
                             QListWidget, QListWidgetItem, QTextEdit, QSplitter, 
                             QFileDialog, QProgressBar, QMenu, QCheckBox)
 from PyQt6.QtCore import Qt, QMimeData
-from PyQt6.QtGui import QDropEvent, QDragEnterEvent
+from PyQt6.QtGui import QDropEvent, QDragEnterEvent, QPainter, QColor
 from core.api import DropboxClient
 from dropbox import files
-from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
+# from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 import json
 import os
 from datetime import datetime
+
+class AlwaysVisiblePlaceholderTextEdit(QTextEdit):
+    """Custom QTextEdit with always-visible placeholder text."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._placeholder_text = ""
+        self._placeholder_visible = True
+    
+    def setPlaceholderText(self, text):
+        self._placeholder_text = text
+        self._placeholder_visible = True
+        self.update()
+    
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._placeholder_visible and not self.toPlainText():
+            painter = QPainter(self.viewport())
+            painter.setPen(QColor(128, 128, 128))  # Gray color for placeholder
+            painter.setFont(self.font())
+            rect = self.viewport().rect()
+            painter.drawText(rect.adjusted(8, 8, -8, -8), Qt.AlignmentFlag.AlignCenter, self._placeholder_text)
+    
+    def setPlainText(self, text):
+        super().setPlainText(text)
+        self._placeholder_visible = not bool(text.strip())
+        self.update()
+    
+    def setHtml(self, text):
+        super().setHtml(text)
+        self._placeholder_visible = not bool(text.strip())
+        self.update()
 
 class WorkspaceTab(QWidget):
     def __init__(self, db, chat_handler):
@@ -34,8 +66,9 @@ class WorkspaceTab(QWidget):
         # Right: Preview/Results Pane
         self.setup_preview_pane(main_splitter)
         
-        # Set proportions (20% files, 80% preview)
-        main_splitter.setSizes([384, 1536])
+        # Use stretch factors for responsive proportions (20% files, 80% preview)
+        main_splitter.setStretchFactor(0, 1)  # Files panel gets 1/5 of space
+        main_splitter.setStretchFactor(1, 4)  # Preview panel gets 4/5 of space
         
         self.setLayout(layout)
 
@@ -100,7 +133,7 @@ class WorkspaceTab(QWidget):
         preview_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         preview_layout.addWidget(preview_header)
         
-        self.preview_text = QTextEdit()
+        self.preview_text = AlwaysVisiblePlaceholderTextEdit()
         self.preview_text.setReadOnly(True)
         self.preview_text.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.3); border-radius: 3px;")
         self.preview_text.setPlaceholderText("Results or file preview will appear here...")
@@ -224,17 +257,8 @@ class WorkspaceTab(QWidget):
             doc_extensions = {'.docx'}
             file_ext = os.path.splitext(file_info['name'])[1].lower()
             
-            content = ""
-            if file_ext in text_extensions:
-                with open(file_info['path'], 'r', encoding='utf-8') as f:
-                    content = f.read()
-            elif file_ext in pdf_extensions:
-                loader = PyPDFLoader(file_info['path'])
-                pages = loader.load()
-                content = "\n\n".join(page.page_content for page in pages[:5])
-            elif file_ext in doc_extensions:
-                loader = Docx2txtLoader(file_info['path'])
-                content = loader.load()[0].page_content
+            # Get file content with caching
+            content = self.get_file_content(file_info)
             
             preview_content = content[:5000]
             if len(content) > 5000:
@@ -247,10 +271,36 @@ class WorkspaceTab(QWidget):
             self.status_label.setText(f"Error: {str(e)}")
             self.progress_bar.setVisible(False)
 
+    def get_file_content(self, file_info):
+        """Get file content with caching to avoid repeated disk I/O."""
+        if 'content' not in file_info:
+            file_ext = os.path.splitext(file_info['name'])[1].lower()
+            content = ""
+            
+            if file_ext in {'.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml', '.csv'}:
+                with open(file_info['path'], 'r', encoding='utf-8') as f:
+                    content = f.read()
+            elif file_ext in {'.pdf'}:
+                # loader = PyPDFLoader(file_info['path'])
+                # pages = loader.load()
+                # content = "\n\n".join(page.page_content for page in pages[:5])
+                content = f"[PDF file: {file_info['name']} - content loading disabled]"
+            elif file_ext in {'.docx'}:
+                # loader = Docx2txtLoader(file_info['path'])
+                # content = loader.load()[0].page_content
+                content = f"[DOCX file: {file_info['name']} - content loading disabled]"
+            
+            # Cache the content for future use
+            file_info['content'] = content
+        
+        return file_info['content']
+
     def generate_document(self):
         marked_files = [f for f in self.selected_files if f['marked']]
         if not marked_files:
             self.status_label.setText("No files marked")
+            # Show empty state in preview
+            self.preview_text.setHtml('<div style="text-align: center; color: #888; font-style: italic; padding: 40px;"><h3>No files selected</h3><p>Mark some files in the list to generate a document.</p></div>')
             return
         try:
             self.status_label.setText("Generating document...")
@@ -258,17 +308,9 @@ class WorkspaceTab(QWidget):
             self.progress_bar.setValue(0)
             
             content = ""
-            for file_info in marked_files[:5]:
-                file_ext = os.path.splitext(file_info['name'])[1].lower()
-                if file_ext in {'.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml', '.csv'}:
-                    with open(file_info['path'], 'r', encoding='utf-8') as f:
-                        content += f.read() + "\n\n"
-                elif file_ext in {'.pdf'}:
-                    loader = PyPDFLoader(file_info['path'])
-                    content += "\n\n".join(page.page_content for page in loader.load()[:5]) + "\n\n"
-                elif file_ext in {'.docx'}:
-                    loader = Docx2txtLoader(file_info['path'])
-                    content += loader.load()[0].page_content + "\n\n"
+            for file_info in marked_files:
+                # Use cached content to avoid repeated disk I/O
+                content += self.get_file_content(file_info) + "\n\n"
             
             # Placeholder RunPod API call
             response = {"document": "Placeholder: RunPod API call for document generation not implemented yet"}
@@ -284,6 +326,8 @@ class WorkspaceTab(QWidget):
         marked_files = [f for f in self.selected_files if f['marked']]
         if not marked_files:
             self.status_label.setText("No files marked")
+            # Show empty state in preview
+            self.preview_text.setHtml('<div style="text-align: center; color: #888; font-style: italic; padding: 40px;"><h3>No files selected</h3><p>Mark some files in the list to run compliance analysis.</p></div>')
             return
         try:
             self.status_label.setText("Running compliance analysis...")
@@ -291,17 +335,9 @@ class WorkspaceTab(QWidget):
             self.progress_bar.setValue(0)
             
             content = ""
-            for file_info in marked_files[:5]:
-                file_ext = os.path.splitext(file_info['name'])[1].lower()
-                if file_ext in {'.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml', '.csv'}:
-                    with open(file_info['path'], 'r', encoding='utf-8') as f:
-                        content += f.read() + "\n\n"
-                elif file_ext in {'.pdf'}:
-                    loader = PyPDFLoader(file_info['path'])
-                    content += "\n\n".join(page.page_content for page in loader.load()[:5]) + "\n\n"
-                elif file_ext in {'.docx'}:
-                    loader = Docx2txtLoader(file_info['path'])
-                    content += loader.load()[0].page_content + "\n\n"
+            for file_info in marked_files:
+                # Use cached content to avoid repeated disk I/O
+                content += self.get_file_content(file_info) + "\n\n"
             
             # Placeholder RunPod API call
             response = {"compliance_report": "Placeholder: RunPod API call for compliance analysis not implemented yet"}
@@ -317,6 +353,8 @@ class WorkspaceTab(QWidget):
         marked_files = [f for f in self.selected_files if f['marked']]
         if not marked_files:
             self.status_label.setText("No files marked")
+            # Show empty state in preview
+            self.preview_text.setHtml('<div style="text-align: center; color: #888; font-style: italic; padding: 40px;"><h3>No files selected</h3><p>Mark some files in the list to generate a summary.</p></div>')
             return
         try:
             self.status_label.setText("Summarizing files...")
@@ -324,17 +362,9 @@ class WorkspaceTab(QWidget):
             self.progress_bar.setValue(0)
             
             content = ""
-            for file_info in marked_files[:5]:
-                file_ext = os.path.splitext(file_info['name'])[1].lower()
-                if file_ext in {'.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml', '.csv'}:
-                    with open(file_info['path'], 'r', encoding='utf-8') as f:
-                        content += f.read() + "\n\n"
-                elif file_ext in {'.pdf'}:
-                    loader = PyPDFLoader(file_info['path'])
-                    content += "\n\n".join(page.page_content for page in loader.load()[:5]) + "\n\n"
-                elif file_ext in {'.docx'}:
-                    loader = Docx2txtLoader(file_info['path'])
-                    content += loader.load()[0].page_content + "\n\n"
+            for file_info in marked_files:
+                # Use cached content to avoid repeated disk I/O
+                content += self.get_file_content(file_info) + "\n\n"
             
             # Placeholder RunPod API call
             response = {"summary": "Placeholder: RunPod API call for file summarization not implemented yet"}

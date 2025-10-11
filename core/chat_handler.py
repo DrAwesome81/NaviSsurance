@@ -6,7 +6,32 @@ from core.db import DatabaseManager
 from core.data_fetch import DataFetcher
 
 class ChatHandler(QObject):
-    task_added_signal = pyqtSignal(str, str)
+    # Email analysis prompt template (static content)
+    EMAIL_ANALYSIS_PROMPT_TEMPLATE = """Analyze these emails and determine which ones are relevant for Dr. Odeh's daily briefing. 
+
+Context: Dr. Odeh is a MedTech consultant focused on AI/ML, IVDs, SaMD, DTC devices. He works with startups and needs to stay on top of:
+- Client communications (goldbugstrategies.com, dovahealth.ca)
+- Business opportunities and partnerships
+- Industry news and regulatory updates
+- Urgent matters requiring immediate attention
+
+Email data:
+{email_data}
+
+Instructions:
+1. Filter out obvious spam, marketing, newsletters, and irrelevant emails
+2. Identify emails that are important for a MedTech consultant
+3. Flag urgent emails that need immediate attention
+4. Group related emails if any
+5. Return ONLY the relevant emails in this format:
+RELEVANT_EMAILS:
+- [Sender] - [Subject] - [Brief summary of why it's relevant]
+- [Next relevant email...]
+
+URGENT_EMAILS:
+- [Urgent email details if any]
+
+Return only the relevant emails, nothing else."""
 
     def __init__(self, chat_window=None):
         super().__init__()
@@ -46,67 +71,77 @@ class ChatHandler(QObject):
         ]) if events else ""
 
         # Tasks
-        with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
-            cursor = conn.execute("SELECT task, due_date FROM tasks WHERE due_date <= strftime('%m-%d-%Y', 'now')")
-            tasks = cursor.fetchall()
-        tasks_str = "\n".join([f"- {t[0]} (due {t[1]})" for t in tasks]) if tasks else ""
+        try:
+            with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
+                cursor = conn.execute("SELECT task, due_date FROM tasks WHERE due_date <= strftime('%m-%d-%Y', 'now')")
+                tasks = cursor.fetchall()
+            tasks_str = "\n".join([f"- {t[0]} (due {t[1]})" for t in tasks]) if tasks else ""
+        except sqlite3.Error as e:
+            print(f"Database error loading tasks for briefing: {e}")
+            tasks_str = ""
+        except Exception as e:
+            print(f"Error loading tasks for briefing: {e}")
+            tasks_str = ""
 
-        # Emails - collect all emails for LLM analysis
+        # Emails - collect all emails for LLM analysis using batch requests
         emails = self.data_fetcher.get_new_emails(last_run)
         all_email_data = []
-        with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
-            for msg in emails[:10]:  # Increased limit to give LLM more data to work with
-                details = self.data_fetcher.get_email_details(msg['id'], msg['source'])
-                if not details:
-                    continue
-                    
-                sender = next(h['value'] for h in details['payload']['headers'] if h['name'] == 'From')
-                subject = next(h['value'] for h in details['payload']['headers'] if h['name'] == 'Subject')
-                timestamp = int(details['internalDate']) // 1000
-                snippet = details.get('snippet', '')
-                
-                # Store all email data for LLM analysis
-                email_data = {
-                    'sender': sender,
-                    'subject': subject,
-                    'snippet': snippet,
-                    'timestamp': timestamp,
-                    'source': msg['source']
-                }
-                all_email_data.append(email_data)
-                
-                # Still store in database for tracking
-                conn.execute("INSERT OR IGNORE INTO emails (id, sender, subject, timestamp, content, source, is_client, is_potential)"
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                            (msg['id'], sender, subject, timestamp, snippet, msg['source'], 0, 0))
+        
+        if emails:
+            # Group emails by source for batch processing
+            emails_by_source = {}
+            for msg in emails:  # Process ALL new emails for comprehensive analysis
+                source = msg['source']
+                if source not in emails_by_source:
+                    emails_by_source[source] = []
+                emails_by_source[source].append(msg)
+            
+            # Process emails in batches by source
+            all_email_details = {}
+            for source, source_emails in emails_by_source.items():
+                email_ids = [msg['id'] for msg in source_emails]
+                batch_details = self.data_fetcher.get_email_details_batch(email_ids, source)
+                all_email_details.update(batch_details)
+            
+            try:
+                with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
+                    for msg in emails:
+                        details = all_email_details.get(msg['id'])
+                        if not details:
+                            continue
+                        
+                        # Extract email data once (avoid duplicate header parsing)
+                        sender = next(h['value'] for h in details['payload']['headers'] if h['name'] == 'From')
+                        subject = next(h['value'] for h in details['payload']['headers'] if h['name'] == 'Subject')
+                        timestamp = int(details['internalDate']) // 1000
+                        snippet = details.get('snippet', '')
+                        
+                        # Store all email data for LLM analysis (reuse extracted data)
+                        email_data = {
+                            'sender': sender,
+                            'subject': subject,
+                            'snippet': snippet,
+                            'timestamp': timestamp,
+                            'source': msg['source']
+                        }
+                        all_email_data.append(email_data)
+                        
+                        # Store in database for tracking (reuse extracted data)
+                        conn.execute("INSERT OR IGNORE INTO emails (id, sender, subject, timestamp, content, source, is_client, is_potential)"
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                    (msg['id'], sender, subject, timestamp, snippet, msg['source'], 0, 0))
+            except sqlite3.Error as e:
+                print(f"Database error processing emails for briefing: {e}")
+            except Exception as e:
+                print(f"Error processing emails for briefing: {e}")
         
         # Let LLM analyze and filter emails intelligently
         if all_email_data:
-            email_analysis_prompt = f"""Analyze these emails and determine which ones are relevant for Dr. Odeh's daily briefing. 
-
-Context: Dr. Odeh is a MedTech consultant focused on AI/ML, IVDs, SaMD, DTC devices. He works with startups and needs to stay on top of:
-- Client communications (goldbugstrategies.com, dovahealth.ca)
-- Business opportunities and partnerships
-- Industry news and regulatory updates
-- Urgent matters requiring immediate attention
-
-Email data:
-{chr(10).join([f"From: {email['sender']} | Subject: {email['subject']} | Content: {email['snippet']}" for email in all_email_data])}
-
-Instructions:
-1. Filter out obvious spam, marketing, newsletters, and irrelevant emails
-2. Identify emails that are important for a MedTech consultant
-3. Flag urgent emails that need immediate attention
-4. Group related emails if any
-5. Return ONLY the relevant emails in this format:
-RELEVANT_EMAILS:
-- [Sender] - [Subject] - [Brief summary of why it's relevant]
-- [Next relevant email...]
-
-URGENT_EMAILS:
-- [Urgent email details if any]
-
-Return only the relevant emails, nothing else."""
+            # Build email data string (only dynamic part)
+            email_data_str = chr(10).join([f"From: {email['sender']} | Subject: {email['subject']} | Content: {email['snippet']}" for email in all_email_data])
+            
+            # Use pre-built template (efficient)
+            email_analysis_prompt = self.EMAIL_ANALYSIS_PROMPT_TEMPLATE.format(email_data=email_data_str)
 
             # Get LLM analysis
             try:
@@ -161,7 +196,8 @@ Return only the relevant emails, nothing else."""
 
     def _add_task_from_chat(self, task_text, due_date, session_id):
         self.db.add_task(session_id, task_text, due_date)
-        self.task_added_signal.emit(task_text, due_date)
+        if hasattr(self, 'task_added_callback') and self.task_added_callback:
+            self.task_added_callback(task_text, due_date)
 
     def update_replied_status(self, sent_email_id, source):
         """
@@ -204,10 +240,62 @@ Return only the relevant emails, nothing else."""
     def update_replied_status_from_sent_emails(self, last_run):
         """
         Check for sent emails since last_run and update the replied status of corresponding received emails.
+        Uses batch processing for efficiency.
         """
         sent_emails = self.data_fetcher.get_sent_emails(last_run)
-        for email in sent_emails:
-            self.update_replied_status(email['id'], email['source'])
+        
+        if sent_emails:
+            # Group sent emails by source for batch processing
+            emails_by_source = {}
+            for email in sent_emails:
+                source = email['source']
+                if source not in emails_by_source:
+                    emails_by_source[source] = []
+                emails_by_source[source].append(email)
+            
+            # Process sent emails in batches by source
+            all_sent_details = {}
+            for source, source_emails in emails_by_source.items():
+                email_ids = [email['id'] for email in source_emails]
+                batch_details = self.data_fetcher.get_email_details_batch(email_ids, source)
+                all_sent_details.update(batch_details)
+            
+            # Update replied status using batch-fetched details
+            for email in sent_emails:
+                sent_details = all_sent_details.get(email['id'])
+                if sent_details:
+                    self.update_replied_status_with_details(email['id'], email['source'], sent_details)
+
+    def update_replied_status_with_details(self, sent_email_id, source, sent_details):
+        """
+        Update the replied status of an email in the database based on a sent email.
+        Uses pre-fetched email details to avoid additional API calls.
+        """
+        try:
+            with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
+                # Try to find 'In-Reply-To' header for direct reply matching
+                in_reply_to = next((h['value'] for h in sent_details['payload']['headers'] if h['name'] == 'In-Reply-To'), None)
+                if in_reply_to:
+                    # Look for the original email by its Message-ID in the database
+                    cursor = conn.execute("SELECT id FROM emails WHERE id = ? AND replied = 0", (in_reply_to,))
+                    matching_email = cursor.fetchone()
+                    if matching_email:
+                        email_id = matching_email[0]
+                        conn.execute("UPDATE emails SET replied = 1 WHERE id = ?", (email_id,))
+                        conn.commit()
+                        return
+
+                # Fallback to subject matching if In-Reply-To is not available or no match found
+                sent_subject = next((h['value'] for h in sent_details['payload']['headers'] if h['name'] == 'Subject'), '')
+                original_subject = sent_subject.replace('Re: ', '').strip()
+                cursor = conn.execute("SELECT id FROM emails WHERE subject LIKE ? AND replied = 0", ('%' + original_subject + '%',))
+                matching_emails = cursor.fetchall()
+                if matching_emails:
+                    email_id = matching_emails[0][0]
+                    conn.execute("UPDATE emails SET replied = 1 WHERE id = ?", (email_id,))
+                    conn.commit()
+        except Exception as e:
+            pass
 
     def search_conversations(self, search_terms, date_range=None):
         """

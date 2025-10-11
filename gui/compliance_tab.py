@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QListWidget, QTextEdit, QProgressBar, QMenu, QFileDialog, QMessageBox
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from core.compliance import ComplianceChecker
 import os
 import json
@@ -211,6 +211,11 @@ class ComplianceTab(QWidget):
         self.compliance_thread.start()
 
     def on_compliance_complete(self, result):
+        # Use thread-safe UI update
+        QTimer.singleShot(0, lambda: self._on_compliance_complete_safe(result))
+    
+    def _on_compliance_complete_safe(self, result):
+        """Thread-safe version of on_compliance_complete."""
         self.progress_bar.hide()
         if result["success"]:
             data = result["data"]

@@ -4,11 +4,90 @@ import os
 import json
 import requests
 import logging
+import re
 from PyQt6.QtGui import QColor
+
+# Setup logging (centralized in main.py)
+logger = logging.getLogger(__name__)
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import QHeaderView
 from datetime import datetime
+
+def robust_json_parse_array(response_text, logger=None):
+    """
+    Robust JSON parsing for arrays that handles various API response formats.
+    
+    Args:
+        response_text: Raw response text from API
+        logger: Optional logger for debug messages
+    
+    Returns:
+        tuple: (parsed_json_array, success_flag)
+    """
+    if logger is None:
+        logger = print  # Fallback to print for debug messages
+    
+    # Step 1: Try direct JSON parsing first
+    try:
+        clean_response = response_text.strip()
+        data = json.loads(clean_response)
+        if isinstance(data, list):
+            logger(f"Direct JSON array parsing successful")
+            return data, True
+    except json.JSONDecodeError:
+        logger(f"Direct JSON array parsing failed, attempting extraction...")
+    
+    # Step 2: Try extracting JSON from markdown code blocks
+    try:
+        # Look for ```json...``` blocks
+        json_pattern = r'```(?:json)?\s*(\[.*?\])\s*```'
+        match = re.search(json_pattern, response_text, re.DOTALL | re.IGNORECASE)
+        if match:
+            json_str = match.group(1).strip()
+            data = json.loads(json_str)
+            if isinstance(data, list):
+                logger(f"JSON array extraction from code block successful")
+                return data, True
+    except (json.JSONDecodeError, AttributeError):
+        logger(f"Code block array extraction failed")
+    
+    # Step 3: Try regex extraction of JSON array
+    try:
+        # Look for first complete JSON array
+        json_pattern = r'\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]'
+        match = re.search(json_pattern, response_text, re.DOTALL)
+        if match:
+            json_str = match.group(0).strip()
+            data = json.loads(json_str)
+            if isinstance(data, list):
+                logger(f"Regex JSON array extraction successful")
+                return data, True
+    except (json.JSONDecodeError, AttributeError):
+        logger(f"Regex array extraction failed")
+    
+    # Step 4: Try finding array boundaries manually
+    try:
+        start_idx = response_text.find('[')
+        end_idx = response_text.rfind(']')
+        
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            json_str = response_text[start_idx:end_idx + 1].strip()
+            
+            # Clean up common issues
+            json_str = json_str.replace('```json', '').replace('```', '')
+            json_str = re.sub(r',\s*]', ']', json_str)  # Remove trailing commas
+            json_str = re.sub(r'\s+', ' ', json_str)   # Normalize whitespace
+            
+            data = json.loads(json_str)
+            if isinstance(data, list):
+                logger(f"Manual array extraction successful")
+                return data, True
+    except (json.JSONDecodeError, AttributeError):
+        logger(f"Manual array extraction failed")
+    
+    logger(f"All JSON array parsing attempts failed")
+    return None, False
 
 class LeadsTab(QWidget):
     def __init__(self, chat_handler, data_dir, parent=None):
@@ -70,9 +149,9 @@ class LeadsTab(QWidget):
                 with open(leads_file, 'r') as f:
                     leads = json.load(f)
                 self.update_leads_table(leads)
-                logging.info(f"Loaded {len(leads)} existing leads")
+                logger.info(f"Loaded {len(leads)} existing leads")
             except Exception as e:
-                logging.error(f"Error loading leads: {e}")
+                logger.error(f"Error loading leads: {e}")
 
     def search_leads(self):
         """Run Grok API search for leads based on system message."""
@@ -80,7 +159,7 @@ class LeadsTab(QWidget):
             # Load system message from config
             config_path = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/lead_gen_config.json'
             if not os.path.exists(config_path):
-                logging.error("Lead gen config not found.")
+                logger.error("Lead gen config not found.")
                 return
             with open(config_path, 'r') as f:
                 config = json.load(f)
@@ -107,7 +186,7 @@ Only include leads that have been verified through the search results.
 
             api_key = os.getenv('GROK_API_KEY', '')
             if not api_key:
-                logging.error("Grok API key not found.")
+                logger.error("Grok API key not found.")
                 return
 
             headers = {
@@ -135,75 +214,59 @@ Only include leads that have been verified through the search results.
 
             response_content = response_data['choices'][0]['message']['content']
 
-            logging.info("Grok API Response:")
-            logging.info(f"Response content: {response_content}")
+            logger.info("Grok API Response:")
+            logger.info(f"Response content: {response_content}")
 
             response_file = os.path.join(self.data_dir, 'grok_response.txt')
             with open(response_file, 'w', encoding='utf-8') as f:
                 f.write("Response content:\n")
                 f.write(response_content + "\n")
-            logging.info(f"Raw response written to {response_file}")
+            logger.info(f"Raw response written to {response_file}")
 
-            json_str = None
-            text = response_content.strip()
-            logging.info(f"Processing response text: {text}")
+            # Use robust JSON parsing for leads array
+            new_leads, success = robust_json_parse_array(response_content, logger)
+            
+            if success and new_leads:
+                logger.info(f"Parsed leads: {new_leads}")
 
-            start_idx = text.find('[')
-            end_idx = text.rfind(']') + 1
-            if start_idx != -1 and end_idx > 0:
-                json_str = text[start_idx:end_idx]
-                logging.info(f"Found JSON string: {json_str}")
+                if isinstance(new_leads, list):
+                    logger.info(f"Successfully parsed JSON array with {len(new_leads)} leads")
 
-            if json_str:
-                try:
-                    json_str = json_str.strip()
-                    json_str = json_str.replace('```json', '').replace('```', '')
-                    logging.info(f"Cleaned JSON string: {json_str}")
+                    leads_file = os.path.join(self.data_dir, 'leads.json')
+                    existing_leads = []
+                    if os.path.exists(leads_file):
+                        with open(leads_file, 'r') as f:
+                            existing_leads = json.load(f)
 
-                    new_leads = json.loads(json_str)
-                    logging.info(f"Parsed leads: {new_leads}")
+                    existing_identifiers = {(lead['name'], lead['company']) for lead in existing_leads}
 
-                    if isinstance(new_leads, list):
-                        logging.info(f"Successfully parsed JSON array with {len(new_leads)} leads")
+                    for lead in new_leads:
+                        if not all(k in lead for k in ['name', 'company', 'title', 'rationale', 'message']):
+                            logger.warning(f"Skipping lead with missing required fields: {lead}")
+                            continue
+                        lead['contacted'] = False
+                        lead['contact_date'] = None
+                        lead['linkedin_url'] = lead.get('linkedin_url', '')
+                        
+                        if (lead['name'], lead['company']) not in existing_identifiers:
+                            existing_leads.insert(0, lead)
+                            existing_identifiers.add((lead['name'], lead['company']))
+                            logger.info(f"Added new lead: {lead['name']} from {lead['company']}")
 
-                        leads_file = os.path.join(self.data_dir, 'leads.json')
-                        existing_leads = []
-                        if os.path.exists(leads_file):
-                            with open(leads_file, 'r') as f:
-                                existing_leads = json.load(f)
+                    with open(leads_file, 'w') as f:
+                        json.dump(existing_leads, f, indent=2)
 
-                        existing_identifiers = {(lead['name'], lead['company']) for lead in existing_leads}
-
-                        for lead in new_leads:
-                            if not all(k in lead for k in ['name', 'company', 'title', 'rationale', 'message']):
-                                logging.warning(f"Skipping lead with missing required fields: {lead}")
-                                continue
-                            lead['contacted'] = False
-                            lead['contact_date'] = None
-                            lead['linkedin_url'] = lead.get('linkedin_url', '')
-                            
-                            if (lead['name'], lead['company']) not in existing_identifiers:
-                                existing_leads.insert(0, lead)
-                                existing_identifiers.add((lead['name'], lead['company']))
-                                logging.info(f"Added new lead: {lead['name']} from {lead['company']}")
-
-                        with open(leads_file, 'w') as f:
-                            json.dump(existing_leads, f, indent=2)
-
-                        self.update_leads_table(existing_leads)
-                        logging.info(f"Successfully loaded {len(new_leads)} new leads")
-                        return
-                except json.JSONDecodeError as e:
-                    logging.error(f"Failed to parse JSON: {e}")
-                    logging.error(f"Raw JSON string: {json_str}")
+                    self.update_leads_table(existing_leads)
+                    logger.info(f"Successfully loaded {len(new_leads)} new leads")
+                    return
             else:
-                logging.error("No JSON array found in response")
-                logging.error(f"Raw response: {response_content}")
+                logger.error("No JSON array found in response")
+                logger.error(f"Raw response: {response_content[:500]}...")  # Truncate for logging
         except requests.exceptions.RequestException as e:
-            logging.error(f"Grok API error: {e}")
+            logger.error(f"Grok API error: {e}")
             QMessageBox.warning(self, "API Error", "The Grok API is currently experiencing issues. Please try again in a few minutes.")
         except Exception as e:
-            logging.error(f"Search leads error: {e}")
+            logger.error(f"Search leads error: {e}")
 
     def update_leads_table(self, leads):
         self.leadsTable.setRowCount(len(leads))

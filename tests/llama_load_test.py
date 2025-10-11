@@ -1,11 +1,11 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import torch
 import logging
+import os
 from typing import List, Dict, Optional
 import json
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Setup logging (centralized in main.py)
 logger = logging.getLogger(__name__)
 
 class DocumentProcessor:
@@ -28,7 +28,7 @@ class DocumentProcessor:
             logger.info("Loading tokenizer...")
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.model_name,
-                token="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"
+                token=os.getenv("HUGGINGFACE_TOKEN", "")
             )
             logger.info("Tokenizer loaded successfully")
             
@@ -65,7 +65,7 @@ class DocumentProcessor:
                 self.model_name,
                 quantization_config=self.quantization_config,
                 device_map=device_map,  # Use our custom device map
-                token="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"
+                token=os.getenv("HUGGINGFACE_TOKEN", "")
             )
             logger.info("LLaMA-2-70B-4bit loaded successfully!")
             

@@ -5,7 +5,7 @@ import time
 from llama_cpp import Llama
 import torch
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Setup logging (centralized in main.py)
 logger = logging.getLogger(__name__)
 
 def test_llama_model():

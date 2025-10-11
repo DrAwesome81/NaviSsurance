@@ -13,6 +13,10 @@ from oauthlib.oauth2.rfc6749.tokens import OAuth2Token
 from pathlib import Path
 from dotenv import load_dotenv
 import json
+import logging
+from core.secure_logging import secure_function_logger, safe_log
+
+logger = logging.getLogger(__name__)
 
 class DataFetcher:
     def __init__(self):
@@ -21,12 +25,10 @@ class DataFetcher:
             'https://www.googleapis.com/auth/gmail.readonly',
             'https://www.googleapis.com/auth/calendar.readonly'
         ]
-        self.CRED_FILE = r"C:\Users\adamo\Dropbox\_Consulting\NaviSsurance\config\client_secret.json"
-        self.TOKEN_FILE = r"C:\Users\adamo\Dropbox\_Consulting\NaviSsurance\config\navi_token.pkl"
+        from config import CONFIG_DIR
+        self.CRED_FILE = os.path.join(CONFIG_DIR, "client_secret.json")
+        self.TOKEN_FILE = os.path.join(CONFIG_DIR, "navi_token.pkl")
         # Import config for database path
-        import sys
-        import os
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from config import DATABASE_PATH
         self.DB_FILE = DATABASE_PATH
         self.gmail, self.calendar = self.get_services()
@@ -42,7 +44,8 @@ class DataFetcher:
             os.getenv('MSN_EMAIL_1'),
             os.getenv('MSN_EMAIL_2')
         ]
-        self.mailbird_token_path = Path('config/mailbird_tokens.json')
+        from config import CONFIG_DIR
+        self.mailbird_token_path = Path(CONFIG_DIR) / 'mailbird_tokens.json'
         # Conversation tracking
         self.conversation_map = {}
         self.conversation_threads = {}
@@ -115,11 +118,12 @@ class DataFetcher:
         all_events.sort(key=lambda x: x['start'].get('dateTime', x['start'].get('date')))
         return all_events
 
+    @secure_function_logger
     def get_mailbird_token(self, email):
         """Get OAuth token from Mailbird's stored configuration for a specific email address"""
         try:
             if not self.mailbird_token_path.exists():
-                print("No token file found. Please run read_mailbird_config.py first.")
+                safe_log(logger, logging.WARNING, "No token file found. Please run read_mailbird_config.py first.")
                 return None
             with open(self.mailbird_token_path, 'r') as f:
                 tokens = json.load(f)
@@ -129,17 +133,20 @@ class DataFetcher:
                 expires_at = datetime.fromisoformat(token['expires_at'].replace('Z', '+00:00'))
                 current_time = datetime.now(timezone.utc)
                 if expires_at > current_time:
+                    safe_log(logger, logging.INFO, f"Found valid token for email: {email}")
                     return token
+            safe_log(logger, logging.WARNING, f"No valid token found for email: {email}")
             return None
         except Exception as e:
-            print(f"Error getting Mailbird token: {e}")
+            safe_log(logger, logging.ERROR, f"Error getting Mailbird token for {email}: {e}")
             return None
 
+    @secure_function_logger
     def fetch_recent_ews_emails(self, email, hours=24):
         """Fetch recent emails using Mailbird's OAuth token via EWS"""
         token_data = self.get_mailbird_token(email)
         if not token_data:
-            print(f"Could not get valid token for {email}")
+            safe_log(logger, logging.WARNING, f"Could not get valid token for {email}")
             return []
         try:
             token_obj = OAuth2Token({
@@ -280,6 +287,51 @@ class DataFetcher:
         for ref_id in references:
             if ref_id not in self.conversation_threads[conversation_id]:
                 self.conversation_threads[conversation_id].append(ref_id)
+
+    def get_email_details_batch(self, email_ids, source='gmail'):
+        """
+        Get email details for multiple emails efficiently using batch requests.
+        Returns a dict mapping email_id to email details.
+        """
+        if not email_ids:
+            return {}
+        
+        print(f"\nGetting details for {len(email_ids)} emails from {source}")
+        email_details = {}
+        
+        if source == 'gmail':
+            # Use Google API client's batch request functionality
+            from googleapiclient import new_batch_http_request
+            import json
+            
+            def callback(request_id, response, exception):
+                if exception is None:
+                    email_details[request_id] = response
+                else:
+                    print(f"Error fetching email {request_id}: {exception}")
+            
+            # Create batch request
+            batch = self.gmail.new_batch_http_request(callback=callback)
+            
+            # Add each email request to the batch
+            for email_id in email_ids:
+                request = self.gmail.users().messages().get(userId='me', id=email_id, format='full')
+                batch.add(request, request_id=email_id)
+            
+            # Execute batch request
+            batch.execute()
+            
+        elif source == 'yahoo':
+            # For Yahoo, we still need to process individually due to IMAP limitations
+            for msg_id in email_ids:
+                try:
+                    details = self.get_email_details(msg_id, source)
+                    if details:
+                        email_details[msg_id] = details
+                except Exception as e:
+                    print(f"Error fetching Yahoo email {msg_id}: {e}")
+        
+        return email_details
 
     def get_email_details(self, msg_id, source='gmail'):
         """

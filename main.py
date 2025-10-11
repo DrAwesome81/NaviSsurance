@@ -1,24 +1,29 @@
 import sys
 import os
 import logging
+from dotenv import load_dotenv
+
+# Load environment variables FIRST before any other imports that might need them
+load_dotenv(os.path.join(os.path.dirname(__file__), "config", ".env"), override=True)
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QRect
 from gui.interface import ChatWindow
 from PyQt6.QtGui import QIcon
 from core.api import get_dropbox_client
-from dotenv import load_dotenv
 
+# Import centralized paths
+from config import LOGS_DIR
 
 # Create logs directory if it doesn't exist
-logs_dir = os.path.join(os.path.dirname(__file__), "logs")
-os.makedirs(logs_dir, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
 
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join(logs_dir, 'app.log')),
+        logging.FileHandler(os.path.join(LOGS_DIR, 'app.log')),
         logging.StreamHandler()
     ]
 )
@@ -26,13 +31,7 @@ logger = logging.getLogger(__name__)
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Load environment variables
-try:
-    load_dotenv(os.path.join(os.path.dirname(__file__), "config", ".env"), override=True)
-    logger.info("Environment variables loaded successfully")
-except Exception as e:
-    logger.error(f"Error loading environment variables: {e}")
-    sys.exit(1)
+# Environment variables already loaded at the top of the file
 
 if __name__ == "__main__":
     try:
@@ -60,12 +59,30 @@ if __name__ == "__main__":
             logger.error(f"Error creating ChatWindow: {e}", exc_info=True)
             sys.exit(1)
         
-        # Set default geometry to fullscreen-like dimensions
+        # Set window geometry with smart sizing based on available screen space
         try:
-            chatWindow.setGeometry(QRect(0, 0, 1920, 1080))
-            logger.info("Window geometry set successfully")
+            # Get available screen geometry (excludes taskbar, dock, etc.)
+            screen = app.primaryScreen()
+            available_rect = screen.availableGeometry()
+            
+            # Preferred window size (full HD resolution)
+            preferred_width = 1920
+            preferred_height = 1080
+            
+            # Calculate actual window size (shrink if screen is too small)
+            window_width = min(preferred_width, available_rect.width())
+            window_height = min(preferred_height, available_rect.height())
+            
+            # Center the window on the available screen space
+            x = available_rect.x() + (available_rect.width() - window_width) // 2
+            y = available_rect.y() + (available_rect.height() - window_height) // 2
+            
+            chatWindow.setGeometry(QRect(x, y, window_width, window_height))
+            logger.info(f"Window geometry set to {window_width}x{window_height} (available: {available_rect.width()}x{available_rect.height()})")
         except Exception as e:
             logger.error(f"Error setting window geometry: {e}", exc_info=True)
+            # Fallback to default size if dynamic detection fails
+            chatWindow.setGeometry(QRect(100, 100, 1200, 800))
         
         logger.info("Showing main window...")
         try:

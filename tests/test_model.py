@@ -12,11 +12,7 @@ import logging
 import time
 import sys
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+# Setup logging (centralized in main.py)
 logger = logging.getLogger(__name__)
 
 def test_llama_model():

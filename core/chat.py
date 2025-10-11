@@ -10,8 +10,8 @@ class ChatManager(QObject):  # Inherit QObject for signals
         self.chat_handler = ChatHandler(chat_window)
         self.db = self.chat_handler.db
         self.response_handler = ResponseHandler(self.chat_handler)
-        # Connect ChatHandler's signal to ChatManager's signal properly
-        self.chat_handler.task_added_signal.connect(self.task_added_signal)
+        # Set up task added callback to emit our signal
+        self.chat_handler.task_added_callback = self.task_added_signal.emit
 
     def start_briefing(self):
         # Daily briefing disabled - only runs when explicitly requested
