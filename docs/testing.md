@@ -150,41 +150,56 @@ Status: Pending
 
 TC-012: Export Functionality
 
-Description: Verify notes can be exported in multiple formats with context included.
+Description: Verify notes can be exported to DOCX format with Save As dialog.
 Steps:
 Open NaviSsurance (interface.py).
 Navigate to Note-Taking System.
 Add several notes with context.
 Click "Export Notes" button.
-Check generated files.
+Verify Save As dialog opens with default filename "notes_export.docx".
+Choose location and filename (or use default).
+Check generated DOCX file.
 
-Expected Result: TXT, DOCX, and PDF files are created with context and categorized notes.
+Expected Result: Save As dialog opens, DOCX file is created with context and notes as bullet points, success message displays file path.
 Actual Result: [Pending: Test not run], 2025-08-11.
 Status: Pending
 
-TC-013: Dropbox Integration
+TC-013: Robust JSON Parsing
 
-Description: Verify exported files are automatically uploaded to Dropbox.
+Description: Verify system handles malformed or non-JSON AI responses gracefully.
 Steps:
 Open NaviSsurance (interface.py).
 Navigate to Note-Taking System.
-Export notes in any format.
-Check Dropbox folder.
+Add a note that triggers AI response with formatting issues (extra text, trailing commas, etc.).
+Verify note is still processed correctly.
 
-Expected Result: Exported files appear in configured Dropbox folder.
+Expected Result: System uses robust JSON parsing with multiple fallback strategies, note is formatted and displayed correctly.
 Actual Result: [Pending: Test not run], 2025-08-11.
 Status: Pending
 
-TC-014: Error Handling
+TC-014: Thread-Safe UI Updates
 
-Description: Verify system handles AI response errors gracefully.
+Description: Verify UI updates from background threads are handled safely.
 Steps:
 Open NaviSsurance (interface.py).
 Navigate to Note-Taking System.
-Simulate AI model failure or invalid response.
-Attempt to process notes.
+Rapidly add multiple notes.
+Verify UI updates correctly without crashes or race conditions.
 
-Expected Result: Clear error messages displayed, system continues to function.
+Expected Result: All notes are displayed correctly, no UI freezing or crashes, thread-safe updates via QTimer.
+Actual Result: [Pending: Test not run], 2025-08-11.
+Status: Pending
+
+TC-015: Notes Session Routing
+
+Description: Verify Notes tab bypasses task/news/!search routing.
+Steps:
+Open NaviSsurance (interface.py).
+Navigate to Note-Taking System.
+Add a note that might trigger task detection (e.g., contains "task" keyword).
+Verify note is processed as a note, not routed to task handler.
+
+Expected Result: Note is formatted and added to notes list, not processed as a task.
 Actual Result: [Pending: Test not run], 2025-08-11.
 Status: Pending
 
@@ -578,7 +593,7 @@ Dashboard Tab
 TC-006, TC-007, TC-008
 Workspace Tab
 
-TC-009, TC-010, TC-011, TC-012, TC-013, TC-014
+TC-009, TC-010, TC-011, TC-012, TC-013, TC-014, TC-015
 Note-Taking System
 
 TC-015, TC-016, TC-017, TC-018, TC-019
