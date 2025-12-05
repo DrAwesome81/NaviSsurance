@@ -37,7 +37,7 @@ class ResponseHandler:
             logger.info(f"Subprocess started with PID: {self.process.pid}")
             # Wait for load confirmation
             start = datetime.now()
-            while (datetime.now() - start).seconds < 60:
+            while (datetime.now() - start).total_seconds() < 60:
                 line = self.process.stderr.readline().strip()
                 if line:
                     logger.info(f"Worker output: {line}")
