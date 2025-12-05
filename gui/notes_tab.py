@@ -1,15 +1,66 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QLineEdit, QLabel, QTextBrowser
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QLineEdit, QLabel, QTextBrowser, QFileDialog
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt6.QtGui import QKeyEvent
 from datetime import datetime
 import json
 import re
 from core.db import DatabaseManager
-from core.api import DropboxClient
 from docx import Document
-from fpdf import FPDF
-from dropbox import files
-import os
+
+def robust_json_parse(response: str, logger=print):
+    """
+    Robustly parse JSON from an LLM response that *should* be JSON,
+    but may have extra text or small formatting issues.
+    Returns (data, success: bool).
+    """
+    import json
+    import re
+
+    if response is None:
+        logger("DEBUG: robust_json_parse received None response")
+        return None, False
+
+    original_response = response
+    response = response.strip()
+    logger(f"DEBUG: Starting robust_json_parse. Raw response (truncated): {original_response[:200]}")
+
+    # First: try direct parse
+    try:
+        data = json.loads(response)
+        logger("DEBUG: Direct JSON parse succeeded")
+        return data, True
+    except json.JSONDecodeError as e:
+        logger(f"DEBUG: Direct parse failed: {e}")
+
+    # Second: extract {...} block
+    json_match = re.search(r'\{.*\}', response, re.DOTALL)
+    if json_match:
+        candidate = json_match.group(0).strip()
+        logger(f"DEBUG: Found JSON-looking block (truncated): {candidate[:200]}")
+        try:
+            data = json.loads(candidate)
+            logger("DEBUG: Parsed JSON from extracted block")
+            return data, True
+        except json.JSONDecodeError as e:
+            logger(f"DEBUG: Extracted block parse failed: {e}")
+
+    # Third: clean whitespace, trailing commas
+    cleaned = response.replace('\r', ' ').replace('\n', ' ')
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    cleaned = re.sub(r',\s*}', '}', cleaned)
+    cleaned = re.sub(r',\s*]', ']', cleaned)
+    cleaned = cleaned.rstrip('\'"')
+    logger(f"DEBUG: Attempting cleaned JSON parse (truncated): {cleaned[:200]}")
+
+    try:
+        data = json.loads(cleaned)
+        logger("DEBUG: Cleaned JSON parse succeeded")
+        return data, True
+    except json.JSONDecodeError as e:
+        logger(f"DEBUG: Cleaned parse still failed: {e}")
+
+    logger("DEBUG: robust_json_parse ultimately failed")
+    return None, False
 
 class NoteProcessingThread(QThread):
     result_signal = pyqtSignal(str)  # Emits the formatted/organized response
@@ -34,7 +85,6 @@ class NoteTakingSystem(QWidget):
         self.chat_handler = chat_handler
         self.db = DatabaseManager()
         self.db.init_notes_table()
-        self.dropbox_client = DropboxClient()
         self.notes = []  # Temporary in-memory storage for notes
         self.organized = False
         self.context = None  # Add context attribute
@@ -115,7 +165,7 @@ class NoteTakingSystem(QWidget):
         context_info = f"Context: {self.context}" if self.context else "No context set"
         prompt = f"""{context_info}. 
 
-TASK: Take the user's note and format it into a clear, professional note.
+INSTRUCTION: Take the user's note and format it into a clear, professional note.
 
 USER'S NOTE: '{content}'
 
@@ -145,38 +195,78 @@ IMPORTANT: Respond with ONLY the JSON. No other text or explanations."""
         self.notes_display.append("<i>Formatting note...</i><br>")
 
     def handle_note_formatted(self, response):
+        QTimer.singleShot(0, lambda: self._handle_note_formatted_safe(response))
+
+    def _handle_note_formatted_safe(self, response):
+        """Thread-safe version of handle_note_formatted with robust, shape-tolerant parsing."""
         try:
-            response_clean = response.strip()
-            if not response_clean.startswith('{'):
-                import re
-                json_match = re.search(r'\\{.*\\}', response_clean, re.DOTALL)
-                if json_match:
-                    response_clean = json_match.group(0)
-            
-            note_data = json.loads(response_clean)
-            formatted = note_data['formatted']
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.db.save_note(formatted, timestamp, self.context)
-            self.notes.append(formatted)
-            self.update_notes_display()
-            
-            # Re-enable input
-            self.chat_input.setEnabled(True)
-            self.chat_input.clear()
-            self.chat_input.setFocus()
-            
-            # Trigger organization if enough notes
-            if len(self.notes) >= 2:
-                self.try_organize_notes()
-        except json.JSONDecodeError:
-            self.notes_display.append("Error: Invalid response format")
-            self.notes_display.append(f"Raw response: {response}")
+            # Use robust JSON parsing
+            note_data, success = robust_json_parse(
+                response,
+                logger=lambda msg: print(f"Note formatting: {msg}")
+            )
+
+            formatted = None
+
+            if success and note_data:
+                # 1) Expected shape: {"formatted": "..."}
+                if isinstance(note_data, dict) and "formatted" in note_data:
+                    formatted = note_data["formatted"]
+
+                # 2) Sometimes models wrap things in a list: [{"formatted": "..."}]
+                elif isinstance(note_data, list):
+                    for item in note_data:
+                        if isinstance(item, dict) and "formatted" in item:
+                            formatted = item["formatted"]
+                            break
+
+                # 3) If the model just returns a plain string, treat it as already formatted
+                elif isinstance(note_data, str):
+                    formatted = note_data
+
+            # 4) Last-ditch fallback: regex directly on the raw response if we still don't have text
+            if not formatted and '"formatted"' in response:
+                try:
+                    import re
+                    m = re.search(r'"formatted"\s*:\s*"(.+?)"', response, re.DOTALL)
+                    if m:
+                        formatted = m.group(1)
+                except Exception as e:
+                    print(f"Note formatting fallback regex failed: {e}")
+
+            if formatted:
+                # Normal success path
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.db.save_note(formatted, timestamp, self.context)
+                self.notes.append(formatted)
+                self.update_notes_display()
+
+                # Re-enable input
+                self.chat_input.setEnabled(True)
+                self.chat_input.clear()
+                self.chat_input.setFocus()
+
+                # Trigger organization if enough notes
+                if len(self.notes) >= 2:
+                    self.try_organize_notes()
+            else:
+                # Only hit this if *all* attempts to salvage text failed
+                self.notes_display.append("Error: Could not parse note formatting response")
+                self.notes_display.append(f"Raw response: {response[:500]}.")  # Truncate for display
+                self.chat_input.setEnabled(True)
+
         except Exception as e:
-            self.notes_display.append(f"Error: {str(e)}")
+            # Hard failure – show the error and the raw response to help debugging
+            self.notes_display.append(f"Error processing note: {str(e)}")
+            self.notes_display.append(f"Raw response: {response[:500]}.")  # Truncate for display
         finally:
+            # Make absolutely sure input is enabled again
             self.chat_input.setEnabled(True)
 
     def handle_note_error(self, error):
+        QTimer.singleShot(0, lambda: self._handle_note_error_safe(error))
+
+    def _handle_note_error_safe(self, error):
         self.notes_display.append(f"Error processing note: {error}")
         self.chat_input.setEnabled(True)
 
@@ -188,7 +278,7 @@ IMPORTANT: Respond with ONLY the JSON. No other text or explanations."""
         context_info = f"Context: {self.context}" if self.context else "No context set"
         prompt = f"""{context_info}. 
 
-TASK: Categorize the existing notes into logical groups.
+INSTRUCTION: Categorize the existing notes into logical groups.
 
 EXISTING NOTES TO CATEGORIZE:
 {chr(10).join([f"- {note}" for note in self.notes])}
@@ -224,36 +314,16 @@ IMPORTANT:
         self.notes_display.append("<i>Organizing notes...</i><br>")
 
     def handle_organization_result(self, response):
+        QTimer.singleShot(0, lambda: self._handle_organization_result_safe(response))
+
+    def _handle_organization_result_safe(self, response):
         try:
-            response_clean = response.strip()
-            print(f"DEBUG: Original response length: {len(response)}")
-            print(f"DEBUG: Cleaned response: '{response_clean}'")
-            
-            if not response_clean.startswith('{'):
-                json_match = re.search(r'\\{.*\\}', response_clean, re.DOTALL)
-                if json_match:
-                    response_clean = json_match.group(0)
-                    print(f"DEBUG: Extracted JSON: '{response_clean}'")
-            
-            if response_clean.count('"') % 2 != 0 or not response_clean.endswith('}'):
-                self.notes_display.append("Warning: Response appears to be truncated, skipping categorization.")
-                print(f"DEBUG: Response appears truncated - quote count: {response_clean.count('"')}, ends with '}}': {response_clean.endswith('}')}")
+            organized_data, success = robust_json_parse(response, logger=print)
+            if not success or organized_data is None:
+                self.notes_display.append("<i>No clear categories found, showing unorganized notes</i><br>")
+                self.update_notes_display(organized=False)
                 self.chat_input.setEnabled(True)
                 return
-            
-            try:
-                organized_data = json.loads(response_clean)
-                print(f"DEBUG: Successfully parsed JSON: {organized_data}")
-            except json.JSONDecodeError as json_err:
-                print(f"DEBUG: JSON decode error: {json_err}")
-                response_clean = response_clean.replace('\n', ' ').replace('\r', ' ')
-                response_clean = re.sub(r'\s+', ' ', response_clean)
-                response_clean = re.sub(r',\s*}', '}', response_clean)
-                response_clean = re.sub(r'"\s*}', '}', response_clean)
-                response_clean = response_clean.rstrip("'\"")
-                print(f"DEBUG: Attempting to fix JSON: '{response_clean}'")
-                organized_data = json.loads(response_clean)
-                print(f"DEBUG: Successfully parsed fixed JSON: {organized_data}")
             
             if 'categories' in organized_data and organized_data['categories']:
                 self.organized = True
@@ -263,10 +333,6 @@ IMPORTANT:
             else:
                 self.notes_display.append("<i>No clear categories found, showing unorganized notes</i><br>")
                 self.update_notes_display(organized=False)
-        except json.JSONDecodeError as json_err:
-            self.notes_display.append("Error: Invalid organization format")
-            self.notes_display.append(f"Raw response: {response}")
-            print(f"DEBUG: Final JSON decode error: {json_err}")
         except Exception as e:
             self.notes_display.append(f"Error: {str(e)}")
             print(f"DEBUG: Unexpected error: {e}")
@@ -274,6 +340,9 @@ IMPORTANT:
             self.chat_input.setEnabled(True)
 
     def handle_organization_error(self, error):
+        QTimer.singleShot(0, lambda: self._handle_organization_error_safe(error))
+
+    def _handle_organization_error_safe(self, error):
         self.notes_display.append(f"Error organizing notes: {error}")
         self.chat_input.setEnabled(True)
 
@@ -284,6 +353,14 @@ IMPORTANT:
         if self.context:
             self.notes_display.append(f"<b>Current Context:</b> {self.context}<br><br>")
         
+        # Show empty state if no notes
+        if not self.notes and not organized:
+            self.notes_display.append('<div style="text-align: center; color: #888; margin-top: 40px;">')
+            self.notes_display.append('<h3>No notes yet—start typing!</h3>')
+            self.notes_display.append('<p>Use the input field on the left to add your thoughts and ideas.</p>')
+            self.notes_display.append('</div>')
+            return
+        
         if not organized:
             for note in self.notes:
                 self.notes_display.append(f"{note}<br>")
@@ -293,68 +370,76 @@ IMPORTANT:
                 for category, notes_list in organized_notes.items():
                     self.notes_display.append(f"<b>{category}</b>:<br>")
                     for note in notes_list:
-                        self.notes_display.append(f"  â€¢ {note}<br>")
+                        self.notes_display.append(f"  • {note}<br>")
                     self.notes_display.append("<br>")
             else:
                 # Fallback to showing unorganized notes if no organized notes found
                 self.notes_display.append("<b>Notes (Unorganized):</b><br>")
                 for note in self.notes:
-                    self.notes_display.append(f"  â€¢ {note}<br>")
+                    self.notes_display.append(f"  • {note}<br>")
 
     def export_notes(self):
-        organized_notes = self.db.get_organized_notes() or {"Uncategorized": self.notes}
-        if not organized_notes:
-            self.notes_display.append("No notes to export.")
+        """Export current notes to a .docx file chosen by the user."""
+        # Debug: confirm the method is being called
+        print("DEBUG: export_notes called")
+
+        # If there are no notes, show a message and bail out
+        if not self.notes:
+            self.notes_display.append("<i>No notes to export.</i><br>")
             return
-        
-        # Export as TXT
-        txt_path = "notes_export.txt"
-        with open(txt_path, "w", encoding='utf-8') as f:
-            if self.context:
-                f.write(f"Context: {self.context}\n\n")
-            for category, notes_list in organized_notes.items():
-                f.write(f"{category}:\n")
-                for note in notes_list:
-                    f.write(f"- {note}\n")
-                f.write("\n")
-        
-        # Export as Word (.docx)
-        doc = Document()
-        if self.context:
-            doc.add_heading(f"Context: {self.context}", level=1)
-            doc.add_paragraph("")  # Add some space
-        for category, notes_list in organized_notes.items():
-            doc.add_heading(category, level=1)
-            for note in notes_list:
-                doc.add_paragraph(note, style='ListBullet')
-        docx_path = "notes_export.docx"
-        doc.save(docx_path)
-        
-        # Export as PDF
-        pdf = FPDF()
-        pdf.set_auto_page_break(auto=True, margin=15)
-        pdf.add_page()
-        pdf.set_font("Arial", size=12)
-        if self.context:
-            pdf.set_font("Arial", "B", 16)
-            pdf.cell(0, 10, f"Context: {self.context}", ln=True)
-            pdf.ln(5)
-        for category, notes_list in organized_notes.items():
-            pdf.set_font("Arial", "B", 16)
-            pdf.cell(0, 10, category, ln=True)
-            pdf.set_font("Arial", size=12)
-            for note in notes_list:
-                pdf.multi_cell(0, 10, f"- {note}")
-            pdf.ln(5)
-        pdf_path = "notes_export.pdf"
-        pdf.output(pdf_path)
-        
-        # Upload to Dropbox
+
+        # Default suggested filename
+        default_filename = "notes_export.docx"
+
+        # Open a Save As dialog so the user can pick the location and filename
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Notes",
+            default_filename,
+            "Word Document (*.docx)"
+        )
+
+        # Debug: show what the dialog returned
+        print(f"DEBUG: QFileDialog returned file_path={file_path!r}, filter={selected_filter!r}")
+
+        # If user cancelled the dialog, do nothing
+        if not file_path:
+            self.notes_display.append("<i>Export cancelled.</i><br>")
+            return
+
+        # Ensure the file has .docx extension
+        if not file_path.lower().endswith(".docx"):
+            file_path += ".docx"
+
         try:
-            for local_path in [txt_path, docx_path, pdf_path]:
-                remote_path = f"/NaviSsurance Exports/{os.path.basename(local_path)}"
-                with open(local_path, "rb") as f:
-                    self.dropbox_client.dbx.files_upload(f.read(), remote_path, mode=files.WriteMode('overwrite'))
-            self.notes_display.append("Notes exported to Dropbox successfully.")
+            # Create a Word document
+            doc = Document()
+
+            # Title
+            doc.add_heading("NaviSsurance Notes Export", level=1)
+
+            # Context, if set
+            if self.context:
+                doc.add_paragraph(f"Context: {self.context}")
+                doc.add_paragraph("")  # blank line
+
+            # Add each note as a bullet point
+            doc.add_paragraph("Notes:", style="Heading 2")
+            for note in self.notes:
+                doc.add_paragraph(note, style="List Bullet")
+
+            # Save the document
+            doc.save(file_path)
+
+            # Let the user know it worked
+            self.notes_display.append(
+                f"<i>Notes exported successfully to:</i> {file_path}<br>"
+            )
+            print(f"DEBUG: Notes exported successfully to {file_path}")
+
         except Exception as e:
-            self.notes_display.append(f"Error uploading to Dropbox: {str(e)}")
+            # Show any error in the UI
+            self.notes_display.append(
+                f"<b>Error exporting notes:</b> {str(e)}<br>"
+            )
+            print("ERROR exporting notes:", e)

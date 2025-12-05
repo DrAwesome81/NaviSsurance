@@ -2,6 +2,7 @@ import os
 import subprocess
 import json
 import logging
+import threading
 from datetime import datetime
 import requests
 import re
@@ -17,6 +18,8 @@ class ResponseHandler:
         self.chat_handler = chat_handler
         self.process = None
         self.model_loaded = False
+        # Ensure only one thread talks to the worker at a time
+        self.worker_lock = threading.Lock()
 
         # Start the worker process with conda env Python
         try:
@@ -63,22 +66,49 @@ class ResponseHandler:
             self.process.wait()
 
     def chat_with_llama(self, messages, session_id):
+        """Send a single request to the llama worker in a thread-safe, robust way."""
         if not self.process or not self.model_loaded:
             return "Model not loaded."
-        try:
-            # Send input to worker
-            self.process.stdin.write(json.dumps({"messages": messages, "session_id": session_id}) + "\n")
-            self.process.stdin.flush()
-            # Read response
-            line = self.process.stdout.readline().strip()
-            response = json.loads(line)
-            if "error" in response:
-                logger.error(f"Worker error: {response['error']}")
-                return f"Error: {response['error']}"
-            return response["response"]
-        except Exception as e:
-            logger.error(f"Worker communication error: {e}")
-            return "Local AI's acting up—try again."
+
+        # Only one thread at a time can talk to the worker subprocess
+        with self.worker_lock:
+            try:
+                payload = json.dumps({"messages": messages, "session_id": session_id})
+
+                # Send input to worker
+                self.process.stdin.write(payload + "\n")
+                self.process.stdin.flush()
+
+                # Read lines until we get a valid JSON object
+                while True:
+                    line = self.process.stdout.readline()
+                    if not line:
+                        # EOF or no response
+                        raise Exception("No response from worker (empty stdout line).")
+
+                    line = line.strip()
+                    if not line:
+                        # Skip blank lines
+                        continue
+
+                    try:
+                        response = json.loads(line)
+                        break
+                    except json.JSONDecodeError as e:
+                        # Log and keep reading – in case some stray output or partial line slipped through
+                        logger.error(f"Invalid JSON from worker: {e}; line (truncated): {line[:200]}")
+                        continue
+
+                if "error" in response:
+                    logger.error(f"Worker error: {response['error']}")
+                    return f"Error: {response['error']}"
+
+                # Normal success path
+                return response.get("response", "")
+
+            except Exception as e:
+                logger.error(f"Worker communication error: {e}")
+                return "Local AI's acting up—try again."
 
     def perform_grok_search(self, query):
         """Perform a web search using Grok API with live search."""
@@ -128,6 +158,11 @@ class ResponseHandler:
     def get_response(self, message, session_id, conversation_history):
         conversation_history.append({"role": "user", "content": message})
         try:
+            # Special-case: Notes tab should bypass task/news/!search routing
+            if session_id == "notes_session" or str(session_id).startswith("notes_"):
+                # For Notes, we just want a plain LLM response with no extra routing logic
+                return self.hybrid_wrapper(conversation_history, session_id)
+
             if message.lower().startswith("!history"):
                 try:
                     date_query = message[8:].strip()
@@ -290,7 +325,8 @@ Respond naturally and conversationally to their question. Be helpful, specific, 
         task_info = []
         
         for task in all_tasks:
-            task_id, task_name, due_date, completed = task
+            # get_tasks() returns: id, task_text, due_date, category, recurrence, completed, session_id
+            task_id, task_name, due_date, category, recurrence, completed, session_id = task
             status = "completed" if completed else "pending"
             
             # Calculate if overdue

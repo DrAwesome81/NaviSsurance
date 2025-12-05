@@ -29,3 +29,6 @@ gui/interface_backup_refactor.py
 gui/interface_backup_final.py
 
 test_table_widget.py
+notes_export.docx
+notes_export.pdf
+notes_export.txt

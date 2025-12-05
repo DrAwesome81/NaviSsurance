@@ -43,8 +43,8 @@ def main():
             response = llm.create_chat_completion(
                 messages=all_messages,
                 max_tokens=1000,
-                temperature=0.9,
-                top_p=0.9
+                temperature=0.2,
+                top_p=0.7
             )
             content = response['choices'][0]['message']['content'].strip()
             print(json.dumps({"response": content}), flush=True)
