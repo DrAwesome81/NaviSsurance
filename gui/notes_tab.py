@@ -59,7 +59,14 @@ def robust_json_parse(response: str, logger=print):
     except json.JSONDecodeError as e:
         logger(f"DEBUG: Cleaned parse still failed: {e}")
 
-    logger("DEBUG: robust_json_parse ultimately failed")
+    # If everything fails but we still have some text, treat it as a plain string
+    cleaned_str = original_response.strip()
+    if cleaned_str:
+        logger("DEBUG: robust_json_parse failed to parse JSON; returning plain string fallback")
+        return cleaned_str, True
+
+    # If there is truly nothing useful, log and return failure
+    logger("DEBUG: robust_json_parse ultimately failed with empty/whitespace response")
     return None, False
 
 class NoteProcessingThread(QThread):
