@@ -9,7 +9,7 @@ This test suite covers:
 - Error handling and thread safety
 """
 
-import pytest
+import pytest  # type: ignore[reportMissingImports]
 import sys
 import os
 import json
