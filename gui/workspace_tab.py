@@ -124,21 +124,102 @@ class WorkspaceTab(QWidget):
         parent_splitter.addWidget(file_widget)
 
     def setup_preview_pane(self, parent_splitter):
+        """
+        Right-hand side of the Workspace tab:
+        - Left: vertical stack of Grok + ChatGPT streaming panes
+        - Right: Markdown document pane (reuses self.preview_text)
+        """
         preview_widget = QWidget()
         preview_layout = QVBoxLayout(preview_widget)
         preview_layout.setContentsMargins(0, 0, 0, 0)
-        
-        preview_header = QLabel("Results / Preview")
-        preview_header.setStyleSheet("color: white; font-weight: bold; padding: 8px; background-color: rgba(253, 98, 98, 0.8); border-radius: 3px;")
-        preview_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        preview_layout.addWidget(preview_header)
-        
+        preview_layout.setSpacing(5)
+
+        # Horizontal splitter: [Grok/ChatGPT stack] | [Markdown document]
+        inner_splitter = QSplitter(Qt.Orientation.Horizontal)
+        preview_layout.addWidget(inner_splitter)
+
+        #
+        # LEFT SIDE: Grok + ChatGPT streaming panes (stacked vertically)
+        #
+        ai_widget = QWidget()
+        ai_layout = QVBoxLayout(ai_widget)
+        ai_layout.setContentsMargins(0, 0, 0, 0)
+        ai_layout.setSpacing(5)
+
+        # Grok pane
+        grok_header = QLabel("Grok (API)")
+        grok_header.setStyleSheet(
+            "color: white; font-weight: bold; padding: 6px; "
+            "background-color: rgba(253, 98, 98, 0.6); border-radius: 3px;"
+        )
+        grok_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ai_layout.addWidget(grok_header)
+
+        self.grok_text = AlwaysVisiblePlaceholderTextEdit()
+        self.grok_text.setReadOnly(True)
+        self.grok_text.setStyleSheet(
+            "background-color: rgba(27, 28, 30, 0.8); "
+            "color: white; border: 1px solid rgba(253, 98, 98, 0.3); "
+            "border-radius: 3px;"
+        )
+        self.grok_text.setPlaceholderText("Grok responses will appear here.")
+        ai_layout.addWidget(self.grok_text)
+
+        # ChatGPT pane
+        chatgpt_header = QLabel("ChatGPT (API)")
+        chatgpt_header.setStyleSheet(
+            "color: white; font-weight: bold; padding: 6px; "
+            "background-color: rgba(253, 98, 98, 0.6); border-radius: 3px;"
+        )
+        chatgpt_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ai_layout.addWidget(chatgpt_header)
+
+        self.chatgpt_text = AlwaysVisiblePlaceholderTextEdit()
+        self.chatgpt_text.setReadOnly(True)
+        self.chatgpt_text.setStyleSheet(
+            "background-color: rgba(27, 28, 30, 0.8); "
+            "color: white; border: 1px solid rgba(253, 98, 98, 0.3); "
+            "border-radius: 3px;"
+        )
+        self.chatgpt_text.setPlaceholderText("ChatGPT responses will appear here.")
+        ai_layout.addWidget(self.chatgpt_text)
+
+        inner_splitter.addWidget(ai_widget)
+
+        #
+        # RIGHT SIDE: Markdown document pane (this is still self.preview_text)
+        #
+        markdown_widget = QWidget()
+        markdown_layout = QVBoxLayout(markdown_widget)
+        markdown_layout.setContentsMargins(0, 0, 0, 0)
+        markdown_layout.setSpacing(5)
+
+        markdown_header = QLabel("Markdown Document")
+        markdown_header.setStyleSheet(
+            "color: white; font-weight: bold; padding: 6px; "
+            "background-color: rgba(253, 98, 98, 0.6); border-radius: 3px;"
+        )
+        markdown_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        markdown_layout.addWidget(markdown_header)
+
+        # IMPORTANT: reuse self.preview_text so existing methods still work
         self.preview_text = AlwaysVisiblePlaceholderTextEdit()
-        self.preview_text.setReadOnly(True)
-        self.preview_text.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.3); border-radius: 3px;")
-        self.preview_text.setPlaceholderText("Results or file preview will appear here...")
-        preview_layout.addWidget(self.preview_text)
-        
+        # Let you edit the Markdown directly if desired
+        self.preview_text.setReadOnly(False)
+        self.preview_text.setStyleSheet(
+            "background-color: rgba(27, 28, 30, 0.8); "
+            "color: white; border: 1px solid rgba(253, 98, 98, 0.3); "
+            "border-radius: 3px;"
+        )
+        self.preview_text.setPlaceholderText("Markdown document will appear here.")
+        markdown_layout.addWidget(self.preview_text)
+
+        inner_splitter.addWidget(markdown_widget)
+
+        # Proportions: give a bit more space to the Markdown pane
+        inner_splitter.setStretchFactor(0, 3)  # Grok/ChatGPT stack
+        inner_splitter.setStretchFactor(1, 4)  # Markdown document
+
         parent_splitter.addWidget(preview_widget)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
