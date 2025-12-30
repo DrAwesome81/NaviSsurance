@@ -138,6 +138,16 @@ from gui.utils import *
 
 logger = logging.getLogger(__name__)
 
+# Try to import TasksTab - handle import errors gracefully
+try:
+    from gui.tasks_tab import TasksTab
+    TASKS_TAB_AVAILABLE = True
+    logger.info("TasksTab imported successfully")
+except (ImportError, SyntaxError) as e:
+    logger.warning(f"TasksTab not available: {e}")
+    TASKS_TAB_AVAILABLE = False
+    TasksTab = None
+
 class EnhancedSplashScreen(QSplashScreen):
     """Enhanced splash screen with progress bar and status updates."""
     
@@ -399,8 +409,41 @@ class ChatWindow(QMainWindow):
 
     def create_tabs(self):
         """Create and add all tabs after the chat handler is fully initialized."""
+        logger.info("Creating tabs...")
         self.dashboard_tab = DashboardTab(self.chat_handler, self.todo_list, self.db, self)
         self.tab_widget.addTab(self.dashboard_tab, "Dashboard")
+        logger.info("Dashboard tab added")
+        
+        # Try to create Tasks tab - handle errors gracefully
+        logger.info(f"TASKS_TAB_AVAILABLE={TASKS_TAB_AVAILABLE}, TasksTab={TasksTab}")
+        if TASKS_TAB_AVAILABLE and TasksTab is not None:
+            try:
+                logger.info("Attempting to create TasksTab...")
+                self.tasks_tab = TasksTab(self)
+                self.tab_widget.addTab(self.tasks_tab, "Tasks")
+                logger.info("Tasks tab added successfully")
+            except Exception as e:
+                logger.error(f"Failed to create Tasks tab: {e}", exc_info=True)
+                # Create a placeholder tab with error message
+                error_widget = QWidget()
+                error_layout = QVBoxLayout()
+                error_label = QLabel(f"Tasks tab unavailable:\n{str(e)}")
+                error_label.setWordWrap(True)
+                error_layout.addWidget(error_label)
+                error_widget.setLayout(error_layout)
+                self.tab_widget.addTab(error_widget, "Tasks (Error)")
+                logger.info("Tasks error tab added")
+        else:
+            # TasksTab import failed - create placeholder
+            logger.warning("TasksTab not available, creating error placeholder")
+            error_widget = QWidget()
+            error_layout = QVBoxLayout()
+            error_label = QLabel("Tasks tab unavailable: TasksTab could not be imported.\nCheck logs for details.")
+            error_label.setWordWrap(True)
+            error_layout.addWidget(error_label)
+            error_widget.setLayout(error_layout)
+            self.tab_widget.addTab(error_widget, "Tasks (Error)")
+            logger.info("Tasks error placeholder tab added")
         
         self.workspace_tab = WorkspaceTab(self.db, self.chat_handler)
         self.tab_widget.addTab(self.workspace_tab, "Workspace")

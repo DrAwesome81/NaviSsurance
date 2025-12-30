@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
                             QListWidget, QListWidgetItem, QTextEdit, QSplitter, 
-                            QFileDialog, QProgressBar, QMenu, QCheckBox)
+                            QFileDialog, QProgressBar, QMenu, QCheckBox, QInputDialog, QApplication)
 from PyQt6.QtCore import Qt, QMimeData
 from PyQt6.QtGui import QDropEvent, QDragEnterEvent, QPainter, QColor
 from core.api import DropboxClient
@@ -9,6 +9,9 @@ from dropbox import files
 import json
 import os
 from datetime import datetime
+
+# ADD THIS IMPORT (just below the Dropbox imports)
+from core.workspace_orchestrator import WorkspaceFile, WorkspaceTaskSpec, DualLLMOrchestrator
 
 class AlwaysVisiblePlaceholderTextEdit(QTextEdit):
     """Custom QTextEdit with always-visible placeholder text."""
@@ -49,6 +52,10 @@ class WorkspaceTab(QWidget):
         self.chat_handler = chat_handler
         self.dropbox_client = DropboxClient()
         self.selected_files = []
+        
+        # NEW: dual-LLM orchestrator that will talk to Grok + ChatGPT
+        self.orchestrator = DualLLMOrchestrator()
+        
         self.setup_ui()
 
     def setup_ui(self):
@@ -104,10 +111,16 @@ class WorkspaceTab(QWidget):
         actions_btn = QPushButton("Actions")
         actions_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white; border: none; padding: 8px; border-radius: 3px;")
         self.actions_menu = QMenu()
+        
+        # existing actions:
         self.actions_menu.addAction("Generate Document", self.generate_document)
         self.actions_menu.addAction("Compliance Analysis", self.run_compliance_analysis)
         self.actions_menu.addAction("Summarize", self.summarize_files)
         self.actions_menu.addAction("Save Results", self.save_results)
+        
+        # NEW: AI collab action that calls the dual-LLM orchestrator
+        self.actions_menu.addAction("AI Collaboration Draft", self.run_ai_collaboration_workflow)
+        
         actions_btn.setMenu(self.actions_menu)
         btn_layout.addWidget(actions_btn)
         file_layout.addLayout(btn_layout)
@@ -375,6 +388,114 @@ class WorkspaceTab(QWidget):
             file_info['content'] = content
         
         return file_info['content']
+
+    def _guess_file_type(self, filename: str) -> str:
+        """Simple helper to guess file type based on file extension."""
+        ext = os.path.splitext(filename)[1].lower()
+        
+        if ext in {".txt", ".log"}:
+            return "text"
+        if ext in {".md", ".markdown"}:
+            return "markdown"
+        if ext in {".py", ".js", ".json", ".xml", ".html", ".css"}:
+            return "text"
+        if ext in {".pdf"}:
+            return "pdf"
+        if ext in {".doc", ".docx"}:
+            return "docx"
+        # Fallback
+        return "unknown"
+
+    def run_ai_collaboration_workflow(self):
+        """
+        Run the dual-LLM collaboration workflow on the marked files.
+
+        For now this:
+        - Collects marked files
+        - Asks the user what they want the AI to do
+        - Calls DualLLMOrchestrator.run_once(...)
+        - Shows the resulting Markdown in the preview pane
+        - Shows Grok and ChatGPT outputs in their respective panes
+        """
+        try:
+            marked_files = [f for f in self.selected_files if f.get("marked")]
+            if not marked_files:
+                self.status_label.setText("No files marked")
+                self.preview_text.setHtml(
+                    '<div style="text-align: center; color: #888; font-style: italic; padding: 40px;">'
+                    '<h3>No files selected</h3>'
+                    '<p>Mark some files in the list to run the AI collaboration workflow.</p>'
+                    '</div>'
+                )
+                return
+
+            # Ask the user what they want Grok + ChatGPT to do
+            instructions, ok = QInputDialog.getText(
+                self,
+                "AI Collaboration Instructions",
+                "Describe what you want Grok + ChatGPT to do with these files:"
+            )
+            if not ok or not instructions.strip():
+                self.status_label.setText("AI collaboration cancelled")
+                return
+
+            self.status_label.setText("Running AI collaboration workflow…")
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            QApplication.processEvents()
+
+            # Convert marked_files into WorkspaceFile objects
+            workspace_files = []
+            for f in marked_files:
+                workspace_files.append(
+                    WorkspaceFile(
+                        path=f["path"],
+                        display_name=f["name"],
+                        file_type=self._guess_file_type(f["name"]),
+                    )
+                )
+
+            # Build the task spec
+            task_spec = WorkspaceTaskSpec(
+                goal=instructions.strip(),
+                context="",  # Could be extended to ask for context
+                files=workspace_files,
+                max_rounds=3,
+            )
+
+            # Call orchestrator (currently synchronous stub)
+            result = self.orchestrator.run_once(task_spec)
+
+            # Unpack the result dict safely
+            markdown_doc = result.get("markdown", "")
+            grok_output = result.get("grok_output", "")
+            chatgpt_output = result.get("chatgpt_output", "")
+
+            # Show outputs in their respective panes
+            if hasattr(self, 'grok_text'):
+                self.grok_text.setPlainText(grok_output)
+            if hasattr(self, 'chatgpt_text'):
+                self.chatgpt_text.setPlainText(chatgpt_output)
+
+            # Show the final Markdown in the preview pane
+            if markdown_doc:
+                self.preview_text.setPlainText(markdown_doc)
+            else:
+                # Fallback if orchestrator didn't return markdown
+                self.preview_text.setPlainText(
+                    "AI collaboration completed, but no markdown document was returned.\n\n"
+                    f"Grok output (preview):\n{grok_output[:2000]}\n\n"
+                    f"ChatGPT output (preview):\n{chatgpt_output[:2000]}"
+                )
+
+            self.status_label.setText("AI collaboration complete")
+            self.progress_bar.setVisible(False)
+
+        except Exception as e:
+            # Basic error handling
+            self.preview_text.setPlainText(f"Error running AI collaboration workflow: {str(e)}")
+            self.status_label.setText("Error during AI collaboration")
+            self.progress_bar.setVisible(False)
 
     def generate_document(self):
         marked_files = [f for f in self.selected_files if f['marked']]
