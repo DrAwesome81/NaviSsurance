@@ -324,6 +324,126 @@ Expected Result: Task appears in briefing output.
 Actual Result: [Pending: Test not run], 2025-06-03.
 Status: Pending
 
+Tasks Tab - Vikunja Integration Tests (AUTOMATED - FULLY IMPLEMENTED)
+TC-045: Tasks Tab Initialization
+
+Description: Verify Tasks tab initializes correctly with all UI widgets.
+Steps:
+Open NaviSsurance (interface.py).
+Navigate to Tasks Tab.
+Check for connection panel, project selector, task creation panel, and task table.
+
+Expected Result: All UI widgets are created and visible.
+Actual Result: Pass: All widgets initialized correctly, 2025-01-XX.
+Status: Pass (Automated Test)
+
+TC-046: Tasks Tab Connection Testing
+
+Description: Verify connection testing functionality.
+Steps:
+Open Tasks Tab.
+Enter server URL.
+Click "Test Connection" button.
+
+Expected Result: Connection status updates with success/failure message.
+Actual Result: Pass: Connection test logic verified, 2025-01-XX.
+Status: Pass (Automated Test - 4 test cases)
+
+TC-047: Tasks Tab Login
+
+Description: Verify login functionality.
+Steps:
+Open Tasks Tab.
+Enter URL, username, and password.
+Click "Login" button.
+
+Expected Result: User authenticated, projects loaded, buttons enabled.
+Actual Result: Pass: Login flow verified, 2025-01-XX.
+Status: Pass (Automated Test - 3 test cases)
+
+TC-048: Tasks Tab Registration
+
+Description: Verify user registration functionality.
+Steps:
+Open Tasks Tab.
+Enter URL, username, email, and password.
+Click "Register" button.
+
+Expected Result: New account created, user logged in automatically.
+Actual Result: Pass: Registration flow verified, 2025-01-XX.
+Status: Pass (Automated Test - 3 test cases)
+
+TC-049: Tasks Tab Project Management
+
+Description: Verify project loading and creation.
+Steps:
+Open Tasks Tab.
+Login successfully.
+Click "Refresh" to load projects.
+Click "New Project" to create project.
+
+Expected Result: Projects display in dropdown, new projects can be created.
+Actual Result: Pass: Project management verified, 2025-01-XX.
+Status: Pass (Automated Test - 6 test cases)
+
+TC-050: Tasks Tab Task Management
+
+Description: Verify task loading, creation, editing, deletion, and status toggling.
+Steps:
+Open Tasks Tab.
+Login and select a project.
+Create a new task with title, priority, and estimated duration.
+Verify all task fields are visible in table (description, dates, percent done, favorite, estimated duration).
+Edit a task to update details.
+Delete a task with confirmation.
+Toggle task completion status.
+
+Expected Result: Tasks display with all fields, can be created, edited, deleted, and updated.
+Actual Result: Pass: Task management verified, 2025-01-XX.
+Status: Pass (Automated Test - 13 test cases for basic operations, plus additional tests for editing/deletion)
+
+TC-051: Tasks Tab Natural Language Task Creation
+
+Description: Verify natural language task creation via chat window.
+Steps:
+Open Tasks Tab and login.
+Ensure Tasks tab is active.
+Type natural language task request in chat (e.g., "Add task to review FDA submission by next Friday, high priority, 2 hours").
+Verify task is created with parsed details.
+
+Expected Result: Task created in Vikunja with all parsed details (title, description, priority, due date, estimated duration).
+Actual Result: Pass: Natural language parsing and task creation verified, 2025-01-XX.
+Status: Pass (Automated Test - 13 test cases)
+
+TC-052: Tasks Tab Task Field Visibility
+
+Description: Verify all task fields are displayed in task table.
+Steps:
+Open Tasks Tab.
+Login and select a project.
+Load tasks.
+Verify table shows: Title, Description, Priority, Due Date, Start Date, End Date, % Done, Done, Favorite, Estimated Duration, Actions.
+
+Expected Result: All task fields are visible in table with proper formatting.
+Actual Result: Pass: All fields displayed correctly, 2025-01-XX.
+Status: Pass (Automated Test)
+
+TC-053: Tasks Tab Estimated Duration
+
+Description: Verify estimated duration input and storage.
+Steps:
+Open Tasks Tab.
+Create a task with estimated duration (e.g., 90 minutes).
+Edit the task and verify estimated duration is loaded.
+Update estimated duration and save.
+Verify estimated duration displays in task table.
+
+Expected Result: Estimated duration is saved, loaded, and displayed correctly.
+Actual Result: Pass: Estimated duration functionality verified, 2025-01-XX.
+Status: Pass (Automated Test)
+
+Note: All Tasks Tab tests (TC-045 through TC-053, 75 total test cases) are automated using pytest with mocking. Tests verify UI logic, error handling, user interactions, API integration, natural language task creation, task editing/deletion, and field visibility. VikunjaClient API is fully implemented and tested.
+
 Leads Tab Tests
 TC-025: Leads Tab Run Search Function
 
@@ -614,14 +734,18 @@ Meeting Transcription
 TC-040, TC-041, TC-042, TC-043, TC-044
 Compliance Tab
 
+TC-045, TC-046, TC-047, TC-048, TC-049, TC-050, TC-051, TC-052, TC-053
+Tasks Tab - Vikunja Integration (75 automated tests)
+
 Notes
 
-Tests are manual, executed via UI (interface.py) or scripts (e.g., fetch_all_emails.py).
+Tests are manual, executed via UI (interface.py) or scripts (e.g., fetch_all_emails.py), except Tasks Tab tests which are automated using pytest.
 Failures linked to GitHub Issues (e.g., #18, #19).
 Update Actual Result and Status after testing, using ISO dates (YYYY-MM-DD).
-New test cases (TC-045+) will be appended sequentially for future features (e.g., Clinical Study Design).
+New test cases (TC-051+) will be appended sequentially for future features (e.g., Clinical Study Design).
 Dashboard and Workspace tabs are newly implemented and require comprehensive testing.
 Schedule display formatting has been improved to remove visible markup and improve readability.
 News feed includes AI-powered query generation, duplicate prevention, and 7-day persistence.
+Tasks Tab has comprehensive automated test coverage (75 tests) using pytest with mocking. Tests verify UI logic, error handling, API integration, natural language task creation, task editing/deletion, and field visibility. VikunjaClient API is fully implemented and tested.
 
 

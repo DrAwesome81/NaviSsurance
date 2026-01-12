@@ -18,13 +18,19 @@ from config import LOGS_DIR
 # Create logs directory if it doesn't exist
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-# Set up logging
+# Set up logging - WARNING level to reduce console verbosity (INFO still goes to file)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.WARNING)  # Only show warnings and errors in console
+
+file_handler = logging.FileHandler(os.path.join(LOGS_DIR, 'app.log'))
+file_handler.setLevel(logging.INFO)  # Keep INFO level for file logging
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.INFO,  # Root level (file will get INFO, console will get WARNING+)
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join(LOGS_DIR, 'app.log')),
-        logging.StreamHandler()
+        file_handler,
+        console_handler
     ]
 )
 logger = logging.getLogger(__name__)

@@ -85,6 +85,32 @@ Persist tasks in core.db.DatabaseManager.
 Support interactive dashboard integration with double-click completion.
 Real-time status updates and task counter display.
 
+Tasks Tab - Vikunja Integration (FULLY IMPLEMENTED)
+
+User Story: As a consultant, I want to manage tasks and projects using a professional task management system (Vikunja), so I can organize work across multiple projects with proper task tracking.
+Acceptance Criteria:
+✅ Connect to Vikunja server (self-hosted or cloud instance) via URL, username, and password.
+✅ Test connection before authentication to verify server accessibility.
+✅ Login with existing credentials or register new account via UI.
+✅ Persistent credentials using QSettings (username/password remain populated across sessions).
+✅ Enter key support for login from username or password fields.
+✅ Load and display projects in hierarchical dropdown (supports nested projects with indentation).
+✅ Create new projects with title and optional metadata.
+✅ Load tasks for selected project with ALL fields visible:
+   - ID (hidden), Title, Description, Priority, Due Date, Start Date, End Date, % Done, Done, Favorite, Estimated Duration, Actions
+✅ Create tasks with title, priority, estimated duration, and optional fields (due date, description, etc.).
+✅ Edit tasks with full dialog supporting all fields including estimated duration.
+✅ Delete tasks with confirmation dialog.
+✅ Toggle task completion status with real-time UI updates.
+✅ Natural language task creation via chat window (when on Tasks tab):
+   - Parse task details from plain language using local Llama model
+   - Extract: title, description, priority, due date, estimated duration, project assignment
+   - Prompt for missing required information before creating
+   - Auto-assign to correct project based on context
+✅ Support custom task fields (estimated duration) stored locally in SQLite and displayed in table.
+✅ Handle errors gracefully with user-friendly messages (no success popups, only error messages).
+Status: Fully implemented with comprehensive test coverage (75 automated tests passing). VikunjaClient API (core/vikunja_client.py) fully implemented and tested.
+
 CRM Integration (PLANNED)
 
 User Story: As a consultant, I want to unify leads, compliance results, and emails, so I can streamline client interactions.

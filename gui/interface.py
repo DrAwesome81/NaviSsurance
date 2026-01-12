@@ -9,7 +9,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QDate, QTimer, pyqtSlot, QUrl, QThread, pyqtSignal, QMetaObject, Q_ARG
 from PyQt6.QtGui import QPixmap, QAction, QDesktopServices, QColor, QPainter
 from core.db import DatabaseManager
-from gui.chat_window import ChatThread, ResponseHandler, sendMessage, saveChat, loadChat
+from gui.chat_window import ChatThread, sendMessage, saveChat, loadChat
+from core.response_handler import ResponseHandler
 from gui.todo_list import TodoList
 from core.chat import ChatManager
 import os
@@ -288,16 +289,16 @@ class ChatWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.db = DatabaseManager()
-        self.chat_handler = ChatManager(self.db)
+        self.chat_handler = ChatManager(self)  # Pass self (ChatWindow) to ChatManager
         self.todoList = QListWidget()
         self.todoList.setStyleSheet("QListWidget::item { border: none; padding: 0; }")
         self.todo_list = TodoList(self)
         self.initUI()
-        self.response_handler = ResponseHandler(self.chat_display, self.chat_input, self.send_button, self.chat_handler, "main_session", [])
-        self.task_added_signal.connect(self.response_handler.handle_task_added)
-        
-        # Create tabs after response_handler is initialized
+        # Create tabs first so tasks_tab is available
         self.create_tabs()
+        
+        self.response_handler = ResponseHandler(self.chat_handler, self)
+        self.task_added_signal.connect(self.response_handler.handle_task_added)
         
         self.load_chat_history()
 

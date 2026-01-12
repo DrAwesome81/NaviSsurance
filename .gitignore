@@ -32,3 +32,7 @@ test_table_widget.py
 notes_export.docx
 notes_export.pdf
 notes_export.txt
+
+# Local Vikunja dev data
+vikunja/db/
+vikunja/files/

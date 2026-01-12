@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
                             QListWidget, QListWidgetItem, QTextEdit, QSplitter, 
-                            QFileDialog, QProgressBar, QMenu, QCheckBox, QInputDialog, QApplication)
-from PyQt6.QtCore import Qt, QMimeData
+                            QFileDialog, QProgressBar, QMenu, QCheckBox, QInputDialog, QApplication, QSpinBox)
+from PyQt6.QtCore import Qt, QMimeData, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QDropEvent, QDragEnterEvent, QPainter, QColor
 from core.api import DropboxClient
 from dropbox import files
@@ -9,9 +9,60 @@ from dropbox import files
 import json
 import os
 from datetime import datetime
+import logging
 
 # ADD THIS IMPORT (just below the Dropbox imports)
-from core.workspace_orchestrator import WorkspaceFile, WorkspaceTaskSpec, DualLLMOrchestrator
+from core.workspace_orchestrator import WorkspaceFile, WorkspaceTaskSpec, DualLLMOrchestrator, call_grok_api, call_chatgpt_api
+from core.file_handler import extract_text_from_file
+
+logger = logging.getLogger(__name__)
+
+class CollaborationWorker(QThread):
+    """Worker thread to run the AI collaboration workflow without freezing the UI."""
+    progress_signal = pyqtSignal(str, int)  # status message, progress percentage
+    round_update_signal = pyqtSignal(dict)  # round data: {round, grok_output, chatgpt_output, markdown}
+    result_signal = pyqtSignal(dict)  # final result
+    error_signal = pyqtSignal(str)  # error message
+    
+    def __init__(self, orchestrator, task_spec, file_contents):
+        super().__init__()
+        self.orchestrator = orchestrator
+        self.task_spec = task_spec
+        self.file_contents = file_contents
+        self._round_count = 0
+        self._max_rounds = task_spec.max_rounds or 3  # Use actual max_rounds from task_spec
+    
+    def run(self):
+        try:
+            self.progress_signal.emit("Starting AI collaboration...", 10)
+            
+            # Set up progress callback that emits signals (thread-safe)
+            def progress_callback(round_data):
+                """Called after each round - emit signal for UI update"""
+                self._round_count += 1
+                # Calculate progress dynamically based on max_rounds:
+                # 20% base + 70% for rounds (distributed across max_rounds) + 10% reserved for final processing
+                # Progress per round = 70 / max_rounds
+                progress_per_round = 70.0 / self._max_rounds
+                progress = 20 + int(self._round_count * progress_per_round)
+                # Cap at 90% until final result
+                progress = min(progress, 90)
+                self.progress_signal.emit(f"Round {self._round_count}/{self._max_rounds} complete", progress)
+                self.round_update_signal.emit(round_data)
+            
+            # Update orchestrator's progress callback
+            self.orchestrator._progress_callback = progress_callback
+            
+            # Run the orchestrator
+            result = self.orchestrator.run_once(self.task_spec, self.file_contents)
+            
+            # Emit final result
+            self.progress_signal.emit("Processing final results...", 95)
+            self.result_signal.emit(result)
+            
+        except Exception as e:
+            logger.error(f"Error in collaboration worker: {e}")
+            self.error_signal.emit(str(e))
 
 class AlwaysVisiblePlaceholderTextEdit(QTextEdit):
     """Custom QTextEdit with always-visible placeholder text."""
@@ -54,7 +105,10 @@ class WorkspaceTab(QWidget):
         self.selected_files = []
         
         # NEW: dual-LLM orchestrator that will talk to Grok + ChatGPT
-        self.orchestrator = DualLLMOrchestrator()
+        # Initialize with real API call functions
+        self._current_file_contents = {}  # Store file contents for API calls
+        self._collaboration_worker = None  # Worker thread for running collaboration
+        self._current_markdown = ""  # Store current markdown for saving
         
         self.setup_ui()
 
@@ -100,6 +154,24 @@ class WorkspaceTab(QWidget):
         status_layout.addWidget(self.progress_bar)
         status_layout.addStretch()
         file_layout.addLayout(status_layout)
+        
+        # Max rounds control
+        rounds_layout = QHBoxLayout()
+        rounds_label = QLabel("Max Rounds:")
+        rounds_label.setStyleSheet("color: white; padding: 4px;")
+        rounds_layout.addWidget(rounds_label)
+        self.max_rounds_spinbox = QSpinBox()
+        self.max_rounds_spinbox.setMinimum(1)
+        self.max_rounds_spinbox.setMaximum(10)
+        self.max_rounds_spinbox.setValue(3)  # Default
+        self.max_rounds_spinbox.setStyleSheet(
+            "background-color: rgba(27, 28, 30, 0.8); "
+            "color: white; border: 1px solid rgba(253, 98, 98, 0.3); "
+            "border-radius: 3px; padding: 4px;"
+        )
+        rounds_layout.addWidget(self.max_rounds_spinbox)
+        rounds_layout.addStretch()
+        file_layout.addLayout(rounds_layout)
         
         # Select and Actions buttons
         btn_layout = QHBoxLayout()
@@ -214,6 +286,28 @@ class WorkspaceTab(QWidget):
         )
         markdown_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         markdown_layout.addWidget(markdown_header)
+
+        # Save/Export button bar
+        button_bar = QHBoxLayout()
+        self.save_button = QPushButton("Save Markdown")
+        self.save_button.setStyleSheet(
+            "background-color: rgba(253, 98, 98, 0.8); "
+            "color: white; border: none; padding: 8px; border-radius: 3px; font-weight: bold;"
+        )
+        self.save_button.clicked.connect(self.save_markdown)
+        self.save_button.setEnabled(False)  # Disabled until document is generated
+        button_bar.addWidget(self.save_button)
+        
+        self.export_button = QPushButton("Export as...")
+        self.export_button.setStyleSheet(
+            "background-color: rgba(253, 98, 98, 0.6); "
+            "color: white; border: none; padding: 8px; border-radius: 3px;"
+        )
+        self.export_button.clicked.connect(self.export_markdown)
+        self.export_button.setEnabled(False)  # Disabled until document is generated
+        button_bar.addWidget(self.export_button)
+        button_bar.addStretch()
+        markdown_layout.addLayout(button_bar)
 
         # IMPORTANT: reuse self.preview_text so existing methods still work
         self.preview_text = AlwaysVisiblePlaceholderTextEdit()
@@ -368,21 +462,20 @@ class WorkspaceTab(QWidget):
     def get_file_content(self, file_info):
         """Get file content with caching to avoid repeated disk I/O."""
         if 'content' not in file_info:
-            file_ext = os.path.splitext(file_info['name'])[1].lower()
-            content = ""
-            
-            if file_ext in {'.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml', '.csv'}:
-                with open(file_info['path'], 'r', encoding='utf-8') as f:
-                    content = f.read()
-            elif file_ext in {'.pdf'}:
-                # loader = PyPDFLoader(file_info['path'])
-                # pages = loader.load()
-                # content = "\n\n".join(page.page_content for page in pages[:5])
-                content = f"[PDF file: {file_info['name']} - content loading disabled]"
-            elif file_ext in {'.docx'}:
-                # loader = Docx2txtLoader(file_info['path'])
-                # content = loader.load()[0].page_content
-                content = f"[DOCX file: {file_info['name']} - content loading disabled]"
+            try:
+                # Use file_handler for proper extraction
+                content = extract_text_from_file(file_info['path'])
+                if not content:
+                    # Fallback for unsupported file types
+                    file_ext = os.path.splitext(file_info['name'])[1].lower()
+                    if file_ext in {'.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml', '.csv'}:
+                        with open(file_info['path'], 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                    else:
+                        content = f"[File: {file_info['name']} - content extraction not available for this file type]"
+            except Exception as e:
+                logger.error(f"Error extracting content from {file_info['path']}: {e}")
+                content = f"[Error extracting content from {file_info['name']}: {str(e)}]"
             
             # Cache the content for future use
             file_info['content'] = content
@@ -419,83 +512,270 @@ class WorkspaceTab(QWidget):
         """
         try:
             marked_files = [f for f in self.selected_files if f.get("marked")]
-            if not marked_files:
-                self.status_label.setText("No files marked")
-                self.preview_text.setHtml(
-                    '<div style="text-align: center; color: #888; font-style: italic; padding: 40px;">'
-                    '<h3>No files selected</h3>'
-                    '<p>Mark some files in the list to run the AI collaboration workflow.</p>'
-                    '</div>'
-                )
-                return
-
+            
             # Ask the user what they want Grok + ChatGPT to do
+            if marked_files:
+                prompt_text = f"Describe what you want Grok + ChatGPT to do with these {len(marked_files)} file(s):"
+            else:
+                prompt_text = "Describe what you want Grok + ChatGPT to research and create (no files uploaded):"
+            
             instructions, ok = QInputDialog.getText(
                 self,
                 "AI Collaboration Instructions",
-                "Describe what you want Grok + ChatGPT to do with these files:"
+                prompt_text
             )
             if not ok or not instructions.strip():
                 self.status_label.setText("AI collaboration cancelled")
                 return
 
-            self.status_label.setText("Running AI collaboration workflow…")
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
-            QApplication.processEvents()
-
-            # Convert marked_files into WorkspaceFile objects
+            # Convert marked_files into WorkspaceFile objects and extract content (if any)
             workspace_files = []
-            for f in marked_files:
-                workspace_files.append(
-                    WorkspaceFile(
-                        path=f["path"],
-                        display_name=f["name"],
-                        file_type=self._guess_file_type(f["name"]),
+            file_contents = {}  # Map file paths to their content
+            
+            if marked_files:
+                self.status_label.setText("Extracting file contents...")
+                self.progress_bar.setVisible(True)
+                self.progress_bar.setValue(0)
+                QApplication.processEvents()
+                
+                total_files = len(marked_files)
+                for idx, f in enumerate(marked_files):
+                    self.status_label.setText(f"Extracting content from {f['name']}... ({idx+1}/{total_files})")
+                    self.progress_bar.setValue(int((idx / total_files) * 30))  # First 30% for extraction
+                    QApplication.processEvents()
+                    
+                    # Extract and cache file content
+                    content = self.get_file_content(f)
+                    file_path = f["path"]
+                    file_contents[file_path] = content
+                    
+                    workspace_files.append(
+                        WorkspaceFile(
+                            path=file_path,
+                            display_name=f["name"],
+                            file_type=self._guess_file_type(f["name"]),
+                        )
                     )
-                )
+            else:
+                # No files - just research request
+                self.status_label.setText("Starting research collaboration...")
+                self.progress_bar.setVisible(True)
+                self.progress_bar.setValue(10)
+                QApplication.processEvents()
 
-            # Build the task spec
+            # Build the task spec with user-defined max_rounds
+            max_rounds = self.max_rounds_spinbox.value()
             task_spec = WorkspaceTaskSpec(
                 goal=instructions.strip(),
                 context="",  # Could be extended to ask for context
                 files=workspace_files,
-                max_rounds=3,
+                max_rounds=max_rounds,
             )
 
-            # Call orchestrator (currently synchronous stub)
-            result = self.orchestrator.run_once(task_spec)
+            # Store file contents for use in API calls
+            self._current_file_contents = file_contents
 
-            # Unpack the result dict safely
-            markdown_doc = result.get("markdown", "")
-            grok_output = result.get("grok_output", "")
-            chatgpt_output = result.get("chatgpt_output", "")
-
-            # Show outputs in their respective panes
-            if hasattr(self, 'grok_text'):
-                self.grok_text.setPlainText(grok_output)
-            if hasattr(self, 'chatgpt_text'):
-                self.chatgpt_text.setPlainText(chatgpt_output)
-
-            # Show the final Markdown in the preview pane
-            if markdown_doc:
-                self.preview_text.setPlainText(markdown_doc)
+            # Update UI for API calls
+            if marked_files:
+                self.status_label.setText("Calling Grok API (Research Agent)...")
+                self.progress_bar.setValue(30)
             else:
-                # Fallback if orchestrator didn't return markdown
-                self.preview_text.setPlainText(
-                    "AI collaboration completed, but no markdown document was returned.\n\n"
-                    f"Grok output (preview):\n{grok_output[:2000]}\n\n"
-                    f"ChatGPT output (preview):\n{chatgpt_output[:2000]}"
-                )
+                self.status_label.setText("Starting AI collaboration (Research Mode)...")
+                self.progress_bar.setValue(20)
+            QApplication.processEvents()
+            
+            # Clear previous outputs
+            if hasattr(self, 'grok_text'):
+                self.grok_text.setPlainText("Processing...")
+            if hasattr(self, 'chatgpt_text'):
+                self.chatgpt_text.setPlainText("Waiting for Grok to complete...")
+            if hasattr(self, 'preview_text'):
+                self.preview_text.setPlainText("Generating document...")
+            
+            # Disable save buttons until document is ready
+            if hasattr(self, 'save_button'):
+                self.save_button.setEnabled(False)
+            if hasattr(self, 'export_button'):
+                self.export_button.setEnabled(False)
 
-            self.status_label.setText("AI collaboration complete")
-            self.progress_bar.setVisible(False)
+            # Create orchestrator (progress callback will be set by worker thread)
+            orchestrator = DualLLMOrchestrator(
+                logger=logger,
+                grok_call=lambda task_spec, file_contents, feedback, round_num, previous_markdown: 
+                    call_grok_api(task_spec, file_contents or self._current_file_contents, feedback, round_num, previous_markdown),
+                chatgpt_call=lambda task_spec, grok_result, round_num: 
+                    call_chatgpt_api(task_spec, grok_result, round_num)
+            )
 
+            # Run orchestrator in background thread to prevent UI freezing
+            self._collaboration_worker = CollaborationWorker(orchestrator, task_spec, file_contents)
+            self._collaboration_worker.progress_signal.connect(self._on_progress_update)
+            self._collaboration_worker.round_update_signal.connect(self._on_round_update)
+            self._collaboration_worker.result_signal.connect(self._on_collaboration_complete)
+            self._collaboration_worker.error_signal.connect(self._on_collaboration_error)
+            self._collaboration_worker.start()
+            
         except Exception as e:
-            # Basic error handling
-            self.preview_text.setPlainText(f"Error running AI collaboration workflow: {str(e)}")
-            self.status_label.setText("Error during AI collaboration")
+            # Handle errors that occur before starting the worker thread
+            logger.error(f"Error setting up AI collaboration workflow: {e}")
+            error_msg = f"Error setting up AI collaboration workflow: {str(e)}"
+            self.status_label.setText("Error during setup")
             self.progress_bar.setVisible(False)
+            self.preview_text.setPlainText(error_msg)
+            if hasattr(self, 'grok_text'):
+                self.grok_text.setPlainText(f"Error: {str(e)}")
+            if hasattr(self, 'chatgpt_text'):
+                self.chatgpt_text.setPlainText("Workflow failed during setup.")
+
+    def _on_progress_update(self, message, progress):
+        """Handle progress updates from worker thread (thread-safe, called on main thread)"""
+        self.status_label.setText(message)
+        self.progress_bar.setValue(progress)
+        QApplication.processEvents()
+    
+    def _on_round_update(self, round_data):
+        """Handle round update signal from worker thread (thread-safe, called on main thread)"""
+        round_num = round_data.get("round", 0)
+        grok_output = round_data.get("grok_output", "")
+        chatgpt_output = round_data.get("chatgpt_output", "")
+        markdown = round_data.get("markdown", "")
+        feedback = round_data.get("feedback", "")
+        
+        # Update Grok pane with current round
+        if hasattr(self, 'grok_text'):
+            current_text = self.grok_text.toPlainText()
+            if "Round" in current_text or current_text.strip() == "Processing...":
+                # Append to existing or replace "Processing..."
+                if current_text.strip() == "Processing...":
+                    self.grok_text.setPlainText(f"--- Round {round_num} ---\n{grok_output}")
+                else:
+                    self.grok_text.append(f"\n\n--- Round {round_num} ---\n{grok_output}")
+            else:
+                # First round
+                self.grok_text.setPlainText(f"--- Round {round_num} ---\n{grok_output}")
+        
+        # Update ChatGPT pane with current round
+        if hasattr(self, 'chatgpt_text'):
+            current_text = self.chatgpt_text.toPlainText()
+            if "Round" in current_text or "Waiting" in current_text:
+                # Append to existing or replace "Waiting..."
+                if "Waiting" in current_text:
+                    feedback_text = f"\n[Feedback to Grok]: {feedback}" if feedback else ""
+                    self.chatgpt_text.setPlainText(f"--- Round {round_num} ---\n{chatgpt_output}{feedback_text}")
+                else:
+                    self.chatgpt_text.append(f"\n\n--- Round {round_num} ---\n{chatgpt_output}")
+                    if feedback:
+                        self.chatgpt_text.append(f"\n[Feedback to Grok]: {feedback}")
+            else:
+                # First round
+                feedback_text = f"\n[Feedback to Grok]: {feedback}" if feedback else ""
+                self.chatgpt_text.setPlainText(f"--- Round {round_num} ---\n{chatgpt_output}{feedback_text}")
+        
+        # Update markdown preview with current version
+        if markdown and hasattr(self, 'preview_text'):
+            self.preview_text.setPlainText(markdown)
+            self._current_markdown = markdown
+        
+        QApplication.processEvents()
+    
+    def _on_collaboration_complete(self, result):
+        """Handle completion of collaboration workflow"""
+        QTimer.singleShot(0, lambda: self._on_collaboration_complete_safe(result))
+    
+    def _on_collaboration_complete_safe(self, result):
+        """Thread-safe completion handler"""
+        # Unpack the result dict safely
+        markdown_doc = result.get("markdown", "")
+        grok_output = result.get("grok_output", "")
+        chatgpt_output = result.get("chatgpt_output", "")
+        collaboration_history = result.get("collaboration_history", [])
+        rounds = result.get("rounds", 0)
+        status = result.get("status", "unknown")
+        
+        # Store markdown for saving
+        self._current_markdown = markdown_doc
+
+        # Show the final Markdown in the preview pane
+        if markdown_doc:
+            self.preview_text.setPlainText(markdown_doc)
+        else:
+            # Fallback if orchestrator didn't return markdown
+            self.preview_text.setPlainText(
+                "AI collaboration completed, but no markdown document was returned.\n\n"
+                f"Grok output (preview):\n{grok_output[:2000] if grok_output else 'N/A'}\n\n"
+                f"ChatGPT output (preview):\n{chatgpt_output[:2000] if chatgpt_output else 'N/A'}"
+            )
+
+        # Enable save buttons
+        if hasattr(self, 'save_button'):
+            self.save_button.setEnabled(True)
+        if hasattr(self, 'export_button'):
+            self.export_button.setEnabled(True)
+
+        self.status_label.setText(f"AI collaboration complete ({status}, {rounds} round{'s' if rounds != 1 else ''})")
+        self.progress_bar.setValue(100)
+        QApplication.processEvents()
+        self.progress_bar.setVisible(False)
+    
+    def _on_collaboration_error(self, error_msg):
+        """Handle errors from collaboration workflow"""
+        QTimer.singleShot(0, lambda: self._on_collaboration_error_safe(error_msg))
+    
+    def _on_collaboration_error_safe(self, error_msg):
+        """Thread-safe error handler"""
+        logger.error(f"Error in AI collaboration workflow: {error_msg}")
+        self.status_label.setText("Error during workflow")
+        self.progress_bar.setVisible(False)
+        self.preview_text.setPlainText(f"Error running AI collaboration workflow: {error_msg}")
+        if hasattr(self, 'grok_text'):
+            self.grok_text.setPlainText(f"Error: {error_msg}")
+        if hasattr(self, 'chatgpt_text'):
+            self.chatgpt_text.setPlainText("Workflow failed before ChatGPT step.")
+    
+    def save_markdown(self):
+        """Save the current markdown document to a file"""
+        if not self._current_markdown:
+            self.status_label.setText("No document to save")
+            return
+        
+        default_filename = f"workspace_document_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Markdown Document",
+            default_filename,
+            "Markdown Files (*.md);;All Files (*)"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(self._current_markdown)
+                self.status_label.setText(f"Document saved to {os.path.basename(file_path)}")
+            except Exception as e:
+                logger.error(f"Error saving markdown: {e}")
+                self.status_label.setText(f"Error saving file: {str(e)}")
+    
+    def export_markdown(self):
+        """Export markdown in different formats"""
+        if not self._current_markdown:
+            self.status_label.setText("No document to export")
+            return
+        
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Document",
+            f"workspace_document_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "Markdown Files (*.md);;Text Files (*.txt);;All Files (*)"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(self._current_markdown)
+                self.status_label.setText(f"Document exported to {os.path.basename(file_path)}")
+            except Exception as e:
+                logger.error(f"Error exporting markdown: {e}")
+                self.status_label.setText(f"Error exporting file: {str(e)}")
 
     def generate_document(self):
         marked_files = [f for f in self.selected_files if f['marked']]

@@ -138,6 +138,16 @@ class DatabaseManager:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
             
+            # Vikunja task metadata table for custom fields not in Vikunja
+            conn.execute('''CREATE TABLE IF NOT EXISTS vikunja_task_metadata (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vikunja_task_id INTEGER NOT NULL UNIQUE,
+                estimated_duration_minutes INTEGER,
+                custom_fields_json TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )''')
+            
             conn.commit()
 
     def create_indexes(self):
@@ -166,6 +176,9 @@ class DatabaseManager:
             # Indexes for news_items table
             conn.execute("CREATE INDEX IF NOT EXISTS idx_news_created_at ON news_items(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_news_source ON news_items(source)")
+            
+            # Indexes for vikunja_task_metadata table
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_vikunja_task_metadata_task_id ON vikunja_task_metadata(vikunja_task_id)")
             
             conn.commit()
 

@@ -14,8 +14,9 @@ from config import headers, API_ENDPOINT, base_system_message
 logger = logging.getLogger(__name__)
 
 class ResponseHandler:
-    def __init__(self, chat_handler):
+    def __init__(self, chat_handler, chat_window=None):
         self.chat_handler = chat_handler
+        self.chat_window = chat_window  # Reference to ChatWindow for accessing tasks_tab
         self.process = None
         self.model_loaded = False
         # Ensure only one thread talks to the worker at a time
@@ -156,6 +157,7 @@ class ResponseHandler:
         return self.chat_with_llama(messages, session_id)
 
     def get_response(self, message, session_id, conversation_history):
+        print(f"DEBUG: ResponseHandler.get_response called with message: {message[:50]}..., session_id: {session_id}")
         conversation_history.append({"role": "user", "content": message})
         try:
             # Special-case: Notes tab should bypass task/news/!search routing
@@ -215,7 +217,13 @@ class ResponseHandler:
                 return formatted_briefing
             
             # Handle task queries - natural language task list access
-            if self._is_task_query(message):
+            # BUT skip this if the message is about creating a task (not querying)
+            # Check for creation keywords first - if it's about creating, skip task query handler
+            is_task_creation = any(keyword in message.lower() for keyword in ['add', 'create', 'new task', 'make a task', 'add a task'])
+            if is_task_creation:
+                print(f"DEBUG: Detected task creation request, skipping task query handler, continuing to ADD_TASK processing")
+            elif self._is_task_query(message):
+                print(f"DEBUG: Detected task query (not creation), routing to _handle_task_query")
                 return self._handle_task_query(message)
             
             # Handle news queries specifically - ALWAYS require web search
@@ -244,23 +252,79 @@ class ResponseHandler:
                 else:
                     return "Unable to fetch current news. Please try again."
             grok_response = self.hybrid_wrapper(conversation_history, session_id)
+            print(f"DEBUG: hybrid_wrapper returned: {grok_response[:200] if grok_response else 'None'}...")
             task_segments = [seg for seg in grok_response.split("ADD_TASK:") if seg.strip()]
+            print(f"DEBUG: task_segments count: {len(task_segments)}, has ADD_TASK: {'ADD_TASK:' in grok_response}")
             added_tasks = []
             if task_segments and "ADD_TASK:" in grok_response:
+                print(f"DEBUG: Found ADD_TASK in response, checking Vikunja routing...")
+                # Check if we're on the Tasks tab and should create Vikunja tasks
+                should_use_vikunja = False
+                if self.chat_window and hasattr(self.chat_window, 'tasks_tab') and self.chat_window.tasks_tab:
+                    tasks_tab = self.chat_window.tasks_tab
+                    print(f"DEBUG: tasks_tab exists: {tasks_tab is not None}")
+                    # Check if Tasks tab is currently active
+                    if hasattr(self.chat_window, 'tab_widget'):
+                        current_tab_index = self.chat_window.tab_widget.currentIndex()
+                        tasks_tab_index = -1
+                        for i in range(self.chat_window.tab_widget.count()):
+                            if self.chat_window.tab_widget.tabText(i) == "Tasks":
+                                tasks_tab_index = i
+                                break
+                        
+                        has_client = tasks_tab.client is not None
+                        has_project = tasks_tab.current_project_id is not None
+                        print(f"DEBUG: Task creation check: current_tab={current_tab_index}, tasks_tab={tasks_tab_index}, has_client={has_client}, has_project={has_project}, project_id={tasks_tab.current_project_id}")
+                        
+                        if current_tab_index == tasks_tab_index and has_client and has_project:
+                            # We're on Tasks tab and logged in - create Vikunja tasks
+                            print(f"DEBUG: Routing to Vikunja task creation")
+                            logger.info("Routing to Vikunja task creation")
+                            should_use_vikunja = True
+                        else:
+                            print(f"DEBUG: Not using Vikunja: current_tab={current_tab_index}, tasks_tab={tasks_tab_index}, has_client={has_client}, has_project={has_project}")
+                    else:
+                        print(f"DEBUG: No tab_widget found on chat_window")
+                else:
+                    print(f"DEBUG: No chat_window or tasks_tab available")
+                
+                if should_use_vikunja:
+                    result = self._handle_vikunja_task_creation(task_segments, message, conversation_history, session_id)
+                    print(f"DEBUG: Vikunja task creation returned: {result}")
+                    return result
+                
+                # Otherwise, use the old task system
+                logger.debug("Using old task system (not on Tasks tab or Vikunja not available)")
                 for segment in task_segments:
                     task_info = segment.split("|", 1)
                     if len(task_info) != 2:
                         continue
                     task_description = task_info[0].strip()
                     try:
+                        from datetime import datetime
                         due_date_obj = parser.parse(task_info[1].strip(), default=datetime.now())
                         due_date = due_date_obj.strftime("%m-%d-%Y")
                     except ValueError:
                         due_date = "unknown"
                     added_tasks.append(f"'{task_description}' due on {due_date}")
-            return grok_response if not added_tasks else f"Added {', '.join(added_tasks)}"
+            # Return the processed response, not the raw grok_response
+            if added_tasks:
+                print(f"DEBUG: Returning processed tasks: {added_tasks}")
+                return f"Added {', '.join(added_tasks)}"
+            else:
+                # If no tasks were added but ADD_TASK was in response, we need to handle it
+                # Don't return raw ADD_TASK: string - ChatThread will try to parse it for old system
+                if "ADD_TASK:" in grok_response:
+                    print(f"DEBUG: ADD_TASK found but no tasks parsed - this shouldn't happen if Vikunja path worked")
+                    logger.warning("ADD_TASK: found in response but no tasks were parsed")
+                    # Return a message instead of raw ADD_TASK to prevent ChatThread from parsing it
+                    return "I received a task creation request, but couldn't process it. Please make sure you're logged into Vikunja and have a project selected if you're on the Tasks tab."
+                print(f"DEBUG: Returning grok_response (no ADD_TASK): {grok_response[:100]}...")
+                return grok_response
         except Exception as e:
-            print(f"Error in get_response: {e}")
+            import traceback
+            print(f"ERROR in get_response: {e}")
+            traceback.print_exc()
             return "I encountered an issue—try again, doc!"
 
     def _load_llama_model(self):
@@ -325,8 +389,8 @@ Respond naturally and conversationally to their question. Be helpful, specific, 
         task_info = []
         
         for task in all_tasks:
-            # get_tasks() returns: id, task_text, due_date, category, recurrence, completed, session_id
-            task_id, task_name, due_date, category, recurrence, completed, session_id = task
+            # get_tasks() returns: id, task_text, due_date, category, recurrence, completed (6 values)
+            task_id, task_name, due_date, category, recurrence, completed = task
             status = "completed" if completed else "pending"
             
             # Calculate if overdue
@@ -361,3 +425,153 @@ All Tasks:
             summary += f"- {task['name']} (due: {task['due_date']}, status: {task['status']}{overdue_indicator})\n"
         
         return summary
+    
+    def _handle_vikunja_task_creation(self, task_segments, original_message, conversation_history, session_id):
+        """Handle task creation for Vikunja when on Tasks tab."""
+        try:
+            tasks_tab = self.chat_window.tasks_tab
+            
+            # Check if user is logged into Vikunja
+            if not tasks_tab.client or not tasks_tab.current_project_id:
+                return "I need you to be logged into Vikunja and have a project selected to create tasks. Please log in and select a project first."
+            
+            # Get available projects for context
+            try:
+                projects = tasks_tab.client.get_projects()
+                project_names = [p.get("title", "") for p in projects]
+            except:
+                project_names = []
+            
+            created_tasks = []
+            missing_info = []
+            
+            for segment in task_segments:
+                if "|" not in segment:
+                    continue
+                
+                task_info = segment.split("|", 1)
+                if len(task_info) != 2:
+                    continue
+                
+                task_description = task_info[0].strip()
+                due_date_raw = task_info[1].strip()
+                
+                # Use Llama to parse task details from the original message and task description
+                parse_prompt = [
+                    {"role": "system", "content": f"""You are parsing a task creation request. Extract task details and return a JSON object with:
+- title: Task title (required)
+- description: Task description (optional, can be empty string)
+- priority: Priority level 0-5 (0 = no priority, 5 = urgent, default 0)
+- due_date: Due date in ISO format YYYY-MM-DD (or null if not specified)
+- estimated_duration_minutes: Estimated duration in minutes (or null if not specified)
+- project_name: Project name to assign to (must match one of: {', '.join(project_names) if project_names else 'any available project'}, or null to use current project)
+
+Available projects: {', '.join(project_names) if project_names else 'none'}
+Current date: {datetime.now().strftime('%Y-%m-%d')}
+
+Return ONLY valid JSON, no other text."""},
+                    {"role": "user", "content": f"Original request: {original_message}\nTask: {task_description}\nDue date mentioned: {due_date_raw}"}
+                ]
+                
+                try:
+                    parse_response = self.chat_with_llama(parse_prompt, "task_parse")
+                    print(f"DEBUG: Llama parse response: {parse_response[:200]}...")
+                    # Extract JSON from response (might have extra text)
+                    import json
+                    import re
+                    json_match = re.search(r'\{[^{}]*\}', parse_response, re.DOTALL)
+                    if json_match:
+                        task_data = json.loads(json_match.group(0))
+                        print(f"DEBUG: Parsed task_data: {task_data}")
+                    else:
+                        # Fallback: try to parse the whole response
+                        task_data = json.loads(parse_response)
+                        print(f"DEBUG: Parsed task_data (fallback): {task_data}")
+                    
+                    # Validate required fields
+                    if not task_data.get('title'):
+                        missing_info.append(f"Task '{task_description}': missing title")
+                        continue
+                    
+                    # Determine project
+                    project_id = tasks_tab.current_project_id
+                    print(f"DEBUG: Starting with project_id from current_project_id: {project_id}")
+                    if task_data.get('project_name') and project_names:
+                        # Try to find matching project
+                        for proj in projects:
+                            if proj.get("title", "").lower() == task_data.get('project_name', '').lower():
+                                new_project_id = proj.get("id")
+                                print(f"DEBUG: Matched project name '{task_data.get('project_name')}' to project_id: {new_project_id}")
+                                project_id = new_project_id
+                                break
+                    
+                    # Ensure project_id is valid
+                    if not project_id:
+                        print(f"DEBUG: ERROR - project_id is None or invalid!")
+                        missing_info.append(f"Task '{task_description}': no project selected")
+                        continue
+                    
+                    print(f"DEBUG: Final project_id before API call: {project_id} (type: {type(project_id)})")
+                    
+                    # Parse due date
+                    due_date_iso = None
+                    if task_data.get('due_date'):
+                        try:
+                            due_date_obj = parser.parse(task_data['due_date'], default=datetime.now())
+                            due_date_iso = due_date_obj.strftime('%Y-%m-%d')
+                        except:
+                            pass
+                    
+                    # Create task in Vikunja
+                    print(f"DEBUG: Calling create_task with project_id={project_id}, title='{task_data['title']}'")
+                    task_result = tasks_tab.client.create_task(
+                        project_id=project_id,
+                        title=task_data['title'],
+                        description=task_data.get('description', ''),
+                        priority=task_data.get('priority', 0),
+                        due_date=due_date_iso
+                    )
+                    
+                    # Save estimated duration if provided
+                    estimated_duration = task_data.get('estimated_duration_minutes')
+                    if estimated_duration and estimated_duration > 0:
+                        task_id = task_result.get('id') if isinstance(task_result, dict) else None
+                        if task_id:
+                            tasks_tab._save_estimated_duration(task_id, estimated_duration)
+                    
+                    # Reload tasks to show the new task
+                    tasks_tab.load_tasks()
+                    
+                    created_tasks.append(task_data['title'])
+                    
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse task JSON: {e}, response: {parse_response}")
+                    missing_info.append(f"Task '{task_description}': parsing error")
+                except Exception as e:
+                    logger.error(f"Error creating Vikunja task: {e}")
+                    missing_info.append(f"Task '{task_description}': {str(e)}")
+            
+            # Build response
+            if created_tasks:
+                response = f"I've created {len(created_tasks)} task(s) in Vikunja: {', '.join(created_tasks)}."
+                if missing_info:
+                    response += f"\n\nHowever, I had issues with: {', '.join(missing_info)}. Please provide more details."
+                return response
+            elif missing_info:
+                return f"I couldn't create the task(s). Issues: {', '.join(missing_info)}. Please provide more details or check your Vikunja connection."
+            else:
+                return "I couldn't parse the task details. Please try again with more specific information."
+                
+        except Exception as e:
+            logger.error(f"Error in Vikunja task creation: {e}")
+            return f"I encountered an error creating the task: {str(e)}"
+    
+    def handle_task_added(self, task_text, due_date):
+        """Handle task added signal (for backward compatibility with old task system).
+        
+        This method is called when a task is added via the old task system.
+        The new system handles tasks through Vikunja or the get_response method.
+        """
+        # Tasks are now handled through Vikunja or get_response, so this is a no-op
+        # Kept for backward compatibility with signal connections
+        pass
