@@ -184,35 +184,14 @@ IMPORTANT: When processing search results:
 Only include leads that have been verified through the search results.
 """
 
-            api_key = os.getenv('GROK_API_KEY', '')
-            if not api_key:
-                logger.error("Grok API key not found.")
-                return
-
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-
-            data = {
-                "messages": [
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": user_system_message}
-                ],
-                "model": "grok-4-latest",
-                "stream": False
-            }
-
-            response = requests.post(
-                "https://api.x.ai/v1/chat/completions",
-                headers=headers,
-                json=data,
-                timeout=120
+            from core.grok_client import grok_completion
+            response_content = grok_completion(
+                system_message, user_system_message,
+                model="grok-4-latest"
             )
-            response.raise_for_status()
-            response_data = response.json()
-
-            response_content = response_data['choices'][0]['message']['content']
+            if not response_content:
+                logger.error("Grok API returned no content (check XAI_API_KEY or GROK_API_KEY).")
+                return
 
             logger.info("Grok API Response:")
             logger.info(f"Response content: {response_content}")
@@ -262,11 +241,9 @@ Only include leads that have been verified through the search results.
             else:
                 logger.error("No JSON array found in response")
                 logger.error(f"Raw response: {response_content[:500]}...")  # Truncate for logging
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Grok API error: {e}")
-            QMessageBox.warning(self, "API Error", "The Grok API is currently experiencing issues. Please try again in a few minutes.")
         except Exception as e:
             logger.error(f"Search leads error: {e}")
+            QMessageBox.warning(self, "API Error", "The Grok API is currently experiencing issues. Please try again in a few minutes.")
 
     def update_leads_table(self, leads):
         self.leadsTable.setRowCount(len(leads))

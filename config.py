@@ -9,21 +9,24 @@ PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
 CONFIG_DIR = os.path.join(PROJECT_ROOT, "config")
 LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
 DATABASE_PATH = os.path.join(PROJECT_ROOT, "naviSsurance_index.db")
-ENV_FILE = os.path.join(PROJECT_ROOT, ".env")
+ARTIFACTS_DIR = os.path.join(PROJECT_ROOT, "data", "artifacts")
+CHROMA_PATH = os.path.join(PROJECT_ROOT, "chroma_index")
+ENV_FILE = os.path.join(CONFIG_DIR, ".env")
 
-# Load environment variables
-load_dotenv(os.path.join(CONFIG_DIR, ".env"))
+# Load environment variables from config folder
+load_dotenv(ENV_FILE)
 
 # Deepseek usage removed - now using Llama model directly via llama_cpp
 USE_DEEPSEEK = False
+
+# Daily briefing and email checking (Gmail/Outlook/Yahoo fetch) — set True to disable
+BRIEFING_AND_EMAIL_DISABLED = True
 
 API_KEY = os.getenv('GROK_API_KEY')
 if API_KEY is None:
     raise ValueError("GROK_API_KEY is not set in the environment")
 
-API_ENDPOINT = 'https://api.x.ai/v1/chat/completions'
-
-# Using Grok 4 API for all functionality
+# Using Grok 4 API via xAI SDK (gRPC / Responses API)
 
 DROPBOX_APP_KEY = os.getenv('DROPBOX_APP_KEY')
 DROPBOX_APP_SECRET = os.getenv('DROPBOX_APP_SECRET')
@@ -32,10 +35,6 @@ if any(var is None for var in (DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFR
     raise ValueError("One or more Dropbox credentials are missing")
 
 DROPBOX_TOKEN_URL = "https://api.dropboxapi.com/oauth2/token"
-
-#DROPBOX_API_KEY = os.getenv("DROPBOX_API_KEY")
-#if DROPBOX_API_KEY is None:
-    #print("DROPBOX_API_KEY not set. Using refresh token to get new one.")
 
 headers = {
     "Authorization": f"Bearer {API_KEY}",
@@ -100,6 +99,3 @@ def refresh_dropbox_token():
         return new_access_token, new_refresh_token
     else:
         raise Exception(f"Failed to refresh access token: {response.text}")
-        #return None, DROPBOX_REFRESH_TOKEN
-
-# DATABASE_PATH is now defined at the top with other centralized paths

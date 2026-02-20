@@ -8,7 +8,7 @@ import requests
 import re
 from dateutil import parser
 os.environ["TORCH_DYNAMO_DISABLE"] = "1"
-from config import headers, API_ENDPOINT, base_system_message
+from config import base_system_message
 # Dropbox indexing removed - using RAG index instead
 
 logger = logging.getLogger(__name__)
@@ -112,41 +112,25 @@ class ResponseHandler:
                 return "Local AI's acting up—try again."
 
     def perform_grok_search(self, query):
-        """Perform a web search using Grok API with live search."""
+        """Perform a web search using Grok via xAI SDK (web_search tool)."""
         try:
+            from core.grok_client import grok_web_search
             from datetime import datetime, timedelta
             current_date = datetime.now()
             week_ago = current_date - timedelta(days=7)
-            
-            # Format dates for Grok live search
-            current_date_str = current_date.strftime("%Y-%m-%d")
             week_ago_str = week_ago.strftime("%Y-%m-%d")
-            
-            data = {
-                "messages": [{"role": "user", "content": f"Find specific MedTech news articles about: {query}. For each article, provide the exact URL to the full article, not just the website homepage."}],
-                "model": "grok-4-latest",
-                "stream": False,
-                "search_parameters": {
-                    "mode": "on",
-                    "from_date": week_ago_str,
-                    "to_date": current_date_str,
-                    "sources": [
-                        {"type": "web"},
-                        {"type": "news"}
-                    ],
-                    "return_citations": True
-                }
-            }
-            response = requests.post(API_ENDPOINT, headers=headers, json=data)
-            response.raise_for_status()
-            result = response.json()['choices'][0]['message']['content']
-            print(f"DEBUG: Grok live search query: {query}")
-            print(f"DEBUG: Date range: {week_ago_str} to {current_date_str}")
-            print(f"DEBUG: Grok search result length: {len(result)}")
-            print(f"DEBUG: Grok search result preview: {result[:200]}...")
-            return result
+            current_date_str = current_date.strftime("%Y-%m-%d")
+            user_prompt = (
+                f"Find specific MedTech news articles about: {query}. "
+                f"Prefer articles from {week_ago_str} to {current_date_str}. "
+                "For each article, provide the exact URL to the full article, not just the website homepage."
+            )
+            result = grok_web_search(user_prompt, model="grok-4-1-fast")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Grok live search query: %s; result length: %s", query, len(result or ""))
+            return result or None
         except Exception as e:
-            print(f"Error performing Grok search: {e}")
+            logger.exception("Error performing Grok search: %s", e)
             return None
 
     def hybrid_wrapper(self, messages, session_id, needs_search=False):
@@ -250,6 +234,10 @@ class ResponseHandler:
                     grok_response = self.hybrid_wrapper(news_prompt, session_id)
                     return grok_response
                 else:
+                    from core.grok_client import grok_available
+                    ok, msg = grok_available()
+                    if not ok:
+                        return f"News (Grok) unavailable: {msg}"
                     return "Unable to fetch current news. Please try again."
             grok_response = self.hybrid_wrapper(conversation_history, session_id)
             print(f"DEBUG: hybrid_wrapper returned: {grok_response[:200] if grok_response else 'None'}...")

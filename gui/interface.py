@@ -135,6 +135,8 @@ from gui.compliance_tab import ComplianceTab, ComplianceThread
 from gui.meetings_tab import MeetingsTab
 from gui.leads_tab import LeadsTab
 from gui.workspace_tab import WorkspaceTab
+from gui.projects_tab import ProjectsTab
+from gui.chief_of_staff_tab import ChiefOfStaffTab
 from gui.utils import *
 
 logger = logging.getLogger(__name__)
@@ -156,8 +158,8 @@ class EnhancedSplashScreen(QSplashScreen):
         super().__init__(pixmap)
         self.setStyleSheet("""
             QSplashScreen {
-                background-color: rgb(27, 28, 30);
-                color: white;
+                background-color: transparent;
+                color: #e8eaed;
                 font-size: 12px;
             }
         """)
@@ -170,14 +172,14 @@ class EnhancedSplashScreen(QSplashScreen):
         self.progress_bar.setGeometry(progress_x, pixmap.height() - 80, progress_width, 20)
         self.progress_bar.setStyleSheet("""
             QProgressBar {
-                border: 2px solid rgba(253, 98, 98, 0.8);
+                border: 2px solid #2e2f32;
                 border-radius: 5px;
                 text-align: center;
-                background-color: rgba(27, 28, 30, 0.8);
-                color: white;
+                background-color: #1c1e24;
+                color: #e8eaed;
             }
             QProgressBar::chunk {
-                background-color: rgba(253, 98, 98, 0.8);
+                background-color: #FD6262;
                 border-radius: 3px;
             }
         """)
@@ -192,7 +194,7 @@ class EnhancedSplashScreen(QSplashScreen):
         self.status_label.setGeometry(label_x, pixmap.height() - 50, label_width, 30)
         self.status_label.setStyleSheet("""
             QLabel {
-                color: white;
+                color: #e8eaed;
                 font-size: 10px;
                 background-color: transparent;
             }
@@ -205,9 +207,9 @@ class EnhancedSplashScreen(QSplashScreen):
         self.log_display.setGeometry(50, 50, pixmap.width() - 100, pixmap.height() - 150)
         self.log_display.setStyleSheet("""
             QTextBrowser {
-                background-color: rgba(27, 28, 30, 0.9);
-                color: white;
-                border: 1px solid rgba(253, 98, 98, 0.5);
+                background-color: rgba(28, 30, 36, 0.75);
+                color: #e8eaed;
+                border: 1px solid rgba(46, 47, 50, 0.6);
                 border-radius: 5px;
                 font-size: 9px;
             }
@@ -352,9 +354,9 @@ class ChatWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)  # Changed to horizontal layout
 
-        # Left side - Chat Panel
-        chat_panel = QWidget()
-        chat_layout = QVBoxLayout(chat_panel)
+        # Left side - Chat Panel (hidden when Chief of Staff tab is active)
+        self.chat_panel = QWidget()
+        chat_layout = QVBoxLayout(self.chat_panel)
         chat_layout.setContentsMargins(5, 5, 5, 5)
         chat_layout.setSpacing(0)
 
@@ -362,12 +364,12 @@ class ChatWindow(QMainWindow):
         chat_header = QLabel("Navi Chat")
         chat_header.setStyleSheet("""
             QLabel {
-                background-color: rgb(20, 20, 22);
-                color: white;
-                padding: 8px;
-                font-size: 12px;
-                font-weight: bold;
-                border-bottom: 1px solid #404040;
+                background-color: #15171c;
+                color: #e8eaed;
+                padding: 8px 12px;
+                font-size: 13px;
+                font-weight: 600;
+                border-bottom: 1px solid #2e2f32;
             }
         """)
         chat_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -399,11 +401,12 @@ class ChatWindow(QMainWindow):
         chat_layout.addSpacing(4)
         
         # Use proper stretch factors instead of fixed percentages
-        main_layout.addWidget(chat_panel, 1)  # Chat panel gets 1/4 of space
+        main_layout.addWidget(self.chat_panel, 1)  # Chat panel gets 1/4 of space
 
         # Right side - Tab Widget
         self.tab_widget = QTabWidget()
         main_layout.addWidget(self.tab_widget, 3)  # Tabs get 3/4 of space
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
         
         setup_shortcuts(self)
         setup_status_bar(self)
@@ -449,6 +452,9 @@ class ChatWindow(QMainWindow):
         self.workspace_tab = WorkspaceTab(self.db, self.chat_handler)
         self.tab_widget.addTab(self.workspace_tab, "Workspace")
         
+        self.projects_tab = ProjectsTab(self.db)
+        self.tab_widget.addTab(self.projects_tab, "Projects")
+        
         self.compliance_tab = ComplianceTab(self.db, self.chat_handler, [])
         self.tab_widget.addTab(self.compliance_tab, "Compliance")
         
@@ -460,6 +466,19 @@ class ChatWindow(QMainWindow):
         
         self.notes_tab = NoteTakingSystem(self.chat_handler)
         self.tab_widget.addTab(self.notes_tab, "Notes")
+        
+        self.chief_of_staff_tab = ChiefOfStaffTab(self.db)
+        self.tab_widget.addTab(self.chief_of_staff_tab, "Chief of Staff")
+        self._on_tab_changed(self.tab_widget.currentIndex())  # Apply visibility for initial tab
+
+    def _on_tab_changed(self, index):
+        """Hide Navi chat panel when Chief of Staff tab is active; show it for other tabs."""
+        tab_name = self.tab_widget.tabText(index) if index >= 0 else ""
+        if tab_name == "Chief of Staff":
+            self.chat_panel.hide()
+            self.tab_widget.setStyleSheet("")  # ensure tab widget can expand
+        else:
+            self.chat_panel.show()
 
     def sendMessage(self):
         message = self.chat_input.text().strip()
@@ -485,6 +504,8 @@ class ChatWindow(QMainWindow):
             self.chat_display.append(f"<b>{sender}:</b> {message}<br>")
 
     def closeEvent(self, event):
+        if hasattr(self, "projects_tab") and hasattr(self.projects_tab, "save_state"):
+            self.projects_tab.save_state()
         self.db.close()
         super().closeEvent(event)
 
@@ -557,8 +578,8 @@ class ChatWindow(QMainWindow):
             events = data_fetcher.get_calendar_events(time_min, time_max)
             
             if events:
-                schedule_html = "<div style='font-family: Arial; color: white;'>"
-                schedule_html += "<h3 style='color: #fd6262;'>Today's Events</h3><ul style='list-style-type: none; padding: 0;'>"
+                schedule_html = "<div style='font-family: Segoe UI, Arial, sans-serif; color: #e8eaed;'>"
+                schedule_html += "<h3 style='color: #6b8cae; margin-bottom: 8px;'>Today's Events</h3><ul style='list-style-type: none; padding: 0;'>"
                 for event in events:
                     start = event['start'].get('dateTime', event['start'].get('date'))
                     if isinstance(start, str):
@@ -578,10 +599,10 @@ class ChatWindow(QMainWindow):
                 schedule_html += "</div>"
                 print(f"Schedule loaded: {len(events)} events")
             else:
-                schedule_html = "<div style='color: white;'>No events scheduled for today</div>"
+                schedule_html = "<div style='color: #e8eaed;'>No events scheduled for today</div>"
                 print("No events found")
         except Exception as e:
-            schedule_html = f"<div style='color: white;'>Error loading schedule: {str(e)}</div>"
+            schedule_html = f"<div style='color: #e8eaed;'>Error loading schedule: {str(e)}</div>"
             print(f"Error loading schedule: {str(e)}")
 
     def process_and_store_news(self, news_results):
@@ -625,27 +646,27 @@ class ChatWindow(QMainWindow):
             recent_news = self.db.get_recent_news(days=7)
             
             if recent_news:
-                news_text = "<div style='color: white; font-family: Arial, sans-serif;'>"
-                news_text += "<h3 style='color: #fd6262; margin-bottom: 15px;'>Latest News</h3>"
+                news_text = "<div style='color: #e8eaed; font-family: Segoe UI, Arial, sans-serif;'>"
+                news_text += "<h3 style='color: #6b8cae; margin-bottom: 15px;'>Latest News</h3>"
                 
                 for title, content, url, source, published_date, created_at in recent_news:
-                    news_text += "<div style='margin-bottom: 20px; padding: 10px; background-color: rgba(253, 98, 98, 0.1); border-radius: 5px;'>"
-                    news_text += f"<h4 style='color: #fd6262; margin: 0 0 8px 0;'>{title}</h4>"
+                    news_text += "<div style='margin-bottom: 20px; padding: 12px; background-color: #22252c; border: 1px solid #2e2f32; border-radius: 6px;'>"
+                    news_text += f"<h4 style='color: #e8eaed; margin: 0 0 8px 0; font-size: 13px;'>{title}</h4>"
                     if content:
-                        news_text += f"<p style='margin: 0 0 8px 0; line-height: 1.4;'>{content}</p>"
+                        news_text += f"<p style='margin: 0 0 8px 0; line-height: 1.5; color: #9aa0a6;'>{content}</p>"
                     if url:
-                        news_text += f'<p style="margin: 0 0 5px 0;"><a href="{url}" style="color: #4fc3f7; text-decoration: underline;">🔗 Read full article</a></p>'
+                        news_text += f'<p style="margin: 0 0 5px 0;"><a href="{url}" style="color: #6b8cae; text-decoration: underline;">🔗 Read full article</a></p>'
                     if published_date:
-                        news_text += f"<small style='color: #888;'>Published: {published_date}</small>"
+                        news_text += f"<small style='color: #5f6368;'>Published: {published_date}</small>"
                     news_text += "</div>"
                 
                 news_text += "</div>"
                 print(f"News displayed: {len(recent_news)} items")
             else:
-                news_text = "<div style='color: white;'>No recent news available</div>"
+                news_text = "<div style='color: #e8eaed;'>No recent news available</div>"
                 print("No news items found")
         except Exception as e:
-            news_text = f"<div style='color: white;'>Error displaying news: {str(e)}</div>"
+            news_text = f"<div style='color: #e8eaed;'>Error displaying news: {str(e)}</div>"
             print(f"Error displaying news: {str(e)}")
 
     def refresh_news_feed(self):

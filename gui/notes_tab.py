@@ -106,12 +106,12 @@ class NoteTakingSystem(QWidget):
         
         # Add context input field
         context_label = QLabel("Context (what you're working on):")
-        context_label.setStyleSheet("color: white; font-weight: bold;")
+        context_label.setStyleSheet("color: #e8eaed; font-weight: 600; font-size: 13px;")
         chat_layout.addWidget(context_label)
         
         self.context_input = QLineEdit()
         self.context_input.setPlaceholderText("Enter context (e.g., 'Working on FDA protocol review')")
-        self.context_input.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.5); padding: 5px;")
+        self.context_input.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; padding: 8px 12px; border-radius: 6px;")
         self.context_input.returnPressed.connect(self.update_context)
         chat_layout.addWidget(self.context_input)
         
@@ -142,12 +142,12 @@ class NoteTakingSystem(QWidget):
         notes_layout = QVBoxLayout(notes_widget)
         self.notes_display = QTextEdit()
         self.notes_display.setReadOnly(True)
-        self.notes_display.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white;")
+        self.notes_display.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 6px;")
         notes_layout.addWidget(self.notes_display)
         
         # Buttons
         export_btn = QPushButton("Export Notes")
-        export_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white;")
+        export_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 500;")
         export_btn.clicked.connect(self.export_notes)
         notes_layout.addWidget(export_btn)
         

@@ -5,15 +5,15 @@ Test script to verify centralized path configuration.
 import os
 import sys
 
-# Add the project root to Python path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add the project root to Python path (script lives in tests/)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(_script_dir)
+sys.path.insert(0, PROJECT_ROOT)
 
-# Test path calculation directly (without importing config to avoid env var issues)
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(PROJECT_ROOT, "config")
 LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
 DATABASE_PATH = os.path.join(PROJECT_ROOT, "naviSsurance_index.db")
-ENV_FILE = os.path.join(PROJECT_ROOT, ".env")
+ENV_FILE = os.path.join(CONFIG_DIR, ".env")
 
 def test_centralized_paths():
     """Test that all centralized paths are correctly configured."""
@@ -68,10 +68,10 @@ def test_centralized_paths():
     print(f"DATABASE_PATH relative to PROJECT_ROOT: {db_relative}")
     print(f"  Correct: {db_relative == 'naviSsurance_index.db'}")
     
-    # Verify ENV_FILE is in PROJECT_ROOT
+    # Verify ENV_FILE is in config folder
     env_relative = os.path.relpath(ENV_FILE, PROJECT_ROOT)
     print(f"ENV_FILE relative to PROJECT_ROOT: {env_relative}")
-    print(f"  Correct: {env_relative == '.env'}")
+    print(f"  Correct: {env_relative == os.path.join('config', '.env')}")
     print()
     
     # Test path consistency

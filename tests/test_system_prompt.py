@@ -104,5 +104,3 @@ if __name__ == "__main__":
     test_prompt_length_and_structure()
     
     print("All tests completed!")
-
-

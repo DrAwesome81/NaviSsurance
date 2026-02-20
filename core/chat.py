@@ -1,6 +1,7 @@
 from PyQt6.QtCore import QObject, pyqtSignal
 from core.chat_handler import ChatHandler
 from core.response_handler import ResponseHandler
+from datetime import datetime, timezone
 
 class ChatManager(QObject):  # Inherit QObject for signals
     task_added_signal = pyqtSignal(str, str)  # Define the signal here
@@ -22,8 +23,28 @@ class ChatManager(QObject):  # Inherit QObject for signals
         self.chat_handler.task_added_callback = self.task_added_signal.emit
 
     def start_briefing(self):
-        # Daily briefing disabled - only runs when explicitly requested
-        pass
+        """Generate daily briefing if it hasn't been shown today."""
+        try:
+            last_run_timestamp = self.db.get_last_run()
+            
+            # Check if briefing was already generated today
+            if last_run_timestamp:
+                last_run_date = datetime.fromtimestamp(last_run_timestamp, tz=timezone.utc).date()
+                today = datetime.now(timezone.utc).date()
+                
+                # If briefing was already generated today, return None
+                if last_run_date == today:
+                    return None
+            
+            # Generate new briefing
+            briefing = self.chat_handler.daily_briefing()
+            return briefing
+            
+        except Exception as e:
+            print(f"Error in start_briefing: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     def get_response(self, message, session_id, conversation_history):
         return self.response_handler.get_response(message, session_id, conversation_history)

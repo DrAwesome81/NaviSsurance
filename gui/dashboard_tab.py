@@ -52,6 +52,49 @@ class NewsWorker(QThread):
             print(f"NewsWorker: Error loading news: {e}")
             self.error_occurred.emit(f"Error loading news: {str(e)}")
 
+
+class BriefingWorker(QThread):
+    """Worker thread for loading daily briefing without blocking the UI."""
+    briefing_loaded = pyqtSignal(str, object)  # Emits (briefing_text, chat_handler_obj)
+    error_occurred = pyqtSignal(str)
+    
+    def __init__(self, chat_handler):
+        super().__init__()
+        self.chat_handler = chat_handler
+    
+    def run(self):
+        try:
+            print(f"BriefingWorker: Loading briefing... chat_handler type: {type(self.chat_handler)}")
+            
+            # Get briefing from chat_handler - handle both ChatManager and ChatHandler
+            briefing = None
+            chat_handler_obj = None
+            
+            if hasattr(self.chat_handler, 'start_briefing'):
+                # It's a ChatManager
+                briefing = self.chat_handler.start_briefing()
+                chat_handler_obj = self.chat_handler.chat_handler if hasattr(self.chat_handler, 'chat_handler') else None
+            elif hasattr(self.chat_handler, 'chat_handler') and hasattr(self.chat_handler.chat_handler, 'start_briefing'):
+                # Nested ChatManager
+                briefing = self.chat_handler.chat_handler.start_briefing()
+                chat_handler_obj = self.chat_handler.chat_handler.chat_handler if hasattr(self.chat_handler.chat_handler, 'chat_handler') else None
+            elif hasattr(self.chat_handler, 'daily_briefing'):
+                # It's a ChatHandler directly
+                chat_handler_obj = self.chat_handler
+                briefing = self.chat_handler.daily_briefing()
+            
+            if briefing:
+                print(f"BriefingWorker: Got briefing ({len(briefing)} chars)")
+                self.briefing_loaded.emit(briefing, chat_handler_obj)
+            else:
+                self.error_occurred.emit("Briefing already shown today or not available")
+                
+        except Exception as e:
+            print(f"BriefingWorker: Error loading briefing: {e}")
+            import traceback
+            traceback.print_exc()
+            self.error_occurred.emit(f"Error loading briefing: {str(e)}")
+
 import re
 
 class DashboardTab(QWidget):
@@ -82,7 +125,7 @@ class DashboardTab(QWidget):
         filter_layout.addWidget(self.category_filter)
 
         self.date_filter = QComboBox()
-        self.date_filter.addItems(["All", "Today", "Overdue", "No Date"])
+        self.date_filter.addItems(["All", "Today", "Overdue", "No Date", "Specific Date"])
         self.date_filter.currentTextChanged.connect(self.load_tasks_filtered)
         filter_layout.addWidget(QLabel("Due Date:"))
         filter_layout.addWidget(self.date_filter)
@@ -167,7 +210,7 @@ class DashboardTab(QWidget):
         try:
             # Create task widget with checkbox and label
             task_widget = QWidget()
-            task_widget.setStyleSheet("QWidget { background-color: white; }")
+            task_widget.setStyleSheet("QWidget { background-color: transparent; }")
             task_layout = QHBoxLayout(task_widget)
             task_layout.setContentsMargins(5, 5, 5, 5)
             task_layout.setSpacing(8)
@@ -177,21 +220,21 @@ class DashboardTab(QWidget):
             checkbox.setChecked(completed)
             checkbox.setStyleSheet("""
                 QCheckBox {
-                    background-color: white;
-                    color: black;
-                    font-weight: bold;
+                    background-color: transparent;
+                    color: #e8eaed;
+                    font-weight: 500;
                     padding: 2px;
                 }
                 QCheckBox::indicator {
                     width: 16px;
                     height: 16px;
-                    background-color: white;
-                    border: 2px solid #666;
+                    background-color: #22252c;
+                    border: 1px solid #2e2f32;
                     border-radius: 3px;
                 }
                 QCheckBox::indicator:checked {
-                    background-color: #333;
-                    border: 2px solid #333;
+                    background-color: #FD6262;
+                    border: 1px solid #FD6262;
                 }
             """)
             checkbox.stateChanged.connect(lambda state, tid=task_id: self.update_task_status(tid, state == Qt.CheckState.Checked.value))
@@ -202,12 +245,12 @@ class DashboardTab(QWidget):
             task_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             task_label.setStyleSheet("""
                 QLabel {
-                    color: black;
-                    font-size: 12px;
+                    color: #e8eaed;
+                    font-size: 13px;
                     padding-left: 5px;
                     text-align: left;
                     margin: 0px;
-                    background-color: white;
+                    background-color: transparent;
                     font-weight: normal;
                 }
             """)
@@ -230,7 +273,7 @@ class DashboardTab(QWidget):
 
             # Actions widget (column 3)
             actions_widget = QWidget()
-            actions_widget.setStyleSheet("QWidget { background-color: white; }")
+            actions_widget.setStyleSheet("QWidget { background-color: transparent; }")
             actions_layout = QHBoxLayout(actions_widget)
             actions_layout.setContentsMargins(0, 0, 0, 0)
             actions_layout.setSpacing(5)
@@ -242,18 +285,18 @@ class DashboardTab(QWidget):
             edit_btn.setMaximumSize(80, 45)
             edit_btn.setStyleSheet("""
                 QPushButton {
-                    background-color: black;
+                    background-color: #FD6262;
                     color: white;
                     border: none;
-                    border-radius: 3px;
-                    padding: 8px 12px;
-                    font-weight: bold;
-                    font-size: 11px;
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                    font-weight: 500;
+                    font-size: 12px;
                     margin: 2px;
                     min-width: 60px;
                 }
                 QPushButton:hover {
-                    background-color: rgba(253, 98, 98, 1.0);
+                    background-color: #e85555;
                 }
             """)
             edit_btn.clicked.connect(lambda checked, r=row_position, tid=task_id: self.edit_task(r, tid))
@@ -266,18 +309,18 @@ class DashboardTab(QWidget):
             delete_btn.setMaximumSize(90, 45)
             delete_btn.setStyleSheet("""
                 QPushButton {
-                    background-color: black;
-                    color: white;
-                    border: none;
-                    border-radius: 3px;
-                    padding: 8px 12px;
-                    font-weight: bold;
-                    font-size: 11px;
+                    background-color: #3a3b3e;
+                    color: #e8eaed;
+                    border: 1px solid #2e2f32;
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                    font-weight: 500;
+                    font-size: 12px;
                     margin: 2px;
                     min-width: 60px;
                 }
                 QPushButton:hover {
-                    background-color: rgba(253, 98, 98, 1.0);
+                    background-color: #4a4a4e;
                 }
             """)
             delete_btn.clicked.connect(lambda checked, r=row_position, tid=task_id: self.delete_task(r, tid))
@@ -354,11 +397,11 @@ class DashboardTab(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to add task: {str(e)}")
 
     def setup_ui(self):
-        # Set the overall dark theme for the dashboard
+        # Set the overall dark theme for the dashboard (professional palette)
         self.setStyleSheet("""
             QWidget {
-                background-color: rgb(27, 28, 30);
-                color: white;
+                background-color: #15171c;
+                color: #e8eaed;
             }
         """)
         
@@ -368,9 +411,13 @@ class DashboardTab(QWidget):
         
         # Header
         dashboard_header = QLabel("Dashboard - Overview")
-        dashboard_header.setStyleSheet("color: white; font-weight: bold; font-size: 16px; padding: 10px; background-color: transparent; border: none;")
+        dashboard_header.setStyleSheet("color: #e8eaed; font-weight: 600; font-size: 16px; padding: 10px; background-color: transparent; border: none;")
         dashboard_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(dashboard_header)
+        
+        # Daily Briefing Widget (top of dashboard)
+        briefing_widget = self.create_briefing_widget()
+        layout.addWidget(briefing_widget)
         
         # Main horizontal layout for left and right columns
         main_layout = QHBoxLayout()
@@ -402,7 +449,7 @@ class DashboardTab(QWidget):
         refresh_layout.addStretch()
         
         refresh_news_btn = QPushButton("Refresh News")
-        refresh_news_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white; border: none; padding: 8px 15px; border-radius: 3px;")
+        refresh_news_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 500;")
         refresh_news_btn.clicked.connect(self.refresh_news_feed)
         refresh_layout.addWidget(refresh_news_btn)
         
@@ -416,6 +463,15 @@ class DashboardTab(QWidget):
         # Initial loads
         self.load_schedule()
         self.load_news()
+        # Load daily briefing if available (with delay to let other components initialize)
+        try:
+            from config import BRIEFING_AND_EMAIL_DISABLED
+        except ImportError:
+            BRIEFING_AND_EMAIL_DISABLED = False
+        if not BRIEFING_AND_EMAIL_DISABLED:
+            QTimer.singleShot(2000, self.load_daily_briefing)
+        else:
+            QTimer.singleShot(500, self._show_briefing_disabled)
 
     def create_task_widget(self):
         widget = QWidget()
@@ -424,7 +480,7 @@ class DashboardTab(QWidget):
         
         # Header
         task_header = QLabel("Task List")
-        task_header.setStyleSheet("color: white; font-weight: bold; padding: 3px; background-color: transparent; border: none; font-size: 11px;")
+        task_header.setStyleSheet("color: #e8eaed; font-weight: 600; padding: 3px; background-color: transparent; border: none; font-size: 13px;")
         task_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         task_header.setMaximumHeight(25)
         layout.addWidget(task_header)
@@ -436,27 +492,27 @@ class DashboardTab(QWidget):
         self.task_list.setAlternatingRowColors(False)  # We'll handle colors manually
         self.task_list.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.task_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        # Clean, simple white table styling
+        # Professional dark table styling
         self.task_list.setStyleSheet("""
             QTableWidget {
-                background-color: white;
-                color: black;
-                gridline-color: #ddd;
+                background-color: #1c1e24;
+                color: #e8eaed;
+                gridline-color: #2e2f32;
             }
             QHeaderView::section {
-                background-color: #f0f0f0;
-                color: black;
+                background-color: #22252c;
+                color: #e8eaed;
                 padding: 8px;
-                border: 1px solid #ccc;
-                font-weight: bold;
+                border: 1px solid #2e2f32;
+                font-weight: 600;
                 font-size: 13px;
                 min-height: 30px;
             }
             QTableWidget::item {
                 padding: 8px;
                 border: none;
-                color: black;
-                background-color: white;
+                color: #e8eaed;
+                background-color: transparent;
             }
         """)
         
@@ -500,7 +556,7 @@ class DashboardTab(QWidget):
         add_layout = QHBoxLayout()
         self.taskInput = QLineEdit()
         self.taskInput.setPlaceholderText("Quick task...")
-        self.taskInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.5); padding: 3px; border-radius: 3px;")
+        self.taskInput.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; padding: 8px 12px; border-radius: 6px;")
         self.taskInput.returnPressed.connect(self.add_task)
         add_layout.addWidget(self.taskInput)
         
@@ -508,32 +564,33 @@ class DashboardTab(QWidget):
         self.dueDateInput = QDateEdit()
         self.dueDateInput.setCalendarPopup(True)
         self.dueDateInput.setDate(QDate.currentDate())
-        self.dueDateInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.5); padding: 3px; border-radius: 3px;")
+        self.dueDateInput.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; padding: 8px; border-radius: 6px;")
         add_layout.addWidget(self.dueDateInput)
 
         # Add category input
         self.categoryInput = QComboBox()
         self.categoryInput.addItems(["Business", "Personal"])
-        self.categoryInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.5); padding: 3px; border-radius: 3px;")
+        self.categoryInput.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; padding: 8px; border-radius: 6px;")
         add_layout.addWidget(self.categoryInput)
 
         # Add recurrence input
         self.recurrenceInput = QComboBox()
         self.recurrenceInput.addItems(["None", "Daily", "Weekly"])
-        self.recurrenceInput.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.5); padding: 3px; border-radius: 3px;")
+        self.recurrenceInput.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; padding: 8px; border-radius: 6px;")
         add_layout.addWidget(self.recurrenceInput)
         
         add_btn = QPushButton("Add")
         add_btn.setStyleSheet("""
             QPushButton {
-                background-color: rgba(253, 98, 98, 0.8);
+                background-color: #FD6262;
                 color: white;
                 border: none;
-                padding: 5px 10px;
-                border-radius: 3px;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-weight: 500;
             }
             QPushButton:hover {
-                background-color: rgba(253, 98, 98, 1.0);
+                background-color: #e85555;
             }
         """)
         add_btn.clicked.connect(self.add_task)
@@ -545,14 +602,15 @@ class DashboardTab(QWidget):
         archive_btn = QPushButton("Archive Completed Tasks")
         archive_btn.setStyleSheet("""
             QPushButton {
-                background-color: rgba(253, 98, 98, 0.8);
+                background-color: #FD6262;
                 color: white;
                 border: none;
-                padding: 8px 15px;
-                border-radius: 3px;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-weight: 500;
             }
             QPushButton:hover {
-                background-color: rgba(253, 98, 98, 1.0);
+                background-color: #e85555;
             }
         """)
         archive_btn.clicked.connect(self.archive_completed_tasks)
@@ -585,46 +643,47 @@ class DashboardTab(QWidget):
             edit_dialog.setModal(True)
             edit_dialog.setStyleSheet("""
                 QDialog {
-                    background-color: rgb(27, 28, 30);
-                    color: white;
+                    background-color: #15171c;
+                    color: #e8eaed;
                 }
                 QLabel {
-                    color: white;
-                    font-weight: bold;
+                    color: #e8eaed;
+                    font-weight: 600;
                 }
                 QLineEdit {
-                    background-color: rgba(27, 28, 30, 0.8);
-                    color: white;
-                    border: 1px solid rgba(253, 98, 98, 0.5);
+                    background-color: #22252c;
+                    color: #e8eaed;
+                    border: 1px solid #2e2f32;
                     padding: 8px;
-                    border-radius: 3px;
-                    font-size: 12px;
+                    border-radius: 6px;
+                    font-size: 13px;
                 }
-                            QDateEdit {
-                background-color: rgba(27, 28, 30, 0.8);
-                color: white;
-                border: 1px solid rgba(253, 98, 98, 0.5);
-                padding: 8px;
-                border-radius: 3px;
-                font-size: 12px;
-                min-height: 30px;
-            }
+                QDateEdit {
+                    background-color: #22252c;
+                    color: #e8eaed;
+                    border: 1px solid #2e2f32;
+                    padding: 8px;
+                    border-radius: 6px;
+                    font-size: 13px;
+                    min-height: 30px;
+                }
                 QPushButton {
-                    background-color: rgba(253, 98, 98, 0.8);
+                    background-color: #FD6262;
                     color: white;
                     border: none;
                     padding: 8px 16px;
-                    border-radius: 3px;
-                    font-size: 12px;
+                    border-radius: 6px;
+                    font-size: 13px;
+                    font-weight: 500;
                 }
                 QPushButton:hover {
-                    background-color: rgba(253, 98, 98, 1.0);
+                    background-color: #e85555;
                 }
                 QPushButton#cancelButton {
-                    background-color: rgba(100, 100, 100, 0.8);
+                    background-color: #3a3b3e;
                 }
                 QPushButton#cancelButton:hover {
-                    background-color: rgba(100, 100, 100, 1.0);
+                    background-color: #4a4a4e;
                 }
             """)
             
@@ -772,7 +831,8 @@ class DashboardTab(QWidget):
         if not task_data:
             return
         
-        # Create context menu
+        # Get row index (item may be in any column)
+        row = item.row()
         from PyQt6.QtWidgets import QMenu
         from PyQt6.QtGui import QAction
         
@@ -780,12 +840,12 @@ class DashboardTab(QWidget):
         
         # Edit action
         edit_action = QAction("Edit Task", self)
-        edit_action.triggered.connect(lambda: self.edit_task(item, 0))
+        edit_action.triggered.connect(lambda: self.edit_task(row, 0))
         context_menu.addAction(edit_action)
         
         # Delete action
         delete_action = QAction("Delete Task", self)
-        delete_action.triggered.connect(lambda: self.delete_task(item, 0))
+        delete_action.triggered.connect(lambda: self.delete_task(row, 0))
         context_menu.addAction(delete_action)
         
         # Show menu
@@ -861,6 +921,35 @@ class DashboardTab(QWidget):
                 conn.commit()
             self.load_tasks_filtered()
 
+    def create_briefing_widget(self):
+        """Create the daily briefing widget."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Header with refresh button
+        header_layout = QHBoxLayout()
+        briefing_header = QLabel("Daily Briefing")
+        briefing_header.setStyleSheet("color: #e8eaed; font-weight: 600; padding: 3px; background-color: transparent; border: none; font-size: 13px;")
+        header_layout.addWidget(briefing_header)
+        header_layout.addStretch()
+        
+        refresh_briefing_btn = QPushButton("Refresh")
+        refresh_briefing_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;")
+        refresh_briefing_btn.clicked.connect(self.refresh_daily_briefing)
+        header_layout.addWidget(refresh_briefing_btn)
+        layout.addLayout(header_layout)
+        
+        # Briefing display
+        self.briefing_display = QTextBrowser()
+        self.briefing_display.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 6px; font-size: 13px;")
+        self.briefing_display.setReadOnly(True)
+        self.briefing_display.setPlaceholderText("Loading daily briefing...")
+        self.briefing_display.setOpenExternalLinks(True)
+        layout.addWidget(self.briefing_display)
+        
+        return widget
+
     def create_schedule_widget(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -868,14 +957,14 @@ class DashboardTab(QWidget):
         
         # Header
         schedule_header = QLabel("Today's Schedule")
-        schedule_header.setStyleSheet("color: white; font-weight: bold; padding: 3px; background-color: transparent; border: none; font-size: 11px;")
+        schedule_header.setStyleSheet("color: #e8eaed; font-weight: 600; padding: 3px; background-color: transparent; border: none; font-size: 13px;")
         schedule_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         schedule_header.setMaximumHeight(25)
         layout.addWidget(schedule_header)
         
         # Schedule display
         self.schedule_display = QTextBrowser()
-        self.schedule_display.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.3); border-radius: 3px;")
+        self.schedule_display.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 6px;")
         self.schedule_display.setReadOnly(True)
         self.schedule_display.setPlaceholderText("Loading schedule...")
         layout.addWidget(self.schedule_display)
@@ -889,14 +978,14 @@ class DashboardTab(QWidget):
         
         # Header
         news_header = QLabel("News Feed")
-        news_header.setStyleSheet("color: white; font-weight: bold; padding: 3px; background-color: transparent; border: none; font-size: 11px;")
+        news_header.setStyleSheet("color: #e8eaed; font-weight: 600; padding: 3px; background-color: transparent; border: none; font-size: 13px;")
         news_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         news_header.setMaximumHeight(25)
         layout.addWidget(news_header)
         
         # News display
         self.news_display = QTextBrowser()
-        self.news_display.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.3); border-radius: 3px; font-size: 10px;")
+        self.news_display.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 6px; font-size: 13px;")
         self.news_display.setReadOnly(True)
         self.news_display.setPlaceholderText("Loading news...")
         self.news_display.setOpenExternalLinks(True)
@@ -960,7 +1049,7 @@ class DashboardTab(QWidget):
                             
                             # Create task widget with checkbox and text for first column
                             task_widget = QWidget()
-                            task_widget.setStyleSheet("QWidget { background-color: white; }")
+                            task_widget.setStyleSheet("QWidget { background-color: transparent; }")
                             task_layout = QHBoxLayout(task_widget)
                             task_layout.setContentsMargins(8, 0, 0, 0)
                             task_layout.setSpacing(8)
@@ -975,27 +1064,27 @@ class DashboardTab(QWidget):
                             print(f"TIMING: setChecked completed for row {row_position} at {time.time():.6f}")
                             checkbox.setStyleSheet("""
                                 QCheckBox {
-                                    color: black;
-                                                    background-color: white;
+                                    color: #e8eaed;
+                                    background-color: transparent;
                                 }
                                 QCheckBox::indicator {
                                     width: 16px;
                                     height: 16px;
-                                    background-color: white;
-                                    border: 2px solid #666;
-                                                border-radius: 3px;
-                                            }
+                                    background-color: #22252c;
+                                    border: 1px solid #2e2f32;
+                                    border-radius: 3px;
+                                }
                                 QCheckBox::indicator:checked {
-                                    background-color: rgba(253, 98, 98, 0.8);
-                                    border: 2px solid rgba(253, 98, 98, 1.0);
-                                        }
-                                    """)
+                                    background-color: #FD6262;
+                                    border: 1px solid #FD6262;
+                                }
+                            """)
                             checkbox.stateChanged.connect(lambda state, tid=task_id, r=row_position: self.update_task_status(tid, state == Qt.CheckState.Checked.value, r))
                             task_layout.addWidget(checkbox)
                             
                             # Add task text label
                             task_label = QLabel(f"   {task_text}")
-                            task_label.setStyleSheet("color: black; background-color: white; border: none;")
+                            task_label.setStyleSheet("color: #e8eaed; background-color: transparent; border: none; font-size: 13px;")
                             task_layout.addWidget(task_label)
                             task_layout.addStretch()
                             
@@ -1011,7 +1100,7 @@ class DashboardTab(QWidget):
                             # Create action buttons widget
                             print(f"DEBUG: Creating actions widget for row {row_position}")
                             actions_widget = QWidget()
-                            actions_widget.setStyleSheet("QWidget { background-color: white; }")
+                            actions_widget.setStyleSheet("QWidget { background-color: transparent; }")
                             actions_widget.setObjectName(f"actions_widget_row_{row_position}_task_{task_id}")
                             actions_layout = QHBoxLayout(actions_widget)
                             actions_layout.setContentsMargins(0, 0, 0, 0)  # Remove all margins
@@ -1025,18 +1114,15 @@ class DashboardTab(QWidget):
                             edit_btn.setMaximumSize(90, 45)
                             edit_btn.setStyleSheet("""
                                 QPushButton {
-                                    background-color: rgba(253, 98, 98, 0.8);
+                                    background-color: #FD6262;
                                     color: white;
                                     border: none;
-                                    border-radius: 3px;
-                                    font-size: 11px;
-                                    font-weight: bold;
+                                    border-radius: 6px;
+                                    font-size: 12px;
+                                    font-weight: 500;
                                 }
                                 QPushButton:hover {
-                                    background-color: rgba(253, 98, 98, 1.0);
-                                }
-                                QPushButton:pressed {
-                                    background-color: rgba(253, 98, 98, 0.6);
+                                    background-color: #e85555;
                                 }
                             """)
                             # Capture the row position by value to avoid lambda closure issues
@@ -1049,18 +1135,15 @@ class DashboardTab(QWidget):
                             delete_btn.setMaximumSize(110, 45)
                             delete_btn.setStyleSheet("""
                                 QPushButton {
-                                    background-color: rgba(253, 98, 98, 0.8);
-                                    color: white;
-                                    border: none;
-                                    border-radius: 3px;
-                                    font-size: 11px;
-                                    font-weight: bold;
+                                    background-color: #3a3b3e;
+                                    color: #e8eaed;
+                                    border: 1px solid #2e2f32;
+                                    border-radius: 6px;
+                                    font-size: 12px;
+                                    font-weight: 500;
                                 }
                                 QPushButton:hover {
-                                    background-color: rgba(253, 98, 98, 1.0);
-                                }
-                                QPushButton:pressed {
-                                    background-color: rgba(253, 98, 98, 0.6);
+                                    background-color: #4a4a4e;
                                 }
                             """)
                             # Capture the row position by value to avoid lambda closure issues
@@ -1264,8 +1347,8 @@ class DashboardTab(QWidget):
             events = data_fetcher.get_calendar_events(time_min, time_max)
             
             if events:
-                schedule_html = "<div style='font-family: Arial; color: white;'>"
-                schedule_html += "<h3 style='color: #fd6262;'>Today's Events</h3><ul style='list-style-type: none; padding: 0;'>"
+                schedule_html = "<div style='font-family: Segoe UI, Arial, sans-serif; color: #e8eaed;'>"
+                schedule_html += "<h3 style='color: #6b8cae; margin-bottom: 8px;'>Today's Events</h3><ul style='list-style-type: none; padding: 0;'>"
                 for event in events:
                     start = event['start'].get('dateTime', event['start'].get('date'))
                     if isinstance(start, str):
@@ -1285,9 +1368,9 @@ class DashboardTab(QWidget):
                 schedule_html += "</div>"
                 self.schedule_display.setHtml(schedule_html)
             else:
-                self.schedule_display.setHtml("<div style='color: white;'>No events scheduled for today</div>")
+                self.schedule_display.setHtml("<div style='color: #e8eaed;'>No events scheduled for today</div>")
         except Exception as e:
-            self.schedule_display.setHtml(f"<div style='color: white;'>Error loading schedule: {str(e)}</div>")
+            self.schedule_display.setHtml(f"<div style='color: #e8eaed;'>Error loading schedule: {str(e)}</div>")
 
     def load_news(self):
         try:
@@ -1320,7 +1403,7 @@ class DashboardTab(QWidget):
             self.db.update_last_news_update()
             
             # Show loading message
-            self.news_display.setHtml("<div style='color: white; text-align: center; padding: 20px;'>Loading latest news...</div>")
+            self.news_display.setHtml("<div style='color: #e8eaed; text-align: center; padding: 20px;'>Loading latest news...</div>")
             
             # Use QThread to make API call without blocking UI
             self.news_thread = NewsWorker(self.chat_handler)
@@ -1331,8 +1414,166 @@ class DashboardTab(QWidget):
         except Exception as e:
             print(f"Error starting news thread: {e}")
             if hasattr(self, 'news_display'):
-                self.news_display.setHtml(f"<div style='color: white;'>Error loading news: {str(e)}</div>")
+                self.news_display.setHtml(f"<div style='color: #e8eaed;'>Error loading news: {str(e)}</div>")
     
+    def _show_briefing_disabled(self):
+        """Show disabled message in briefing widget (when BRIEFING_AND_EMAIL_DISABLED is True)."""
+        try:
+            if hasattr(self, 'briefing_display'):
+                self.briefing_display.setHtml(
+                    "<div style='color: #9aa0a6; text-align: center; padding: 20px;'>Daily briefing and email checking are currently disabled.</div>"
+                )
+        except Exception as e:
+            print(f"Error showing briefing disabled: {e}")
+
+    def load_daily_briefing(self):
+        """Load and display daily briefing if it hasn't been shown today (runs in background thread)."""
+        try:
+            from config import BRIEFING_AND_EMAIL_DISABLED
+            if BRIEFING_AND_EMAIL_DISABLED:
+                self._show_briefing_disabled()
+                return
+            # Check if briefing widget exists
+            if not hasattr(self, 'briefing_display'):
+                print("Briefing widget not yet created, skipping load_daily_briefing")
+                return
+            
+            # Show loading message
+            self.briefing_display.setHtml("<div style='color: #e8eaed; text-align: center; padding: 20px;'>Loading daily briefing... (this may take a moment)</div>")
+            
+            # Use QThread to make briefing generation non-blocking
+            if not hasattr(self, 'briefing_thread') or not self.briefing_thread.isRunning():
+                self.briefing_thread = BriefingWorker(self.chat_handler)
+                self.briefing_thread.briefing_loaded.connect(self.on_briefing_loaded)
+                self.briefing_thread.error_occurred.connect(self.on_briefing_error)
+                self.briefing_thread.start()
+                
+        except Exception as e:
+            print(f"Error starting briefing thread: {e}")
+            import traceback
+            traceback.print_exc()
+            if hasattr(self, 'briefing_display'):
+                self.briefing_display.setHtml(f"<div style='color: #e8eaed;'>Error loading briefing: {str(e)}</div>")
+    
+    def on_briefing_loaded(self, briefing, chat_handler_obj):
+        """Called when briefing is loaded successfully in the worker thread."""
+        # Use thread-safe UI update
+        QTimer.singleShot(0, lambda: self._on_briefing_loaded_safe(briefing, chat_handler_obj))
+    
+    def _on_briefing_loaded_safe(self, briefing, chat_handler_obj):
+        """Thread-safe version of on_briefing_loaded."""
+        try:
+            if not hasattr(self, 'briefing_display'):
+                return
+            
+            # Format the briefing using response_handler
+            try:
+                from core.response_handler import ResponseHandler
+                response_handler = ResponseHandler(chat_handler_obj, None)
+                
+                # Format the briefing with LLM
+                formatted_briefing = response_handler.chat_with_llama([
+                    {"role": "user", "content": f"Turn this briefing into a snarky rundown: {briefing} Use <br><br> sections, punchy. The emails have already been intelligently filtered by AI - focus on presenting them well and suggesting actions for urgent items. MedTech focus. For any empty sections, generate appropriate snarky commentary instead of leaving them blank."}
+                ], "briefing_session")
+                
+                # Clean up formatting
+                formatted_briefing = re.sub(r'\n+', '\n', formatted_briefing)
+                formatted_briefing = re.sub(r'^#+\s*', '', formatted_briefing, flags=re.MULTILINE)
+                lines = formatted_briefing.split('\n')
+                formatted_lines = [line.strip() for line in lines if line.strip()]
+                formatted_briefing = '\n'.join(formatted_lines)
+                formatted_briefing = formatted_briefing.replace('\n\n', '<br><br>').replace('\n', '<br>')
+                formatted_briefing = re.sub(r'^<br><br>', '', formatted_briefing.strip())
+                
+                # Display formatted briefing
+                self.briefing_display.setHtml(f"<div style='color: #e8eaed; padding: 10px; line-height: 1.5;'>{formatted_briefing}</div>")
+            except Exception as e:
+                print(f"Error formatting briefing: {e}")
+                import traceback
+                traceback.print_exc()
+                # Fallback: display raw briefing
+                briefing_html = briefing.replace('\n', '<br>')
+                self.briefing_display.setHtml(f"<div style='color: #e8eaed; padding: 10px; line-height: 1.5;'>{briefing_html}</div>")
+        except Exception as e:
+            print(f"Error in briefing display: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def on_briefing_error(self, error_message):
+        """Called when briefing loading fails in the worker thread."""
+        # Use thread-safe UI update
+        QTimer.singleShot(0, lambda: self._on_briefing_error_safe(error_message))
+    
+    def _on_briefing_error_safe(self, error_message):
+        """Thread-safe version of on_briefing_error."""
+        try:
+            if not hasattr(self, 'briefing_display'):
+                return
+            
+            if "already shown today" in error_message:
+                self.briefing_display.setHtml("<div style='color: #e8eaed; text-align: center; padding: 20px;'>Daily briefing has already been shown today. Click 'Refresh' to generate a new one.</div>")
+            else:
+                self.briefing_display.setHtml(f"<div style='color: #e8eaed;'>Error loading briefing: {error_message}</div>")
+        except Exception as e:
+            print(f"Error displaying briefing error: {e}")
+
+    def refresh_daily_briefing(self):
+        """Force refresh the daily briefing (bypasses date check, runs in background thread)."""
+        try:
+            from config import BRIEFING_AND_EMAIL_DISABLED
+            if BRIEFING_AND_EMAIL_DISABLED:
+                self._show_briefing_disabled()
+                return
+            # Check if briefing widget exists
+            if not hasattr(self, 'briefing_display'):
+                return
+            
+            # Show loading message
+            self.briefing_display.setHtml("<div style='color: #e8eaed; text-align: center; padding: 20px;'>Generating new briefing... (this may take a moment)</div>")
+            
+            # Create a worker that forces new briefing (calls daily_briefing directly, not start_briefing)
+            if not hasattr(self, 'briefing_refresh_thread') or not self.briefing_refresh_thread.isRunning():
+                # Create a custom worker for forced refresh
+                class RefreshBriefingWorker(QThread):
+                    briefing_loaded = pyqtSignal(str, object)
+                    error_occurred = pyqtSignal(str)
+                    
+                    def __init__(self, chat_handler):
+                        super().__init__()
+                        self.chat_handler = chat_handler
+                    
+                    def run(self):
+                        try:
+                            briefing = None
+                            chat_handler_obj = None
+                            
+                            # Force new briefing by calling daily_briefing directly
+                            if hasattr(self.chat_handler, 'chat_handler') and hasattr(self.chat_handler.chat_handler, 'daily_briefing'):
+                                chat_handler_obj = self.chat_handler.chat_handler
+                                briefing = self.chat_handler.chat_handler.daily_briefing()
+                            elif hasattr(self.chat_handler, 'daily_briefing'):
+                                chat_handler_obj = self.chat_handler
+                                briefing = self.chat_handler.daily_briefing()
+                            
+                            if briefing:
+                                self.briefing_loaded.emit(briefing, chat_handler_obj)
+                            else:
+                                self.error_occurred.emit("Unable to generate briefing")
+                        except Exception as e:
+                            self.error_occurred.emit(f"Error: {str(e)}")
+                
+                self.briefing_refresh_thread = RefreshBriefingWorker(self.chat_handler)
+                self.briefing_refresh_thread.briefing_loaded.connect(self.on_briefing_loaded)
+                self.briefing_refresh_thread.error_occurred.connect(self.on_briefing_error)
+                self.briefing_refresh_thread.start()
+                
+        except Exception as e:
+            print(f"Error starting briefing refresh thread: {e}")
+            import traceback
+            traceback.print_exc()
+            if hasattr(self, 'briefing_display'):
+                self.briefing_display.setHtml(f"<div style='color: #e8eaed;'>Error loading briefing: {str(e)}</div>")
+
     def on_news_loaded(self, news_query):
         """Called when news is loaded successfully in the worker thread."""
         # Use thread-safe UI update
@@ -1352,7 +1593,7 @@ class DashboardTab(QWidget):
         except Exception as e:
             print(f"Error processing loaded news: {e}")
             if hasattr(self, 'news_display'):
-                self.news_display.setHtml(f"<div style='color: white;'>Error processing news: {str(e)}</div>")
+                self.news_display.setHtml(f"<div style='color: #e8eaed;'>Error processing news: {str(e)}</div>")
     
     def on_news_error(self, error_message):
         """Called when there's an error loading news in the worker thread."""
@@ -1366,15 +1607,15 @@ class DashboardTab(QWidget):
             # Check if it's a credit limit error
             if "credit" in error_message.lower() or "spending limit" in error_message.lower():
                 self.news_display.setHtml(
-                    "<div style='color: #ffcc00; text-align: center; padding: 20px;'>"
-                    "⚠️ Grok API credits exhausted<br>"
+                    "<div style='color: #e8eaed; text-align: center; padding: 20px;'>"
+                    "<span style='color: #d4a84b;'>⚠️ Grok API credits exhausted</span><br>"
                     "Please add credits to your xAI account to continue fetching news.<br>"
-                    "<small>Showing cached news below...</small></div>"
+                    "<small style='color: #9aa0a6;'>Showing cached news below...</small></div>"
                 )
                 # Still try to show cached news
                 self.display_stored_news()
             else:
-                self.news_display.setHtml(f"<div style='color: white;'>{error_message}</div>")
+                self.news_display.setHtml(f"<div style='color: #e8eaed;'>{error_message}</div>")
 
     def parse_published_date(self, date_str):
         """Parse published date string into datetime object."""
@@ -1700,24 +1941,24 @@ class DashboardTab(QWidget):
                 # Sort news items by published date (newest first)
                 display_news = self.sort_news_by_date(recent_news)
                 
-                news_text = "<div style='color: white; font-family: Arial, sans-serif;'>"
-                news_text += "<h3 style='color: #fd6262; margin-bottom: 15px;'>Latest News</h3>"
+                news_text = "<div style='color: #e8eaed; font-family: Segoe UI, Arial, sans-serif;'>"
+                news_text += "<h3 style='color: #6b8cae; margin-bottom: 15px;'>Latest News</h3>"
                 
                 for title, content, url, source, published_date, created_at in display_news:
-                    news_text += "<div style='margin-bottom: 15px; padding: 10px; background-color: rgba(253, 98, 98, 0.1); border-radius: 5px; border-left: 3px solid #fd6262;'>"
-                    news_text += f"<h4 style='color: #fd6262; margin: 0 0 8px 0; font-size: 12px; line-height: 1.3;'>{title}</h4>"
+                    news_text += "<div style='margin-bottom: 15px; padding: 12px; background-color: #22252c; border: 1px solid #2e2f32; border-radius: 6px;'>"
+                    news_text += f"<h4 style='color: #e8eaed; margin: 0 0 8px 0; font-size: 13px; line-height: 1.3;'>{title}</h4>"
                     if content:
                         # Truncate content if too long
                         display_content = content[:200] + "..." if len(content) > 200 else content
-                        news_text += f"<p style='margin: 0 0 8px 0; line-height: 1.4; font-size: 11px;'>{display_content}</p>"
+                        news_text += f"<p style='margin: 0 0 8px 0; line-height: 1.5; font-size: 12px; color: #9aa0a6;'>{display_content}</p>"
                     if url:
-                        news_text += f'<p style="margin: 0 0 5px 0;"><a href="{url}" style="color: #4fc3f7; text-decoration: underline; font-size: 10px;">🔗 Read full article</a></p>'
+                        news_text += f'<p style="margin: 0 0 5px 0;"><a href="{url}" style="color: #6b8cae; text-decoration: underline; font-size: 12px;">🔗 Read full article</a></p>'
                     if source:
-                        news_text += f"<small style='color: #888; font-size: 10px;'>Source: {source}</small>"
+                        news_text += f"<small style='color: #5f6368; font-size: 11px;'>Source: {source}</small>"
                     if published_date:
                         # Try to format the date better
                         formatted_date = self.format_display_date(published_date)
-                        news_text += f"<br><small style='color: #888; font-size: 10px;'>Published: {formatted_date}</small>"
+                        news_text += f"<br><small style='color: #5f6368; font-size: 11px;'>Published: {formatted_date}</small>"
                     news_text += "</div>"
                 
                 news_text += "</div>"

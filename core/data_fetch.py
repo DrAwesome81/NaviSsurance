@@ -37,9 +37,8 @@ class DataFetcher:
             'user': 'adamodeh81@yahoo.com',
             'pwd': os.getenv('YAHOO_APP_PASSWORD', '')
         }
-        # Outlook/Office365 accounts
-        env_path = Path('config') / '.env'
-        load_dotenv(env_path)
+        # Outlook/Office365 accounts (env loaded from config/.env)
+        load_dotenv(os.path.join(CONFIG_DIR, ".env"))
         self.outlook_accounts = [
             os.getenv('MSN_EMAIL_1'),
             os.getenv('MSN_EMAIL_2')
@@ -120,25 +119,83 @@ class DataFetcher:
 
     @secure_function_logger
     def get_mailbird_token(self, email):
-        """Get OAuth token from Mailbird's stored configuration for a specific email address"""
+        """Get OAuth token directly from Mailbird's Store database for a specific email address"""
         try:
-            if not self.mailbird_token_path.exists():
-                safe_log(logger, logging.WARNING, "No token file found. Please run read_mailbird_config.py first.")
+            import sqlite3
+            # Mailbird stores its database in LOCALAPPDATA
+            store_path = Path(os.environ.get('LOCALAPPDATA', '')) / 'Mailbird' / 'Store' / 'Store.db'
+            
+            if not store_path.exists():
+                safe_log(logger, logging.WARNING, f"Mailbird Store.db not found at {store_path}")
                 return None
-            with open(self.mailbird_token_path, 'r') as f:
-                tokens = json.load(f)
-            for token in tokens:
-                if str(token.get('email', '')).strip().lower() != email.strip().lower():
-                    continue
-                expires_at = datetime.fromisoformat(token['expires_at'].replace('Z', '+00:00'))
+            
+            conn = sqlite3.connect(str(store_path))
+            cursor = conn.cursor()
+            
+            # Get Microsoft OAuth credentials for the specific email, joining with Accounts to get the email
+            cursor.execute("""
+                SELECT 
+                    oauth.Id,
+                    oauth.AccessToken,
+                    oauth.AccessTokenExpiresAt_UTC,
+                    oauth.RefreshToken,
+                    oauth.ManagerScope,
+                    oauth.ProviderScope,
+                    acc.Username as Email
+                FROM OAuth2Credentials oauth
+                JOIN Accounts acc ON acc.OAuth2CredentialsId = oauth.Id
+                WHERE LOWER(acc.Username) = LOWER(?)
+            """, (email,))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if not row:
+                safe_log(logger, logging.WARNING, f"No Mailbird token found for email: {email}")
+                return None
+            
+            # Check if it's a Microsoft/Outlook token
+            provider_scope = row[5] or ''
+            if not any(x in provider_scope.lower() for x in ['outlook', 'office', 'microsoft']):
+                safe_log(logger, logging.WARNING, f"Token for {email} is not a Microsoft/Outlook token")
+                return None
+            
+            # Check if token is still valid
+            expires_at_str = row[2]  # AccessTokenExpiresAt_UTC
+            if expires_at_str:
+                try:
+                    # Parse the expires_at timestamp (it's stored as a timestamp, not ISO string)
+                    expires_at = datetime.fromtimestamp(float(expires_at_str) / 1000000.0, tz=timezone.utc)
+                except (ValueError, TypeError):
+                    # Try parsing as ISO string if timestamp parsing fails
+                    expires_at = datetime.fromisoformat(expires_at_str.replace('Z', '+00:00'))
+                
                 current_time = datetime.now(timezone.utc)
-                if expires_at > current_time:
-                    safe_log(logger, logging.INFO, f"Found valid token for email: {email}")
-                    return token
-            safe_log(logger, logging.WARNING, f"No valid token found for email: {email}")
+                if expires_at <= current_time:
+                    safe_log(logger, logging.WARNING, f"Token for {email} has expired (expired at {expires_at})")
+                    return None
+            
+            # Return token data in the expected format
+            token_data = {
+                'id': row[0],
+                'access_token': row[1],
+                'expires_at': expires_at_str,
+                'refresh_token': row[3],
+                'manager_scope': row[4],
+                'provider_scope': row[5],
+                'email': row[6]
+            }
+            
+            safe_log(logger, logging.INFO, f"Successfully retrieved valid Mailbird token for email: {email}")
+            return token_data
+            
+        except sqlite3.Error as e:
+            safe_log(logger, logging.ERROR, f"SQLite error getting Mailbird token for {email}: {e}")
             return None
         except Exception as e:
             safe_log(logger, logging.ERROR, f"Error getting Mailbird token for {email}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     @secure_function_logger
@@ -172,7 +229,8 @@ class DataFetcher:
             )
             end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(hours=hours)
-            messages = list(account.inbox.filter(datetime_received__gte=start_time).order_by('-datetime_received')[:10])
+            # Increase limit to 50 emails per account to match max_emails parameter
+            messages = list(account.inbox.filter(datetime_received__gte=start_time).order_by('-datetime_received')[:50])
             results = []
             for msg in messages:
                 results.append({
@@ -189,17 +247,43 @@ class DataFetcher:
             print(f"Error in fetch_recent_ews_emails for {email}: {e}")
             return []
 
-    def get_new_emails(self, last_run):
+    def get_new_emails(self, last_run, max_emails=50):
+        """
+        Get new emails since last_run.
+        
+        Args:
+            last_run: Timestamp of last run (should be limited to max 7 days ago by caller)
+            max_emails: Maximum number of emails to fetch (default 50 to avoid rate limits)
+        """
         emails = []
+        
+        # Ensure we don't fetch emails older than 7 days (safety check)
+        max_lookback_days = 7
+        max_lookback_timestamp = int((datetime.now(timezone.utc) - timedelta(days=max_lookback_days)).timestamp())
+        if last_run < max_lookback_timestamp:
+            last_run = max_lookback_timestamp
+        
         # Gmail
         folders = ['INBOX', 'News', 'NaviSure Admin']
+        emails_per_folder = max(1, max_emails // len(folders))  # Distribute limit across folders
+        
         for folder in folders:
-            query = f"after:{last_run}"
+            if len(emails) >= max_emails:
+                break
+                
+            # Gmail's 'after:' query accepts date in YYYY/MM/DD format
+            # Convert timestamp to date string for more reliable querying
+            lookback_date = datetime.fromtimestamp(last_run, tz=timezone.utc)
+            query = f"after:{lookback_date.strftime('%Y/%m/%d')}"
             if folder != 'INBOX':
                 query += f' label:"{folder}"'
             try:
-                results = self.gmail.users().messages().list(userId='me', q=query).execute()
-                emails.extend({'id': msg['id'], 'source': 'gmail', 'folder': folder} for msg in results.get('messages', []))
+                results = self.gmail.users().messages().list(
+                    userId='me', 
+                    q=query,
+                    maxResults=min(emails_per_folder, max_emails - len(emails))
+                ).execute()
+                emails.extend({'id': msg['id'], 'source': 'gmail', 'folder': folder} for msg in results.get('messages', [])[:emails_per_folder])
             except Exception as e:
                 continue
 
@@ -209,16 +293,20 @@ class DataFetcher:
             mail.login(self.yahoo_account['user'], self.yahoo_account['pwd'])
             mail.select('inbox')
             
-            # Use last 30 days instead of last_run if last_run is too old
-            search_date = datetime.now() - timedelta(days=30)
+            # Limit to last 7 days maximum for Yahoo
+            search_date = datetime.now() - timedelta(days=7)
             if last_run > 0:
-                last_run_date = datetime.fromtimestamp(last_run)
+                last_run_date = datetime.fromtimestamp(last_run, tz=timezone.utc).replace(tzinfo=None)
+                # Use the more recent of: last_run or 7 days ago
                 if last_run_date > search_date:
                     search_date = last_run_date
             
             since_date = search_date.strftime('%d-%b-%Y')
             _, data = mail.search(None, f'SINCE {since_date}')
-            for num in data[0].split():
+            # Limit Yahoo emails to avoid processing too many old emails
+            yahoo_limit = max_emails // 3  # Use 1/3 of limit for Yahoo
+            yahoo_email_nums = data[0].split()[:yahoo_limit] if data[0] else []
+            for num in yahoo_email_nums:
                 _, msg_data = mail.fetch(num, '(RFC822)')
                 emails.append({'id': num.decode(), 'source': 'yahoo', 'raw': msg_data[0][1], 'folder': 'INBOX'})
             mail.logout()
@@ -230,10 +318,22 @@ class DataFetcher:
             if not outlook_email:
                 continue
             try:
-                ews_emails = self.fetch_recent_ews_emails(outlook_email)
+                # Calculate hours from last_run to now (max 7 days = 168 hours)
+                if last_run > 0:
+                    hours_ago = (datetime.now(timezone.utc).timestamp() - last_run) / 3600
+                    hours_ago = min(hours_ago, 168)  # Cap at 7 days
+                else:
+                    hours_ago = 24  # Default to 24 hours if no last_run
+                
+                ews_emails = self.fetch_recent_ews_emails(outlook_email, hours=int(hours_ago))
+                if ews_emails:
+                    print(f"Fetched {len(ews_emails)} emails from {outlook_email}")
                 emails.extend(ews_emails)
             except Exception as e:
-                pass
+                print(f"Error fetching emails from {outlook_email}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
 
         return emails
 
@@ -300,44 +400,184 @@ class DataFetcher:
         email_details = {}
         
         if source == 'gmail':
-            # Use Google API client's batch request functionality
-            from googleapiclient import new_batch_http_request
+            # Use Google API client's batch request functionality with rate limiting
+            # Gmail has limits: max 100 requests per batch, and rate limits on concurrent requests
             import json
+            import time
+            from googleapiclient.errors import HttpError
+            
+            # Deduplicate email IDs to avoid "request with this ID already exists" errors
+            email_ids = list(dict.fromkeys(email_ids))  # Preserves order while removing duplicates
             
             def callback(request_id, response, exception):
                 if exception is None:
                     email_details[request_id] = response
                 else:
-                    print(f"Error fetching email {request_id}: {exception}")
+                    # Handle rate limit errors gracefully
+                    if isinstance(exception, HttpError):
+                        if exception.resp.status == 429:
+                            print(f"Rate limit hit for email {request_id[:8]}... - will retry later")
+                        else:
+                            print(f"Error fetching email {request_id[:8]}...: {exception.resp.status}")
+                    else:
+                        # Check for duplicate request ID error
+                        error_str = str(exception)
+                        if "already exists" in error_str.lower():
+                            print(f"Skipping duplicate email {request_id[:8]}...")
+                        else:
+                            print(f"Error fetching email {request_id[:8]}...: {exception}")
             
-            # Create batch request
-            batch = self.gmail.new_batch_http_request(callback=callback)
+            # Split into smaller batches to avoid rate limits
+            # Gmail allows ~100 per batch, but rate limits are stricter on concurrent requests
+            # Use smaller chunks (10) and add delays to avoid hitting rate limits
+            batch_size = 10
+            delay_between_batches = 2.0  # 2 second delay between batches
+            max_retries = 3
             
-            # Add each email request to the batch
-            for email_id in email_ids:
-                request = self.gmail.users().messages().get(userId='me', id=email_id, format='full')
-                batch.add(request, request_id=email_id)
+            i = 0
+            retry_count = {}
             
-            # Execute batch request
-            batch.execute()
+            while i < len(email_ids):
+                batch_chunk = email_ids[i:i + batch_size]
+                chunk_key = i // batch_size
+                
+                try:
+                    # Create batch request for this chunk
+                    batch = self.gmail.new_batch_http_request(callback=callback)
+                    
+                    # Add each email request to the batch (deduplicated)
+                    seen_in_batch = set()
+                    for email_id in batch_chunk:
+                        if email_id not in seen_in_batch:
+                            seen_in_batch.add(email_id)
+                            request = self.gmail.users().messages().get(userId='me', id=email_id, format='full')
+                            batch.add(request, request_id=email_id)
+                    
+                    # Execute batch request
+                    batch.execute()
+                    
+                    # Success - move to next batch
+                    retry_count[chunk_key] = 0
+                    i += batch_size
+                    
+                    # Add delay between batches to avoid rate limits
+                    if i < len(email_ids):
+                        time.sleep(delay_between_batches)
+                        
+                except HttpError as e:
+                    if e.resp.status == 429:
+                        retry_count[chunk_key] = retry_count.get(chunk_key, 0) + 1
+                        if retry_count[chunk_key] >= max_retries:
+                            print(f"Max retries ({max_retries}) exceeded for batch {chunk_key}. Skipping and continuing...")
+                            retry_count[chunk_key] = 0
+                            i += batch_size  # Skip this batch
+                            continue
+                        
+                        # Exponential backoff: wait 2^retry_count * 5 seconds
+                        wait_time = (2 ** retry_count[chunk_key]) * 5
+                        print(f"Rate limit exceeded (batch {chunk_key}, attempt {retry_count[chunk_key]}/{max_retries}). Waiting {wait_time} seconds...")
+                        time.sleep(wait_time)
+                        # Retry same batch - don't increment i
+                        continue
+                    else:
+                        print(f"HTTP error in batch {chunk_key}: {e.resp.status} - {e}")
+                        # Skip this batch and continue
+                        i += batch_size
+                except Exception as e:
+                    error_str = str(e)
+                    if "already exists" in error_str.lower():
+                        print(f"Duplicate request ID error in batch {chunk_key}. Skipping duplicates and continuing...")
+                        # Skip this batch and continue
+                        i += batch_size
+                    else:
+                        print(f"Error executing batch {chunk_key}: {e}")
+                        # Skip this batch and continue
+                        i += batch_size
             
         elif source == 'yahoo':
-            # For Yahoo, we still need to process individually due to IMAP limitations
-            for msg_id in email_ids:
-                try:
-                    details = self.get_email_details(msg_id, source)
-                    if details:
-                        email_details[msg_id] = details
-                except Exception as e:
-                    print(f"Error fetching Yahoo email {msg_id}: {e}")
+            # For Yahoo, open one IMAP connection and fetch all emails in one session
+            # This is much faster than opening/closing connections for each email
+            # Limit to reasonable number to avoid slow processing
+            max_yahoo_batch = 20  # Don't process more than 20 Yahoo emails at once
+            email_ids = email_ids[:max_yahoo_batch]
+            
+            print(f"Fetching {len(email_ids)} Yahoo emails in one batch...")
+            try:
+                mail = imaplib.IMAP4_SSL('imap.mail.yahoo.com')
+                mail.login(self.yahoo_account['user'], self.yahoo_account['pwd'])
+                mail.select('inbox')
+                
+                # Fetch all emails in one session
+                for idx, msg_id in enumerate(email_ids, 1):
+                    if idx % 5 == 0:
+                        print(f"  Processed {idx}/{len(email_ids)} Yahoo emails...")
+                    try:
+                        _, data = mail.fetch(str(msg_id), '(RFC822)')
+                        if data and data[0]:
+                            raw_email = data[0][1]
+                            msg = email.message_from_bytes(raw_email)
+                            headers = [{'name': h, 'value': v} for h, v in msg.items()]
+                            
+                            # Handle email content properly
+                            if msg.is_multipart():
+                                content_parts = []
+                                for part in msg.walk():
+                                    if part.get_content_type() == "text/plain":
+                                        payload = part.get_payload(decode=True)
+                                        if payload:
+                                            content_parts.append(payload.decode('utf-8', errors='ignore'))
+                                content = ' '.join(content_parts)
+                            else:
+                                payload = msg.get_payload(decode=True)
+                                content = payload.decode('utf-8', errors='ignore') if payload else ''
+                            
+                            # Extract common headers
+                            from_addr = msg.get('From', 'Unknown')
+                            subject = msg.get('Subject', 'No Subject')
+                            date_str = msg.get('Date', '')
+                            
+                            # Convert date to timestamp if possible
+                            try:
+                                from email.utils import parsedate_to_datetime
+                                dt = parsedate_to_datetime(date_str)
+                                timestamp = int(dt.timestamp()) if dt else 0
+                            except:
+                                timestamp = 0
+                            
+                            # Format to match Gmail API structure
+                            email_details[msg_id] = {
+                                'payload': {
+                                    'headers': headers
+                                },
+                                'snippet': content[:200] if content else '',
+                                'internalDate': str(timestamp * 1000) if timestamp else '0'
+                            }
+                    except Exception as e:
+                        print(f"Error fetching Yahoo email {msg_id}: {e}")
+                        continue
+                
+                mail.logout()
+            except Exception as e:
+                print(f"Error connecting to Yahoo IMAP: {e}")
+                # Try individual fetches as fallback
+                for msg_id in email_ids[:10]:  # Limit fallback to first 10 emails
+                    try:
+                        details = self.get_email_details(msg_id, source)
+                        if details:
+                            email_details[msg_id] = details
+                    except:
+                        continue
         
         return email_details
 
     def get_email_details(self, msg_id, source='gmail'):
         """
         Get email details and update conversation tracking.
+        Note: For Yahoo emails, use get_email_details_batch instead for better performance.
         """
-        print(f"\nGetting details for email {msg_id} from {source}")
+        # Only print for Gmail to reduce noise (Yahoo should use batch method)
+        if source == 'gmail':
+            print(f"\nGetting details for email {msg_id} from {source}")
         if source == 'gmail':
             msg = self.gmail.users().messages().get(userId='me', id=msg_id, format='full').execute()
             headers = {h['name']: h['value'] for h in msg['payload']['headers']}

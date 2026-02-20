@@ -14,8 +14,9 @@ from PyQt6.QtWidgets import (QApplication, QTableWidget, QTableWidgetItem,
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QBrush
 
-# Use centralized database path (avoid importing config to prevent env var issues)
-DATABASE_PATH = "naviSsurance_index.db"
+# Use centralized database path from project root (script lives in tests/)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATABASE_PATH = os.path.join(_PROJECT_ROOT, "naviSsurance_index.db")
 
 
 class TestTableWidget:

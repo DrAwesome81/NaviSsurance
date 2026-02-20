@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NaviSsurance — Style mockup: Current vs Proposed vs Professional</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #0d0d0e;
+      color: #e0e0e0;
+      padding: 24px;
+      min-height: 100vh;
+    }
+    h1 {
+      text-align: center;
+      font-size: 18px;
+      font-weight: 600;
+      color: #aaa;
+      margin-bottom: 24px;
+    }
+    .compare {
+      display: flex;
+      gap: 24px;
+      justify-content: center;
+      flex-wrap: wrap;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .panel {
+      flex: 1 1 300px;
+      min-width: 280px;
+      max-width: 380px;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+    .panel-title {
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .panel.current .panel-title { background: #1a1a1c; color: #FD6262; }
+    .panel.proposed .panel-title { background: #1a1a1c; color: #8BA4C4; }
+    .panel.professional .panel-title {
+      background: #1c1e24;
+      color: #8b9cb8;
+      font-family: 'Inter', system-ui, sans-serif;
+      letter-spacing: 0.06em;
+    }
+
+    /* ========== CURRENT (logo palette) ========== */
+    .current {
+      --bg-main: #141416;
+      --bg-pane: #232426;
+      --border: #2A2A2E;
+      --accent: #FD6262;
+      --accent-hover: #C83232;
+      --accent-muted: rgba(253, 98, 98, 0.25);
+      --text: #ffffff;
+      --text-muted: #b0b0b0;
+    }
+
+    /* ========== PROPOSED (softer, same structure) ========== */
+    .proposed {
+      --bg-main: #141416;
+      --bg-pane: #1e1f21;
+      --border: #2e2f32;
+      --accent: #E07A7A;
+      --accent-strong: #FD6262;
+      --accent-cool: #7BA3C9;
+      --accent-muted: rgba(224, 122, 122, 0.2);
+      --text: #f0f0f0;
+      --text-muted: #a0a0a0;
+    }
+
+    /* ========== PROFESSIONAL (refined base, typography, depth, restraint) ========== */
+    .professional {
+      --bg-main: #15171c;
+      --bg-pane: #1c1e24;
+      --bg-elevated: #22252c;
+      --border: rgba(255, 255, 255, 0.06);
+      --border-strong: rgba(255, 255, 255, 0.1);
+      --accent: #FD6262;
+      --accent-cool: #6b8cae;
+      --text: #e8eaed;
+      --text-muted: #9aa0a6;
+      --text-tertiary: #5f6368;
+      --radius: 6px;
+      --space: 8px;
+      --space-md: 12px;
+      --space-lg: 16px;
+      --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+      --duration: 140ms;
+    }
+
+    .app-frame {
+      height: 420px;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-main);
+    }
+    .app-frame .chat-header {
+      background: #141416;
+      color: var(--text);
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: bold;
+      border-bottom: 1px solid var(--border);
+      text-align: center;
+    }
+    .current .app-frame .chat-header { border-bottom-color: rgba(253,98,98,0.3); }
+    .proposed .app-frame .chat-header { border-bottom-color: var(--border); }
+    .professional .app-frame {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: var(--bg-main);
+    }
+    .professional .app-frame .chat-header {
+      background: var(--bg-main);
+      padding: var(--space-md) var(--space-lg);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .professional .app-frame .chat-header .status {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .professional .app-frame .chat-header .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #4caf50;
+      flex-shrink: 0;
+    }
+
+    .app-frame .content-row {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+    }
+    .app-frame .chat-panel {
+      width: 28%;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-pane);
+      border-right: 1px solid var(--border);
+      padding: 10px;
+    }
+    .professional .app-frame .chat-panel {
+      background: var(--bg-pane);
+      border-right: 1px solid var(--border);
+      padding: var(--space-md);
+      box-shadow: 1px 0 0 0 var(--border);
+    }
+    .app-frame .chat-messages {
+      flex: 1;
+      background: var(--bg-pane);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 12px;
+      overflow: auto;
+      margin-bottom: 8px;
+    }
+    .current .app-frame .chat-messages { border-color: rgba(253,98,98,0.4); }
+    .proposed .app-frame .chat-messages { border-color: var(--border); }
+    .professional .app-frame .chat-messages {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: var(--space-md);
+      font-size: 13px;
+      line-height: 1.5;
+      margin-bottom: var(--space);
+      color: var(--text-muted);
+    }
+
+    .app-frame .chat-messages b { color: var(--text); }
+    .current .app-frame .chat-messages a { color: #FD6262; }
+    .proposed .app-frame .chat-messages a { color: var(--accent-cool); }
+    .professional .app-frame .chat-messages a {
+      color: var(--accent-cool);
+      text-decoration: none;
+      transition: color var(--duration) var(--ease);
+    }
+    .professional .app-frame .chat-messages a:hover { text-decoration: underline; }
+
+    .app-frame .chat-input-row {
+      display: flex;
+      gap: 6px;
+      margin-top: auto;
+    }
+    .app-frame .chat-input-row input {
+      flex: 1;
+      background: var(--bg-pane);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: var(--text);
+      font-size: 13px;
+    }
+    .current .app-frame .chat-input-row input:focus {
+      outline: none;
+      border-color: #FD6262;
+      box-shadow: 0 0 0 2px rgba(253,98,98,0.2);
+    }
+    .proposed .app-frame .chat-input-row input:focus {
+      outline: none;
+      border-color: var(--accent-cool);
+      box-shadow: 0 0 0 2px rgba(123,163,201,0.2);
+    }
+    .professional .app-frame .chat-input-row {
+      gap: var(--space);
+      margin-top: auto;
+    }
+    .professional .app-frame .chat-input-row input {
+      height: 36px;
+      min-height: 36px;
+      padding: 0 var(--space-md);
+      font-size: 13px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      transition: border-color var(--duration) var(--ease), box-shadow var(--duration) var(--ease);
+    }
+    .professional .app-frame .chat-input-row input:focus {
+      outline: none;
+      border-color: var(--border-strong);
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.04);
+    }
+    .professional .app-frame .chat-input-row input::placeholder {
+      color: var(--text-tertiary);
+    }
+
+    .app-frame .tabs-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-main);
+      padding: 0 12px 12px;
+    }
+    .app-frame .tab-bar {
+      display: flex;
+      gap: 2px;
+      padding: 8px 0 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .app-frame .tab {
+      padding: 8px 14px;
+      font-size: 12px;
+      border-radius: 4px 4px 0 0;
+      background: var(--bg-pane);
+      color: var(--text-muted);
+      border: 1px solid transparent;
+      border-bottom: none;
+      margin-bottom: -1px;
+      cursor: default;
+    }
+    .app-frame .tab:hover {
+      background: #2A2A2E;
+      color: var(--text);
+    }
+    .current .app-frame .tab.active {
+      background: #FD6262;
+      color: white;
+      border-color: #FD6262;
+    }
+    .proposed .app-frame .tab.active {
+      background: transparent;
+      color: var(--accent-cool);
+      border-color: var(--border);
+      border-bottom: 2px solid var(--accent-cool);
+      margin-bottom: -2px;
+    }
+    .professional .app-frame .tabs-area {
+      padding: 0 var(--space-lg) var(--space-lg);
+    }
+    .professional .app-frame .tab-bar {
+      padding: 0 0 var(--space);
+      border-bottom: 1px solid var(--border);
+      gap: 0;
+    }
+    .professional .app-frame .tab {
+      padding: var(--space) var(--space-md);
+      font-size: 13px;
+      font-weight: 500;
+      background: transparent;
+      color: var(--text-muted);
+      border: none;
+      border-radius: 0;
+      margin-bottom: 0;
+      border-bottom: 2px solid transparent;
+      transition: color var(--duration) var(--ease), border-bottom-color var(--duration) var(--ease);
+    }
+    .professional .app-frame .tab:hover {
+      color: var(--text);
+      background: transparent;
+    }
+    .professional .app-frame .tab.active {
+      color: var(--text);
+      font-weight: 600;
+      border-bottom-color: var(--accent);
+      background: transparent;
+    }
+
+    .app-frame .tab-content {
+      flex: 1;
+      background: var(--bg-pane);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+      padding: 14px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .current .app-frame .tab-content { border-color: rgba(253,98,98,0.2); }
+    .proposed .app-frame .tab-content { border-color: var(--border); }
+    .professional .app-frame .tab-content {
+      background: var(--bg-pane);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 var(--radius) var(--radius);
+      padding: var(--space-lg);
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-muted);
+    }
+    .professional .app-frame .tab-content strong {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .professional .app-frame .tab-content .section-label {
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: var(--space);
+    }
+    .professional .app-frame .tab-content .card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: var(--space-md);
+      margin-bottom: var(--space-lg);
+    }
+    .professional .app-frame .tab-content .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      margin: 0 0 var(--space) 0;
+    }
+    .professional .app-frame .tab-content .card p {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-muted);
+      margin: 0;
+    }
+
+    .app-frame .btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: bold;
+      cursor: default;
+    }
+    .current .app-frame .btn-primary {
+      background: linear-gradient(180deg, #FD6262, #C83232);
+      color: white;
+    }
+    .current .app-frame .btn-primary:hover { background: linear-gradient(180deg, #C83232, #A01A1A); }
+    .proposed .app-frame .btn-primary {
+      background: linear-gradient(180deg, #FD6262, #C83232);
+      color: white;
+    }
+    .proposed .app-frame .btn-primary:hover { background: linear-gradient(180deg, #E07A7A, #B85A5A); }
+
+    .app-frame .btn-secondary {
+      background: var(--bg-pane);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .current .app-frame .btn-secondary:hover { border-color: #FD6262; color: #FD6262; }
+    .proposed .app-frame .btn-secondary:hover { border-color: var(--accent-cool); color: var(--accent-cool); }
+    .professional .app-frame .btn {
+      height: 36px;
+      min-height: 36px;
+      padding: 0 var(--space-lg);
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: var(--radius);
+      transition: background var(--duration) var(--ease), border-color var(--duration) var(--ease), color var(--duration) var(--ease);
+    }
+    .professional .app-frame .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+    .professional .app-frame .btn-primary:hover {
+      background: #e85555;
+    }
+    .professional .app-frame .btn-secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border-strong);
+    }
+    .professional .app-frame .btn-secondary:hover {
+      background: rgba(255,255,255,0.04);
+      border-color: var(--border-strong);
+      color: var(--text);
+    }
+    .professional .app-frame .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .scroll-demo {
+      height: 36px;
+      background: var(--bg-pane);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      margin-top: 10px;
+      gap: 4px;
+    }
+    .scroll-demo .track {
+      flex: 1;
+      height: 8px;
+      background: var(--bg-main);
+      border-radius: 4px;
+      position: relative;
+      overflow: hidden;
+    }
+    .scroll-demo .thumb {
+      position: absolute;
+      left: 20%;
+      width: 30%;
+      height: 100%;
+      border-radius: 4px;
+      top: 0;
+    }
+    .current .scroll-demo .thumb { background: linear-gradient(180deg, #FD6262, #C83232); }
+    .proposed .scroll-demo .thumb { background: #4A4A4E; }
+    .professional .scroll-demo .thumb {
+      background: rgba(255,255,255,0.15);
+    }
+
+    .legend {
+      margin-top: 16px;
+      padding: 12px;
+      background: rgba(0,0,0,0.3);
+      border-radius: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .legend strong { color: var(--text); }
+    .current .legend .accent { color: #FD6262; }
+    .proposed .legend .accent { color: #E07A7A; }
+    .proposed .legend .accent-cool { color: #7BA3C9; }
+    .professional .legend {
+      font-family: 'Inter', system-ui, sans-serif;
+      font-size: 11px;
+      line-height: 1.45;
+    }
+    .professional .legend .accent { color: #FD6262; }
+    .professional .legend .accent-cool { color: #6b8cae; }
+  </style>
+</head>
+<body>
+  <h1>NaviSsurance — Current vs Softer vs Professional</h1>
+  <div class="compare">
+    <div class="panel current">
+      <div class="panel-title">Current — #FD6262 + #141416</div>
+      <div class="app-frame">
+        <div class="chat-header">Navi Chat</div>
+        <div class="content-row">
+          <div class="chat-panel">
+            <div class="chat-messages">
+              <b>You:</b> What's on the schedule?<br>
+              <b>Navi:</b> Today you have <a href="#">3 meetings</a>. Next: Strategy at 2pm.
+            </div>
+            <div class="chat-input-row">
+              <input type="text" placeholder="Type your message here..." value="">
+              <button class="btn btn-primary">Send</button>
+            </div>
+            <div class="scroll-demo">
+              <div class="track"><div class="thumb"></div></div>
+            </div>
+          </div>
+          <div class="tabs-area">
+            <div class="tab-bar">
+              <span class="tab active">Dashboard</span>
+              <span class="tab">Workspace</span>
+              <span class="tab">Leads</span>
+              <span class="tab">Chief of Staff</span>
+            </div>
+            <div class="tab-content">
+              <div style="margin-bottom:10px;"><strong style="color:inherit;">Today's summary</strong></div>
+              <p style="margin:0 0 12px 0;">Same pane shade (#232426) and structure. Accent used for tabs, focus, scrollbar, links.</p>
+              <button class="btn btn-primary">Refresh</button>
+              <button class="btn btn-secondary">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="legend">
+        <strong>Current:</strong> One accent (<span class="accent">#FD6262</span>) everywhere — tabs, focus, scrollbar, links, buttons. Logo-accurate but visually heavy.
+      </div>
+    </div>
+
+    <div class="panel proposed">
+      <div class="panel-title">Proposed — Softer hierarchy</div>
+      <div class="app-frame">
+        <div class="chat-header">Navi Chat</div>
+        <div class="content-row">
+          <div class="chat-panel">
+            <div class="chat-messages">
+              <b>You:</b> What's on the schedule?<br>
+              <b>Navi:</b> Today you have <a href="#">3 meetings</a>. Next: Strategy at 2pm.
+            </div>
+            <div class="chat-input-row">
+              <input type="text" placeholder="Type your message here..." value="">
+              <button class="btn btn-primary">Send</button>
+            </div>
+            <div class="scroll-demo">
+              <div class="track"><div class="thumb"></div></div>
+            </div>
+          </div>
+          <div class="tabs-area">
+            <div class="tab-bar">
+              <span class="tab active">Dashboard</span>
+              <span class="tab">Workspace</span>
+              <span class="tab">Leads</span>
+              <span class="tab">Chief of Staff</span>
+            </div>
+            <div class="tab-content">
+              <div style="margin-bottom:10px;"><strong style="color:inherit;">Today's summary</strong></div>
+              <p style="margin:0 0 12px 0;">Red only on primary CTA (Send / Refresh). Tabs and focus use <span style="color:#7BA3C9">cool accent</span>; scrollbar neutral.</p>
+              <button class="btn btn-primary">Refresh</button>
+              <button class="btn btn-secondary">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="legend">
+        <strong>Proposed:</strong> <span class="accent">Muted coral</span> for secondary UI; <span class="accent-cool">#7BA3C9</span> for tabs, focus, links; <strong>#FD6262</strong> only on primary buttons. Same #141416 / pane contrast.
+      </div>
+    </div>
+
+    <div class="panel professional">
+      <div class="panel-title">Professional</div>
+      <div class="app-frame">
+        <div class="chat-header">
+          <span>Navi Chat</span>
+          <span class="status"><span class="status-dot"></span> Ready</span>
+        </div>
+        <div class="content-row">
+          <div class="chat-panel">
+            <div class="chat-messages">
+              <b>You:</b> What's on the schedule?<br>
+              <b>Navi:</b> Today you have <a href="#">3 meetings</a>. Next: Strategy at 2pm.
+            </div>
+            <div class="chat-input-row">
+              <input type="text" placeholder="Type your message here..." value="">
+              <button class="btn btn-primary">Send</button>
+            </div>
+            <div class="scroll-demo">
+              <div class="track"><div class="thumb"></div></div>
+            </div>
+          </div>
+          <div class="tabs-area">
+            <div class="tab-bar">
+              <span class="tab active">Dashboard</span>
+              <span class="tab">Workspace</span>
+              <span class="tab">Leads</span>
+              <span class="tab">Chief of Staff</span>
+            </div>
+            <div class="tab-content">
+              <div class="section-label">Overview</div>
+              <div class="card">
+                <div class="card-title">Today's summary</div>
+                <p>Refined dark base, Inter type, 8px spacing, underline tabs. Red only on primary CTA and active tab indicator. Transitions and content hierarchy added.</p>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button class="btn btn-primary">Refresh</button>
+                <button class="btn btn-secondary">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="legend">
+        <strong>Professional:</strong> Dark blue-grey base, Inter font, 8px grid, underline tabs. <span class="accent">#FD6262</span> for primary actions only. Transitions (140ms), status line, section labels and cards for hierarchy. Disabled state on buttons.
+      </div>
+    </div>
+  </div>
+</body>
+</html>

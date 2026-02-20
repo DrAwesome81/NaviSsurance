@@ -222,5 +222,6 @@ def main():
         print("No valid documents indexed; check paths or file types in rag_config.json")
 
 if __name__ == "__main__":
-    load_dotenv()
+    from config import CONFIG_DIR
+    load_dotenv(os.path.join(CONFIG_DIR, ".env"))
     main()

@@ -222,5 +222,3 @@ Based on your app's workflow, I'd suggest Option 2 (dedicated RAG tab) because:
 - Doesn't clutter existing workspace
 - Can be enhanced with advanced search features later
 """
-
-

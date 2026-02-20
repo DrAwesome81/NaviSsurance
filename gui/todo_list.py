@@ -235,10 +235,38 @@ class TodoList:
                 due_date = due_date_label.text()
                 is_completed = checkbox.checkState() == Qt.CheckState.Checked
                 if is_completed:
-                    tasks_to_archive.append((task_text, due_date))
+                    # Get category and recurrence from widget data or layout
+                    category = "Business"  # Default
+                    recurrence = "None"  # Default
+                    
+                    # Try to get from task_data first
+                    if hasattr(widget, 'task_data'):
+                        category = widget.task_data.get('category', category)
+                        recurrence = widget.task_data.get('recurrence', recurrence)
+                    else:
+                        # Fallback to layout parsing
+                        if layout.count() > 2:
+                            category_label = layout.itemAt(2).widget()
+                            if category_label:
+                                category = category_label.text()
+                        # Get recurrence from database
+                        # We need task_id to get recurrence, but we can try to find it
+                        try:
+                            with sqlite3.connect(self.db.db_name) as conn:
+                                cursor = conn.execute(
+                                    'SELECT id FROM tasks WHERE task_text = ? ORDER BY created_at DESC LIMIT 1',
+                                    (task_text,)
+                                )
+                                task_id_result = cursor.fetchone()
+                                if task_id_result:
+                                    recurrence = self.db.get_task_recurrence(task_id_result[0])
+                        except Exception:
+                            pass  # Keep default if we can't get it
+                    
+                    tasks_to_archive.append((task_text, due_date, category, recurrence))
             
-            for task_text, due_date in tasks_to_archive:
-                self.db.archive_task(task_text, due_date, True)
+            for task_text, due_date, category, recurrence in tasks_to_archive:
+                self.db.archive_task(task_text, due_date, category, recurrence, True)
                 archived_count += 1
                 for i in range(self.todoList.count()):
                     item = self.todoList.item(i)
@@ -309,15 +337,15 @@ class TodoList:
 
             if checkbox and label and due_date_label:
                 if checkbox.isChecked():
-                    label.setStyleSheet("color: gray; text-decoration: line-through;")
-                    widget.setStyleSheet("QWidget { background-color: lightgray; border: none; }")
+                    label.setStyleSheet("color: #9aa0a6; text-decoration: line-through;")
+                    widget.setStyleSheet("QWidget { background-color: #22252c; border: none; }")
                 else:
                     due_date = due_date_label.text()
                     if due_date != "No Date" and QDate.fromString(due_date, "MM-dd-yyyy") < QDate.currentDate():
-                        label.setStyleSheet("color: red;")
-                        widget.setStyleSheet("QWidget { background-color: lightcoral; border: none; }")
+                        label.setStyleSheet("color: #e07a7a;")
+                        widget.setStyleSheet("QWidget { background-color: #2a2224; border: none; }")
                     else:
-                        label.setStyleSheet("color: white;")
-                        widget.setStyleSheet("QWidget { background-color: lightblue; border: none; }")
+                        label.setStyleSheet("color: #e8eaed;")
+                        widget.setStyleSheet("QWidget { background-color: #1c1e24; border: none; }")
         except Exception as e:
             print(f"Error updating task style: {str(e)}")

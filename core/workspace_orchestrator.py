@@ -140,7 +140,7 @@ class DualLLMOrchestrator:
             if grok_is_complete:
                 self.logger(f"DualLLMOrchestrator: Grok indicated completion at round {round_num}")
                 # Still let ChatGPT review it one more time
-                chatgpt_result = self._call_chatgpt(task_spec, grok_result, round_num)
+                chatgpt_result = self._call_chatgpt(task_spec, grok_result, file_contents, round_num)
                 chatgpt_output = chatgpt_result.get("explanation", "")
                 chatgpt_markdown = chatgpt_result.get("markdown", current_markdown)
                 chatgpt_is_complete = chatgpt_result.get("is_complete", False)
@@ -176,7 +176,7 @@ class DualLLMOrchestrator:
                     }
             
             # 2) ChatGPT reviews and edits markdown
-            chatgpt_result = self._call_chatgpt(task_spec, grok_result, round_num)
+            chatgpt_result = self._call_chatgpt(task_spec, grok_result, file_contents, round_num)
             chatgpt_output = chatgpt_result.get("explanation", "")
             chatgpt_markdown = chatgpt_result.get("markdown", current_markdown)
             chatgpt_feedback = chatgpt_result.get("feedback", "")
@@ -212,6 +212,7 @@ class DualLLMOrchestrator:
                 if round_num < max_rounds:
                     round_num += 1
                     grok_review_result = self._call_grok(task_spec, file_contents, None, round_num, current_markdown)
+                    # Note: grok_review_result doesn't need to be passed to ChatGPT since we already have the markdown
                     grok_review_output = grok_review_result.get("explanation", "")
                     grok_review_markdown = grok_review_result.get("markdown", current_markdown)
                     grok_review_complete = grok_review_result.get("is_complete", False)
@@ -331,12 +332,13 @@ class DualLLMOrchestrator:
         }
 
     def _call_chatgpt(self, task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str], 
-                      round_num: int = 1) -> Dict[str, str]:
+                      file_contents: Dict[str, str] = None, round_num: int = 1) -> Dict[str, str]:
         """
         Call ChatGPT (or stub) as the 'Reviewer / Editor'.
         Receives:
           - task_spec
           - grok_result: the dict returned by _call_grok
+          - file_contents: Dict mapping file paths to their content (for verification against source)
           - round_num: Current collaboration round number
 
         Expected return dict keys:
@@ -347,7 +349,7 @@ class DualLLMOrchestrator:
         """
         if self._chatgpt_call is not None:
             self.logger(f"DualLLMOrchestrator._call_chatgpt: using injected chatgpt_call (round {round_num})")
-            return self._chatgpt_call(task_spec, grok_result, round_num)
+            return self._chatgpt_call(task_spec, grok_result, file_contents or {}, round_num)
 
         grok_markdown = grok_result.get("markdown", "")
 
@@ -396,36 +398,54 @@ def call_grok_api(task_spec: WorkspaceTaskSpec, file_contents: Dict[str, str],
         Dict with "explanation" and "markdown" keys
     """
     try:
-        from config import headers, API_ENDPOINT
+        from core.grok_client import grok_completion
+
+        # Get current date for context
+        current_date = datetime.now().strftime("%B %d, %Y")
         
         # Build file content summary (if files are provided)
         # With Grok 4.1 Fast Reasoning's 2M token context window, we can send full file contents
         file_summaries = []
         for file in task_spec.files:
-            content = file_contents.get(file.path, "")
+            # Normalize path for lookup
+            normalized_path = os.path.abspath(file.path)
+            content = file_contents.get(normalized_path, "")
+            if not content:
+                # Try original path as fallback
+                content = file_contents.get(file.path, "")
             if content:
+                logger.info(f"Grok: Including content from {file.display_name} ({len(content)} chars)")
                 # No truncation needed - Grok 4.1 Fast Reasoning has 2M token context window
                 # Only add a note if file is extremely large (as a safeguard)
                 file_summaries.append(f"### {file.display_name} ({file.file_type})\n{content}\n")
+            else:
+                logger.warning(f"Grok: No content found for {file.display_name} (path: {file.path})")
+                logger.debug(f"Available keys in file_contents: {list(file_contents.keys())}")
         
         files_text = "\n".join(file_summaries) if file_summaries else ""
         has_files = len(file_summaries) > 0
+        
+        # Warn if files were expected but none were found
+        if task_spec.files and not has_files:
+            logger.warning(f"Grok: Expected {len(task_spec.files)} file(s) but none had content")
         
         # Build the prompt for Grok as Research Agent
         if round_num == 1:
             # First round: initial creation
             if has_files:
-                system_message = """You are a research agent helping with document analysis and drafting. 
-Your role is to:
-1. Analyze the provided files and understand the user's goal
-2. Research and synthesize information from the files
-3. Create a comprehensive markdown document that addresses the goal
+                system_message = """You are a research agent creating finished, publication-ready documents. 
 
-You are collaborating with a reviewer (ChatGPT) who will provide feedback. Work together to create the best possible document.
+CRITICAL INSTRUCTIONS:
+- The markdown document you create must be a FINISHED, COMPLETE document ready for immediate use
+- DO NOT include any conversational text, questions, or instructions in the markdown
+- DO NOT include phrases like "paste the document when ready" or "please provide" or "if you have questions"
+- The document must stand alone - no meta-commentary, no explanations, no questions to users
+- The markdown should read like a professional, finished document, not an AI draft
 
-Respond with:
-- A brief explanation of your research approach and findings
-- A well-structured markdown document that fulfills the user's goal"""
+Your output format:
+1. First, write a brief explanation (this will be removed before delivery)
+2. Then, on a new line starting with "#", provide ONLY the finished markdown document
+3. The markdown must be complete and ready to use - no placeholders, no questions, no conversational text"""
                 
                 user_message = f"""Goal: {task_spec.goal}
 
@@ -436,27 +456,30 @@ Current Date: {current_date}
 Files to analyze:
 {files_text}
 
-Please:
-1. Analyze the files in relation to the goal
-2. Create a comprehensive markdown document that addresses the goal
-3. Structure the document clearly with appropriate headings
-4. Include relevant information from the files
-5. Use the current date ({current_date}) as a reference point for any time-sensitive information
+Create a FINISHED, PUBLICATION-READY markdown document that:
+1. Fully addresses the goal without needing any clarification
+2. Is well-structured with clear headings and sections
+3. Includes all relevant information from the files
+4. Uses the current date ({current_date}) as reference for time-sensitive information
+5. Contains NO conversational text, questions, or instructions
+6. Is ready for immediate use as a professional document
 
-Respond with your explanation first, followed by the markdown document. Use clear section markers."""
+Remember: This is a FINISHED document, not a draft with questions. Write as if it's going directly to the end user."""
             else:
                 # No files - pure research task
-                system_message = """You are a research agent helping with research and document creation. 
-Your role is to:
-1. Conduct research on the topic based on the user's goal
-2. Synthesize information from your knowledge
-3. Create a comprehensive markdown document that addresses the goal
+                system_message = """You are a research agent creating finished, publication-ready documents.
 
-You are collaborating with a reviewer (ChatGPT) who will provide feedback. Work together to create the best possible document.
+CRITICAL INSTRUCTIONS:
+- The markdown document you create must be a FINISHED, COMPLETE document ready for immediate use
+- DO NOT include any conversational text, questions, or instructions in the markdown
+- DO NOT include phrases like "paste the document when ready" or "please provide" or "if you have questions"
+- The document must stand alone - no meta-commentary, no explanations, no questions to users
+- The markdown should read like a professional, finished document, not an AI draft
 
-Respond with:
-- A brief explanation of your research approach and findings
-- A well-structured markdown document that fulfills the user's goal"""
+Your output format:
+1. First, write a brief explanation (this will be removed before delivery)
+2. Then, on a new line starting with "#", provide ONLY the finished markdown document
+3. The markdown must be complete and ready to use - no placeholders, no questions, no conversational text"""
                 
                 user_message = f"""Goal: {task_spec.goal}
 
@@ -464,32 +487,36 @@ Context: {task_spec.context or 'No additional context provided.'}
 
 Current Date: {current_date}
 
-Please:
-1. Research the topic thoroughly based on the goal
-2. Create a comprehensive markdown document that addresses the goal
-3. Structure the document clearly with appropriate headings
-4. Include relevant information, examples, and details
-5. Use the current date ({current_date}) as a reference point for any time-sensitive information (e.g., "the past year" means from {current_date} going back one year)
+Create a FINISHED, PUBLICATION-READY markdown document that:
+1. Fully addresses the goal without needing any clarification
+2. Is well-structured with clear headings and sections
+3. Includes relevant information, examples, and details from your research
+4. Uses the current date ({current_date}) as reference for time-sensitive information (e.g., "the past year" means from {current_date} going back one year)
+5. Contains NO conversational text, questions, or instructions
+6. Is ready for immediate use as a professional document
 
-Respond with your explanation first, followed by the markdown document. Use clear section markers."""
+Remember: This is a FINISHED document, not a draft with questions. Write as if it's going directly to the end user."""
         else:
             # Subsequent rounds: review and edit collaboratively
-            system_message = """You are a research agent collaborating with another AI (ChatGPT) to refine a document.
-Your role is to:
+            system_message = """You are a research agent refining a finished, publication-ready document.
+
+CRITICAL INSTRUCTIONS:
+- The markdown document must be a FINISHED, COMPLETE document ready for immediate use
+- DO NOT include any conversational text, questions, or instructions in the markdown
+- DO NOT include phrases like "paste the document when ready" or "please provide" or "if you have questions"
+- The document must stand alone - no meta-commentary, no explanations, no questions to users
+- Remove any conversational artifacts that may have been introduced
+
+Your role:
 1. Review the current markdown document (which may have been edited by ChatGPT)
-2. Consider any feedback from previous rounds
-3. Edit and improve the markdown document as needed
-4. Work collaboratively until both you and ChatGPT agree the document is complete
+2. Remove any conversational text, questions, or instructions
+3. Ensure the document is finished and publication-ready
+4. Make edits to improve clarity, completeness, and professionalism
 
-You can:
-- Accept ChatGPT's edits if they're good
-- Make your own edits to improve the document
-- Provide feedback if you think more work is needed
-
-Respond with:
-- A brief explanation of your review and any changes you made
-- The revised markdown document (or keep it if no changes needed)
-- Optionally end with "FEEDBACK: [your feedback]" if more work is needed, or "COMPLETE: Document is ready" if you agree it's done"""
+Your output format:
+1. First, write a brief explanation (this will be removed before delivery)
+2. Then, on a new line starting with "#", provide ONLY the finished, clean markdown document
+3. End with "FEEDBACK: [your feedback]" if more work is needed, or "COMPLETE: Document is ready" if finished"""
             
             user_message = f"""Goal: {task_spec.goal}
 
@@ -508,53 +535,22 @@ Previous Feedback:
 Current Markdown Document (may have been edited by ChatGPT):
 {previous_markdown or 'No previous document.'}
 
-Please review this document. You can:
-1. Accept it as-is if it's good
-2. Make edits to improve it
-3. Provide feedback if more work is needed
+IMPORTANT: Clean this document to be publication-ready:
+1. Remove ALL conversational text, questions, or instructions (e.g., "paste when ready", "please provide", "if you have questions")
+2. Ensure it's a finished, standalone document with no meta-commentary
+3. Make any improvements needed for clarity, completeness, and professionalism
+4. Use the current date ({current_date}) as reference for time-sensitive information
 
-Remember: The current date is {current_date}. Use this as a reference for any time-sensitive information.
+The output must be a clean, finished markdown document ready for immediate use - no placeholders, no questions, no conversational artifacts.
 
-If you're satisfied with the document, end your response with "COMPLETE: Document is ready and meets all requirements".
-If you think it needs more work, end with "FEEDBACK: [specific feedback]".
+If satisfied, end with "COMPLETE: Document is ready and meets all requirements".
+If more work is needed, end with "FEEDBACK: [specific feedback]".
 
-Respond with your explanation first, then the markdown document (revised or as-is), and finally your completion status or feedback."""
-        
-        data = {
-            "messages": [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ],
-            "model": "grok-4-1-fast-reasoning-latest",  # 2M token context window
-            # No max_tokens limit - let model generate full quality responses
-            "stream": False
-        }
-        
-        # Log the request for debugging
-        logger.debug(f"Grok API request - Model: {data.get('model')}, Endpoint: {API_ENDPOINT}")
-        
-        response = requests.post(API_ENDPOINT, headers=headers, json=data, timeout=180)
-        
-        # Better error handling - capture actual API error message
-        if response.status_code != 200:
-            error_detail = ""
-            try:
-                error_data = response.json()
-                error_detail = f" - Response: {error_data}"
-                logger.error(f"Grok API error {response.status_code}: {error_data}")
-            except:
-                error_detail = f" - Response text: {response.text[:500]}"
-                logger.error(f"Grok API error {response.status_code}: {response.text[:500]}")
-            raise Exception(f"Grok API error {response.status_code}: {response.reason}{error_detail}")
-        
-        response.raise_for_status()
-        response_data = response.json()
-        
-        if 'choices' not in response_data or len(response_data['choices']) == 0:
-            raise Exception(f"Invalid Grok API response: {response_data}")
-        
-        content = response_data['choices'][0]['message']['content']
-        
+Provide your explanation first, then the cleaned/revised markdown document starting with "#", then your completion status."""
+
+        logger.debug("Grok API request via xAI SDK (grok_completion)")
+        content = grok_completion(system_message, user_message, model="grok-4-1-fast-reasoning-latest")
+
         # Parse response to extract: explanation, markdown, feedback, and completion status
         lines = content.split('\n')
         
@@ -625,13 +621,15 @@ Respond with your explanation first, then the markdown document (revised or as-i
         }
 
 
-def call_chatgpt_api(task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str], round_num: int = 1) -> Dict[str, str]:
+def call_chatgpt_api(task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str], 
+                     file_contents: Dict[str, str] = None, round_num: int = 1) -> Dict[str, str]:
     """
     Call ChatGPT/OpenAI API as the 'Reviewer / Editor'.
     
     Args:
         task_spec: The workspace task specification
         grok_result: The result from Grok (contains "markdown" and "explanation")
+        file_contents: Dict mapping file paths to their content (for verification against source)
         round_num: Current collaboration round number
     
     Returns:
@@ -647,26 +645,50 @@ def call_chatgpt_api(task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str], 
         if not openai_api_key:
             # Fallback to Grok if OpenAI not configured
             logger.info("OpenAI API key not found, using Grok for review")
-            return call_grok_review(task_spec, grok_result)
+            return call_grok_review(task_spec, grok_result, file_contents)
         
         grok_markdown = grok_result.get("markdown", "")
         grok_explanation = grok_result.get("explanation", "")
         
-        system_message = """You are a document reviewer and editor collaborating with a research agent (Grok).
-Your role is to:
-1. Review the draft markdown document provided by the research agent
-2. Identify areas for improvement in clarity, structure, and completeness
-3. Determine if the document is ready or needs further revision
-4. Provide specific, actionable feedback for the research agent
+        # Build original source files section for ChatGPT to verify against
+        files_text = ""
+        if file_contents and task_spec.files:
+            file_summaries = []
+            for file in task_spec.files:
+                # Normalize path for lookup
+                normalized_path = os.path.abspath(file.path)
+                content = file_contents.get(normalized_path, "")
+                if not content:
+                    # Try original path as fallback
+                    content = file_contents.get(file.path, "")
+                if content:
+                    logger.info(f"ChatGPT: Including content from {file.display_name} ({len(content)} chars) for verification")
+                    file_summaries.append(f"### {file.display_name} ({file.file_type})\n{content}\n")
+                else:
+                    logger.warning(f"ChatGPT: No content found for {file.display_name} (path: {file.path})")
+            if file_summaries:
+                files_text = "\n\nOriginal Source Files (for verification):\n" + "\n".join(file_summaries)
+        
+        system_message = """You are a document reviewer and editor creating finished, publication-ready documents.
 
-You are working in a collaborative loop. If the document needs improvement, provide feedback.
-If the document is complete and meets all requirements, indicate completion.
+CRITICAL INSTRUCTIONS:
+- The markdown document you output must be FINISHED, COMPLETE, and ready for immediate use
+- DO NOT include any conversational text, questions, or instructions in the markdown
+- DO NOT include phrases like "paste the document when ready" or "please provide" or "if you have questions"
+- The document must stand alone - no meta-commentary, no explanations, no questions to users
+- Remove ANY conversational artifacts from the draft before outputting
 
-IMPORTANT: Structure your response as follows:
-1. Start with your review explanation
-2. If you made changes, include the refined markdown document
+Your role:
+1. Review the draft markdown document from the research agent
+2. Remove all conversational text, questions, and instructions
+3. Improve clarity, structure, and completeness
+4. Ensure the document is publication-ready
+
+Your output format:
+1. Start with your review explanation (this will be removed before delivery)
+2. On a new line starting with "#", provide ONLY the cleaned, finished markdown document
 3. End with either:
-   - "FEEDBACK: [specific feedback for improvements]" if the document needs revision
+   - "FEEDBACK: [specific feedback]" if revision is needed
    - "COMPLETE: The document is ready and meets all requirements" if finished"""
         
         # Get current date for context
@@ -682,20 +704,25 @@ Collaboration Round: {round_num}
 
 Research Agent's Explanation:
 {grok_explanation}
+{files_text}
 
 Draft Markdown Document:
 {grok_markdown}
 
-Please review this document. Consider:
-- Does it fully address the goal?
-- Is it clear, well-structured, and complete?
-- Are there any gaps or areas needing improvement?
-- Are time-sensitive references accurate? (Remember: current date is {current_date}, so "the past year" means from {current_date} going back one year)
+IMPORTANT: Clean and refine this document to be publication-ready:
+1. Remove ALL conversational text, questions, or instructions (e.g., "paste when ready", "please provide", "if you have questions")
+2. Ensure it's a finished, standalone document with no meta-commentary
+3. Check that it fully addresses the goal without needing clarification
+4. Verify accuracy against the original source files (provided above) to ensure Grok's work is correct and complete
+5. Improve clarity, structure, and completeness
+6. Verify time-sensitive references are accurate (current date is {current_date}, so "the past year" means from {current_date} going back one year)
 
-If the document is complete and ready, respond with "COMPLETE: The document is ready and meets all requirements" at the end.
-If improvements are needed, provide specific feedback starting with "FEEDBACK:" at the end.
+The output must be a clean, finished markdown document ready for immediate use - no placeholders, no questions, no conversational artifacts.
 
-Respond with your review explanation first, then any refined markdown (if you made changes), and finally your feedback or completion status."""
+If complete and ready, end with "COMPLETE: The document is ready and meets all requirements".
+If improvements are needed, end with "FEEDBACK: [specific feedback]".
+
+Provide your review explanation first, then the cleaned/refined markdown document starting with "#", then your completion status."""
         
         headers = {
             "Authorization": f"Bearer {openai_api_key}",
@@ -859,63 +886,49 @@ Respond with your review explanation first, then any refined markdown (if you ma
         logger.error(f"Error calling ChatGPT API: {e}")
         # Fallback to Grok review
         logger.info("Falling back to Grok for review")
-        return call_grok_review(task_spec, grok_result)
+        return call_grok_review(task_spec, grok_result, file_contents)
 
 
-def call_grok_review(task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str]) -> Dict[str, str]:
+def call_grok_review(task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str], 
+                     file_contents: Dict[str, str] = None) -> Dict[str, str]:
     """
-    Fallback: Use Grok for review if OpenAI not available.
+    Fallback: Use Grok for review if OpenAI not available. Uses xAI SDK.
     """
     try:
-        from config import headers, API_ENDPOINT
-        
+        from core.grok_client import grok_completion
+
         grok_markdown = grok_result.get("markdown", "")
-        
+
+        # Build original source files section if available
+        files_text = ""
+        if file_contents and task_spec.files:
+            file_summaries = []
+            for file in task_spec.files:
+                normalized_path = os.path.abspath(file.path)
+                content = file_contents.get(normalized_path, "") or file_contents.get(file.path, "")
+                if content:
+                    file_summaries.append(f"### {file.display_name} ({file.file_type})\n{content}\n")
+            if file_summaries:
+                files_text = "\n\nOriginal Source Files (for verification):\n" + "\n".join(file_summaries)
+
         system_message = """You are a document reviewer and editor. Review the draft markdown document and refine it for clarity, structure, and completeness."""
-        
+
         # Get current date for context
         current_date = datetime.now().strftime("%B %d, %Y")
-        
+
         user_message = f"""Original Goal: {task_spec.goal}
 
 Current Date: {current_date}
+{files_text}
 
 Draft Markdown Document:
 {grok_markdown}
 
-Please review and refine this document. Make improvements for clarity, structure, and completeness. Remember: The current date is {current_date}. Use this as a reference for any time-sensitive information.
+Please review and refine this document. Make improvements for clarity, structure, and completeness. If original source files are provided above, verify the draft against them for accuracy. Remember: The current date is {current_date}. Use this as a reference for any time-sensitive information.
 
 Respond with your review explanation first, followed by the refined markdown document."""
-        
-        data = {
-            "messages": [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ],
-            "model": "grok-4-1-fast-reasoning-latest",  # 2M token context window
-            # No max_tokens limit - let model generate full quality responses
-            "stream": False
-        }
-        
-        response = requests.post(API_ENDPOINT, headers=headers, json=data, timeout=180)
-        
-        # Better error handling - capture actual API error message
-        if response.status_code != 200:
-            error_detail = ""
-            try:
-                error_data = response.json()
-                error_detail = f" - {error_data}"
-            except:
-                error_detail = f" - {response.text}"
-            raise Exception(f"Grok API error (review) {response.status_code}: {response.reason}{error_detail}")
-        
-        response.raise_for_status()
-        response_data = response.json()
-        
-        if 'choices' not in response_data or len(response_data['choices']) == 0:
-            raise Exception(f"Invalid Grok API response (review): {response_data}")
-        
-        content = response_data['choices'][0]['message']['content']
+
+        content = grok_completion(system_message, user_message, model="grok-4-1-fast-reasoning-latest")
         
         # Try to separate explanation from markdown
         lines = content.split('\n')

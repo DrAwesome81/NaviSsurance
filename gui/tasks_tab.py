@@ -58,7 +58,7 @@ class TasksTab(QWidget):
                 "⚠️ Vikunja client not available. Please check that core/vikunja_client.py is valid.\n"
                 "The Tasks tab will not function until this is fixed."
             )
-            error_label.setStyleSheet("color: red; padding: 10px;")
+            error_label.setStyleSheet("color: #e07a7a; padding: 10px; font-size: 13px;")
             error_label.setWordWrap(True)
             layout.addWidget(error_label)
             self.setLayout(layout)
@@ -103,7 +103,7 @@ class TasksTab(QWidget):
         conn_layout.addRow(button_layout)
         
         self.conn_status = QLabel("Not connected")
-        self.conn_status.setStyleSheet("color: orange;")
+        self.conn_status.setStyleSheet("color: #9aa0a6; font-size: 13px;")
         conn_layout.addRow("Status:", self.conn_status)
         
         conn_group.setLayout(conn_layout)
@@ -196,15 +196,15 @@ class TasksTab(QWidget):
             client = VikunjaClient(base_url=url)
             if client.test_connection():
                 self.conn_status.setText("Connection OK (not authenticated)")
-                self.conn_status.setStyleSheet("color: blue;")
+                self.conn_status.setStyleSheet("color: #6b8cae;")
                 QMessageBox.information(self, "Success", "Connection test successful!")
             else:
                 self.conn_status.setText("Connection failed")
-                self.conn_status.setStyleSheet("color: red;")
+                self.conn_status.setStyleSheet("color: #e07a7a;")
                 QMessageBox.warning(self, "Error", "Connection test failed")
         except Exception as e:
             self.conn_status.setText("Connection error")
-            self.conn_status.setStyleSheet("color: red;")
+            self.conn_status.setStyleSheet("color: #e07a7a;")
             QMessageBox.critical(self, "Error", f"Connection error: {e}")
     
     def login(self):
@@ -221,7 +221,7 @@ class TasksTab(QWidget):
             self.client = VikunjaClient(base_url=url)
             self.client.login(username, password)
             self.conn_status.setText(f"Connected as {username}")
-            self.conn_status.setStyleSheet("color: green;")
+            self.conn_status.setStyleSheet("color: #6bae6b;")
             self.refresh_btn.setEnabled(True)
             self.new_project_btn.setEnabled(True)
             self.create_task_btn.setEnabled(True)
@@ -248,7 +248,7 @@ class TasksTab(QWidget):
             self.client = VikunjaClient(base_url=url)
             self.client.register(username, email, password)
             self.conn_status.setText(f"Connected as {username}")
-            self.conn_status.setStyleSheet("color: green;")
+            self.conn_status.setStyleSheet("color: #6bae6b;")
             self.refresh_btn.setEnabled(True)
             self.new_project_btn.setEnabled(True)
             self.create_task_btn.setEnabled(True)

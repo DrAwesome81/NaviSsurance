@@ -6,7 +6,7 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from llama_cpp import Llama
-from config import base_system_message
+from config import get_system_prompt
 
 def main():
     model_path = "C:/Users/adamo/.cache/huggingface/hub/models--bartowski--Meta-Llama-3-8B-Instruct-GGUF/snapshots/2c3f8d7f3db06e3f9e8c4c6b6e6c7f3f8d9e4c6/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
@@ -30,15 +30,14 @@ def main():
         sys.stderr.flush()
         sys.exit(1)
 
-    # Normalize system message
-    system_content = base_system_message["content"].replace("\n", " ").strip()
-
     for line in sys.stdin:
         try:
             data = json.loads(line.strip())
             messages = data["messages"]
             session_id = data["session_id"]
-            # Prepend system message
+            # Fresh system prompt with current date for each request
+            system_msg = get_system_prompt()
+            system_content = system_msg["content"].replace("\n", " ").strip()
             all_messages = [{"role": "system", "content": system_content}] + messages
             response = llm.create_chat_completion(
                 messages=all_messages,

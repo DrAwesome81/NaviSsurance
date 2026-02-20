@@ -38,61 +38,104 @@ class MeetingsTab(QWidget):
         self.meetingTranscript = QTextEdit(self)
         self.meetingTranscript.setReadOnly(True)
         layout.addWidget(self.meetingTranscript)
+        self._check_recording_deps()
         
         self.saveTranscriptButton = QPushButton("Save Transcript", self)
         self.saveTranscriptButton.clicked.connect(self.save_transcript)
         self.saveTranscriptButton.setEnabled(False)
         layout.addWidget(self.saveTranscriptButton)
 
+    def _check_recording_deps(self):
+        """Show a hint if sounddevice is not installed."""
+        try:
+            import sounddevice as sd  # noqa: F401
+        except ImportError:
+            self.meetingTranscript.setPlainText(
+                "Recording is unavailable: the 'sounddevice' package is not installed.\n\n"
+                "To enable recording, run in a terminal:\n  pip install sounddevice\n\n"
+                "You can still use 'Load File' to transcribe an existing audio or video file."
+            )
+
     def start_recording(self):
-        print("Recording TBD")
         """
         Start recording audio using sounddevice.
         Saves to a temporary WAV file.
         """
-        import sounddevice as sd
-        import scipy.io.wavfile as wavfile
-        import os
         import time
-
         self.recordButton.setEnabled(False)
         self.stopButton.setEnabled(True)
-        print("Starting recording...")
-        self.recording = True
-        self.sample_rate = 44100  # Hz
-        self.audio_data = []
-        self.recording_start_time = time.time()
-        
-        def callback(indata, frames, time, status):
-            if status:
-                print(status)
-            if self.recording:
-                self.audio_data.extend(indata.copy())
+        self._stream = None
+        try:
+            import sounddevice as sd
+            print("Starting recording...")
+            self.recording = True
+            self.sample_rate = 44100  # Hz
+            self.audio_data = []
+            self.recording_start_time = time.time()
 
-        self.stream = sd.InputStream(samplerate=self.sample_rate, channels=1, callback=callback)
-        self.stream.start()
+            def callback(indata, frames, time_info, status):
+                if status:
+                    print("Recording status:", status)
+                if self.recording and hasattr(self, "audio_data"):
+                    self.audio_data.append(indata.copy())
+
+            self._stream = sd.InputStream(
+                samplerate=self.sample_rate, channels=1, callback=callback, blocksize=1024
+            )
+            self._stream.start()
+        except Exception as e:
+            self.recording = False
+            self.recordButton.setEnabled(True)
+            self.stopButton.setEnabled(False)
+            print(f"Recording start error: {e}")
+            QMessageBox.critical(
+                self,
+                "Recording error",
+                f"Could not start recording.\n\n{type(e).__name__}: {e}\n\nCheck that a microphone is available and sounddevice is installed.",
+            )
 
     def stop_recording(self):
-        print("Stop recording TBD")
         """
         Stop recording audio and save to a temporary WAV file.
         """
-        import scipy.io.wavfile as wavfile
-        import os
-        import numpy as np
-
+        import time
         self.recording = False
-        self.stream.stop()
-        self.stream.close()
+        stream = getattr(self, "_stream", None)
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception as e:
+                print(f"Stream stop/close error: {e}")
+            self._stream = None
+        self.recordButton.setEnabled(True)
         self.stopButton.setEnabled(False)
-        self.transcribeButton.setEnabled(True)
-        print("Recording stopped")
-        
-        # Save the recorded audio to a temporary file
-        self.audio_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_recording.wav")
-        audio_array = np.array(self.audio_data)
-        wavfile.write(self.audio_file_path, self.sample_rate, audio_array)
-        print(f"Audio saved to {self.audio_file_path}")
+        if not getattr(self, "audio_data", None):
+            self.meetingTranscript.setText("Error: No audio data. Recording may not have started correctly.")
+            return
+        try:
+            import scipy.io.wavfile as wavfile
+            self.transcribeButton.setEnabled(True)
+            print("Recording stopped")
+            self.audio_file_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "temp_recording.wav"
+            )
+            # audio_data is list of chunks; concatenate
+            audio_array = np.concatenate(self.audio_data, axis=0)
+            if audio_array.dtype != np.int16:
+                audio_array = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
+            wavfile.write(self.audio_file_path, self.sample_rate, audio_array)
+            print(f"Audio saved to {self.audio_file_path}")
+            self.selected_audio_path = self.audio_file_path
+            self.meetingTranscript.setText(f"Recording saved. Click 'Generate Transcript' to transcribe.")
+        except Exception as e:
+            print(f"Stop/save error: {e}")
+            QMessageBox.critical(
+                self,
+                "Save recording error",
+                f"Recording stopped but saving failed.\n\n{type(e).__name__}: {e}",
+            )
+            self.meetingTranscript.setText(f"Error saving recording: {e}")
 
     def transcribe_meeting(self):
         print("Transcription TBD")

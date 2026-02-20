@@ -140,14 +140,14 @@ class WorkspaceTab(QWidget):
         file_layout.setContentsMargins(0, 0, 0, 0)
         
         file_header = QLabel("Files")
-        file_header.setStyleSheet("color: white; font-weight: bold; padding: 8px; background-color: rgba(253, 98, 98, 0.8); border-radius: 3px;")
+        file_header.setStyleSheet("color: #e8eaed; font-weight: 600; padding: 8px; background-color: #22252c; border: 1px solid #2e2f32; border-radius: 6px;")
         file_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         file_layout.addWidget(file_header)
         
         # Status and progress
         status_layout = QHBoxLayout()
         self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("color: white; padding: 5px;")
+        self.status_label.setStyleSheet("color: #9aa0a6; padding: 5px; font-size: 13px;")
         status_layout.addWidget(self.status_label)
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -158,16 +158,15 @@ class WorkspaceTab(QWidget):
         # Max rounds control
         rounds_layout = QHBoxLayout()
         rounds_label = QLabel("Max Rounds:")
-        rounds_label.setStyleSheet("color: white; padding: 4px;")
+        rounds_label.setStyleSheet("color: #e8eaed; padding: 4px; font-size: 13px;")
         rounds_layout.addWidget(rounds_label)
         self.max_rounds_spinbox = QSpinBox()
         self.max_rounds_spinbox.setMinimum(1)
         self.max_rounds_spinbox.setMaximum(10)
         self.max_rounds_spinbox.setValue(3)  # Default
         self.max_rounds_spinbox.setStyleSheet(
-            "background-color: rgba(27, 28, 30, 0.8); "
-            "color: white; border: 1px solid rgba(253, 98, 98, 0.3); "
-            "border-radius: 3px; padding: 4px;"
+            "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
+            "border-radius: 6px; padding: 8px;"
         )
         rounds_layout.addWidget(self.max_rounds_spinbox)
         rounds_layout.addStretch()
@@ -176,12 +175,12 @@ class WorkspaceTab(QWidget):
         # Select and Actions buttons
         btn_layout = QHBoxLayout()
         select_btn = QPushButton("Select File/Folder")
-        select_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white; border: none; padding: 8px; border-radius: 3px;")
+        select_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 500;")
         select_btn.clicked.connect(self.select_files)
         btn_layout.addWidget(select_btn)
         
         actions_btn = QPushButton("Actions")
-        actions_btn.setStyleSheet("background-color: rgba(253, 98, 98, 0.8); color: white; border: none; padding: 8px; border-radius: 3px;")
+        actions_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 500;")
         self.actions_menu = QMenu()
         
         # existing actions:
@@ -198,7 +197,7 @@ class WorkspaceTab(QWidget):
         file_layout.addLayout(btn_layout)
         
         self.file_list = QListWidget()
-        self.file_list.setStyleSheet("background-color: rgba(27, 28, 30, 0.8); color: white; border: 1px solid rgba(253, 98, 98, 0.3); border-radius: 3px;")
+        self.file_list.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 6px;")
         self.file_list.setToolTip("Drag and drop files here or mark RAG results")
         self.file_list.itemClicked.connect(self.on_file_selected)
         file_layout.addWidget(self.file_list)
@@ -234,8 +233,8 @@ class WorkspaceTab(QWidget):
         # Grok pane
         grok_header = QLabel("Grok (API)")
         grok_header.setStyleSheet(
-            "color: white; font-weight: bold; padding: 6px; "
-            "background-color: rgba(253, 98, 98, 0.6); border-radius: 3px;"
+            "color: #e8eaed; font-weight: 600; padding: 8px; "
+            "background-color: #22252c; border: 1px solid #2e2f32; border-radius: 6px;"
         )
         grok_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ai_layout.addWidget(grok_header)
@@ -243,9 +242,8 @@ class WorkspaceTab(QWidget):
         self.grok_text = AlwaysVisiblePlaceholderTextEdit()
         self.grok_text.setReadOnly(True)
         self.grok_text.setStyleSheet(
-            "background-color: rgba(27, 28, 30, 0.8); "
-            "color: white; border: 1px solid rgba(253, 98, 98, 0.3); "
-            "border-radius: 3px;"
+            "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
+            "border-radius: 6px;"
         )
         self.grok_text.setPlaceholderText("Grok responses will appear here.")
         ai_layout.addWidget(self.grok_text)
@@ -253,8 +251,8 @@ class WorkspaceTab(QWidget):
         # ChatGPT pane
         chatgpt_header = QLabel("ChatGPT (API)")
         chatgpt_header.setStyleSheet(
-            "color: white; font-weight: bold; padding: 6px; "
-            "background-color: rgba(253, 98, 98, 0.6); border-radius: 3px;"
+            "color: #e8eaed; font-weight: 600; padding: 8px; "
+            "background-color: #22252c; border: 1px solid #2e2f32; border-radius: 6px;"
         )
         chatgpt_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ai_layout.addWidget(chatgpt_header)
@@ -262,9 +260,8 @@ class WorkspaceTab(QWidget):
         self.chatgpt_text = AlwaysVisiblePlaceholderTextEdit()
         self.chatgpt_text.setReadOnly(True)
         self.chatgpt_text.setStyleSheet(
-            "background-color: rgba(27, 28, 30, 0.8); "
-            "color: white; border: 1px solid rgba(253, 98, 98, 0.3); "
-            "border-radius: 3px;"
+            "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
+            "border-radius: 6px;"
         )
         self.chatgpt_text.setPlaceholderText("ChatGPT responses will appear here.")
         ai_layout.addWidget(self.chatgpt_text)
@@ -281,8 +278,8 @@ class WorkspaceTab(QWidget):
 
         markdown_header = QLabel("Markdown Document")
         markdown_header.setStyleSheet(
-            "color: white; font-weight: bold; padding: 6px; "
-            "background-color: rgba(253, 98, 98, 0.6); border-radius: 3px;"
+            "color: #e8eaed; font-weight: 600; padding: 8px; "
+            "background-color: #22252c; border: 1px solid #2e2f32; border-radius: 6px;"
         )
         markdown_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         markdown_layout.addWidget(markdown_header)
@@ -291,8 +288,8 @@ class WorkspaceTab(QWidget):
         button_bar = QHBoxLayout()
         self.save_button = QPushButton("Save Markdown")
         self.save_button.setStyleSheet(
-            "background-color: rgba(253, 98, 98, 0.8); "
-            "color: white; border: none; padding: 8px; border-radius: 3px; font-weight: bold;"
+            "background-color: #FD6262; color: white; border: none; padding: 8px 16px; "
+            "border-radius: 6px; font-weight: 500;"
         )
         self.save_button.clicked.connect(self.save_markdown)
         self.save_button.setEnabled(False)  # Disabled until document is generated
@@ -300,8 +297,8 @@ class WorkspaceTab(QWidget):
         
         self.export_button = QPushButton("Export as...")
         self.export_button.setStyleSheet(
-            "background-color: rgba(253, 98, 98, 0.6); "
-            "color: white; border: none; padding: 8px; border-radius: 3px;"
+            "background-color: #3a3b3e; color: #e8eaed; border: 1px solid #2e2f32; "
+            "padding: 8px 16px; border-radius: 6px; font-weight: 500;"
         )
         self.export_button.clicked.connect(self.export_markdown)
         self.export_button.setEnabled(False)  # Disabled until document is generated
@@ -314,9 +311,8 @@ class WorkspaceTab(QWidget):
         # Let you edit the Markdown directly if desired
         self.preview_text.setReadOnly(False)
         self.preview_text.setStyleSheet(
-            "background-color: rgba(27, 28, 30, 0.8); "
-            "color: white; border: 1px solid rgba(253, 98, 98, 0.3); "
-            "border-radius: 3px;"
+            "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
+            "border-radius: 6px;"
         )
         self.preview_text.setPlaceholderText("Markdown document will appear here.")
         markdown_layout.addWidget(self.preview_text)
@@ -465,7 +461,7 @@ class WorkspaceTab(QWidget):
             try:
                 # Use file_handler for proper extraction
                 content = extract_text_from_file(file_info['path'])
-                if not content:
+                if not content or content.strip() == "":
                     # Fallback for unsupported file types
                     file_ext = os.path.splitext(file_info['name'])[1].lower()
                     if file_ext in {'.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml', '.csv'}:
@@ -473,6 +469,11 @@ class WorkspaceTab(QWidget):
                             content = f.read()
                     else:
                         content = f"[File: {file_info['name']} - content extraction not available for this file type]"
+                        logger.warning(f"Could not extract content from {file_info['name']} (type: {file_ext})")
+                
+                if not content or content.strip() == "":
+                    logger.warning(f"Empty content extracted from {file_info['name']}")
+                    
             except Exception as e:
                 logger.error(f"Error extracting content from {file_info['path']}: {e}")
                 content = f"[Error extracting content from {file_info['name']}: {str(e)}]"
@@ -546,12 +547,19 @@ class WorkspaceTab(QWidget):
                     
                     # Extract and cache file content
                     content = self.get_file_content(f)
-                    file_path = f["path"]
+                    # Normalize file path for consistent matching
+                    file_path = os.path.abspath(f["path"])
+                    
+                    # Validate content extraction
+                    if not content or content.startswith("[Error") or content.startswith("[File:"):
+                        logger.warning(f"Empty or error content for {f['name']}: {content[:100] if content else 'No content'}")
+                    
+                    logger.info(f"Extracted {len(content)} chars from {file_path}")
                     file_contents[file_path] = content
                     
                     workspace_files.append(
                         WorkspaceFile(
-                            path=file_path,
+                            path=file_path,  # Use normalized path
                             display_name=f["name"],
                             file_type=self._guess_file_type(f["name"]),
                         )
@@ -574,6 +582,11 @@ class WorkspaceTab(QWidget):
 
             # Store file contents for use in API calls
             self._current_file_contents = file_contents
+
+            # Log file contents being passed to orchestrator
+            logger.info(f"Passing {len(file_contents)} file(s) to orchestrator")
+            logger.debug(f"File paths: {list(file_contents.keys())}")
+            logger.debug(f"Task spec files: {[f.path for f in task_spec.files]}")
 
             # Update UI for API calls
             if marked_files:
@@ -603,8 +616,8 @@ class WorkspaceTab(QWidget):
                 logger=logger,
                 grok_call=lambda task_spec, file_contents, feedback, round_num, previous_markdown: 
                     call_grok_api(task_spec, file_contents or self._current_file_contents, feedback, round_num, previous_markdown),
-                chatgpt_call=lambda task_spec, grok_result, round_num: 
-                    call_chatgpt_api(task_spec, grok_result, round_num)
+                chatgpt_call=lambda task_spec, grok_result, file_contents, round_num: 
+                    call_chatgpt_api(task_spec, grok_result, file_contents or self._current_file_contents, round_num)
             )
 
             # Run orchestrator in background thread to prevent UI freezing
@@ -782,7 +795,7 @@ class WorkspaceTab(QWidget):
         if not marked_files:
             self.status_label.setText("No files marked")
             # Show empty state in preview
-            self.preview_text.setHtml('<div style="text-align: center; color: #888; font-style: italic; padding: 40px;"><h3>No files selected</h3><p>Mark some files in the list to generate a document.</p></div>')
+            self.preview_text.setHtml('<div style="text-align: center; color: #9aa0a6; font-style: italic; padding: 40px;"><h3 style="color: #e8eaed;">No files selected</h3><p>Mark some files in the list to generate a document.</p></div>')
             return
         try:
             self.status_label.setText("Generating document...")
@@ -809,7 +822,7 @@ class WorkspaceTab(QWidget):
         if not marked_files:
             self.status_label.setText("No files marked")
             # Show empty state in preview
-            self.preview_text.setHtml('<div style="text-align: center; color: #888; font-style: italic; padding: 40px;"><h3>No files selected</h3><p>Mark some files in the list to run compliance analysis.</p></div>')
+            self.preview_text.setHtml('<div style="text-align: center; color: #9aa0a6; font-style: italic; padding: 40px;"><h3 style="color: #e8eaed;">No files selected</h3><p>Mark some files in the list to run compliance analysis.</p></div>')
             return
         try:
             self.status_label.setText("Running compliance analysis...")
@@ -836,7 +849,7 @@ class WorkspaceTab(QWidget):
         if not marked_files:
             self.status_label.setText("No files marked")
             # Show empty state in preview
-            self.preview_text.setHtml('<div style="text-align: center; color: #888; font-style: italic; padding: 40px;"><h3>No files selected</h3><p>Mark some files in the list to generate a summary.</p></div>')
+            self.preview_text.setHtml('<div style="text-align: center; color: #9aa0a6; font-style: italic; padding: 40px;"><h3 style="color: #e8eaed;">No files selected</h3><p>Mark some files in the list to generate a summary.</p></div>')
             return
         try:
             self.status_label.setText("Summarizing files...")
