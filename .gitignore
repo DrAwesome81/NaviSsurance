@@ -13,7 +13,12 @@ models/
 codebase_export.txt
 *.jsonl
 *.json
+!rag_config.json
 *.wav
+
+# Auth tokens (never commit)
+config/navi_token.pkl
+config/mailbird_tokens.json
 
 llama_cpp_python-0.3.8+cu128.gemma3-cp312-cp312-win_amd64.whl
 chroma_index_test/

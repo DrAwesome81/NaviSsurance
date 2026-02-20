@@ -33,10 +33,10 @@ URGENT_EMAILS:
 
 Return only the relevant emails, nothing else."""
 
-    def __init__(self, chat_window=None):
+    def __init__(self, chat_window=None, db=None):
         super().__init__()
         self.chat_window = chat_window
-        self.db = DatabaseManager()
+        self.db = db if db is not None else DatabaseManager()
         self.db.init_email_calendar_tables()
         self.db.init_last_run_table()
         self.data_fetcher = DataFetcher()
@@ -50,12 +50,14 @@ Return only the relevant emails, nothing else."""
             briefing = self.daily_briefing()
             # Replace \n with <br> for HTML
             formatted_briefing = briefing.replace('\n', '<br>')
-            self.chat_window.chatDisplay.append(f'<div style="text-align: left;"><b>Navi:</b> {formatted_briefing}</div>')
+            if self.chat_window is not None and hasattr(self.chat_window, 'chatDisplay'):
+                self.chat_window.chatDisplay.append(f'<div style="text-align: left;"><b>Navi:</b> {formatted_briefing}</div>')
 
     def daily_briefing(self):
         """Generate comprehensive daily briefing with improved data collection and formatting."""
         from config import BRIEFING_AND_EMAIL_DISABLED
         if BRIEFING_AND_EMAIL_DISABLED:
+            self.db.update_last_run()  # Update timestamp even when disabled to avoid repeated calls
             return "Daily briefing and email checking are currently disabled."
         last_run = self.db.get_last_run()
         today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -258,6 +260,7 @@ Return only the relevant emails, nothing else."""
                         except (KeyError, StopIteration) as e:
                             print(f"Skipping email due to missing data: {e}")
                             continue
+                    conn.commit()
                 
                 # LLM analysis of emails
                 if all_email_data:
@@ -269,13 +272,21 @@ Return only the relevant emails, nothing else."""
                     email_analysis_prompt = self.EMAIL_ANALYSIS_PROMPT_TEMPLATE.format(email_data=email_data_str)
                     
                     try:
-                        from core.response_handler import ResponseHandler
-                        response_handler = ResponseHandler(self, None)
-                        email_analysis = response_handler.chat_with_llama(
-                            [{"role": "user", "content": email_analysis_prompt}], 
-                            "email_analysis"
-                        )
-                        
+                        # Use Grok directly to avoid spawning llama_worker subprocess for a single call
+                        from core.grok_client import grok_available, grok_completion
+                        ok, _ = grok_available()
+                        if ok:
+                            email_analysis = grok_completion(
+                                system="You analyze emails for a MedTech consultant's daily briefing. Return RELEVANT_EMAILS: and URGENT_EMAILS: sections.",
+                                user=email_analysis_prompt,
+                                model="grok-4-1-fast"
+                            )
+                        else:
+                            email_analysis = None
+
+                        if not email_analysis:
+                            raise ValueError("Grok unavailable for email analysis")
+
                         # Extract relevant and urgent emails
                         if "RELEVANT_EMAILS:" in email_analysis:
                             relevant_section = email_analysis.split("RELEVANT_EMAILS:")[1]
@@ -407,7 +418,7 @@ Return only the relevant emails, nothing else."""
         Uses 'In-Reply-To' header for more accurate matching if available.
         """
         try:
-            with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
+            with sqlite3.connect(self.db.db_name) as conn:
                 # Fetch details of the sent email to get subject or thread information
                 try:
                     sent_details = self.data_fetcher.get_email_details(sent_email_id, source)
@@ -473,7 +484,7 @@ Return only the relevant emails, nothing else."""
         Uses pre-fetched email details to avoid additional API calls.
         """
         try:
-            with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
+            with sqlite3.connect(self.db.db_name) as conn:
                 # Try to find 'In-Reply-To' header for direct reply matching
                 in_reply_to = next((h['value'] for h in sent_details['payload']['headers'] if h['name'] == 'In-Reply-To'), None)
                 if in_reply_to:

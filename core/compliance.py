@@ -133,16 +133,22 @@ class ComplianceChecker:
                 # First, remove code block markers if present
                 cleaned_response = re.sub(r'```json|```', '', response).strip()
                 
-                # Now match the outer { ... }
-                json_match = re.search(r'\{.*?\}', cleaned_response, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group(0)
+                # Find outermost { ... } with balanced braces (handles nested objects/arrays)
+                start = cleaned_response.find('{')
+                json_str = None
+                if start >= 0:
+                    depth = 0
+                    for i in range(start, len(cleaned_response)):
+                        c = cleaned_response[i]
+                        if c == '{':
+                            depth += 1
+                        elif c == '}':
+                            depth -= 1
+                            if depth == 0:
+                                json_str = cleaned_response[start:i + 1]
+                                break
+                if json_str:
                     logger.info(f"Extracted JSON string: {json_str}")
-                    
-                    # Additional clean: Remove any lingering non-JSON
-                    json_str = re.sub(r'^[^[{]*', '', json_str)  # Remove text before {
-                    json_str = re.sub(r'[^}]*$', '', json_str)  # Remove text after }
-                    
                     results = json.loads(json_str)
                     logger.info(f"Parsed results: {results}")
                     

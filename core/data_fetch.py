@@ -293,11 +293,11 @@ class DataFetcher:
             mail.login(self.yahoo_account['user'], self.yahoo_account['pwd'])
             mail.select('inbox')
             
-            # Limit to last 7 days maximum for Yahoo
-            search_date = datetime.now() - timedelta(days=7)
+            # Limit to last 7 days maximum for Yahoo (use UTC for consistent comparison)
+            search_date = datetime.now(timezone.utc) - timedelta(days=7)
             if last_run > 0:
-                last_run_date = datetime.fromtimestamp(last_run, tz=timezone.utc).replace(tzinfo=None)
-                # Use the more recent of: last_run or 7 days ago
+                last_run_date = datetime.fromtimestamp(last_run, tz=timezone.utc)
+                # Use the more recent of: last_run or 7 days ago (both UTC)
                 if last_run_date > search_date:
                     search_date = last_run_date
             

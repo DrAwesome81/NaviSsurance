@@ -299,8 +299,9 @@ class ChatWindow(QMainWindow):
         # Create tabs first so tasks_tab is available
         self.create_tabs()
         
-        self.response_handler = ResponseHandler(self.chat_handler, self)
-        self.task_added_signal.connect(self.response_handler.handle_task_added)
+        # Reuse ChatManager's ResponseHandler to avoid spawning duplicate llama_worker subprocess
+        self.response_handler = self.chat_handler.response_handler
+        self.chat_handler.task_added_signal.connect(self.response_handler.handle_task_added)
         
         self.load_chat_history()
 

@@ -50,40 +50,47 @@ class DatabaseManager:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
             
-            # Check if the table exists with old schema and migrate it
+            # Check if the table exists with old schema and migrate it (wrapped in transaction)
             cursor = conn.cursor()
             cursor.execute("PRAGMA table_info(tasks)")
             columns = [col[1] for col in cursor.fetchall()]
-            
-            # If task_text doesn't exist, try to migrate from common alternatives
-            if 'task_text' not in columns:
-                if 'task' in columns:
-                    # Rename 'task' to 'task_text'
-                    conn.execute("ALTER TABLE tasks RENAME COLUMN task TO task_text")
-                    print("DEBUG: Migrated 'task' column to 'task_text'")
-                elif 'description' in columns:
-                    # Rename 'description' to 'task_text'
-                    conn.execute("ALTER TABLE tasks RENAME COLUMN description TO task_text")
-                    print("DEBUG: Migrated 'description' column to 'task_text'")
-                elif 'content' in columns:
-                    # Rename 'content' to 'task_text'
-                    conn.execute("ALTER TABLE tasks RENAME COLUMN content TO task_text")
-                    print("DEBUG: Migrated 'content' column to 'task_text'")
-                else:
-                    print("WARNING: Could not find task column to migrate")
-            
-            # Add missing columns if they don't exist
-            if 'category' not in columns:
-                conn.execute("ALTER TABLE tasks ADD COLUMN category TEXT DEFAULT 'Business'")
-                print("DEBUG: Added 'category' column with default 'Business'")
-            
-            if 'recurrence' not in columns:
-                conn.execute("ALTER TABLE tasks ADD COLUMN recurrence TEXT DEFAULT 'None'")
-                print("DEBUG: Added 'recurrence' column with default 'None'")
-            
-            if 'session_id' not in columns:
-                conn.execute("ALTER TABLE tasks ADD COLUMN session_id TEXT")
-                print("DEBUG: Added 'session_id' column")
+
+            conn.execute("BEGIN")
+            try:
+                # If task_text doesn't exist, try to migrate from common alternatives
+                if 'task_text' not in columns:
+                    if 'task' in columns:
+                        conn.execute("ALTER TABLE tasks RENAME COLUMN task TO task_text")
+                        print("DEBUG: Migrated 'task' column to 'task_text'")
+                    elif 'description' in columns:
+                        conn.execute("ALTER TABLE tasks RENAME COLUMN description TO task_text")
+                        print("DEBUG: Migrated 'description' column to 'task_text'")
+                    elif 'content' in columns:
+                        conn.execute("ALTER TABLE tasks RENAME COLUMN content TO task_text")
+                        print("DEBUG: Migrated 'content' column to 'task_text'")
+                    else:
+                        print("WARNING: Could not find task column to migrate")
+
+                # Re-fetch columns after potential rename
+                cursor.execute("PRAGMA table_info(tasks)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                if 'category' not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN category TEXT DEFAULT 'Business'")
+                    print("DEBUG: Added 'category' column with default 'Business'")
+
+                if 'recurrence' not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN recurrence TEXT DEFAULT 'None'")
+                    print("DEBUG: Added 'recurrence' column with default 'None'")
+
+                if 'session_id' not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN session_id TEXT")
+                    print("DEBUG: Added 'session_id' column")
+
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
             
             # Update archived_tasks table to match new schema
             conn.execute('DROP TABLE IF EXISTS archived_tasks')
@@ -787,25 +794,8 @@ class DatabaseManager:
             except Exception as e:
                 print(f"    - Error creating CoS tables: {e}")
         
-        # Version 7 to 8: CoS chat list (conversations organized by project)
-        if from_version < 8 and to_version >= 8:
-            print("  - Creating cos_chats table for Chief of Staff chat history")
-            try:
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS cos_chats (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        title TEXT NOT NULL DEFAULT 'New chat',
-                        project TEXT,
-                        created_at TEXT,
-                        updated_at TEXT
-                    )
-                """)
-                conn.commit()
-                print("    - cos_chats created")
-            except Exception as e:
-                print(f"    - Error creating cos_chats: {e}")
-
         # Version 6 to 7: CoS suggested/accepted fields (Suggest Next Actions workflow)
+        # Must run before 7->8 so cos_projects has required columns
         if from_version < 7 and to_version >= 7:
             print("  - Adding cos_projects columns: notes, blockers_json, priority_tier, suggested_*, accepted_at")
             try:
@@ -828,6 +818,24 @@ class DatabaseManager:
                 conn.commit()
             except Exception as e:
                 print(f"    - Error adding CoS suggestion columns: {e}")
+
+        # Version 7 to 8: CoS chat list (conversations organized by project)
+        if from_version < 8 and to_version >= 8:
+            print("  - Creating cos_chats table for Chief of Staff chat history")
+            try:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS cos_chats (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        title TEXT NOT NULL DEFAULT 'New chat',
+                        project TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                """)
+                conn.commit()
+                print("    - cos_chats created")
+            except Exception as e:
+                print(f"    - Error creating cos_chats: {e}")
         
         print(f"Schema migration from version {from_version} to {to_version} completed.")
 

@@ -1,5 +1,6 @@
 from PyQt6.QtCore import QObject, pyqtSignal
 from core.chat_handler import ChatHandler
+from core.db import DatabaseManager
 from core.response_handler import ResponseHandler
 from datetime import datetime, timezone
 
@@ -9,18 +10,22 @@ class ChatManager(QObject):  # Inherit QObject for signals
     def __init__(self, chat_window=None):
         super().__init__()
         # chat_window can be ChatWindow instance or DatabaseManager (for backward compatibility)
-        if hasattr(chat_window, 'db'):
-            # It's a ChatWindow instance
+        # DatabaseManager has no 'db' attribute; ChatWindow has self.db
+        if isinstance(chat_window, DatabaseManager):
+            self.chat_handler = ChatHandler(None, db=chat_window)
+            self.db = chat_window
+            self.response_handler = ResponseHandler(self.chat_handler, None)
+            self.chat_handler.task_added_callback = None  # No UI to update in backward compat
+        elif chat_window is not None and hasattr(chat_window, 'db'):
             self.chat_handler = ChatHandler(chat_window)
             self.db = self.chat_handler.db
             self.response_handler = ResponseHandler(self.chat_handler, chat_window)
+            self.chat_handler.task_added_callback = self.task_added_signal.emit
         else:
-            # It's a DatabaseManager (old signature)
             self.chat_handler = ChatHandler(None)
-            self.db = chat_window if chat_window else self.chat_handler.db
+            self.db = self.chat_handler.db
             self.response_handler = ResponseHandler(self.chat_handler, None)
-        # Set up task added callback to emit our signal
-        self.chat_handler.task_added_callback = self.task_added_signal.emit
+            self.chat_handler.task_added_callback = None
 
     def start_briefing(self):
         """Generate daily briefing if it hasn't been shown today."""
