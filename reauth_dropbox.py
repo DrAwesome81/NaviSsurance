@@ -1,5 +1,3 @@
-import sys
-sys.path.append(r'C:\Users\adamo\Dropbox\_Consulting\NaviSsurance')
 from dropbox import DropboxOAuth2FlowNoRedirect
 from core.api import DROPBOX_APP_KEY, DROPBOX_APP_SECRET
 
