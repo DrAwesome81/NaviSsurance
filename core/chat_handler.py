@@ -208,3 +208,46 @@ class ChatHandler(QObject):
             list: List of tuples (role, content, timestamp) matching the search
         """
         return self.db.search_conversations(search_terms, date_range)
+
+    def get_chat_history_by_date_range(self, session_id, date_query: str):
+        """
+        Return messages for a session over a natural-language day query.
+
+        Supported:
+        - YYYY-MM-DD (or any dateutil-parseable date)
+        - today / yesterday
+        - last <weekday> (e.g., 'last thursday')
+        """
+        q = (date_query or "").strip().lower()
+        now = datetime.now(UTC)
+
+        if q in {"today"}:
+            day = now.date()
+        elif q in {"yesterday"}:
+            day = (now - timedelta(days=1)).date()
+        elif q.startswith("last "):
+            weekday_name = q.replace("last ", "", 1).strip()
+            weekdays = {
+                "monday": 0,
+                "tuesday": 1,
+                "wednesday": 2,
+                "thursday": 3,
+                "friday": 4,
+                "saturday": 5,
+                "sunday": 6,
+            }
+            if weekday_name not in weekdays:
+                raise ValueError(f"Unsupported weekday in history query: {weekday_name}")
+            target = weekdays[weekday_name]
+            # How many days ago was the most recent target weekday (excluding today if same weekday)?
+            delta = (now.weekday() - target) % 7
+            delta = 7 if delta == 0 else delta
+            day = (now - timedelta(days=delta)).date()
+        else:
+            # Fall back to dateutil parsing (date-only queries recommended)
+            dt = parser.parse(q, default=now)
+            day = dt.date()
+
+        start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
+        end = start + timedelta(days=1)
+        return self.db.get_messages_by_date_range(session_id, start.isoformat(), end.isoformat())

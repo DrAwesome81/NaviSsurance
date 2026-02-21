@@ -23,23 +23,6 @@ class ChatThread(QThread):
             print(f"[DEBUG] ChatThread: Got response: {response}")
             
             if response:
-                if "Added" in response and "due on" in response:
-                    print("[DEBUG] ChatThread: Task detected in response")
-                    # Split the response into individual task entries
-                    task_entries = response.replace("Added ", "").split(", ")
-                    for entry in task_entries:
-                        task_match = re.search(r"'([^']*)'", entry)
-                            date_match = re.search(r'due on (\d{4}-\d{2}-\d{2})', entry)
-                        print(f"[DEBUG] ChatThread: Task match: {task_match.group(1) if task_match else 'None'}")
-                        print(f"[DEBUG] ChatThread: Date match: {date_match.group(1) if date_match else 'None'}")
-
-                        if task_match and date_match:
-                            task_text = task_match.group(1)
-                            due_date = date_match.group(1)
-                            print(f"[DEBUG] ChatThread: Emitting task signal with text: {task_text}, date: {due_date}")
-                            # Emit the signal through the chat_manager instead of chat_handler
-                            self.chat_handler.task_added_signal.emit(task_text, due_date)
-                            print("[DEBUG] ChatThread: Task signal emitted")
                 self.response_signal.emit(response)
             else:
                 print("[DEBUG] ChatThread: No response received.")
