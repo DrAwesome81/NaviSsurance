@@ -171,6 +171,9 @@ class DatabaseManager:
         
         # Multi-agent tables are created in migration 2 -> 3 (see _migrate_schema)
 
+        # Best-effort: backfill dedup keys for existing news items
+        self.backfill_news_dedup()
+
     def create_indexes(self):
         """Create database indexes for optimal query performance."""
         with sqlite3.connect(self.db_name) as conn:
@@ -483,14 +486,18 @@ class DatabaseManager:
             from core.news_dedup import canonicalize_url, make_dedup_key
 
             canonical_url = canonicalize_url(url)
-            key = make_dedup_key(title=title, url=canonical_url, published_date=published_date)
+            key_url = make_dedup_key(title=title, url=canonical_url, published_date=published_date)
+            key_title = make_dedup_key(title=title, url=None, published_date=published_date)
             with sqlite3.connect(self.db_name) as conn:
                 # First: check dedup table (preferred)
-                cursor = conn.execute("SELECT news_id FROM news_dedup WHERE dedup_key = ?", (key,))
+                cursor = conn.execute(
+                    "SELECT news_id FROM news_dedup WHERE dedup_key IN (?, ?) LIMIT 1",
+                    (key_url, key_title),
+                )
                 if cursor.fetchone():
                     conn.execute(
-                        "UPDATE news_dedup SET last_seen = datetime('now') WHERE dedup_key = ?",
-                        (key,),
+                        "UPDATE news_dedup SET last_seen = datetime('now') WHERE dedup_key IN (?, ?)",
+                        (key_url, key_title),
                     )
                     conn.commit()
                     return False
@@ -508,7 +515,14 @@ class DatabaseManager:
                         INSERT OR REPLACE INTO news_dedup (dedup_key, news_id, first_seen, last_seen)
                         VALUES (?, ?, datetime('now'), datetime('now'))
                         """,
-                        (key, existing[0]),
+                        (key_url, existing[0]),
+                    )
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO news_dedup (dedup_key, news_id, first_seen, last_seen)
+                        VALUES (?, ?, datetime('now'), datetime('now'))
+                        """,
+                        (key_title, existing[0]),
                     )
                     conn.commit()
                     return False
@@ -523,7 +537,14 @@ class DatabaseManager:
                     INSERT OR REPLACE INTO news_dedup (dedup_key, news_id, first_seen, last_seen)
                     VALUES (?, ?, datetime('now'), datetime('now'))
                     """,
-                    (key, news_id),
+                    (key_url, news_id),
+                )
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO news_dedup (dedup_key, news_id, first_seen, last_seen)
+                    VALUES (?, ?, datetime('now'), datetime('now'))
+                    """,
+                    (key_title, news_id),
                 )
                 conn.commit()
                 return True
@@ -538,7 +559,7 @@ class DatabaseManager:
             try:
                 cursor = conn.execute(
                     f"""
-                    SELECT n.title, n.content, n.url, n.source, n.published_date, n.created_at
+                    SELECT DISTINCT n.id, n.title, n.content, n.url, n.source, n.published_date, n.created_at
                     FROM news_items n
                     JOIN (
                         SELECT dedup_key, MAX(news_id) AS news_id
@@ -552,7 +573,8 @@ class DatabaseManager:
                 )
                 rows = cursor.fetchall()
                 if rows:
-                    return rows
+                    # Drop id column to preserve original return shape
+                    return [(r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows]
             except Exception:
                 pass
 
@@ -570,10 +592,14 @@ class DatabaseManager:
             from core.news_dedup import canonicalize_url, make_dedup_key
 
             canonical_url = canonicalize_url(url)
-            key = make_dedup_key(title=title, url=canonical_url, published_date=None)
+            key_url = make_dedup_key(title=title, url=canonical_url, published_date=None)
+            key_title = make_dedup_key(title=title, url=None, published_date=None)
 
             try:
-                cursor = conn.execute("SELECT 1 FROM news_dedup WHERE dedup_key = ? LIMIT 1", (key,))
+                cursor = conn.execute(
+                    "SELECT 1 FROM news_dedup WHERE dedup_key IN (?, ?) LIMIT 1",
+                    (key_url, key_title),
+                )
                 if cursor.fetchone():
                     return True
             except Exception:
@@ -584,6 +610,41 @@ class DatabaseManager:
             else:
                 cursor = conn.execute('SELECT id FROM news_items WHERE title = ?', (title,))
             return cursor.fetchone() is not None
+
+    def backfill_news_dedup(self) -> None:
+        """
+        Best-effort backfill of news_dedup mappings for existing news_items.
+        Keeps newest entries preferred by processing most recent first.
+        """
+        try:
+            from core.news_dedup import canonicalize_url, make_dedup_key
+            with sqlite3.connect(self.db_name) as conn:
+                (count,) = conn.execute("SELECT COUNT(*) FROM news_dedup").fetchone()
+                if count and count > 0:
+                    return
+
+                rows = conn.execute(
+                    "SELECT id, title, url, published_date FROM news_items ORDER BY created_at DESC"
+                ).fetchall()
+                for news_id, title, url, published_date in rows:
+                    cu = canonicalize_url(url)
+                    if cu and cu != url:
+                        conn.execute("UPDATE news_items SET url = ? WHERE id = ?", (cu, news_id))
+
+                    key_url = make_dedup_key(title=title, url=cu, published_date=published_date)
+                    key_title = make_dedup_key(title=title, url=None, published_date=published_date)
+
+                    conn.execute(
+                        "INSERT OR IGNORE INTO news_dedup (dedup_key, news_id) VALUES (?, ?)",
+                        (key_url, news_id),
+                    )
+                    conn.execute(
+                        "INSERT OR IGNORE INTO news_dedup (dedup_key, news_id) VALUES (?, ?)",
+                        (key_title, news_id),
+                    )
+                conn.commit()
+        except Exception:
+            return
 
     def cleanup_old_news(self, days=7):
         """Remove news items older than N days and malformed items."""
