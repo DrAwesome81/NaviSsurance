@@ -18,6 +18,14 @@ The app uses Anthropic web search to retrieve headlines and requires a **JSON ar
 
 Code: `core/news.py:NewsService._web_search_headlines()`
 
+#### Planned: migrate from Anthropic to Grok (xAI)
+Today this uses Anthropic web search because it provides a convenient integrated search tool. Longer-term, it would be cleaner to standardize on **Grok (xAI)** for this step as well.
+
+Implementation notes for that swap:
+- Replace the Anthropic client call in `NewsService._web_search_headlines()` with a Grok call (same pattern as `core/response_handler.py:chat_with_grok`).
+- Keep the **same output contract**: a JSON array of `{title, url, source, published_at, summary}` so the dedup/cache layer stays unchanged.
+- Ensure the Grok request uses a timeout + retries and does not log sensitive responses.
+
 ### 3) Dedup + cache in SQLite
 Each headline is normalized and stored in SQLite:
 - **Canonical URL** removes tracking parameters (`utm_*`, `gclid`, `fbclid`, etc.) and fragments.
