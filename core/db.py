@@ -116,6 +116,19 @@ class DatabaseManager:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(title, url)
             )''')
+
+            # Dedup index for news_items. This lets us dedup across:
+            # - tracking-param variations in URLs (canonicalization)
+            # - minor title variations (normalized title + date fallback)
+            conn.execute('''CREATE TABLE IF NOT EXISTS news_dedup (
+                dedup_key TEXT PRIMARY KEY,
+                news_id INTEGER,
+                first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_shown DATETIME
+            )''')
+
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_news_dedup_news_id ON news_dedup(news_id)")
             
             # Dropbox index tables removed - using RAG index instead
             
@@ -467,19 +480,52 @@ class DatabaseManager:
     def store_news_item(self, title, content, url=None, source=None, published_date=None):
         """Store a news item in the database, avoiding duplicates."""
         try:
+            from core.news_dedup import canonicalize_url, make_dedup_key
+
+            canonical_url = canonicalize_url(url)
+            key = make_dedup_key(title=title, url=canonical_url, published_date=published_date)
             with sqlite3.connect(self.db_name) as conn:
-                # Check if item already exists before inserting
-                cursor = conn.execute('SELECT id FROM news_items WHERE title = ? OR (url IS NOT NULL AND url = ?)', (title, url))
+                # First: check dedup table (preferred)
+                cursor = conn.execute("SELECT news_id FROM news_dedup WHERE dedup_key = ?", (key,))
                 if cursor.fetchone():
-                    print(f"News item already exists: {title[:50]}...")
+                    conn.execute(
+                        "UPDATE news_dedup SET last_seen = datetime('now') WHERE dedup_key = ?",
+                        (key,),
+                    )
+                    conn.commit()
+                    return False
+
+                # Backward-compat: check by exact title or URL match
+                cursor = conn.execute(
+                    "SELECT id FROM news_items WHERE title = ? OR (url IS NOT NULL AND url = ?)",
+                    (title, canonical_url),
+                )
+                existing = cursor.fetchone()
+                if existing:
+                    # Attach a dedup key mapping so future checks are stable
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO news_dedup (dedup_key, news_id, first_seen, last_seen)
+                        VALUES (?, ?, datetime('now'), datetime('now'))
+                        """,
+                        (key, existing[0]),
+                    )
+                    conn.commit()
                     return False
                 
                 conn.execute('''INSERT INTO news_items 
                     (title, content, url, source, published_date, created_at) 
                     VALUES (?, ?, ?, ?, ?, datetime('now'))''',
-                    (title, content, url, source, published_date))
+                    (title, content, canonical_url, source, published_date))
+                news_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO news_dedup (dedup_key, news_id, first_seen, last_seen)
+                    VALUES (?, ?, datetime('now'), datetime('now'))
+                    """,
+                    (key, news_id),
+                )
                 conn.commit()
-                print(f"Successfully stored news item: {title[:50]}...")
                 return True
         except Exception as e:
             print(f"Error storing news item: {e}")
@@ -488,17 +534,53 @@ class DatabaseManager:
     def get_recent_news(self, days=7):
         """Get news items from the last N days."""
         with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('''SELECT title, content, url, source, published_date, created_at 
-                FROM news_items 
-                WHERE created_at >= datetime('now', '-{} days')
-                ORDER BY created_at DESC'''.format(days))
+            # Prefer one row per dedup_key (best-effort). Fall back to direct news_items if needed.
+            try:
+                cursor = conn.execute(
+                    f"""
+                    SELECT n.title, n.content, n.url, n.source, n.published_date, n.created_at
+                    FROM news_items n
+                    JOIN (
+                        SELECT dedup_key, MAX(news_id) AS news_id
+                        FROM news_dedup
+                        GROUP BY dedup_key
+                    ) d ON d.news_id = n.id
+                    WHERE n.created_at >= datetime('now', ?)
+                    ORDER BY n.created_at DESC
+                    """,
+                    (f"-{int(days)} days",),
+                )
+                rows = cursor.fetchall()
+                if rows:
+                    return rows
+            except Exception:
+                pass
+
+            cursor = conn.execute(
+                f"""SELECT title, content, url, source, published_date, created_at
+                    FROM news_items
+                    WHERE created_at >= datetime('now', '-{int(days)} days')
+                    ORDER BY created_at DESC"""
+            )
             return cursor.fetchall()
 
     def check_news_exists(self, title, url=None):
         """Check if a news item already exists in the database."""
         with sqlite3.connect(self.db_name) as conn:
-            if url:
-                cursor = conn.execute('SELECT id FROM news_items WHERE title = ? OR url = ?', (title, url))
+            from core.news_dedup import canonicalize_url, make_dedup_key
+
+            canonical_url = canonicalize_url(url)
+            key = make_dedup_key(title=title, url=canonical_url, published_date=None)
+
+            try:
+                cursor = conn.execute("SELECT 1 FROM news_dedup WHERE dedup_key = ? LIMIT 1", (key,))
+                if cursor.fetchone():
+                    return True
+            except Exception:
+                pass
+
+            if canonical_url:
+                cursor = conn.execute('SELECT id FROM news_items WHERE title = ? OR url = ?', (title, canonical_url))
             else:
                 cursor = conn.execute('SELECT id FROM news_items WHERE title = ?', (title,))
             return cursor.fetchone() is not None
@@ -539,6 +621,14 @@ class DatabaseManager:
             cursor = conn.execute('SELECT COUNT(*) FROM news_items')
             after_count = cursor.fetchone()[0]
             
+            # Remove dedup rows pointing to deleted items
+            try:
+                conn.execute(
+                    "DELETE FROM news_dedup WHERE news_id IS NOT NULL AND news_id NOT IN (SELECT id FROM news_items)"
+                )
+            except Exception:
+                pass
+
             conn.commit()
             # Cleanup completed
 
