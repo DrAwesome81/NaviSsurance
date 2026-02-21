@@ -21,6 +21,7 @@ This plan is intentionally pragmatic: it fits the current Python + PyQt + SQLite
 - Memory is “raw retrieval” (FTS search), not structured facts + summaries.
 - Delegation to other agents is not implemented (no job queue / agent registry / artifacts).
 - Calendar write-back and email sending are not implemented (read-only posture).
+- Search is not yet unified across Dropbox + local + Google Drive, and dedup across sources is not implemented (see `docs/unified_search.md`).
 
 ## Product Goals (Chief of Staff)
 
@@ -65,6 +66,7 @@ Initial tool set:
 - `get_history` (day range)
 - `web_search` (Claude)
 - `dropbox_search` (local index)
+- `doc_search` (unified search across Dropbox/local/Google Drive; dedup-aware) — see `docs/unified_search.md`
 - `draft_email` (no send; produces a draft artifact)
 - `schedule_suggestion` (no write; proposes blocks)
 
