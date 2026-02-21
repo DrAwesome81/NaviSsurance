@@ -69,15 +69,53 @@ Initial tool set:
 - `schedule_suggestion` (no write; proposes blocks)
 
 ### Memory System (Structured + Retrieval)
-Keep raw conversation logs (already in SQLite), and add **structured memory**:
-- facts about people/clients (names, roles, preferences)
-- projects and goals
-- open loops/commitments
-- long-term preferences (tone, working hours, meeting rules)
+Keep raw conversation logs (already in SQLite), and add a **memory layer** that can retrieve *only what’s needed* for a given prompt.
 
-Memory should be:
-- **written** explicitly (when you confirm or when it’s a clear stable fact)
-- **retrieved** automatically during planning and relevant chats
+This approach is exactly what you described: store all chats, then attach **tags** and **summaries** so the assistant can find the right snippets quickly. The key is to store summaries/tags as **separate indexed fields**, not by mutating or “prepending” content onto the raw chat rows. (Prepending is workable, but it tends to contaminate retrieval results, duplicate information, and make it harder to audit what was actually said.)
+
+#### Memory Components (Recommended)
+- **Raw conversation log (immutable)**: full text of each turn, timestamped.
+- **Chunking**: group turns into “chunks” (e.g., 10–30 turns, or ~2–5 minutes of conversation).
+- **Rolling summaries**:
+  - per-chunk summary (what happened, decisions, commitments)
+  - per-day summary (high-level timeline)
+  - per-project summary (current status and open loops)
+- **Tags / entities**:
+  - project/client (Abbott, Dova, etc.)
+  - people (names, roles)
+  - topics (FDA, ISO 13485, PCCP, etc.)
+  - intent types (decision, task, preference, meeting, follow-up)
+- **Structured memory facts** (for stable long-term recall):
+  - preferences (working hours, tone, scheduling rules)
+  - relationships (who is who, what company)
+  - ongoing commitments (“I promised to send X by date Y”)
+
+#### Retrieval Strategy (How it uses memory)
+Use a staged approach so retrieval stays small and relevant:
+1. **Hard filters** (fast): project tag, date window (e.g., last 30 days), person tags.
+2. **Lexical search (FTS)**: search `conversation` and/or chunk summaries for keywords.
+3. **Semantic re-rank (optional)**: if you add embeddings later, re-rank top candidates by similarity.
+4. **Assemble minimal context**:
+   - top N chunk summaries
+   - the 3–10 most relevant raw turns (verbatim) for grounding
+   - relevant memory facts (preferences/commitments)
+5. **Guardrails**: retrieved text is treated as *untrusted reference*, not instructions; only user-approved actions cause side effects.
+
+#### When to write memory (Summarize/Tag triggers)
+- **On session end / idle timer**: summarize the last chunk and tag entities.
+- **On explicit user command**: “remember this”, “tag this to Abbott”.
+- **On high-signal events**:
+  - task created
+  - decision made (“we will do X”)
+  - preference stated (“don’t schedule meetings before 10”)
+  - delegation created (“ask agent to research Y”)
+
+#### Is “tag + summarize + search” a good idea?
+Yes. It’s a strong, low-complexity path that:
+- keeps **full fidelity** (raw logs remain intact),
+- makes retrieval cheap and relevant (summaries/tags are small),
+- allows iterative upgrades (you can add embeddings later without changing the user experience),
+- improves safety/auditability (you can show “why this was retrieved”).
 
 ### Planner / Prioritizer
 Introduce a planning step that takes:
@@ -113,8 +151,16 @@ Each job should produce **artifacts** (text, JSON, attachments) stored locally f
   - `project_id`, `name`, `priority`, `notes`
 - `task_context`:
   - `task_id`, `project_id`, `context_json`, `source` (chat/email/manual)
+- `conversation_chunks`:
+  - `chunk_id`, `session_id`, `start_ts`, `end_ts`, `turn_ids_json`, `project_id` (nullable)
+- `conversation_summaries`:
+  - `summary_id`, `scope` (chunk/day/project), `scope_id`, `summary_text`, `key_decisions_json`, `open_loops_json`, `created_at`
+- `conversation_tags`:
+  - `tag_id`, `scope` (turn/chunk/session), `scope_id`, `tag_type` (project/person/topic/intent), `tag_value`, `confidence`, `created_at`
 - `memory_facts`:
   - `fact_id`, `subject`, `predicate`, `object`, `confidence`, `source`, `created_at`, `updated_at`
+- `memory_preferences` (optional, can be folded into `memory_facts`):
+  - `pref_id`, `key`, `value`, `source`, `updated_at`
 - `job_queue`:
   - `job_id`, `type`, `status`, `input_json`, `result_json`, `created_at`, `updated_at`
 - `artifacts`:
@@ -174,12 +220,14 @@ Acceptance Criteria:
 - One-click “Plan My Day” output in UI that is consistent and actionable.
 
 ### Milestone 2: Structured Memory
-- Implement `memory_facts` table + retrieval hooks:
-  - store client preferences, names, ongoing commitments
-  - add “remember this” and “what do you remember about X?” interactions
+- Implement the memory layer on top of the raw chat DB:
+  - add chunking + summaries + tagging tables
+  - implement retrieval that pulls: (a) a few summaries, (b) a few verbatim turns, (c) relevant memory facts
+  - add “remember this” (write memory) and “what do you remember about X?” (read memory) interactions
+  - add “show sources” option that prints the chunk IDs / timestamps used for recall
 
 Acceptance Criteria:
-- Assistant can recall key facts without you using `!search`.
+- Assistant can recall key facts without you using `!search`, and can cite where it came from (summary + source turns).
 
 ### Milestone 3: Delegation Framework
 - Implement `job_queue` + basic sub-agent runners:
