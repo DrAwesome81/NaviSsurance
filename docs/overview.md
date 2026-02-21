@@ -4,21 +4,27 @@
 NaviSsurance is an AI-powered medical device regulatory consulting platform, serving AI Software as a Medical Device (SaMD), In Vitro Diagnostics/Laboratory Developed Tests (IVD/LDT), and non-AI MedTech clients (e.g., diagnostics, implants, surgical devices). It automates compliance checking, lead generation, and clinical study design, delivering 60–80% cost savings ($3,750–$28,000 per project) compared to traditional consultancies (e.g., Emergo, RQM+), with results in hours or days versus weeks.
 
 ## Features
+- **Dashboard Tab**: New comprehensive dashboard with task list, schedule display (Google Calendar integration), and news feed (AI-powered MedTech news with 7-day persistence and hyperlinks). Features auto-refresh timers and interactive task completion.
+- **Workspace Tab**: Advanced document workspace with QSplitter layout: left panel (Dropbox file tree), center panel (document preview), and right sidebar (analysis tools for compliance, chunking, and document generation).
+- **Note-Taking System**: AI-powered note-taking with context-aware formatting and dynamic categorization. Features include context setting, automatic note formatting with robust JSON parsing, intelligent categorization, thread-safe UI updates, and DOCX export via Save As dialog. Uses local Llama 3.1-8B-Instruct model with deterministic settings (temperature=0.2, top_p=0.7).
 - **Compliance Checking**: Grok-powered three-column UI (`interface.py`) for analyzing SOPs, PDFs, or URLs against standards (e.g., ISO 13485, 21 CFR 801), outputting JSON results (`[{section, issue, fix, reference}]`) for client recommendations.
-- **Lead Generation**: Claude 3.7 Sonnet generates JSON-backed leads (name, company, title, LinkedIn URL, rationale) in the Leads Tab (`interface.py`), with personalized LinkedIn messages for manual outreach.
+- **Lead Generation**: Grok 4 API generates JSON-backed leads (name, company, title, LinkedIn URL, rationale) in the Leads Tab (`interface.py`), with personalized LinkedIn messages for manual outreach.
 - **Clinical Study Design (Planned)**: AI optimizer for 510(k), IDE, or PMCF protocols, costing $3,000–$12,000 versus $10,000–$40,000, targeting diagnostics (e.g., Abbott) and CROs, with 1–3 day delivery.
-- **Email Fetching**: Fetches Gmail, MSN/Outlook, and custom IMAP inboxes (`fetch_all_emails.py`); planned folder access (e.g., “Clients,” “Leads”) for DistilBERT training to filter emails (8-class: Response Needed, Personal, etc.).
+- **Email Fetching**: Fetches Gmail, MSN/Outlook, and custom IMAP inboxes (`fetch_all_emails.py`); planned folder access (e.g., "Clients," "Leads") for DistilBERT training to filter emails (8-class: Response Needed, Personal, etc.).
 - **Meeting Transcription**: AssemblyAI processes speaker-separated transcripts (`interface.py`, lines 248–312).
-- **Task Management**: Manual and chat-based task addition, archiving, and persistence (`core.db.DatabaseManager`), needing UX improvements.
-- **Chief of Staff Assistant (Planned/Iterating)**: A personal assistant mode that prioritizes schedule, tracks commitments, remembers key details, and delegates work to sub-agents (see `docs/chief_of_staff.md`).
+- **Task Management**: Manual and chat-based task addition, archiving, and persistence (`core.db.DatabaseManager`), with interactive dashboard integration and double-click completion.
+- **Tasks Tab (Vikunja Integration)**: Professional task management with fully implemented Vikunja API integration. Features include connection management with persistent credentials, project creation and hierarchical display, comprehensive task table showing all fields (title, description, priority, due date, start date, end date, percent done, favorite, estimated duration), task creation with estimated duration input, task editing and deletion, natural language task creation via chat window, and comprehensive test coverage (75 automated tests passing).
 - **CRM Integration (Planned)**: SQLite-based (`crm.py`) to unify leads, compliance results, and filtered emails.
 
 ## Tech Stack
-- **Core**: Python 3.12.7, PyQt6 (UI), SQLite (`crm.py` for data storage).
-- **APIs**: xAI Grok (compliance, document generation), Anthropic Claude 3.7 Sonnet (lead generation), LinkedIn (Share, Sign In, Community Management), AssemblyAI (transcription).
+- **Core**: Python 3.12.7, PyQt6 (UI), SQLite (`core/db.py` for data storage).
+- **AI Models**: Local Llama 3.1-8B-Instruct model for note-taking and chat interactions, with 1000-token response limits for comprehensive outputs.
+- **APIs**: xAI Grok (compliance, document generation, lead generation), LinkedIn (Share, Sign In, Community Management), AssemblyAI (transcription).
 - **Tools**: Cursor (IDE), Git/GitHub (version control), Dropbox (storage at `C:/Users/adamo/Dropbox/_Consulting/NaviSsurance`).
 
 ## Status
-- **Operational**: Lead generation and transcription are fully functional; task management is functional but clunky; email fetching is limited to inboxes, needing folder access.
-- **In Development**: Compliance Tab UI (three-column, file/URL uploads), clinical study design optimizer, CRM integration, and DistilBERT email filtering.
-- **Next Steps**: Debug `fetch_all_emails.py` for folder access, implement Compliance Tab in `interface.py`, launch clinical study design optimizer to expand client base (diagnostics, CROs).
+- **Fully Operational**: Dashboard tab with task management, schedule display, and news feed; Workspace tab with document management and analysis tools; Note-taking system with AI formatting and categorization; Lead generation and transcription are fully functional.
+- **Operational with Improvements**: Task management is now functional with dashboard integration and interactive features; Email fetching is limited to inboxes, needing folder access.
+- **Fully Operational**: Tasks Tab (Vikunja integration) - Fully implemented with comprehensive test coverage (75 passing tests). VikunjaClient API (`core/vikunja_client.py`) is complete and tested. Features include natural language task creation, task editing/deletion, estimated duration tracking, and full field visibility.
+- **In Development**: Clinical study design optimizer, CRM integration, and DistilBERT email filtering.
+- **Next Steps**: Debug `fetch_all_emails.py` for folder access, launch clinical study design optimizer to expand client base (diagnostics, CROs), enhance CRM integration.

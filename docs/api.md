@@ -1,10 +1,31 @@
 NaviSsurance API Integrations
 Overview
-NaviSsurance uses third-party APIs for core functionality: xAI Grok (compliance, study design), Anthropic Claude 3.7 Sonnet (lead generation), LinkedIn (posting, authentication), and AssemblyAI (transcription). API keys are non-transferable; buyers must register their own accounts.
+NaviSsurance uses third-party APIs for core functionality: xAI Grok (compliance, study design, lead generation), LinkedIn (posting, authentication), and AssemblyAI (transcription). It also uses a local Llama 3.1-8B-Instruct model for note-taking and chat interactions. API keys are non-transferable; buyers must register their own accounts.
+
+Local AI Model (Llama 3.1-8B-Instruct)
+
+Purpose: Provides AI-powered note formatting, categorization, and chat interactions using a local model for privacy and cost efficiency.
+Model: Llama 3.1-8B-Instruct-GGUF (quantized for efficiency).
+Configuration:
+- Context Window: 8192 tokens
+- Response Limit: 1000 tokens
+- GPU Layers: 33 (for acceleration)
+- Threads: 4 (for CPU processing)
+- Temperature: 0.9 (for creative responses)
+- Top-p: 0.9 (for response diversity)
+
+Setup:
+Download model from Hugging Face: Meta-Llama-3-8B-Instruct-GGUF
+Place in local cache directory
+Configure model path in core/llama_worker.py
+
+Code: core/llama_worker.py, gui/interface.py (NoteTakingSystem)
+Notes: Local processing ensures data privacy; no API costs; requires GPU for optimal performance.
+
 API Details
 xAI Grok
 
-Purpose: Analyzes SOPs for compliance (ISO 13485, 21 CFR 820) and generates study protocols, outputting JSON ([{section, issue, fix, reference}]).
+Purpose: Analyzes SOPs for compliance (ISO 13485, 21 CFR 820), generates study protocols, and provides lead generation, outputting JSON ([{section, issue, fix, reference}]) for compliance and structured data for leads.
 Endpoints: https://api.x.ai/grok (REST API).
 Authentication: API key (GROK_API_KEY) in .env.
 Setup:
@@ -12,32 +33,21 @@ Register at https://x.ai/api.
 Obtain SuperGrok subscription (~$20–$100/month, higher quotas).
 Update .env with key.
 
+Features:
+- Compliance Analysis: Document analysis against regulatory standards
+- Lead Generation: Company and contact research for MedTech companies
+- News Search: AI-powered query generation for MedTech industry news
 
-Code: chat.py (compliance, study design calls).
+Code: core/chat.py (compliance, study design calls), gui/interface.py (lead generation, news search).
 Notes: Commercial use allowed per ToS; verify at https://x.ai/grok.
-
-Anthropic Claude 3.7 Sonnet
-
-Purpose: Generates lead JSON ({name, company, title, LinkedIn_url, rationale}) for AI SaMD/IVD companies.
-Endpoints: https://api.anthropic.com/v1/messages.
-Authentication: API key (ANTHROPIC_API_KEY) in .env.
-Setup:
-Register at https://www.anthropic.com/api.
-Obtain API key (~$50–$200/project).
-Update .env.
-
-
-Code: interface.py (Leads Tab).
-Notes: Non-transferable key; contact support@anthropic.com for ToS.
 
 LinkedIn APIs (Share, Sign In, Community Management)
 
-Purpose: Posts content, authenticates users, manages NaviSure’s LinkedIn page.
+Purpose: Posts content, authenticates users, manages NaviSure's LinkedIn page.
 Endpoints:
 Share: https://api.linkedin.com/v2/ugcPosts (w_member_social).
 Sign In: https://api.linkedin.com/v2/me (r_liteprofile).
 Community: https://api.linkedin.com/v2/socialActions (r_organization_social).
-
 
 Authentication: OAuth token (LINKEDIN_ACCESS_TOKEN) in .env.
 Setup:
@@ -45,9 +55,8 @@ Apply at https://www.linkedin.com/developers.
 Create app, request Marketing Developer Platform access.
 Update .env with token.
 
-
-Code: interface.py (Leads Tab, page posts).
-Notes: US accounts can’t use Member Data Portability; buyer must reapply for access.
+Code: gui/interface.py (Leads Tab, page posts).
+Notes: US accounts can't use Member Data Portability; buyer must reapply for access.
 
 AssemblyAI
 
@@ -59,9 +68,70 @@ Register at https://www.assemblyai.com.
 Obtain API key (~$0.10–$0.50/hour audio).
 Update .env.
 
-
-Code: interface.py (lines 248–312).
+Code: gui/interface.py (Meeting Transcription Tab).
 Notes: ToS allows commercial use; verify at https://www.assemblyai.com/terms.
+
+Google Calendar API
+
+Purpose: Fetches calendar events for dashboard schedule display.
+Endpoints: https://www.googleapis.com/calendar/v3.
+Authentication: OAuth2 credentials via client_secret.json and token files.
+Setup:
+Configure Google Cloud Console project
+Enable Calendar API
+Download credentials to config/client_secret.json
+Generate token via OAuth2 flow
+
+Code: core/data_fetch.py (get_calendar_events)
+Notes: Used for dashboard schedule display with auto-refresh functionality.
+
+Dropbox API
+
+Purpose: File storage, indexing, and management for workspace documents.
+Endpoints: https://api.dropboxapi.com/2.
+Authentication: Access token (DROPBOX_ACCESS_TOKEN) in .env.
+Setup:
+Create Dropbox app at https://www.dropbox.com/developers
+Generate access token
+Update .env with token
+
+Code: core/api.py, core/index_dropbox.py
+Notes: Used for document workspace, file preview, and storage integration.
+
+Vikunja API
+
+Purpose: Task and project management for professional task organization.
+Endpoints: Self-hosted Vikunja instance (default: http://localhost:3456/api/v1).
+Authentication: Username/password via login endpoint, or registration for new users.
+Setup:
+Deploy Vikunja instance (Docker recommended, see vikunja/docker-compose.yml)
+Configure server URL in Tasks tab UI
+Login or register new account via UI
+Credentials are persisted using QSettings (remain populated across sessions)
+
+Implemented Methods (VikunjaClient class):
+- test_connection(): Test API connectivity
+- login(username, password): Authenticate user (endpoint: /api/v1/login)
+- register(username, email, password): Create new account (endpoint: /api/v1/register)
+- get_projects(): Fetch all projects (supports nested projects)
+- create_project(title, description, hex_color, parent_project_id, is_favorite, is_archived, position): Create new project
+- get_tasks(project_id): Fetch tasks for a project
+- create_task(project_id, title, description, due_date, start_date, end_date, priority, hex_color, percent_done, is_favorite, done, bucket_id): Create new task
+- update_task(task_id, title, description, due_date, start_date, end_date, priority, hex_color, percent_done, is_favorite, done, bucket_id): Update existing task
+- toggle_task_done(task_id, done): Update task completion status
+- delete_task(task_id): Delete a task
+
+Features:
+- Full task table with all fields visible (Description, Due Date, Start Date, End Date, % Done, Favorite, Estimated Duration)
+- Task editing dialog with all fields including estimated duration
+- Task deletion with confirmation
+- Estimated duration input in task creation and editing (stored locally in SQLite)
+- Natural language task creation via chat window (when on Tasks tab)
+- Persistent credentials using QSettings
+- Enter key support for login
+
+Code: gui/tasks_tab.py (UI implementation), core/vikunja_client.py (API client - fully implemented)
+Notes: Fully implemented with comprehensive test coverage (75 automated tests passing). Local development instance available via Docker (vikunja/docker-compose.yml). Registration must be enabled in Vikunja instance (VIKUNJA_SERVICE_ENABLEREGISTRATION: "true").
 
 Notes
 
@@ -69,4 +139,5 @@ API keys are stored in .env, not hardcoded, ensuring GDPR/HIPAA compliance.
 Buyers must secure their own API keys due to non-transferable ToS.
 Transition support (30–60 days) recommended for buyer setup.
 Review ToS for commercial use and transfer policies before sale.
+All API integrations are currently functional and tested in the application. VikunjaClient is fully implemented with comprehensive test coverage (75 automated tests passing).
 

@@ -10,8 +10,9 @@ def fetch_recent_yahoo_emails(num_emails=10):
     Fetch the most recent emails from Yahoo using IMAP.
     Returns a list of email details including sender, subject, and content.
     """
-    # Load environment variables
-    load_dotenv(os.path.join(os.path.dirname(__file__), "config", ".env"), override=True)
+    # Load environment variables using centralized paths
+    from config import CONFIG_DIR
+    load_dotenv(os.path.join(CONFIG_DIR, ".env"), override=True)
     
     # Yahoo account credentials
     yahoo_account = {

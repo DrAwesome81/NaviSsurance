@@ -4,32 +4,21 @@ import os
 from dropbox import Dropbox
 from datetime import datetime, timedelta
 import logging
+from core.secure_logging import secure_function_logger, safe_log
 
 logger = logging.getLogger(__name__)
 
-# Load environment variables (prefer explicit path, else repo-local defaults)
-_DEFAULT_ENV_CANDIDATES = (
-    os.getenv("NAVISSURANCE_ENV_FILE"),
-    os.path.join(os.path.dirname(__file__), "..", "config", ".env"),
-    os.path.join(os.path.dirname(__file__), "..", ".env"),
-)
-for _candidate in _DEFAULT_ENV_CANDIDATES:
-    if _candidate and os.path.exists(_candidate):
-        load_dotenv(_candidate, override=True)
-        break
+# Load environment variables using centralized paths
+from config import CONFIG_DIR
+load_dotenv(os.path.join(CONFIG_DIR, ".env"), override=True)
 
 # Load from environment variables
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
 DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
-BRAVE_API_URL = os.getenv("BRAVE_API_URL")
-BRAVE_TOKEN = os.getenv("BRAVE_TOKEN")
 
-# Path to the .env file to update (defaults to repo-local config)
-ENV_FILE = (
-    os.getenv("NAVISSURANCE_ENV_FILE")
-    or os.path.join(os.path.dirname(__file__), "..", "config", ".env")
-)
+# Import centralized ENV_FILE path
+from config import ENV_FILE
 
 class DropboxClient:
     """Manages a Dropbox client with token refresh."""
@@ -46,6 +35,7 @@ class DropboxClient:
 
     def refresh(self):
         """Refresh the Dropbox access token and update .env."""
+        safe_log(logger, logging.INFO, "DropboxClient: Starting token refresh...")
         new_access_token, new_refresh_token = refresh_dropbox_token()
         self.access_token = new_access_token
         self.client = Dropbox(new_access_token)
@@ -53,45 +43,30 @@ class DropboxClient:
         # Update the .env file with the new tokens
         set_key(ENV_FILE, "DROPBOX_ACCESS_TOKEN", new_access_token)
         set_key(ENV_FILE, "DROPBOX_REFRESH_TOKEN", new_refresh_token)
+        safe_log(logger, logging.INFO, "DropboxClient: Token refresh completed and saved to .env")
 
 dropbox_client = DropboxClient()
 
+@secure_function_logger
 def refresh_dropbox_token():
-    if not DROPBOX_REFRESH_TOKEN or not DROPBOX_APP_KEY or not DROPBOX_APP_SECRET:
-        raise RuntimeError("Dropbox credentials are missing (refresh token / app key / app secret).")
-
-    try:
-        response = requests.post(
-            "https://api.dropbox.com/oauth2/token",
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": DROPBOX_REFRESH_TOKEN,
-                "client_id": DROPBOX_APP_KEY,
-                "client_secret": DROPBOX_APP_SECRET,
-            },
-            timeout=15,
-        )
-        response.raise_for_status()
+    """Refresh Dropbox access token with secure logging."""
+    safe_log(logger, logging.INFO, "Refreshing Dropbox token...")
+    
+    response = requests.post("https://api.dropbox.com/oauth2/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": DROPBOX_REFRESH_TOKEN,
+        "client_id": DROPBOX_APP_KEY,
+        "client_secret": DROPBOX_APP_SECRET
+    })
+    
+    if response.status_code == 200:
         data = response.json()
+        safe_log(logger, logging.INFO, "Dropbox token refreshed successfully")
         return data["access_token"], data.get("refresh_token", DROPBOX_REFRESH_TOKEN)
-    except requests.RequestException as e:
-        # Never log request/response bodies here: they can contain secrets/tokens.
-        logger.error("Dropbox token refresh failed: %s", str(e))
-        raise
+    else:
+        safe_log(logger, logging.ERROR, f"Failed to refresh Dropbox token: {response.status_code}")
+        response.raise_for_status()
 
 def get_dropbox_client() -> Dropbox:
     """Creates a Dropbox client with the current or refreshed access token."""
     return dropbox_client.get_client()
-
-# Comment out Brave search function
-# def brave_search(query: str) -> dict | None:
-#     """Perform a search using the Brave Search API."""
-#     headers = {"Accept": "application/json", "X-Subscription-Token": BRAVE_TOKEN}
-#     params = {"q": query, "count": 10}
-#     try:
-#         response = requests.get(BRAVE_API_URL, headers=headers, params=params)
-#         response.raise_for_status()
-#         return response.json()
-#     except requests.RequestException as e:
-#         logger.error(f"Brave search failed for query '{query}': {str(e)}")
-#         raise RuntimeError(f"Search failed: {str(e)}")

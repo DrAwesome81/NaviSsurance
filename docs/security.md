@@ -10,7 +10,7 @@ HIPAA Compliance: US health data (e.g., SOPs) is encrypted, access-controlled, a
 
 API Security
 
-Key Management: API keys (Grok, Claude, LinkedIn, AssemblyAI) are stored in .env, not hardcoded, and rotated every 90 days.
+Key Management: API keys (Grok, LinkedIn, AssemblyAI) are stored in .env, not hardcoded, and rotated every 90 days.
 Access: Keys are accessible only to the local application (interface.py, chat.py), with no external exposure.
 ToS Compliance: API usage adheres to provider terms (e.g., https://x.ai/grok), ensuring commercial use and no key sharing.
 

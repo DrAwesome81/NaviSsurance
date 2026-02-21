@@ -1,0 +1,23 @@
+Enhanced Dual LLM Collaboration Workflow and Added Current Date Context
+
+Major Changes:
+- Enhanced dual LLM collaboration workflow: Both Grok and ChatGPT can now edit and pass markdown documents back and forth until they agree
+- Added current date to all prompts: Models now receive the current date to provide accurate time-sensitive information
+
+Workspace Orchestrator Improvements:
+- Modified collaboration loop to support true back-and-forth editing between Grok and ChatGPT
+- Grok can now review ChatGPT's edits, make its own edits, and mark documents as complete
+- ChatGPT's markdown edits are now properly used in the collaboration workflow
+- Added completion status parsing for both models (COMPLETE/FEEDBACK markers)
+- Both models can indicate completion, with the other model getting a final review opportunity
+- Added current date (datetime.now()) to all prompts for both Grok and ChatGPT
+- Explicit instructions added for time-sensitive queries (e.g., "the past year" means from current date going back one year)
+
+Technical Details:
+- Updated _call_grok() to parse completion status and feedback from responses
+- Updated _call_chatgpt() to include current date in prompts
+- Enhanced round_data tracking to include feedback from both models
+- Improved completion logic to handle agreement from either model
+- Added datetime import to workspace_orchestrator.py
+
+This ensures accurate time-sensitive research (like news summaries) and enables true collaborative document refinement where both AIs can edit and improve the document iteratively.
