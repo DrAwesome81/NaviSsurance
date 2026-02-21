@@ -34,7 +34,8 @@ def search_dropbox_index(db_manager, query):
                 FROM dropbox_index i
                 JOIN dropbox_files f ON i.name = f.name
                 WHERE dropbox_index MATCH ?
-                ORDER BY rank
+                ORDER BY bm25(dropbox_index)
+                LIMIT 20
             """, (query,))
             results = [
                 {"name": row[0], "path": row[1], "link": row[2], "content": row[3]}
