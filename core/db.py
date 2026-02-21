@@ -1,11 +1,32 @@
 # db.py
 import sqlite3
-from datetime import datetime, UTC
+from datetime import datetime, UTC, date
+from typing import Iterable, Optional, Tuple
+
+from core import settings
 
 class DatabaseManager:
     def __init__(self):
-        self.db_name = r"F:\naviSsurance_index.db"  # Switch to your indexed DB
+        self.db_name = str(settings.db_path())
         self.setup_db()
+
+    @staticmethod
+    def _parse_date_to_iso(value: str) -> Optional[str]:
+        if not value:
+            return None
+        v = value.strip()
+        # Already ISO
+        try:
+            return date.fromisoformat(v).isoformat()
+        except ValueError:
+            pass
+        # Common legacy formats used in this repo
+        for fmt in ("%m-%d-%Y", "%m-%d-%y", "%m/%d/%Y", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(v, fmt).date().isoformat()
+            except ValueError:
+                continue
+        return None
 
     def setup_db(self):
         with sqlite3.connect(self.db_name) as conn:
@@ -28,9 +49,8 @@ class DatabaseManager:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
             
-            # Drop and recreate archived_tasks table
-            conn.execute('DROP TABLE IF EXISTS archived_tasks')
-            conn.execute('''CREATE TABLE archived_tasks (
+            # Archived tasks (do not drop on startup)
+            conn.execute('''CREATE TABLE IF NOT EXISTS archived_tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task TEXT,
                 due_date TEXT,
@@ -58,10 +78,25 @@ class DatabaseManager:
             )''')
             conn.commit()
 
+            # Best-effort migration: normalize legacy due_date strings to ISO for correct sorting/filtering.
+            try:
+                cursor = conn.execute("SELECT id, due_date FROM tasks")
+                updates: list[Tuple[str, int]] = []
+                for task_id, due_date_val in cursor.fetchall():
+                    iso = self._parse_date_to_iso(str(due_date_val or ""))
+                    if iso and iso != due_date_val:
+                        updates.append((iso, task_id))
+                if updates:
+                    conn.executemany("UPDATE tasks SET due_date = ? WHERE id = ?", updates)
+                    conn.commit()
+            except Exception:
+                # Don't block app startup on migration issues.
+                pass
+
     def save_message(self, session_id, role, content):
         with sqlite3.connect(self.db_name) as conn:
             conn.execute('INSERT INTO conversation (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)',
-                        (session_id, role, content, datetime.now()))
+                        (session_id, role, content, datetime.now(UTC).isoformat()))
             conn.commit()
 
     def search_conversations(self, search_terms, date_range=None):
@@ -92,10 +127,27 @@ class DatabaseManager:
             cursor = conn.execute(query, params)
             return cursor.fetchall()
 
+    def get_messages_by_date_range(self, session_id: str, start_iso: str, end_iso: str):
+        """Return messages for a session between [start_iso, end_iso)."""
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.execute(
+                """
+                SELECT role, content, timestamp
+                FROM conversation
+                WHERE session_id = ?
+                  AND timestamp >= ?
+                  AND timestamp < ?
+                ORDER BY timestamp ASC
+                """,
+                (session_id, start_iso, end_iso),
+            )
+            return cursor.fetchall()
+
     def add_task(self, session_id, task_text, due_date):
+        iso_due = self._parse_date_to_iso(str(due_date or "")) or str(due_date or "")
         with sqlite3.connect(self.db_name) as conn:
             conn.execute('INSERT INTO tasks (session_id, task, due_date) VALUES (?, ?, ?)',
-                        (session_id, task_text, due_date))
+                        (session_id, task_text, iso_due))
             conn.commit()
 
     def get_tasks(self):
@@ -120,11 +172,12 @@ class DatabaseManager:
                 conn.commit()
 
     def archive_task(self, task_text, due_date, completed):
+        iso_due = self._parse_date_to_iso(str(due_date or "")) or str(due_date or "")
         with sqlite3.connect(self.db_name) as conn:
             conn.execute('''INSERT INTO archived_tasks 
                           (task, due_date, completed, session_id, created_at) 
                           VALUES (?, ?, ?, ?, ?)''',
-                        (task_text, due_date, completed, None, datetime.now()))
+                        (task_text, iso_due, completed, None, datetime.now(UTC).isoformat()))
             conn.commit()
 
     def init_email_calendar_tables(self):

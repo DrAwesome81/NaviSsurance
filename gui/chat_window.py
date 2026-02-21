@@ -29,7 +29,7 @@ class ChatThread(QThread):
                     task_entries = response.replace("Added ", "").split(", ")
                     for entry in task_entries:
                         task_match = re.search(r"'([^']*)'", entry)
-                        date_match = re.search(r'due on (\d{2}-\d{2}-\d{4})', entry)
+                            date_match = re.search(r'due on (\d{4}-\d{2}-\d{2})', entry)
                         print(f"[DEBUG] ChatThread: Task match: {task_match.group(1) if task_match else 'None'}")
                         print(f"[DEBUG] ChatThread: Date match: {date_match.group(1) if date_match else 'None'}")
 

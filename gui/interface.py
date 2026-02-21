@@ -9,6 +9,7 @@ from core.db import DatabaseManager
 from gui.chat_window import ChatThread, ResponseHandler, sendMessage, saveChat, loadChat
 from gui.todo_list import TodoList
 from core.chat import ChatManager
+from core import settings
 import os
 import json
 from anthropic import Anthropic, AnthropicError
@@ -47,7 +48,7 @@ class SettingsDialog(QDialog):
         self.system_message_input = QTextEdit(self)
         
         # Load existing system message from config
-        config_path = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/lead_gen_config.json'
+        config_path = str(settings.config_dir() / "lead_gen_config.json")
         if os.path.exists(config_path):
             try:
                 with open(config_path, 'r') as f:
@@ -128,8 +129,7 @@ class ChatWindow(QMainWindow):
         super().__init__()
         
         # Create data directory if it doesn't exist
-        self.data_dir = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/data'
-        os.makedirs(self.data_dir, exist_ok=True)
+        self.data_dir = str(settings.data_dir())
         
         logger.info("Loading splash screen...")
         pixmap = QPixmap("assets/logo v2.png")
@@ -171,7 +171,7 @@ class ChatWindow(QMainWindow):
         """Run Claude API search for leads based on system message."""
         try:
             # Load system message from config
-            config_path = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/lead_gen_config.json'
+            config_path = str(settings.config_dir() / "lead_gen_config.json")
             if not os.path.exists(config_path):
                 logger.error("Lead gen config not found.")
                 return
@@ -582,7 +582,7 @@ Only include leads that have been verified through the search results.
             try:
                 system_message = dialog.system_message_input.toPlainText()
                 config = {"system_message": system_message}
-                config_path = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/lead_gen_config.json'
+                config_path = str(settings.config_dir() / "lead_gen_config.json")
                 with open(config_path, 'w') as f:
                     json.dump(config, f)
                 logger.info("Lead gen settings saved.")

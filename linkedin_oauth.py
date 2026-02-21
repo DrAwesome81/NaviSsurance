@@ -2,8 +2,9 @@ import requests
 import os
 from dotenv import load_dotenv
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from core import settings
 
-load_dotenv('C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/.env')
+load_dotenv(settings.env_file_path())
 client_id = os.getenv('LINKEDIN_CLIENT_ID')
 client_secret = os.getenv('LINKEDIN_CLIENT_SECRET')
 redirect_uri = os.getenv('LINKEDIN_REDIRECT_URI')
@@ -30,10 +31,11 @@ class OAuthHandler(BaseHTTPRequestHandler):
                 'client_id': client_id,
                 'client_secret': client_secret
             }
-            response = requests.post(token_url, data=data)
+            response = requests.post(token_url, data=data, timeout=15)
             response.raise_for_status()
             token = response.json().get('access_token')
-            with open('C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/data/linkedin_token.txt', 'w') as f:
+            token_path = settings.data_dir() / "linkedin_token.txt"
+            with open(token_path, 'w') as f:
                 f.write(token)
             self.wfile.write(b"Access token saved to linkedin_token.txt")
         except Exception as e:

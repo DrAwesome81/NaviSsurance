@@ -10,6 +10,7 @@ import tempfile
 import time
 from datetime import datetime, timedelta
 import pandas as pd
+from core import settings
 
 def extract_text_from_pdf(pdf_path):
     document = fitz.open(pdf_path)
@@ -55,7 +56,9 @@ def count_dropbox_files(dbx):
     print(f"Total files: {total}")
     return total
 
-def index_dropbox(dbx, db_path="F:/naviSsurance_index.db", progress_callback=None):
+def index_dropbox(dbx, db_path=None, progress_callback=None):
+    if db_path is None:
+        db_path = str(settings.db_path())
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     
@@ -186,7 +189,7 @@ def index_dropbox(dbx, db_path="F:/naviSsurance_index.db", progress_callback=Non
                         conn.commit()
                         if unreadable_files:
                             df = pd.DataFrame(unreadable_files, columns=["File Name", "Path"])
-                            csv_path = "F:/unreadable_files.csv"
+                            csv_path = str(settings.data_dir() / "unreadable_files.csv")
                             df.to_csv(csv_path, index=False)
                             print(f"Saved {len(unreadable_files)} unreadable files to {csv_path} at {processed_files} files")
                         dbx = get_dropbox_client()  # Refresh token
@@ -203,7 +206,7 @@ def index_dropbox(dbx, db_path="F:/naviSsurance_index.db", progress_callback=Non
         print(f"\nDone! Checked {processed_files} files, added/updated {added_or_updated}.")
         if unreadable_files:
             df = pd.DataFrame(unreadable_files, columns=["File Name", "Path"])
-            csv_path = "F:/unreadable_files.csv"
+            csv_path = str(settings.data_dir() / "unreadable_files.csv")
             df.to_csv(csv_path, index=False)
             print(f"Saved {len(unreadable_files)} unreadable files to {csv_path}")
         c.execute("INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('last_index_time', ?)",
@@ -215,7 +218,7 @@ def index_dropbox(dbx, db_path="F:/naviSsurance_index.db", progress_callback=Non
         callback()
         if unreadable_files:
             df = pd.DataFrame(unreadable_files, columns=["File Name", "Path"])
-            csv_path = "F:/unreadable_files.csv"
+            csv_path = str(settings.data_dir() / "unreadable_files.csv")
             df.to_csv(csv_path, index=False)
             print(f"Saved {len(unreadable_files)} unreadable files to {csv_path}")
         conn.commit()
@@ -223,7 +226,9 @@ def index_dropbox(dbx, db_path="F:/naviSsurance_index.db", progress_callback=Non
     finally:
         conn.close()
 
-def should_auto_index(db_path="F:/naviSsurance_index.db", weeks=2):
+def should_auto_index(db_path=None, weeks=2):
+    if db_path is None:
+        db_path = str(settings.db_path())
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     
@@ -245,7 +250,7 @@ def should_auto_index(db_path="F:/naviSsurance_index.db", weeks=2):
     return datetime.now() - last_dt > timedelta(weeks=weeks)
 
 # Trigger 1: Auto-check on app launch
-def auto_index_on_launch(dbx, db_path="F:/naviSsurance_index.db"):
+def auto_index_on_launch(dbx, db_path=None):
     print("Auto-indexing temporarily disabled.")
     return 0
     # if should_auto_index(db_path):
@@ -256,18 +261,22 @@ def auto_index_on_launch(dbx, db_path="F:/naviSsurance_index.db"):
     #     return 0
 
 # Trigger 2: Button press (for future UI)
-def manual_index(dbx, db_path="F:/naviSsurance_index.db"):
+def manual_index(dbx, db_path=None):
     print("Manual Dropbox index update triggered.")
     return index_dropbox(dbx, db_path)
 
 # Trigger 3: Chat command (for local AI detection)
-def chat_index(dbx, db_path="F:/naviSsurance_index.db"):
+def chat_index(dbx, db_path=None):
     """Called by local AI when 'index Dropbox' intent is detected."""
     updated_count = index_dropbox(dbx, db_path)
-    return f"ADD_TASK:Confirm Dropbox index updated with {updated_count} files|{datetime.now().strftime('%m-%d-%Y')}"
+    return f"ADD_TASK:Confirm Dropbox index updated with {updated_count} files|{datetime.now().date().isoformat()}"
 
-def log_unreadable_pdfs(db_path="F:/naviSsurance_index.db", csv_path="F:/unreadable_files.csv"):
+def log_unreadable_pdfs(db_path=None, csv_path=None):
     import time
+    if db_path is None:
+        db_path = str(settings.db_path())
+    if csv_path is None:
+        csv_path = str(settings.data_dir() / "unreadable_files.csv")
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
     

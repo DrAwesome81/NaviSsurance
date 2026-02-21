@@ -50,8 +50,8 @@ class ChatHandler(QObject):
         ]) if events else "- No meetings—slacker!"
 
         # Tasks
-        with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
-            cursor = conn.execute("SELECT task, due_date FROM tasks WHERE due_date <= strftime('%m-%d-%Y', 'now')")
+        with sqlite3.connect(self.db.db_name) as conn:
+            cursor = conn.execute("SELECT task, due_date FROM tasks WHERE due_date <= date('now')")
             tasks = cursor.fetchall()
             print(f"[DEBUG] Raw tasks from query: {tasks}")
         tasks_str = "\n".join([f"- {t[0]} (due {t[1]})" for t in tasks]) if tasks else "- No tasks—living the dream!"
@@ -62,7 +62,7 @@ class ChatHandler(QObject):
         emails = self.data_fetcher.get_new_emails(last_run)
         print(f"Found {len(emails)} new emails")
         email_summaries = []
-        with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
+        with sqlite3.connect(self.db.db_name) as conn:
             for msg in emails[:5]:  # Limit to 5 most recent emails
                 details = self.data_fetcher.get_email_details(msg['id'], msg['source'])
                 if not details:
@@ -108,7 +108,7 @@ class ChatHandler(QObject):
         emails_str = "\n".join(email_summaries) if email_summaries else "- No new emails—quiet day!"
 
         # Unreplied
-        with sqlite3.connect(self.data_fetcher.DB_FILE) as conn:
+        with sqlite3.connect(self.db.db_name) as conn:
             cursor = conn.execute("""
                 SELECT sender, subject, timestamp 
                 FROM emails 

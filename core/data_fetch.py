@@ -1,18 +1,34 @@
 from dropbox import Dropbox
 from core.api import get_dropbox_client
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
 import pickle
 import os
-from google.auth.transport.requests import Request
 import imaplib
 import email
 from datetime import datetime, timedelta, timezone
-from exchangelib import Account, Configuration, OAuth2Credentials, DELEGATE
-from oauthlib.oauth2.rfc6749.tokens import OAuth2Token
 from pathlib import Path
 from dotenv import load_dotenv
 import json
+
+from core import settings
+
+try:
+    from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
+    from googleapiclient.discovery import build  # type: ignore
+    from google.auth.transport.requests import Request  # type: ignore
+except ImportError:  # pragma: no cover
+    InstalledAppFlow = None
+    build = None
+    Request = None
+
+try:
+    from exchangelib import Account, Configuration, OAuth2Credentials, DELEGATE  # type: ignore
+    from oauthlib.oauth2.rfc6749.tokens import OAuth2Token  # type: ignore
+except ImportError:  # pragma: no cover
+    Account = None
+    Configuration = None
+    OAuth2Credentials = None
+    DELEGATE = None
+    OAuth2Token = None
 
 class DataFetcher:
     def __init__(self):
@@ -21,28 +37,36 @@ class DataFetcher:
             'https://www.googleapis.com/auth/gmail.readonly',
             'https://www.googleapis.com/auth/calendar.readonly'
         ]
-        self.CRED_FILE = r"C:\Users\adamo\Dropbox\_Consulting\NaviSsurance\config\client_secret.json"
-        self.TOKEN_FILE = r"C:\Users\adamo\Dropbox\_Consulting\NaviSsurance\config\navi_token.pkl"
-        self.DB_FILE = r"F:\naviSsurance_index.db"
-        self.gmail, self.calendar = self.get_services()
+        self.CRED_FILE = str(settings.config_dir() / "client_secret.json")
+        self.TOKEN_FILE = str(settings.config_dir() / "navi_token.pkl")
+        self.DB_FILE = str(settings.db_path())
+
+        self.gmail = None
+        self.calendar = None
+        if InstalledAppFlow and build and Request and os.path.exists(self.CRED_FILE):
+            try:
+                self.gmail, self.calendar = self.get_services()
+            except Exception as e:
+                print(f"Error initializing Google services: {e}")
         # Yahoo account with IMAP credentials
         self.yahoo_account = {
-            'user': 'adamodeh81@yahoo.com',
+            'user': os.getenv('YAHOO_EMAIL', 'adamodeh81@yahoo.com'),
             'pwd': os.getenv('YAHOO_APP_PASSWORD', '')
         }
         # Outlook/Office365 accounts
-        env_path = Path('config') / '.env'
-        load_dotenv(env_path)
+        load_dotenv(settings.env_file_path())
         self.outlook_accounts = [
             os.getenv('MSN_EMAIL_1'),
             os.getenv('MSN_EMAIL_2')
         ]
-        self.mailbird_token_path = Path('config/mailbird_tokens.json')
+        self.mailbird_token_path = settings.config_dir() / "mailbird_tokens.json"
         # Conversation tracking
         self.conversation_map = {}
         self.conversation_threads = {}
 
     def get_services(self):
+        if not InstalledAppFlow or not build or not Request:
+            raise RuntimeError("Google client libraries are not installed.")
         creds = None
         if os.path.exists(self.TOKEN_FILE):
             print(f"Loading token from {self.TOKEN_FILE}")
@@ -72,6 +96,8 @@ class DataFetcher:
         Get a list of all available calendars, including shared calendars.
         Returns a list of calendar objects with id, summary, and description.
         """
+        if not self.calendar:
+            return []
         try:
             calendar_list = self.calendar.calendarList().list().execute()
             return calendar_list.get('items', [])
@@ -136,6 +162,8 @@ class DataFetcher:
 
     def fetch_recent_ews_emails(self, email, hours=24):
         """Fetch recent emails using Mailbird's OAuth token via EWS"""
+        if not (OAuth2Token and OAuth2Credentials and Configuration and Account and DELEGATE):
+            return []
         token_data = self.get_mailbird_token(email)
         if not token_data:
             print(f"Could not get valid token for {email}")
@@ -184,6 +212,8 @@ class DataFetcher:
     def get_new_emails(self, last_run):
         emails = []
         # Gmail
+        if not self.gmail:
+            return emails
         folders = ['INBOX', 'News', 'NaviSure Admin']
         for folder in folders:
             print(f"\nChecking Gmail folder: {folder}")
@@ -252,6 +282,8 @@ class DataFetcher:
         """
         sent_emails = []
         # Gmail sent emails
+        if not self.gmail:
+            return sent_emails
         results = self.gmail.users().messages().list(userId='me', q=f"after:{last_run} in:sent").execute()
         sent_emails.extend({'id': msg['id'], 'source': 'gmail'} for msg in results.get('messages', []))
         return sent_emails

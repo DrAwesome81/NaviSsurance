@@ -65,7 +65,10 @@ class ResponseHandler:
                     if search_results:
                         formatted_results = []
                         for role, content, timestamp in search_results:
-                            date_str = datetime.fromisoformat(timestamp).strftime("%Y-%m-%d %H:%M")
+                            try:
+                                date_str = datetime.fromisoformat(str(timestamp)).strftime("%Y-%m-%d %H:%M")
+                            except Exception:
+                                date_str = str(timestamp)
                             formatted_results.append(f"[{date_str}] {role}: {content}")
                         return f"Here are the conversations about '{search_terms}':\n" + "\n".join(formatted_results)
                     else:
@@ -135,7 +138,7 @@ class ResponseHandler:
                     task_description = task_info[0].strip()
                     try:
                         due_date_obj = parser.parse(task_info[1].strip(), default=datetime.now())
-                        due_date = due_date_obj.strftime("%m-%d-%Y")
+                        due_date = due_date_obj.date().isoformat()
                     except ValueError:
                         print(f"Failed to parse date: {task_info[1]}")
                         due_date = "unknown"

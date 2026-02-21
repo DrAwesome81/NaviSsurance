@@ -15,7 +15,7 @@ class TodoList:
 
     def addTask(self):
         task_text = self.parent.taskInput.text().strip()
-        due_date = self.parent.dueDateInput.date().toString("MM-dd-yyyy")
+        due_date = self.parent.dueDateInput.date().toString("yyyy-MM-dd")
         
         if not task_text:
             QMessageBox.warning(self.parent, "Error", "Task text cannot be empty")
@@ -150,16 +150,16 @@ class TodoList:
                                               "Task:", text=task_text)
             if ok and new_text:
                 new_date, ok = QInputDialog.getText(self.parent, "Edit Due Date",
-                                                  "Due Date (MM-DD-YYYY):", text=due_date)
+                                                  "Due Date (YYYY-MM-DD):", text=due_date)
                 if ok and new_date:
                     # Validate date format
                     try:
-                        datetime.strptime(new_date, "%m-%d-%Y")
+                        datetime.strptime(new_date, "%Y-%m-%d")
                         self.db.delete_task(task_text)
                         self.db.add_task(self.session_id, new_text, new_date)
                         self.loadTasksFromDB()
                     except ValueError:
-                        QMessageBox.warning(self.parent, "Error", "Invalid date format. Use MM-DD-YYYY")
+                        QMessageBox.warning(self.parent, "Error", "Invalid date format. Use YYYY-MM-DD")
         except Exception as e:
             QMessageBox.critical(self.parent, "Error", f"Failed to edit task: {str(e)}")
 
@@ -269,7 +269,7 @@ class TodoList:
                 if checkbox.isChecked():
                     label.setStyleSheet("color: gray; text-decoration: line-through;")
                 else:
-                    due_date = QDate.fromString(due_date_label.text(), "MM-dd-yyyy")
+                    due_date = QDate.fromString(due_date_label.text(), "yyyy-MM-dd")
                     if due_date < QDate.currentDate():
                         label.setStyleSheet("color: red;")
                     else:
