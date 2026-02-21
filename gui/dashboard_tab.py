@@ -1735,7 +1735,13 @@ class DashboardTab(QWidget):
     def sort_news_by_date(self, news_items):
         """Sort news items by published date (newest first)."""
         def get_sort_key(item):
-            title, content, url, source, published_date, created_at = item
+            # Support both shapes:
+            # - legacy: (title, content, url, source, published_date, created_at)
+            # - dashboard (suppressed): (id, title, content, url, source, published_date, created_at)
+            if len(item) == 7:
+                _, title, content, url, source, published_date, created_at = item
+            else:
+                title, content, url, source, published_date, created_at = item
             
             if published_date:
                 # Try to parse the published date
@@ -1905,7 +1911,8 @@ class DashboardTab(QWidget):
             
             # Clean up old news items first
             self.db.cleanup_old_news(days=7)
-            recent_news = self.db.get_recent_news(days=7)
+            # Suppress repeats that have been shown recently
+            recent_news = self.db.get_news_for_dashboard(days=7, suppress_days=2, limit=50)
             
             # Filter out items with old published dates (older than 7 days)
             from datetime import datetime, timedelta
@@ -1913,7 +1920,8 @@ class DashboardTab(QWidget):
             filtered_news = []
             
             for item in recent_news:
-                title, content, url, source, published_date, created_at = item
+                # DB returns id + fields
+                news_id, title, content, url, source, published_date, created_at = item
                 should_include = False
                 
                 if published_date:
@@ -1944,7 +1952,9 @@ class DashboardTab(QWidget):
                 news_text = "<div style='color: #e8eaed; font-family: Segoe UI, Arial, sans-serif;'>"
                 news_text += "<h3 style='color: #6b8cae; margin-bottom: 15px;'>Latest News</h3>"
                 
-                for title, content, url, source, published_date, created_at in display_news:
+                shown_ids = []
+                for news_id, title, content, url, source, published_date, created_at in display_news:
+                    shown_ids.append(news_id)
                     news_text += "<div style='margin-bottom: 15px; padding: 12px; background-color: #22252c; border: 1px solid #2e2f32; border-radius: 6px;'>"
                     news_text += f"<h4 style='color: #e8eaed; margin: 0 0 8px 0; font-size: 13px; line-height: 1.3;'>{title}</h4>"
                     if content:
@@ -1963,6 +1973,11 @@ class DashboardTab(QWidget):
                 
                 news_text += "</div>"
                 self.news_display.setHtml(news_text)
+                # Mark items as shown so they won't repeat for the suppression window
+                try:
+                    self.db.mark_news_shown(shown_ids)
+                except Exception:
+                    pass
                 # News display updated successfully
             else:
                 self.news_display.setPlainText("No recent news available. Check back later.")

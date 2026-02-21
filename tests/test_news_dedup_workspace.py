@@ -79,3 +79,29 @@ def test_store_news_item_dedups_same_title_different_url():
             os.unlink(path)
         except OSError:
             pass
+
+
+def test_news_suppression_after_mark_shown():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        import config as config_mod
+        import core.db as core_db
+
+        with patch.object(config_mod, "DATABASE_PATH", path):
+            with patch.object(core_db, "DATABASE_PATH", path):
+                db = core_db.DatabaseManager()
+                db.store_news_item("Title 1", "C", "https://example.com/1", "S", "2026-02-21")
+                items = db.get_news_for_dashboard(days=7, suppress_days=2, limit=10)
+                assert len(items) == 1
+                news_id = items[0][0]
+                db.mark_news_shown([news_id])
+
+                # Should be suppressed immediately
+                items2 = db.get_news_for_dashboard(days=7, suppress_days=2, limit=10)
+                assert items2 == []
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass

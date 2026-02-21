@@ -586,6 +586,59 @@ class DatabaseManager:
             )
             return cursor.fetchall()
 
+    def get_news_for_dashboard(self, days: int = 7, suppress_days: int = 2, limit: int = 50):
+        """
+        Return recent news items, suppressing items shown in the last N days.
+        Uses news_dedup.last_shown aggregated per news_id.
+        Returns rows shaped like get_recent_news plus an id: (id, title, content, url, source, published_date, created_at)
+        """
+        with sqlite3.connect(self.db_name) as conn:
+            try:
+                cursor = conn.execute(
+                    """
+                    SELECT
+                        n.id,
+                        n.title,
+                        n.content,
+                        n.url,
+                        n.source,
+                        n.published_date,
+                        n.created_at,
+                        MAX(d.last_shown) AS last_shown
+                    FROM news_items n
+                    LEFT JOIN news_dedup d ON d.news_id = n.id
+                    WHERE n.created_at >= datetime('now', ?)
+                    GROUP BY n.id
+                    HAVING last_shown IS NULL OR last_shown < datetime('now', ?)
+                    ORDER BY n.created_at DESC
+                    LIMIT ?
+                    """,
+                    (f"-{int(days)} days", f"-{int(suppress_days)} days", int(limit)),
+                )
+                return [(r[0], r[1], r[2], r[3], r[4], r[5], r[6]) for r in cursor.fetchall()]
+            except Exception:
+                cursor = conn.execute(
+                    f"""SELECT id, title, content, url, source, published_date, created_at
+                        FROM news_items
+                        WHERE created_at >= datetime('now', '-{int(days)} days')
+                        ORDER BY created_at DESC
+                        LIMIT {int(limit)}"""
+                )
+                return cursor.fetchall()
+
+    def mark_news_shown(self, news_ids):
+        """Mark a set of news_ids as shown now (updates all dedup keys for those items)."""
+        ids = [int(i) for i in news_ids if i is not None]
+        if not ids:
+            return
+        with sqlite3.connect(self.db_name) as conn:
+            placeholders = ",".join(["?"] * len(ids))
+            conn.execute(
+                f"UPDATE news_dedup SET last_shown = datetime('now') WHERE news_id IN ({placeholders})",
+                ids,
+            )
+            conn.commit()
+
     def check_news_exists(self, title, url=None):
         """Check if a news item already exists in the database."""
         with sqlite3.connect(self.db_name) as conn:
