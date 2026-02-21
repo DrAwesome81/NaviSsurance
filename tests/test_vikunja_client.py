@@ -335,7 +335,7 @@ class TestTaskManagement:
         assert call_args[0] == ('POST', '/projects/1/tasks')
         payload = call_args[1]['json']
         assert payload['title'] == 'New Task'
-        assert payload['project_id'] == 1
+        # project_id is part of the URL path in Vikunja API, not the JSON payload
     
     @patch('core.vikunja_client.VikunjaClient._request')
     def test_create_task_with_priority(self, mock_request, client):

@@ -4,7 +4,6 @@ from datetime import datetime, UTC
 import json
 import sys
 import os
-from core.file_handler import extract_for_dataset
 
 # Import centralized database path and artifact store
 from config import DATABASE_PATH, ARTIFACTS_DIR
@@ -411,7 +410,9 @@ class DatabaseManager:
             conn.commit()
 
     def store_dataset_entry(self, file_path, jsonl_path="data/fine_tune.jsonl"):
-        entry = extract_for_dataset(file_path)  # From file_handler
+        # Lazy import: document extraction deps are heavy and optional for most runtime paths.
+        from core.file_handler import extract_for_dataset
+        entry = extract_for_dataset(file_path)
         with open(jsonl_path, 'a') as f:  # Append to JSONL
             f.write(json.dumps(entry) + '\n')
 

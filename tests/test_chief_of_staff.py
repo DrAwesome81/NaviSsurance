@@ -41,10 +41,11 @@ def temp_db_path():
 @pytest.fixture
 def cos_db(temp_db_path):
     """DatabaseManager using a temporary DB file so CoS tables exist after migration."""
-    with patch("config.DATABASE_PATH", temp_db_path):
-        with patch("core.db.DATABASE_PATH", temp_db_path):
-            from core.db import DatabaseManager
-            db = DatabaseManager()
+    import config as config_mod
+    import core.db as core_db
+    with patch.object(config_mod, "DATABASE_PATH", temp_db_path):
+        with patch.object(core_db, "DATABASE_PATH", temp_db_path):
+            db = core_db.DatabaseManager()
             yield db
 
 
