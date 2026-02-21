@@ -7,8 +7,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv("C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/.env", override=True)
+# Load environment variables (prefer explicit path, else repo-local defaults)
+_DEFAULT_ENV_CANDIDATES = (
+    os.getenv("NAVISSURANCE_ENV_FILE"),
+    os.path.join(os.path.dirname(__file__), "..", "config", ".env"),
+    os.path.join(os.path.dirname(__file__), "..", ".env"),
+)
+for _candidate in _DEFAULT_ENV_CANDIDATES:
+    if _candidate and os.path.exists(_candidate):
+        load_dotenv(_candidate, override=True)
+        break
 
 # Load from environment variables
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
@@ -17,8 +25,11 @@ DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
 BRAVE_API_URL = os.getenv("BRAVE_API_URL")
 BRAVE_TOKEN = os.getenv("BRAVE_TOKEN")
 
-# Path to the .env file (assumes it's in the root directory)
-ENV_FILE = os.path.join(os.path.dirname(__file__), "..", ".env")
+# Path to the .env file to update (defaults to repo-local config)
+ENV_FILE = (
+    os.getenv("NAVISSURANCE_ENV_FILE")
+    or os.path.join(os.path.dirname(__file__), "..", "config", ".env")
+)
 
 class DropboxClient:
     """Manages a Dropbox client with token refresh."""
@@ -46,19 +57,27 @@ class DropboxClient:
 dropbox_client = DropboxClient()
 
 def refresh_dropbox_token():
-    response = requests.post("https://api.dropbox.com/oauth2/token", data={
-        "grant_type": "refresh_token",
-        "refresh_token": DROPBOX_REFRESH_TOKEN,
-        "client_id": DROPBOX_APP_KEY,
-        "client_secret": DROPBOX_APP_SECRET
-    })
-    print(f"Request Data: {response.request.body}")
-    print(f"Status: {response.status_code}, Response: {response.text}")
-    if response.status_code == 200:
+    if not DROPBOX_REFRESH_TOKEN or not DROPBOX_APP_KEY or not DROPBOX_APP_SECRET:
+        raise RuntimeError("Dropbox credentials are missing (refresh token / app key / app secret).")
+
+    try:
+        response = requests.post(
+            "https://api.dropbox.com/oauth2/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": DROPBOX_REFRESH_TOKEN,
+                "client_id": DROPBOX_APP_KEY,
+                "client_secret": DROPBOX_APP_SECRET,
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
         data = response.json()
         return data["access_token"], data.get("refresh_token", DROPBOX_REFRESH_TOKEN)
-    else:
-        response.raise_for_status()
+    except requests.RequestException as e:
+        # Never log request/response bodies here: they can contain secrets/tokens.
+        logger.error("Dropbox token refresh failed: %s", str(e))
+        raise
 
 def get_dropbox_client() -> Dropbox:
     """Creates a Dropbox client with the current or refreshed access token."""

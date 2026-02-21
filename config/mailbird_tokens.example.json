@@ -1,0 +1,7 @@
+[
+  {
+    "email": "user@example.com",
+    "access_token": "MAILBIRD_OAUTH_ACCESS_TOKEN",
+    "expires_at": "2026-01-01T00:00:00Z"
+  }
+]

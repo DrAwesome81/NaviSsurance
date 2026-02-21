@@ -5,16 +5,25 @@ navissurance.db
 navissurance_documents.db
 Get_Tokens
 cuda_env/ 
-config/
 data/
 logs/
 models/
 .vscode/
 config/mailbird_tokens.json
+config/client_secret.json
+config/.env
 config/navi_token.pkl
 data/compliance_documents.json
 gui/temp_recording.wav
 logs/app.log
+
+# Common secret/token artifacts (keep examples tracked)
+config/*token*.json
+config/*token*.pkl
+config/*secret*.json
+
+# Allow checked-in templates/examples
+!config/*.example.json
 
 data/compliance_documents.json
 config/navi_token.pkl
