@@ -30,3 +30,22 @@ def test_archived_tasks_table_is_not_dropped_on_startup(tmp_path, monkeypatch):
     with sqlite3.connect(db2.db_name) as conn:
         (count,) = conn.execute("SELECT COUNT(*) FROM archived_tasks").fetchone()
     assert count >= 1
+
+
+def test_archive_task_by_id_moves_row(tmp_path, monkeypatch):
+    monkeypatch.setenv("NAVISSURANCE_DB_PATH", str(tmp_path / "test.db"))
+
+    from core.db import DatabaseManager
+
+    db = DatabaseManager()
+    db.add_task("S1", "To archive", "2026-02-21")
+    task_id = db.get_tasks()[0][0]
+
+    assert db.archive_task_by_id(task_id) is True
+    assert db.archive_task_by_id(task_id) is False  # already gone
+
+    with sqlite3.connect(db.db_name) as conn:
+        (tasks_count,) = conn.execute("SELECT COUNT(*) FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        (archived_count,) = conn.execute("SELECT COUNT(*) FROM archived_tasks WHERE task = ?", ("To archive",)).fetchone()
+    assert tasks_count == 0
+    assert archived_count == 1

@@ -163,6 +163,11 @@ class DatabaseManager:
                 conn.execute('DELETE FROM tasks WHERE id = ?', (task_id[0],))
                 conn.commit()
 
+    def delete_task_by_id(self, task_id: int) -> None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
+            conn.commit()
+
     def update_task_status(self, task_text, completed):
         with sqlite3.connect(self.db_name) as conn:
             cursor = conn.execute('SELECT id FROM tasks WHERE task = ? ORDER BY created_at DESC LIMIT 1', (task_text,))
@@ -170,6 +175,20 @@ class DatabaseManager:
             if task_id:
                 conn.execute('UPDATE tasks SET completed = ? WHERE id = ?', (completed, task_id[0]))
                 conn.commit()
+
+    def update_task_status_by_id(self, task_id: int, completed: bool) -> None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute('UPDATE tasks SET completed = ? WHERE id = ?', (1 if completed else 0, task_id))
+            conn.commit()
+
+    def update_task_by_id(self, task_id: int, task_text: str, due_date: str) -> None:
+        iso_due = self._parse_date_to_iso(str(due_date or "")) or str(due_date or "")
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                'UPDATE tasks SET task = ?, due_date = ? WHERE id = ?',
+                (task_text, iso_due, task_id),
+            )
+            conn.commit()
 
     def archive_task(self, task_text, due_date, completed):
         iso_due = self._parse_date_to_iso(str(due_date or "")) or str(due_date or "")
@@ -179,6 +198,38 @@ class DatabaseManager:
                           VALUES (?, ?, ?, ?, ?)''',
                         (task_text, iso_due, completed, None, datetime.now(UTC).isoformat()))
             conn.commit()
+
+    def archive_task_by_id(self, task_id: int) -> bool:
+        """
+        Archive a task by id, preserving session_id + created_at, then remove it from tasks.
+        Returns True if a row was archived, False if not found.
+        """
+        with sqlite3.connect(self.db_name) as conn:
+            row = conn.execute(
+                "SELECT task, due_date, completed, session_id, created_at FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            if not row:
+                return False
+            task_text, due_date, completed, session_id, created_at = row
+            iso_due = self._parse_date_to_iso(str(due_date or "")) or str(due_date or "")
+            conn.execute(
+                """
+                INSERT INTO archived_tasks (task, due_date, completed, session_id, created_at, archived_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(task_text),
+                    iso_due,
+                    int(completed or 0),
+                    session_id,
+                    created_at,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+            conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            conn.commit()
+            return True
 
     def init_email_calendar_tables(self):
         with sqlite3.connect(self.db_name) as conn:
