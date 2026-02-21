@@ -10,6 +10,7 @@ NaviSsurance is an AI-powered medical device regulatory consulting platform, ser
 - **Email Fetching**: Fetches Gmail, MSN/Outlook, and custom IMAP inboxes (`fetch_all_emails.py`); planned folder access (e.g., “Clients,” “Leads”) for DistilBERT training to filter emails (8-class: Response Needed, Personal, etc.).
 - **Meeting Transcription**: AssemblyAI processes speaker-separated transcripts (`interface.py`, lines 248–312).
 - **Task Management**: Manual and chat-based task addition, archiving, and persistence (`core.db.DatabaseManager`), needing UX improvements.
+- **Chief of Staff Assistant (Planned/Iterating)**: A personal assistant mode that prioritizes schedule, tracks commitments, remembers key details, and delegates work to sub-agents (see `docs/chief_of_staff.md`).
 - **CRM Integration (Planned)**: SQLite-based (`crm.py`) to unify leads, compliance results, and filtered emails.
 
 ## Tech Stack
