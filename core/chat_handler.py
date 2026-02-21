@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, UTC
 from dateutil import parser
 from core.db import DatabaseManager
 from core.data_fetch import DataFetcher
+from core.news import NewsService
 
 class ChatHandler(QObject):
     task_added_signal = pyqtSignal(str, str)
@@ -15,6 +16,7 @@ class ChatHandler(QObject):
         self.db.init_email_calendar_tables()
         self.db.init_last_run_table()
         self.data_fetcher = DataFetcher()
+        self.news_service = NewsService(self.db, self.data_fetcher)
         self.last_search_results = []
 
     def start_briefing(self):
@@ -122,6 +124,22 @@ class ChatHandler(QObject):
         unreplied_str = "\n".join([f"- {u[0]} - \"{u[1]}\" (sent {datetime.fromtimestamp(u[2]).strftime('%Y-%m-%d %H:%M')})"
                                 for u in unreplied]) if unreplied else "- No ignored emails—caught up, huh?"
 
+        # News (external headlines; deduped and cached)
+        try:
+            news_items = self.news_service.get_briefing_items(limit=5)
+            if news_items:
+                news_str = "\n".join(
+                    [
+                        f"- {it['title']} ({it.get('source') or 'web'}) - {it.get('link') or ''}"
+                        for it in news_items
+                    ]
+                )
+            else:
+                news_str = "- No relevant headlines found."
+        except Exception as e:
+            print(f"[DEBUG] News briefing error: {e}")
+            news_str = "- News unavailable right now."
+
         # Scheduling
         scheduling_str = "- No scheduling nudges today—lazy day!"
 
@@ -130,6 +148,7 @@ class ChatHandler(QObject):
                   f"[SECTION:Tasks]\n{tasks_str}\n\n" \
                   f"[SECTION:New Emails]\n{emails_str}\n\n" \
                   f"[SECTION:Unreplied Emails]\n{unreplied_str}\n\n" \
+                  f"[SECTION:News]\n{news_str}\n\n" \
                   f"[SECTION:Scheduling Suggestions]\n{scheduling_str}"
         self.db.update_last_run()
         return briefing  # Caller formats and appends

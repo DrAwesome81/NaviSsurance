@@ -288,6 +288,34 @@ class DataFetcher:
         sent_emails.extend({'id': msg['id'], 'source': 'gmail'} for msg in results.get('messages', []))
         return sent_emails
 
+    def get_gmail_news_seeds(self, days: int = 3, max_messages: int = 20) -> list[str]:
+        """
+        Return recent Gmail subjects from the 'News' label to use as relevance seeds for external headlines.
+        This is best-effort: returns [] if Gmail is not configured.
+        """
+        if not self.gmail:
+            return []
+        try:
+            # Gmail search syntax: newer_than:Nd label:"News"
+            q = f'newer_than:{int(days)}d label:"News"'
+            results = self.gmail.users().messages().list(userId="me", q=q, maxResults=max_messages).execute()
+            msg_ids = [m["id"] for m in results.get("messages", []) if "id" in m]
+            subjects: list[str] = []
+            for mid in msg_ids:
+                msg = self.gmail.users().messages().get(
+                    userId="me",
+                    id=mid,
+                    format="metadata",
+                    metadataHeaders=["Subject"],
+                ).execute()
+                headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+                subj = str(headers.get("Subject") or "").strip()
+                if subj:
+                    subjects.append(subj)
+            return subjects
+        except Exception:
+            return []
+
     def extract_conversation_info(self, headers):
         """
         Extract conversation tracking information from email headers.

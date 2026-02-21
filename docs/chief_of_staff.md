@@ -22,6 +22,7 @@ This plan is intentionally pragmatic: it fits the current Python + PyQt + SQLite
 - Delegation to other agents is not implemented (no job queue / agent registry / artifacts).
 - Calendar write-back and email sending are not implemented (read-only posture).
 - Search is not yet unified across Dropbox + local + Google Drive, and dedup across sources is not implemented (see `docs/unified_search.md`).
+- External news headlines can be included in the daily briefing with dedup and caching (see `docs/news_briefing.md`).
 
 ## Product Goals (Chief of Staff)
 

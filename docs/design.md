@@ -14,6 +14,7 @@ See `docs/diagrams/architecture.png` for a visual representation.
 - **Task Management** (`core.db.DatabaseManager`): Stores tasks in SQLite, accessible via UI or chat.
 - **Chief of Staff Orchestration** (`core/response_handler.py`, `config.py`): Parses assistant action commands (tasks, web search, local search, history) and routes to tools. Roadmap in `docs/chief_of_staff.md`.
 - **Unified Document Search (Planned)**: A dedup-aware search layer across Dropbox + local + Google Drive (see `docs/unified_search.md`).
+- **External News Briefing (Planned/Iterating)**: External headlines for daily briefing with dedup + cache (see `docs/news_briefing.md`).
 - **Transcription** (`interface.py`, lines 248–312): Uses AssemblyAI for meeting transcripts.
 - **CRM** (`crm.py`): SQLite-based, planned to unify leads, compliance, and emails.
 
