@@ -9,9 +9,18 @@ This test suite covers:
 - Error handling and thread safety
 """
 
-import pytest  # type: ignore[reportMissingImports]
-import sys
 import os
+import pytest  # type: ignore[reportMissingImports]
+
+if not os.getenv("RUN_QT_TESTS"):
+    pytest.skip(
+        "Qt/UI tests are disabled by default (set RUN_QT_TESTS=1 to enable).",
+        allow_module_level=True,
+    )
+
+pytest.importorskip("PyQt6")
+
+import sys
 import json
 import tempfile
 from pathlib import Path

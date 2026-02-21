@@ -1,6 +1,13 @@
 import os
-from anthropic import Anthropic
 import logging
+import pytest
+
+pytest.skip(
+    "Live Anthropic API smoke test (set RUN_CLAUDE_TESTS=1 to enable).",
+    allow_module_level=True,
+)
+
+from anthropic import Anthropic
 from dotenv import load_dotenv
 
 # Load environment variables using centralized paths

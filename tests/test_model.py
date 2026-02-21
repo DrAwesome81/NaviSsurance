@@ -1,4 +1,13 @@
 import os
+import pytest
+
+# Large-model / GPU integration test. Disabled by default.
+if not os.getenv("RUN_LARGE_MODEL_TESTS"):
+    pytest.skip(
+        "Large model tests are disabled by default (set RUN_LARGE_MODEL_TESTS=1 to enable).",
+        allow_module_level=True,
+    )
+
 os.environ["TORCH_DYNAMO_DISABLE"] = "1"
 
 #!/usr/bin/env python3
@@ -6,7 +15,8 @@ os.environ["TORCH_DYNAMO_DISABLE"] = "1"
 Simple test script for LLaMA-3.3-70B-Instruct model with 4-bit quantization
 """
 
-import torch
+torch = pytest.importorskip("torch")
+transformers = pytest.importorskip("transformers")
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import logging
 import time

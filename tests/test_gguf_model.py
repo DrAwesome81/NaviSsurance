@@ -1,9 +1,16 @@
 import os
 os.environ["TORCH_DYNAMO_DISABLE"] = "1"
+import pytest
+
+if not os.getenv("RUN_LLAMA_CPP_TESTS"):
+    pytest.skip(
+        "llama.cpp integration tests are disabled by default (set RUN_LLAMA_CPP_TESTS=1).",
+        allow_module_level=True,
+    )
 import logging
 import time
-from llama_cpp import Llama
-import torch
+Llama = pytest.importorskip("llama_cpp").Llama
+torch = pytest.importorskip("torch")
 
 # Setup logging (centralized in main.py)
 logger = logging.getLogger(__name__)

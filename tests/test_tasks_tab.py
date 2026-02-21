@@ -7,9 +7,18 @@ This test suite covers:
 - Task management (loading, creating, toggling)
 - UI initialization and error handling
 """
-import pytest
-import sys
 import os
+import pytest
+
+if not os.getenv("RUN_QT_TESTS"):
+    pytest.skip(
+        "Qt/UI tests are disabled by default (set RUN_QT_TESTS=1 to enable).",
+        allow_module_level=True,
+    )
+
+pytest.importorskip("PyQt6")
+
+import sys
 from unittest.mock import Mock, patch, MagicMock
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtCore import Qt

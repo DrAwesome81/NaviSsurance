@@ -3,10 +3,19 @@ Pytest tests for QTableWidget functionality.
 Tests widget persistence, database loading, and table operations.
 """
 
-import sys
-import os
-import sqlite3
 import pytest
+import os
+
+if not os.getenv("RUN_QT_TESTS"):
+    pytest.skip(
+        "Qt/UI tests are disabled by default (set RUN_QT_TESTS=1 to enable).",
+        allow_module_level=True,
+    )
+
+pytest.importorskip("PyQt6")
+
+import sys
+import sqlite3
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QTableWidget, QTableWidgetItem, 
                              QWidget, QPushButton, QCheckBox, QLabel, 

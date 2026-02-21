@@ -24,7 +24,7 @@ BRIEFING_AND_EMAIL_DISABLED = True
 
 API_KEY = os.getenv('GROK_API_KEY')
 if API_KEY is None:
-    raise ValueError("GROK_API_KEY is not set in the environment")
+    API_KEY = ""
 
 # Using Grok 4 API via xAI SDK (gRPC / Responses API)
 
@@ -32,7 +32,10 @@ DROPBOX_APP_KEY = os.getenv('DROPBOX_APP_KEY')
 DROPBOX_APP_SECRET = os.getenv('DROPBOX_APP_SECRET')
 DROPBOX_REFRESH_TOKEN = os.getenv('DROPBOX_REFRESH_TOKEN')
 if any(var is None for var in (DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN)):
-    raise ValueError("One or more Dropbox credentials are missing")
+    # Keep imports/test runs functional even without secrets configured.
+    DROPBOX_APP_KEY = DROPBOX_APP_KEY or ""
+    DROPBOX_APP_SECRET = DROPBOX_APP_SECRET or ""
+    DROPBOX_REFRESH_TOKEN = DROPBOX_REFRESH_TOKEN or ""
 
 DROPBOX_TOKEN_URL = "https://api.dropboxapi.com/oauth2/token"
 
