@@ -1,15 +1,11 @@
-import sys
-sys.path.append(r'C:\Users\adamo\Dropbox\_Consulting\NaviSsurance')
-from dropbox import files
-from core.api import get_dropbox_client
+import os
+import pytest
 
-dbx = get_dropbox_client()
-test_file = "/odeh green card files/new docs - oct 2021/4c. other financial - beneficiaries/adam_odeh_401(k)_beneficiaries.pdf"
-archive_path = "/Archive" + test_file
+if not os.getenv("RUN_DROPBOX_TESTS"):
+    pytest.skip("Dropbox integration tests are disabled by default (set RUN_DROPBOX_TESTS=1).", allow_module_level=True)
 
-print(f"Testing move: {test_file} to {archive_path}")
-try:
-    dbx.files_move_v2(test_file, archive_path)
-    print("Move succeeded!")
-except Exception as e:
-    print(f"Move failed: {e}")
+pytest.importorskip("dropbox")
+
+
+def test_dropbox_move_smoke():
+    pytest.skip("Requires live Dropbox credentials and explicit test fixtures.")

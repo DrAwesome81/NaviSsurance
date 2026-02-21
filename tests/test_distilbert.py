@@ -1,17 +1,19 @@
-from transformers import DistilBertForSequenceClassification, DistilBertTokenizer
-import torch
 import os
+import pytest
 
-model_path = "C:\\Users\\adamo\\.cache\\huggingface\\hub\\models--distilbert-base-uncased\\snapshots\\12040accade4e8a0f71eabdb258fecc2e7e948be"
-if not os.path.exists(model_path):
-    print(f"Error: Directory {model_path} does not exist")
-    exit(1)
-try:
-    model = DistilBertForSequenceClassification.from_pretrained(model_path)
-    tokenizer = DistilBertTokenizer.from_pretrained(model_path)
-    print("Model and tokenizer loaded!")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    print(f"Model on {device}")
-except Exception as e:
-    print(f"Error: {e}")
+if not os.getenv("RUN_ML_TESTS"):
+    pytest.skip("ML tests are disabled by default (set RUN_ML_TESTS=1 to enable).", allow_module_level=True)
+
+transformers = pytest.importorskip("transformers")
+torch = pytest.importorskip("torch")
+
+
+def test_distilbert_loads_from_hf_cache():
+    model_path = os.getenv("DISTILBERT_MODEL_PATH")
+    if not model_path or not os.path.exists(model_path):
+        pytest.skip("Set DISTILBERT_MODEL_PATH to a local model snapshot to run this test.")
+
+    model = transformers.DistilBertForSequenceClassification.from_pretrained(model_path)
+    tokenizer = transformers.DistilBertTokenizer.from_pretrained(model_path)
+    assert model is not None
+    assert tokenizer is not None

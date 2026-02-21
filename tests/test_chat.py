@@ -2,8 +2,13 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import pytest
-from core.chat_handler import ChatHandler
 from unittest.mock import Mock, patch
+
+if not os.getenv("RUN_GUI_TESTS"):
+    pytest.skip("GUI-dependent tests are disabled by default (set RUN_GUI_TESTS=1 to enable).", allow_module_level=True)
+
+pytest.importorskip("PyQt6")
+from core.chat_handler import ChatHandler
 
 def test_daily_briefing():
     print("Running test_daily_briefing")
@@ -13,7 +18,8 @@ def test_daily_briefing():
     handler.data_fetcher.get_calendar_events.return_value = [{"summary": "Test", "start": {"date": "2025-02-26"}}]
     handler.data_fetcher.get_new_emails.return_value = []
     handler.data_fetcher.get_email_details.return_value = {"payload": {"headers": [{"name": "From", "value": "test@example.com"}, {"name": "Subject", "value": "Test"}]}}
-    handler.db = Mock()
+    handler.data_fetcher.get_sent_emails.return_value = []
+    handler.db = Mock(db_name="test.db")
     handler.db.get_last_run.return_value = 1740595995
     handler.db.update_last_run.return_value = None
     # Mock sqlite3.connect for all DB calls
