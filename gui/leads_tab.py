@@ -291,23 +291,24 @@ class LeadsTab(QWidget):
                 except Exception:
                     pass
 
-            # Use web search when available so results can be verified (less hallucination).
-            prompt = f"""{user_system_message}
+            # Two-pass pipeline:
+            # A) Discover candidate leads (verifiable, but minimal fields)
+            # B) Verify/enrich: tighten evidence, add personalized message, incorporate openFDA signals
+            discover_prompt = f"""{user_system_message}
 
 Use web search to find *verifiable* leads. Only include leads where you found evidence in sources.
 
-Return ONLY a JSON array of 5-15 leads. Each lead object must include:
-- name: Full name of key decision maker
-- company: Company name
-- title: Current title
-- rationale: Why this person/company is a good lead for NaviSure (MedTech regulatory consulting)
-- linkedin_url: LinkedIn profile URL if found, else empty string
-- message: A personalized LinkedIn message (2-5 sentences) referencing a specific signal you found
+Return ONLY a JSON array of 8-20 CANDIDATE leads. Each lead object must include:
+- name
+- company
+- title
+- rationale
+- linkedin_url (or empty string)
+- company_url (or empty string)
+- sources: [url1, url2] (must have at least 1)
 
-Optional fields (if you can support them with sources):
-- company_url
+Optional:
 - signals: [\"signal 1\", \"signal 2\"]
-- sources: [\"url1\", \"url2\"]
 
 Hard rules:
 - Do not invent people, titles, or URLs.
@@ -322,14 +323,14 @@ Hard rules:
                     logger.error(msg)
                     return
                 try:
-                    response_content = grok_web_search(prompt, model=MODEL_WEB)
+                    response_content = grok_web_search(discover_prompt, model=MODEL_WEB)
                 except Exception:
                     response_content = ""
                 if not response_content:
                     # Fallback without web_search tool
                     response_content = grok_completion(
                         system="You are a lead generation assistant. Return only JSON as instructed.",
-                        user=prompt,
+                        user=discover_prompt,
                         model=MODEL_WEB,
                     )
             except Exception as e:
@@ -349,19 +350,27 @@ Hard rules:
                 f.write(response_content + "\n")
             logger.info(f"Raw response written to {response_file}")
 
-            # Use robust JSON parsing for leads array
-            new_leads, success = robust_json_parse_array(response_content, logger)
+            # Use robust JSON parsing for leads array (candidates)
+            candidates, success = robust_json_parse_array(response_content, logger)
             
-            if success and new_leads:
-                logger.info(f"Parsed leads: {new_leads}")
+            if success and candidates:
+                logger.info(f"Parsed leads: {candidates}")
 
-                if isinstance(new_leads, list):
-                    logger.info(f"Successfully parsed JSON array with {len(new_leads)} leads")
-                    stored = 0
-                    for lead in new_leads:
+                if isinstance(candidates, list):
+                    logger.info(f"Successfully parsed JSON array with {len(candidates)} candidate leads")
+
+                    # Enrich with openFDA signals before verification pass
+                    enriched_candidates = []
+                    try:
+                        from core.openfda import search_510k_by_applicant, summarize_510k_records
+                    except Exception:
+                        search_510k_by_applicant = None
+                        summarize_510k_records = None
+
+                    for lead in candidates:
                         if not isinstance(lead, dict):
                             continue
-                        if not all(k in lead for k in ['name', 'company', 'title', 'rationale', 'message']):
+                        if not all(k in lead for k in ['name', 'company', 'title', 'rationale']):
                             logger.warning(f"Skipping lead with missing required fields: {lead}")
                             continue
 
@@ -381,6 +390,93 @@ Hard rules:
                         lead.setdefault("contact_date", None)
                         lead.setdefault("next_action_date", None)
                         lead.setdefault("notes", "")
+
+                        company = str(lead.get("company") or "").strip()
+                        if company and search_510k_by_applicant and summarize_510k_records:
+                            try:
+                                recs, req_url = search_510k_by_applicant(company, limit=5)
+                                summ = summarize_510k_records(company, recs, req_url)
+                                # Merge signals and sources (dedup)
+                                lead["signals"] = list(dict.fromkeys((lead.get("signals") or []) + (summ.get("signals") or [])))
+                                lead["sources"] = list(dict.fromkeys((lead.get("sources") or []) + (summ.get("sources") or [])))
+                                lead["openfda_meta"] = summ.get("meta") or {}
+                            except Exception:
+                                pass
+
+                        enriched_candidates.append(lead)
+
+                    # Verification / enrichment pass: add message + tighten evidence
+                    verify_prompt = f"""{user_system_message}
+
+You will be given a JSON array of candidate leads (with some sources and possible openFDA signals).
+
+Task:
+- Verify each lead is real and current using web search.
+- Keep only leads with strong evidence.
+- Produce a FINAL JSON array of up to 15 leads with:
+  - name, company, title, rationale, linkedin_url, company_url
+  - signals: [..]
+  - sources: [..] (must have at least 2 when possible; never empty)
+  - message: personalized LinkedIn message (2-5 sentences) referencing a specific signal and offering help
+
+Hard rules:
+- Do not invent. If not verifiable, omit the lead.
+- Return ONLY the JSON array.
+
+Candidates JSON:
+{json.dumps(enriched_candidates, ensure_ascii=False)}
+"""
+
+                    final_text = ""
+                    try:
+                        from core.grok_client import grok_web_search, MODEL_WEB
+                        final_text = grok_web_search(verify_prompt, model=MODEL_WEB)
+                    except Exception:
+                        final_text = ""
+                    if not final_text:
+                        try:
+                            from core.grok_client import grok_completion, MODEL_WEB
+                            final_text = grok_completion(
+                                system="You are a lead generation assistant. Return only JSON as instructed.",
+                                user=verify_prompt,
+                                model=MODEL_WEB,
+                            )
+                        except Exception:
+                            final_text = ""
+
+                    final_leads = []
+                    if final_text:
+                        final_leads, ok2 = robust_json_parse_array(final_text, logger)
+                        if not ok2 or not isinstance(final_leads, list):
+                            final_leads = []
+
+                    stored = 0
+                    try:
+                        from core.lead_scoring import score_lead
+                    except Exception:
+                        score_lead = None
+
+                    for lead in (final_leads or []):
+                        if not isinstance(lead, dict):
+                            continue
+                        if not all(k in lead for k in ['name', 'company', 'title', 'rationale', 'message']):
+                            continue
+
+                        sources = lead.get("sources") or []
+                        if not isinstance(sources, list) or len(sources) == 0:
+                            continue
+
+                        lead.setdefault("signals", [])
+                        lead.setdefault("linkedin_url", "")
+                        lead.setdefault("company_url", "")
+                        lead.setdefault("status", "new")
+                        lead.setdefault("contacted", False)
+                        lead.setdefault("contact_date", None)
+                        lead.setdefault("next_action_date", None)
+                        lead.setdefault("notes", "")
+
+                        if score_lead:
+                            lead.update(score_lead(lead))
 
                         if self.db:
                             try:
