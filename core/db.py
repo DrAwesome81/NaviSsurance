@@ -202,8 +202,13 @@ class DatabaseManager:
                 formatted_note TEXT NOT NULL,
                 category TEXT NOT NULL,
                 context TEXT,
+                raw_note TEXT,
+                state TEXT NOT NULL DEFAULT 'ready', -- ready|pending|error
+                error_text TEXT,
+                pinned INTEGER NOT NULL DEFAULT 0,
                 timestamp TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
             
             # Add context column if it doesn't exist (for existing databases)
@@ -211,6 +216,67 @@ class DatabaseManager:
                 conn.execute('ALTER TABLE notes ADD COLUMN context TEXT')
             except sqlite3.OperationalError:
                 # Column already exists
+                pass
+
+            # Backfill/extend notes table schema for legacy DBs
+            try:
+                cursor = conn.execute("PRAGMA table_info(notes)")
+                cols = {row[1] for row in cursor.fetchall()}
+                if "raw_note" not in cols:
+                    conn.execute("ALTER TABLE notes ADD COLUMN raw_note TEXT")
+                if "state" not in cols:
+                    conn.execute("ALTER TABLE notes ADD COLUMN state TEXT NOT NULL DEFAULT 'ready'")
+                if "error_text" not in cols:
+                    conn.execute("ALTER TABLE notes ADD COLUMN error_text TEXT")
+                if "pinned" not in cols:
+                    conn.execute("ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+                if "updated_at" not in cols:
+                    conn.execute("ALTER TABLE notes ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP")
+            except Exception:
+                pass
+
+            # FTS for notes (best-effort). If FTS5 isn't available, search falls back to LIKE.
+            try:
+                conn.execute(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
+                    USING fts5(
+                        formatted_note,
+                        context,
+                        category,
+                        content='notes',
+                        content_rowid='id',
+                        tokenize='porter'
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+                        INSERT INTO notes_fts(rowid, formatted_note, context, category)
+                        VALUES (new.id, new.formatted_note, new.context, new.category);
+                    END;
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+                        INSERT INTO notes_fts(notes_fts, rowid, formatted_note, context, category)
+                        VALUES('delete', old.id, old.formatted_note, old.context, old.category);
+                    END;
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+                        INSERT INTO notes_fts(notes_fts, rowid, formatted_note, context, category)
+                        VALUES('delete', old.id, old.formatted_note, old.context, old.category);
+                        INSERT INTO notes_fts(rowid, formatted_note, context, category)
+                        VALUES (new.id, new.formatted_note, new.context, new.category);
+                    END;
+                    """
+                )
+            except Exception:
                 pass
             
             # Organized notes table
@@ -441,6 +507,28 @@ class DatabaseManager:
                     source TEXT
                 )
             """)
+            # Backfill/extend email schema (legacy DBs) with additional metadata used by briefing + reply tracking.
+            try:
+                cursor = conn.execute("PRAGMA table_info(emails)")
+                cols = {row[1] for row in cursor.fetchall()}
+                if "folder" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN folder TEXT")
+                if "account" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN account TEXT")
+                if "rfc822_message_id" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN rfc822_message_id TEXT")
+                if "rfc822_in_reply_to" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN rfc822_in_reply_to TEXT")
+                if "rfc822_references" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN rfc822_references TEXT")
+                if "thread_id" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN thread_id TEXT")
+                # Helpful indexes (best-effort)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_timestamp ON emails(timestamp)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_replied ON emails(replied)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_rfc822_message_id ON emails(rfc822_message_id)")
+            except Exception:
+                pass
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS calendar_events (
                     id TEXT PRIMARY KEY,
@@ -632,18 +720,239 @@ class DatabaseManager:
         """Initialize notes table (already done in setup_db, but kept for compatibility)."""
         pass
 
-    def save_note(self, formatted_note, timestamp, context=None):
-        """Save a formatted note to the database."""
+    def create_note_draft(
+        self,
+        *,
+        raw_note: str,
+        timestamp: str,
+        context: str | None = None,
+        category: str = "Uncategorized",
+    ) -> int:
+        """
+        Insert a draft note row immediately so user text is never lost.
+        Returns note id.
+        """
+        rn = (raw_note or "").strip()
+        if not rn:
+            return 0
         with sqlite3.connect(self.db_name) as conn:
-            conn.execute('INSERT INTO notes (formatted_note, category, context, timestamp) VALUES (?, ?, ?, ?)',
-                        (formatted_note, "Uncategorized", context, timestamp))
+            cur = conn.execute(
+                """
+                INSERT INTO notes (formatted_note, category, context, raw_note, state, error_text, pinned, timestamp, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'pending', NULL, 0, ?, datetime('now'), datetime('now'))
+                """,
+                (rn, category, context, rn, timestamp),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def update_note_by_id(
+        self,
+        note_id: int,
+        *,
+        formatted_note: str | None = None,
+        raw_note: str | None = None,
+        category: str | None = None,
+        context: str | None = None,
+        pinned: int | None = None,
+        state: str | None = None,
+        error_text: str | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        fields = []
+        params = []
+        if formatted_note is not None:
+            fields.append("formatted_note = ?")
+            params.append(str(formatted_note))
+        if raw_note is not None:
+            fields.append("raw_note = ?")
+            params.append(str(raw_note))
+        if category is not None:
+            fields.append("category = ?")
+            params.append(str(category))
+        if context is not None:
+            fields.append("context = ?")
+            params.append(str(context))
+        if pinned is not None:
+            fields.append("pinned = ?")
+            params.append(int(pinned))
+        if state is not None:
+            fields.append("state = ?")
+            params.append(str(state))
+        if error_text is not None:
+            fields.append("error_text = ?")
+            params.append(str(error_text) if error_text else None)
+        if timestamp is not None:
+            fields.append("timestamp = ?")
+            params.append(str(timestamp))
+        if not fields:
+            return
+        fields.append("updated_at = datetime('now')")
+        params.append(int(note_id))
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(f"UPDATE notes SET {', '.join(fields)} WHERE id = ?", params)
             conn.commit()
 
-    def get_notes(self):
-        """Get all notes from the database."""
+    def delete_note_by_id(self, note_id: int) -> None:
         with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('SELECT formatted_note, context FROM notes ORDER BY created_at DESC')
-            return [(row[0], row[1]) for row in cursor.fetchall()]
+            conn.execute("DELETE FROM notes WHERE id = ?", (int(note_id),))
+            conn.commit()
+
+    def list_notes(
+        self,
+        *,
+        context: str | None = None,
+        include_pinned_first: bool = True,
+        limit: int = 200,
+    ) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            where = "1=1"
+            params: list = []
+            if context is not None:
+                where += " AND (context = ?)"
+                params.append(str(context))
+            order = "ORDER BY created_at DESC"
+            if include_pinned_first:
+                order = "ORDER BY pinned DESC, created_at DESC"
+            q = f"""
+                SELECT id, formatted_note, category, context, raw_note, state, error_text, pinned, timestamp, created_at, updated_at
+                FROM notes
+                WHERE {where}
+                {order}
+                LIMIT ?
+            """
+            params.append(int(limit))
+            rows = conn.execute(q, params).fetchall()
+        out = []
+        for r in rows:
+            (
+                nid,
+                formatted_note,
+                category,
+                ctx,
+                raw_note,
+                state,
+                error_text,
+                pinned,
+                ts,
+                created_at,
+                updated_at,
+            ) = r
+            out.append(
+                {
+                    "id": int(nid),
+                    "formatted_note": formatted_note or "",
+                    "category": category or "Uncategorized",
+                    "context": ctx,
+                    "raw_note": raw_note or "",
+                    "state": state or "ready",
+                    "error_text": error_text,
+                    "pinned": int(pinned or 0),
+                    "timestamp": ts or "",
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                }
+            )
+        return out
+
+    def search_notes(
+        self,
+        *,
+        query: str,
+        context: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        q = (query or "").strip()
+        if not q:
+            return self.list_notes(context=context, limit=limit)
+        with sqlite3.connect(self.db_name) as conn:
+            # Prefer FTS if available.
+            try:
+                where = "notes_fts MATCH ?"
+                params: list = [q]
+                if context is not None:
+                    where += " AND notes.context = ?"
+                    params.append(str(context))
+                params.append(int(limit))
+                rows = conn.execute(
+                    f"""
+                    SELECT notes.id, notes.formatted_note, notes.category, notes.context, notes.raw_note, notes.state, notes.error_text,
+                           notes.pinned, notes.timestamp, notes.created_at, notes.updated_at
+                    FROM notes_fts
+                    JOIN notes ON notes.id = notes_fts.rowid
+                    WHERE {where}
+                    ORDER BY notes.pinned DESC, notes.created_at DESC
+                    LIMIT ?
+                    """,
+                    params,
+                ).fetchall()
+            except Exception:
+                like = f"%{q}%"
+                where = "(formatted_note LIKE ? OR raw_note LIKE ? OR context LIKE ? OR category LIKE ?)"
+                params = [like, like, like, like]
+                if context is not None:
+                    where += " AND context = ?"
+                    params.append(str(context))
+                params.append(int(limit))
+                rows = conn.execute(
+                    f"""
+                    SELECT id, formatted_note, category, context, raw_note, state, error_text, pinned, timestamp, created_at, updated_at
+                    FROM notes
+                    WHERE {where}
+                    ORDER BY pinned DESC, created_at DESC
+                    LIMIT ?
+                    """,
+                    params,
+                ).fetchall()
+        out = []
+        for r in rows:
+            (
+                nid,
+                formatted_note,
+                category,
+                ctx,
+                raw_note,
+                state,
+                error_text,
+                pinned,
+                ts,
+                created_at,
+                updated_at,
+            ) = r
+            out.append(
+                {
+                    "id": int(nid),
+                    "formatted_note": formatted_note or "",
+                    "category": category or "Uncategorized",
+                    "context": ctx,
+                    "raw_note": raw_note or "",
+                    "state": state or "ready",
+                    "error_text": error_text,
+                    "pinned": int(pinned or 0),
+                    "timestamp": ts or "",
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                }
+            )
+        return out
+
+    def save_note(self, formatted_note, timestamp, context=None):
+        """Save a formatted note to the database. Returns note id."""
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO notes (formatted_note, category, context, raw_note, state, error_text, pinned, timestamp, created_at, updated_at)
+                VALUES (?, ?, ?, NULL, 'ready', NULL, 0, ?, datetime('now'), datetime('now'))
+                """,
+                (formatted_note, "Uncategorized", context, timestamp),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def get_notes(self):
+        """Backward-compatible note list (formatted_note, context)."""
+        rows = self.list_notes(limit=500)
+        return [(r["formatted_note"], r.get("context")) for r in rows]
 
     def save_organized_notes(self, organized_notes):
         """Save organized notes as JSON."""

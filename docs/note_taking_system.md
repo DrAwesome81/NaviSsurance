@@ -34,16 +34,26 @@ The Note-Taking System is an AI-powered feature that provides intelligent note f
 - Handles truncation detection and error recovery
 
 ### Dynamic Categorization
-- Automatically categorizes notes when 2 or more exist
-- Uses exact note text without modification
-- Supports dynamic re-categorization as new notes are added
-- Falls back to unorganized display if no clear categories found
+- Automatically categorizes notes when 2 or more “ready” notes exist (per context)
+- Categorization uses stable **note IDs** (not only note text) to avoid ambiguity
+- Categories are shown in a **collapsible tree**, and notes can be **moved manually** to a different category
+- Re-organize can be run at any time
 
 ### Export Capabilities
-- **DOCX Export**: Single Word document export with Save As dialog
-- User chooses filename and location via `QFileDialog.getSaveFileName`
-- Document includes context (if set) and all notes as bullet points
-- No automatic cloud uploads - user controls file location
+- **DOCX Export**
+- **Markdown Export**
+- **PDF Export**
+- Export includes timestamps + categories (and context if filtered)
+
+### Browsing / Search / Editing
+- Notes are DB-backed and loaded on tab open
+- Search box (FTS-backed when available; falls back to LIKE)
+- Filters: context, time range (All/7/30/90 days), pinned-only
+- Per-note actions: pin/unpin, edit, delete, retry formatting, copy to clipboard
+
+### Integrations
+- Create Task from a note (due date + category)
+- Remember: store a note into Navi’s structured memory (`cos_memory`) for future recall
 
 ## Technical Implementation
 
@@ -75,8 +85,13 @@ CREATE TABLE notes (
     formatted_note TEXT NOT NULL,
     category TEXT NOT NULL,
     context TEXT,  -- Context for the note
+    raw_note TEXT,
+    state TEXT NOT NULL DEFAULT 'ready',
+    error_text TEXT,
+    pinned INTEGER NOT NULL DEFAULT 0,
     timestamp TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Organized notes table
@@ -114,10 +129,9 @@ CREATE TABLE organized_notes (
 
 ### Exporting Notes
 1. Click "Export Notes" button
-2. Save As dialog opens with default filename "notes_export.docx"
-3. Choose location and filename (or use default)
-4. DOCX file is generated with context (if set) and all notes as bullet points
-5. Success message displays the file path
+2. Choose format (DOCX / Markdown / PDF)
+3. Save As dialog opens with default filename `notes_export.docx`
+4. Export includes timestamps + categories (and context if filtered)
 
 ## Configuration
 

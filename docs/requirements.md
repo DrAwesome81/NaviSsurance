@@ -64,10 +64,16 @@ Email Fetching and Filtering (PARTIALLY IMPLEMENTED)
 
 User Story: As a consultant, I want to fetch and filter emails from multiple accounts, so I can efficiently manage personal assistance and planning tasks for clients.
 Acceptance Criteria:
-Fetch emails from Gmail, MSN/Outlook, and custom IMAP accounts, including folders ("Clients," "Leads") via fetch_all_emails.py.
-Save emails to data/email_labels.csv for 8-class DistilBERT filtering (e.g., Response Needed, Personal, Meeting Request).
-Display filtered emails in Briefing Pane (interface.py) to prioritize client-related tasks.
+Fetch emails from Gmail, Yahoo (IMAP), and MSN/Outlook (EWS), including configurable folders/labels (e.g., "Clients", "Leads") via `core/data_fetch.py:get_new_emails()`.
+Persist fetched emails into SQLite (`emails` table) and mark reply status best-effort.
+Display filtered emails in the Daily Briefing (Dashboard) to prioritize client-related tasks.
 Handle invalid email accounts with error logging.
+
+Notes:
+- Folders/labels are configured via `config/.env`:
+  - `EMAIL_GMAIL_LABELS`, `EMAIL_YAHOO_FOLDERS`, `EMAIL_OUTLOOK_FOLDERS`
+- Client/potential classification is configured via `EMAIL_CLIENT_DOMAINS`, `EMAIL_POTENTIAL_DOMAINS`, `EMAIL_CLIENT_LABELS`, `EMAIL_POTENTIAL_LABELS`.
+- DistilBERT training/export to `data/email_labels.csv` is not implemented in the current Workspace branch.
 
 Meeting Transcription (IMPLEMENTED)
 

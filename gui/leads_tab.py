@@ -187,8 +187,8 @@ Hard rules:
                 response_content = grok_web_search(
                     discover_prompt,
                     model=MODEL_WEB,
-                    timeout=180,
-                    retries=1,
+                    timeout=900,
+                    retries=0,
                 )
             except Exception:
                 response_content = ""
@@ -300,8 +300,8 @@ Candidates JSON:
                 final_text = grok_web_search(
                     verify_prompt,
                     model=MODEL_WEB,
-                    timeout=180,
-                    retries=1,
+                    timeout=900,
+                    retries=0,
                 )
             except Exception:
                 final_text = ""
@@ -610,6 +610,25 @@ class LeadsTab(QWidget):
             QMessageBox.warning(self, "Leads", "Database is not available; cannot run lead search.")
             return
 
+        def _set_tab_title(title: str) -> None:
+            try:
+                tw = getattr(self.parent, "tab_widget", None)
+                if tw is None:
+                    return
+                idx = tw.indexOf(self)
+                if idx >= 0:
+                    tw.setTabText(idx, title)
+            except Exception:
+                return
+
+        def _status(msg: str, timeout_ms: int = 15000) -> None:
+            try:
+                from gui.utils import update_status
+                if self.parent is not None:
+                    update_status(self.parent, msg, timeout=timeout_ms)
+            except Exception:
+                return
+
         # Load system message from config (quick; keep on UI thread)
         user_system_message = ""
         try:
@@ -641,6 +660,8 @@ class LeadsTab(QWidget):
         self.runSearchButton.setEnabled(False)
         self.refreshButton.setEnabled(False)
         self.search_status_label.setText("Searching…")
+        _set_tab_title("Leads (searching…)")  # visible even if user switches tabs
+        _status("Lead search started…", timeout_ms=8000)
 
         self._search_worker = _LeadsSearchWorker(
             db=self.db,
@@ -653,12 +674,21 @@ class LeadsTab(QWidget):
             self.runSearchButton.setEnabled(True)
             self.refreshButton.setEnabled(True)
             self.search_status_label.setText(f"Stored {stored} lead(s).")
+            _set_tab_title("Leads (done)")
+            _status(f"Lead search finished: stored {stored} lead(s).", timeout_ms=20000)
             self.refresh_leads()
+            try:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(20000, lambda: _set_tab_title("Leads"))
+            except Exception:
+                pass
 
         def _on_err(msg: str):
             self.runSearchButton.setEnabled(True)
             self.refreshButton.setEnabled(True)
             self.search_status_label.setText("Lead search failed.")
+            _set_tab_title("Leads")
+            _status("Lead search failed (see dialog).", timeout_ms=20000)
             QMessageBox.warning(self, "Lead Search", msg or "Lead search failed.")
 
         self._search_worker.finished.connect(_on_done)

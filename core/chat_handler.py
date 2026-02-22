@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, UTC
 from dateutil import parser
 from core.db import DatabaseManager
 from core.data_fetch import DataFetcher
+from core.email_utils import classify_email, normalize_message_id
 
 class ChatHandler(QObject):
     # Email analysis prompt template (static content)
@@ -220,6 +221,9 @@ Return only the relevant emails, nothing else."""
                 all_email_details = {}
                 for source, source_emails in emails_by_source.items():
                     try:
+                        # Outlook EWS results already include basic details; batch fetch isn't supported there.
+                        if source == "outlook":
+                            continue
                         email_ids = [msg['id'] for msg in source_emails]
                         batch_details = self.data_fetcher.get_email_details_batch(email_ids, source)
                         all_email_details.update(batch_details)
@@ -234,29 +238,98 @@ Return only the relevant emails, nothing else."""
                 
                 with sqlite3.connect(self.db.db_name) as conn:
                     for msg in emails:
-                        details = all_email_details.get(msg['id'])
-                        if not details:
-                            continue
-                        
                         try:
-                            sender = next(h['value'] for h in details['payload']['headers'] if h['name'] == 'From')
-                            subject = next(h['value'] for h in details['payload']['headers'] if h['name'] == 'Subject')
-                            timestamp = int(details['internalDate']) // 1000
-                            snippet = details.get('snippet', '')
+                            source = msg.get("source")
+                            folder = (msg.get("folder") or "").strip() or None
+                            account = (msg.get("account") or "").strip() or None
+
+                            # Outlook messages already carry details in msg.
+                            if source == "outlook":
+                                sender = str(msg.get("from") or msg.get("sender") or "Unknown")
+                                subject = str(msg.get("subject") or "")
+                                snippet = str(msg.get("snippet") or msg.get("content") or "")
+                                try:
+                                    # prefer explicit unix seconds, else parse iso
+                                    if msg.get("timestamp"):
+                                        timestamp = int(msg.get("timestamp"))
+                                    elif msg.get("received"):
+                                        timestamp = int(parser.parse(str(msg.get("received"))).timestamp())
+                                    else:
+                                        timestamp = int(datetime.now(UTC).timestamp())
+                                except Exception:
+                                    timestamp = int(datetime.now(UTC).timestamp())
+                                # Best-effort header fields
+                                rfc822_mid = normalize_message_id(str(msg.get("message_id") or ""))
+                                rfc822_irt = normalize_message_id(str(msg.get("in_reply_to") or ""))
+                                rfc822_refs = str(msg.get("references") or "") or None
+                                thread_id = str(msg.get("thread_id") or "") or None
+                            else:
+                                details = all_email_details.get(msg['id'])
+                                if not details:
+                                    continue
+                                headers_list = details.get("payload", {}).get("headers", []) or []
+                                # Case-insensitive header lookup
+                                headers = {}
+                                for h in headers_list:
+                                    try:
+                                        headers[str(h.get("name") or "").strip().lower()] = str(h.get("value") or "")
+                                    except Exception:
+                                        continue
+                                sender = headers.get("from", "Unknown")
+                                subject = headers.get("subject", "")
+                                timestamp = int(details.get('internalDate') or 0) // 1000
+                                snippet = details.get('snippet', '') or ""
+                                rfc822_mid = normalize_message_id(headers.get("message-id", ""))
+                                rfc822_irt = normalize_message_id(headers.get("in-reply-to", ""))
+                                rfc822_refs = (headers.get("references") or "").strip() or None
+                                thread_id = str(details.get("threadId") or details.get("thread_id") or "") or None
+
+                            # Classify to support Unreplied Emails view
+                            import os
+                            client_domains = (os.getenv("EMAIL_CLIENT_DOMAINS") or "goldbugstrategies.com,dovahealth.ca").split(",")
+                            potential_domains = (os.getenv("EMAIL_POTENTIAL_DOMAINS") or "").split(",")
+                            client_labels = (os.getenv("EMAIL_CLIENT_LABELS") or "Clients,Client").split(",")
+                            potential_labels = (os.getenv("EMAIL_POTENTIAL_LABELS") or "Leads,Lead").split(",")
+                            is_client, is_potential = classify_email(
+                                sender_header=sender,
+                                folder=folder,
+                                client_domains=client_domains,
+                                potential_domains=potential_domains,
+                                client_labels=client_labels,
+                                potential_labels=potential_labels,
+                            )
                             
                             email_data = {
                                 'sender': sender,
                                 'subject': subject,
                                 'snippet': snippet,
                                 'timestamp': timestamp,
-                                'source': msg['source']
+                                'source': source,
+                                'folder': folder or "",
                             }
                             all_email_data.append(email_data)
                             
                             # Store in database
-                            conn.execute("INSERT OR IGNORE INTO emails (id, sender, subject, timestamp, content, source, is_client, is_potential)"
-                                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                                        (msg['id'], sender, subject, timestamp, snippet, msg['source'], 0, 0))
+                            conn.execute(
+                                "INSERT OR IGNORE INTO emails (id, sender, subject, timestamp, content, source, is_client, is_potential, folder, account, rfc822_message_id, rfc822_in_reply_to, rfc822_references, thread_id) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                (
+                                    str(msg.get("id") or ""),
+                                    sender,
+                                    subject,
+                                    int(timestamp),
+                                    snippet,
+                                    str(source or ""),
+                                    int(is_client),
+                                    int(is_potential),
+                                    folder,
+                                    account,
+                                    rfc822_mid or None,
+                                    rfc822_irt or None,
+                                    rfc822_refs,
+                                    thread_id,
+                                ),
+                            )
                         except (KeyError, StopIteration) as e:
                             print(f"Skipping email due to missing data: {e}")
                             continue
@@ -595,8 +668,9 @@ Return only the relevant emails, nothing else."""
                 # Try to find 'In-Reply-To' header for direct reply matching
                 in_reply_to = next((h['value'] for h in sent_details['payload']['headers'] if h['name'] == 'In-Reply-To'), None)
                 if in_reply_to:
-                    # Look for the original email by its Message-ID in the database
-                    cursor = conn.execute("SELECT id FROM emails WHERE id = ? AND replied = 0", (in_reply_to,))
+                    # Look for the original email by its RFC822 Message-ID in the database
+                    irt = normalize_message_id(in_reply_to)
+                    cursor = conn.execute("SELECT id FROM emails WHERE rfc822_message_id = ? AND replied = 0", (irt,))
                     matching_email = cursor.fetchone()
                     if matching_email:
                         email_id = matching_email[0]

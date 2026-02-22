@@ -226,8 +226,8 @@ class DataFetcher:
             return None
 
     @secure_function_logger
-    def fetch_recent_ews_emails(self, email, hours=24):
-        """Fetch recent emails using Mailbird's OAuth token via EWS"""
+    def fetch_recent_ews_emails(self, email, hours=24, folders: list[str] | None = None):
+        """Fetch recent emails using Mailbird's OAuth token via EWS (best-effort)."""
         token_data = self.get_mailbird_token(email)
         if not token_data:
             safe_log(logger, logging.WARNING, f"Could not get valid token for {email}")
@@ -256,19 +256,48 @@ class DataFetcher:
             )
             end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(hours=hours)
-            # Increase limit to 50 emails per account to match max_emails parameter
-            messages = list(account.inbox.filter(datetime_received__gte=start_time).order_by('-datetime_received')[:50])
             results = []
-            for msg in messages:
-                results.append({
-                    'id': msg.message_id,
-                    'source': 'outlook',
-                    'subject': msg.subject,
-                    'from': msg.sender.email_address if msg.sender else 'Unknown',
-                    'received': msg.datetime_received.isoformat() if msg.datetime_received else '',
-                    'snippet': msg.text_body[:100] if msg.text_body else '',
-                    'folder': 'INBOX',
-                })
+            folder_names = folders or ["INBOX"]
+            # Increase limit to 50 emails per account per folder (cap below)
+            per_folder_limit = 25
+            for folder_name in folder_names:
+                folder_obj = None
+                try:
+                    if folder_name.strip().upper() in {"INBOX", "INBOX/"}:
+                        folder_obj = account.inbox
+                    else:
+                        # Best-effort: treat as subfolder of Inbox
+                        folder_obj = account.inbox / folder_name.strip()
+                except Exception:
+                    folder_obj = None
+                if folder_obj is None:
+                    continue
+                try:
+                    messages = list(
+                        folder_obj.filter(datetime_received__gte=start_time)
+                        .order_by("-datetime_received")[:per_folder_limit]
+                    )
+                except Exception:
+                    continue
+                for msg in messages:
+                    try:
+                        results.append(
+                            {
+                                "id": msg.message_id or "",
+                                "source": "outlook",
+                                "account": email,
+                                "subject": msg.subject or "",
+                                "from": msg.sender.email_address if msg.sender else "Unknown",
+                                "received": msg.datetime_received.isoformat() if msg.datetime_received else "",
+                                "timestamp": int(msg.datetime_received.timestamp()) if msg.datetime_received else 0,
+                                "snippet": (msg.text_body or "")[:200],
+                                "folder": folder_name.strip() or "INBOX",
+                                # EWS doesn't always expose RFC822 Message-ID consistently; keep placeholder fields.
+                                "message_id": msg.message_id or "",
+                            }
+                        )
+                    except Exception:
+                        continue
             return results
         except Exception as e:
             print(f"Error in fetch_recent_ews_emails for {email}: {e}")
@@ -291,18 +320,30 @@ class DataFetcher:
             last_run = max_lookback_timestamp
         
         # Gmail
-        folders = ['INBOX', 'News', 'NaviSure Admin']
-        emails_per_folder = max(1, max_emails // len(folders))  # Distribute limit across folders
+        # Configurable labels/folders via env. Example:
+        #   EMAIL_GMAIL_LABELS=INBOX,News
+        gmail_labels = []
+        try:
+            raw = os.getenv("EMAIL_GMAIL_LABELS") or "INBOX,News"
+            gmail_labels = [s.strip() for s in raw.split(",") if s.strip()]
+        except Exception:
+            gmail_labels = ["INBOX", "News"]
+        if not gmail_labels:
+            gmail_labels = ["INBOX"]
+
+        emails_per_folder = max(1, max_emails // len(gmail_labels))  # Distribute limit across folders
         
-        for folder in folders:
+        for folder in gmail_labels:
             if len(emails) >= max_emails:
                 break
                 
             # Gmail's 'after:' query accepts date in YYYY/MM/DD format
             # Convert timestamp to date string for more reliable querying
             lookback_date = datetime.fromtimestamp(last_run, tz=timezone.utc)
-            query = f"after:{lookback_date.strftime('%Y/%m/%d')}"
-            if folder != 'INBOX':
+            query = f"after:{lookback_date.strftime('%Y/%m/%d')} -in:spam -in:trash"
+            if folder.upper() == "INBOX":
+                query += " in:inbox"
+            else:
                 query += f' label:"{folder}"'
             try:
                 results = self.gmail.users().messages().list(
@@ -310,7 +351,15 @@ class DataFetcher:
                     q=query,
                     maxResults=min(emails_per_folder, max_emails - len(emails))
                 ).execute()
-                emails.extend({'id': msg['id'], 'source': 'gmail', 'folder': folder} for msg in results.get('messages', [])[:emails_per_folder])
+                emails.extend(
+                    {
+                        'id': msg['id'],
+                        'source': 'gmail',
+                        'folder': folder,
+                        'account': 'gmail',
+                    }
+                    for msg in results.get('messages', [])[:emails_per_folder]
+                )
             except Exception as e:
                 continue
 
@@ -318,7 +367,14 @@ class DataFetcher:
         try:
             mail = imaplib.IMAP4_SSL('imap.mail.yahoo.com')
             mail.login(self.yahoo_account['user'], self.yahoo_account['pwd'])
-            mail.select('inbox')
+            yahoo_folders = []
+            try:
+                raw = os.getenv("EMAIL_YAHOO_FOLDERS") or "INBOX"
+                yahoo_folders = [s.strip() for s in raw.split(",") if s.strip()]
+            except Exception:
+                yahoo_folders = ["INBOX"]
+            if not yahoo_folders:
+                yahoo_folders = ["INBOX"]
             
             # Limit to last 7 days maximum for Yahoo (use UTC for consistent comparison)
             search_date = datetime.now(timezone.utc) - timedelta(days=7)
@@ -329,13 +385,37 @@ class DataFetcher:
                     search_date = last_run_date
             
             since_date = search_date.strftime('%d-%b-%Y')
-            _, data = mail.search(None, f'SINCE {since_date}')
             # Limit Yahoo emails to avoid processing too many old emails
-            yahoo_limit = max_emails // 3  # Use 1/3 of limit for Yahoo
-            yahoo_email_nums = data[0].split()[:yahoo_limit] if data[0] else []
-            for num in yahoo_email_nums:
-                _, msg_data = mail.fetch(num, '(RFC822)')
-                emails.append({'id': num.decode(), 'source': 'yahoo', 'raw': msg_data[0][1], 'folder': 'INBOX'})
+            yahoo_limit_total = max(1, max_emails // 3)  # Use ~1/3 of limit for Yahoo
+            yahoo_limit_per_folder = max(1, yahoo_limit_total // len(yahoo_folders))
+
+            for folder in yahoo_folders:
+                if len(emails) >= max_emails:
+                    break
+                try:
+                    mail.select(folder)
+                except Exception:
+                    # Some servers require lowercase inbox, etc.
+                    try:
+                        mail.select(folder.lower())
+                    except Exception:
+                        continue
+                try:
+                    _, data = mail.search(None, f'SINCE {since_date}')
+                    yahoo_email_nums = data[0].split()[:yahoo_limit_per_folder] if data and data[0] else []
+                    for num in yahoo_email_nums:
+                        _, msg_data = mail.fetch(num, '(RFC822)')
+                        emails.append(
+                            {
+                                'id': num.decode(),
+                                'source': 'yahoo',
+                                'raw': msg_data[0][1],
+                                'folder': folder,
+                                'account': self.yahoo_account.get("user") or "yahoo",
+                            }
+                        )
+                except Exception:
+                    continue
             mail.logout()
         except Exception as e:
             pass
@@ -352,7 +432,16 @@ class DataFetcher:
                 else:
                     hours_ago = 24  # Default to 24 hours if no last_run
                 
-                ews_emails = self.fetch_recent_ews_emails(outlook_email, hours=int(hours_ago))
+                outlook_folders = []
+                try:
+                    raw = os.getenv("EMAIL_OUTLOOK_FOLDERS") or "INBOX"
+                    outlook_folders = [s.strip() for s in raw.split(",") if s.strip()]
+                except Exception:
+                    outlook_folders = ["INBOX"]
+                if not outlook_folders:
+                    outlook_folders = ["INBOX"]
+
+                ews_emails = self.fetch_recent_ews_emails(outlook_email, hours=int(hours_ago), folders=outlook_folders)
                 if ews_emails:
                     print(f"Fetched {len(ews_emails)} emails from {outlook_email}")
                 emails.extend(ews_emails)
