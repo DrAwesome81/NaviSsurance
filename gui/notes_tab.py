@@ -235,6 +235,14 @@ class NoteTakingSystem(QWidget):
         # Detail pane
         detail = QWidget()
         detail_layout = QVBoxLayout(detail)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(6)
+
+        self.note_status_label = QLabel("")
+        self.note_status_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        self.note_status_label.setVisible(False)
+        detail_layout.addWidget(self.note_status_label)
+
         self.note_detail = QTextEdit()
         self.note_detail.setReadOnly(True)
         self.note_detail.setStyleSheet(box_style)
@@ -529,6 +537,9 @@ IMPORTANT: Respond with ONLY the JSON. No other text or explanations."""
                 self._render_note_detail(self._selected_note_id)
             elif self.notes_list.count() > 0:
                 self.notes_list.setCurrentRow(0)
+            else:
+                self._set_note_status(None)
+                self._set_action_buttons_enabled(None)
         except Exception as e:
             try:
                 self.note_detail.setPlainText(f"Error loading notes: {e}")
@@ -540,6 +551,8 @@ IMPORTANT: Respond with ONLY the JSON. No other text or explanations."""
         if not items:
             self._selected_note_id = None
             self.note_detail.setPlainText("")
+            self._set_note_status(None)
+            self._set_action_buttons_enabled(None)
             return
         nid = int(items[0].data(Qt.ItemDataRole.UserRole))
         self._selected_note_id = nid
@@ -559,7 +572,11 @@ IMPORTANT: Respond with ONLY the JSON. No other text or explanations."""
 
         if not note:
             self.note_detail.setPlainText("(Note not found)")
+            self._set_note_status(None)
+            self._set_action_buttons_enabled(None)
             return
+        self._set_note_status(note)
+        self._set_action_buttons_enabled(note)
         formatted = (note.get("formatted_note") or "").strip()
         raw = (note.get("raw_note") or "").strip()
         ctx = (note.get("context") or "").strip()
@@ -582,6 +599,72 @@ IMPORTANT: Respond with ONLY the JSON. No other text or explanations."""
         if raw and raw != formatted:
             parts.append("\n---\nRaw:\n" + raw)
         self.note_detail.setPlainText("\n".join(parts))
+
+    def _set_note_status(self, note: dict | None) -> None:
+        """Show an inline status line for the currently selected note."""
+        if not note:
+            self.note_status_label.setVisible(False)
+            self.note_status_label.setText("")
+            return
+        state = (note.get("state") or "ready").strip().lower()
+        if state == "pending":
+            self.note_status_label.setText("Formatting…")
+            self.note_status_label.setVisible(True)
+        elif state == "error":
+            self.note_status_label.setText("Formatting failed (you can Retry).")
+            self.note_status_label.setVisible(True)
+        else:
+            self.note_status_label.setVisible(False)
+            self.note_status_label.setText("")
+
+    def _set_action_buttons_enabled(self, note: dict | None) -> None:
+        """Enable/disable action buttons based on selection + note state."""
+        btns = [
+            self.pin_btn,
+            self.edit_btn,
+            self.del_btn,
+            self.retry_btn,
+            self.move_btn,
+            self.copy_btn,
+            self.task_btn,
+            self.remember_btn,
+        ]
+        if not note:
+            for b in btns:
+                try:
+                    b.setEnabled(False)
+                except Exception:
+                    pass
+            return
+
+        state = (note.get("state") or "ready").strip().lower()
+        has_text = bool((note.get("formatted_note") or "").strip() or (note.get("raw_note") or "").strip())
+        is_ready = state == "ready"
+        is_pending = state == "pending"
+        is_error = state == "error"
+
+        # Always allow delete when a note exists; allow pin even if pending.
+        self.del_btn.setEnabled(True)
+        self.pin_btn.setEnabled(True)
+
+        # Copy is allowed if we have any text
+        self.copy_btn.setEnabled(has_text)
+
+        # Retry only makes sense on error (or if you want to force reformat)
+        self.retry_btn.setEnabled(is_error)
+
+        # Editing/moving/task/remember should only be enabled once formatted/ready.
+        self.edit_btn.setEnabled(is_ready)
+        self.move_btn.setEnabled(is_ready)
+        self.task_btn.setEnabled(is_ready and bool((note.get("formatted_note") or "").strip()))
+        self.remember_btn.setEnabled(is_ready and bool((note.get("formatted_note") or "").strip()))
+
+        # If pending, disable most actions that would conflict
+        if is_pending:
+            self.edit_btn.setEnabled(False)
+            self.move_btn.setEnabled(False)
+            self.task_btn.setEnabled(False)
+            self.remember_btn.setEnabled(False)
 
     def toggle_pin_selected(self):
         if not self._selected_note_id:
