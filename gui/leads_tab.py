@@ -187,7 +187,7 @@ Hard rules:
                 response_content = grok_web_search(
                     discover_prompt,
                     model=MODEL_WEB,
-                    timeout=360,
+                    timeout=900,
                     retries=0,
                 )
             except Exception:
@@ -300,7 +300,7 @@ Candidates JSON:
                 final_text = grok_web_search(
                     verify_prompt,
                     model=MODEL_WEB,
-                    timeout=360,
+                    timeout=900,
                     retries=0,
                 )
             except Exception:
