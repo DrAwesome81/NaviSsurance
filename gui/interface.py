@@ -551,6 +551,13 @@ class ChatWindow(QMainWindow):
     def _handle_response_safe(self, response):
         """Thread-safe version of handle_response."""
         self.chat_display.append(f"<b>Navi:</b> {response}<br>")
+        # If Navi added tasks via CoS chat, refresh the Dashboard task table immediately.
+        try:
+            if isinstance(response, str) and re.search(r"\bAdded\s+\d+\s+task", response):
+                if hasattr(self, "dashboard_tab") and hasattr(self.dashboard_tab, "load_tasks_filtered"):
+                    QTimer.singleShot(0, self.dashboard_tab.load_tasks_filtered)
+        except Exception:
+            pass
 
     def load_chat_history(self):
         # Load Dashboard chat history from the persistent CoS session.
