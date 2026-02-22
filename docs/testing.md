@@ -261,7 +261,7 @@ Email Fetching Configuration (Folders/Labels)
 Email fetching runs as part of the daily briefing (and is capped to the last 7 days).
 You can configure which folders/labels are included via environment variables in `config/.env`:
 - `EMAIL_GMAIL_LABELS`: comma-separated Gmail labels to include. Use `INBOX` to include inbox.
-  - Example: `EMAIL_GMAIL_LABELS=INBOX,Clients,Leads,News,NaviSure Admin`
+  - Example: `EMAIL_GMAIL_LABELS=INBOX,News`
 - `EMAIL_YAHOO_FOLDERS`: comma-separated IMAP folder names (Yahoo). Default: `INBOX`
   - Example: `EMAIL_YAHOO_FOLDERS=INBOX,Clients,Leads`
 - `EMAIL_OUTLOOK_FOLDERS`: comma-separated folder names (best-effort via EWS). Default: `INBOX`

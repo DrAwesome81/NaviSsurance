@@ -321,13 +321,13 @@ class DataFetcher:
         
         # Gmail
         # Configurable labels/folders via env. Example:
-        #   EMAIL_GMAIL_LABELS=INBOX,Clients,Leads,News,NaviSure Admin
+        #   EMAIL_GMAIL_LABELS=INBOX,News
         gmail_labels = []
         try:
-            raw = os.getenv("EMAIL_GMAIL_LABELS") or "INBOX,News,NaviSure Admin"
+            raw = os.getenv("EMAIL_GMAIL_LABELS") or "INBOX,News"
             gmail_labels = [s.strip() for s in raw.split(",") if s.strip()]
         except Exception:
-            gmail_labels = ["INBOX", "News", "NaviSure Admin"]
+            gmail_labels = ["INBOX", "News"]
         if not gmail_labels:
             gmail_labels = ["INBOX"]
 
