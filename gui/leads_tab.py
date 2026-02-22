@@ -1,5 +1,20 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QCheckBox, QMessageBox
-from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QCheckBox,
+    QMessageBox,
+    QLabel,
+    QComboBox,
+    QSpinBox,
+    QDialog,
+    QTextBrowser,
+    QApplication,
+)
+from PyQt6.QtCore import Qt, QUrl
 import os
 import json
 import requests
@@ -10,7 +25,6 @@ from PyQt6.QtGui import QColor
 # Setup logging (centralized in main.py)
 logger = logging.getLogger(__name__)
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import QHeaderView
 from datetime import datetime
 
@@ -95,7 +109,32 @@ class LeadsTab(QWidget):
         self.chat_handler = chat_handler
         self.data_dir = data_dir
         self.parent = parent
+        # Prefer the app's DatabaseManager (ChatWindow.db) if available.
+        try:
+            if self.parent is not None and hasattr(self.parent, "db"):
+                self.db = self.parent.db
+            else:
+                from core.db import DatabaseManager
+                self.db = DatabaseManager()
+        except Exception:
+            self.db = None
         self.setup_ui()
+
+    class _HtmlDialog(QDialog):
+        def __init__(self, parent, title: str, html: str):
+            super().__init__(parent)
+            self.setWindowTitle(title)
+            layout = QVBoxLayout(self)
+            view = QTextBrowser(self)
+            view.setOpenExternalLinks(True)
+            view.setHtml(html)
+            layout.addWidget(view)
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(self.accept)
+            btn_row.addWidget(close_btn)
+            layout.addLayout(btn_row)
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -115,43 +154,119 @@ class LeadsTab(QWidget):
         self.runSearchButton.clicked.connect(self.search_leads)
         self.runSearchButton.setToolTip("Search for new leads (F5)")
         leads_button_layout.addWidget(self.runSearchButton)
+
+        self.refreshButton = QPushButton("Refresh", self)
+        self.refreshButton.clicked.connect(self.refresh_leads)
+        leads_button_layout.addWidget(self.refreshButton)
         
         layout.addLayout(leads_button_layout)
+
+        # Filters (DB-backed)
+        filters_layout = QHBoxLayout()
+        filters_layout.addWidget(QLabel("Status:"))
+        self.status_filter = QComboBox()
+        self.status_filter.addItems(["All", "new", "contacted", "nurturing", "disqualified"])
+        self.status_filter.currentTextChanged.connect(self.refresh_leads)
+        filters_layout.addWidget(self.status_filter)
+
+        filters_layout.addWidget(QLabel("Min score:"))
+        self.min_score_filter = QSpinBox()
+        self.min_score_filter.setRange(0, 999)
+        self.min_score_filter.setValue(0)
+        self.min_score_filter.valueChanged.connect(self.refresh_leads)
+        filters_layout.addWidget(self.min_score_filter)
+
+        self.hide_contacted = QCheckBox("Hide contacted")
+        self.hide_contacted.stateChanged.connect(self.refresh_leads)
+        filters_layout.addWidget(self.hide_contacted)
+
+        filters_layout.addStretch()
+        layout.addLayout(filters_layout)
         
         # Configure the leads table
-        self.leadsTable = QTableWidget(0, 8)
+        self.leadsTable = QTableWidget(0, 12)
         self.leadsTable.setHorizontalHeaderLabels([
-            "Name", "Company", "Title", "Contacted", "Contact Date", "Message", "Delete", "Rationale"
+            "Name", "Company", "Title", "Score", "Status", "Contacted", "Contact Date", "Next Action", "Message", "Sources", "Delete", "Rationale"
         ])
         
         # Set column widths and behavior
         self.leadsTable.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.leadsTable.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.leadsTable.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.leadsTable.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.leadsTable.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self.leadsTable.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.leadsTable.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.leadsTable.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         self.leadsTable.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
-        self.leadsTable.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+        self.leadsTable.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
+        self.leadsTable.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.Fixed)
+        self.leadsTable.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.Fixed)
+        self.leadsTable.horizontalHeader().setSectionResizeMode(10, QHeaderView.ResizeMode.Fixed)
+        self.leadsTable.horizontalHeader().setSectionResizeMode(11, QHeaderView.ResizeMode.Stretch)
         
-        self.leadsTable.setColumnWidth(3, 80)
-        self.leadsTable.setColumnWidth(4, 100)
-        self.leadsTable.setColumnWidth(5, 120)
-        self.leadsTable.setColumnWidth(6, 90)
+        self.leadsTable.setColumnWidth(3, 65)
+        self.leadsTable.setColumnWidth(5, 80)
+        self.leadsTable.setColumnWidth(6, 100)
+        self.leadsTable.setColumnWidth(7, 95)
+        self.leadsTable.setColumnWidth(8, 120)
+        self.leadsTable.setColumnWidth(9, 90)
+        self.leadsTable.setColumnWidth(10, 70)
         
         self.leadsTable.setWordWrap(True)
+        self.leadsTable.setSortingEnabled(True)
         layout.addWidget(self.leadsTable)
-        
-        # Load existing leads
-        leads_file = os.path.join(self.data_dir, 'leads.json')
-        if os.path.exists(leads_file):
-            try:
-                with open(leads_file, 'r') as f:
-                    leads = json.load(f)
-                self.update_leads_table(leads)
-                logger.info(f"Loaded {len(leads)} existing leads")
-            except Exception as e:
-                logger.error(f"Error loading leads: {e}")
+
+        self.leadsTable.cellClicked.connect(self.on_cell_clicked)
+        self.refresh_leads()
+
+    def _maybe_import_legacy_json(self):
+        """Best-effort import of legacy data/leads.json into SQLite if DB is empty."""
+        if not self.db:
+            return
+        try:
+            if self.db.list_leads(limit=1):
+                return
+        except Exception:
+            return
+
+        leads_file = os.path.join(self.data_dir, "leads.json")
+        if not os.path.exists(leads_file):
+            return
+        try:
+            with open(leads_file, "r", encoding="utf-8") as f:
+                leads = json.load(f)
+            if not isinstance(leads, list):
+                return
+            for lead in leads:
+                if not isinstance(lead, dict):
+                    continue
+                lead.setdefault("sources", [])
+                lead.setdefault("signals", [])
+                try:
+                    self.db.upsert_lead(lead)
+                except Exception:
+                    continue
+        except Exception:
+            return
+
+    def refresh_leads(self):
+        """Reload leads from SQLite using current filter settings."""
+        if not self.db:
+            return
+
+        self._maybe_import_legacy_json()
+
+        status = self.status_filter.currentText()
+        if status == "All":
+            status = None
+        min_score = int(self.min_score_filter.value() or 0)
+        contacted = 0 if self.hide_contacted.isChecked() else None
+
+        try:
+            leads = self.db.list_leads(status=status, contacted=contacted, min_score=min_score, limit=500)
+        except Exception as e:
+            logger.error(f"Error loading leads: {e}")
+            leads = []
+        self.update_leads_table(leads)
 
     def search_leads(self):
         """Run Grok API search for leads based on system message."""
@@ -242,33 +357,41 @@ Hard rules:
 
                 if isinstance(new_leads, list):
                     logger.info(f"Successfully parsed JSON array with {len(new_leads)} leads")
-
-                    leads_file = os.path.join(self.data_dir, 'leads.json')
-                    existing_leads = []
-                    if os.path.exists(leads_file):
-                        with open(leads_file, 'r') as f:
-                            existing_leads = json.load(f)
-
-                    existing_identifiers = {(lead['name'], lead['company']) for lead in existing_leads}
-
+                    stored = 0
                     for lead in new_leads:
+                        if not isinstance(lead, dict):
+                            continue
                         if not all(k in lead for k in ['name', 'company', 'title', 'rationale', 'message']):
                             logger.warning(f"Skipping lead with missing required fields: {lead}")
                             continue
-                        lead['contacted'] = False
-                        lead['contact_date'] = None
-                        lead['linkedin_url'] = lead.get('linkedin_url', '')
-                        
-                        if (lead['name'], lead['company']) not in existing_identifiers:
-                            existing_leads.insert(0, lead)
-                            existing_identifiers.add((lead['name'], lead['company']))
-                            logger.info(f"Added new lead: {lead['name']} from {lead['company']}")
 
-                    with open(leads_file, 'w') as f:
-                        json.dump(existing_leads, f, indent=2)
+                        sources = lead.get("sources") or []
+                        if not isinstance(sources, list):
+                            sources = []
+                        # Enforce evidence: no sources, no lead.
+                        if len(sources) == 0:
+                            logger.warning(f"Skipping unverifiable lead (no sources): {lead.get('name')} @ {lead.get('company')}")
+                            continue
 
-                    self.update_leads_table(existing_leads)
-                    logger.info(f"Successfully loaded {len(new_leads)} new leads")
+                        lead.setdefault("signals", [])
+                        lead.setdefault("linkedin_url", "")
+                        lead.setdefault("company_url", "")
+                        lead.setdefault("status", "new")
+                        lead.setdefault("contacted", False)
+                        lead.setdefault("contact_date", None)
+                        lead.setdefault("next_action_date", None)
+                        lead.setdefault("notes", "")
+
+                        if self.db:
+                            try:
+                                self.db.upsert_lead(lead)
+                                stored += 1
+                            except Exception as e:
+                                logger.warning(f"Failed to store lead: {e}")
+                                continue
+
+                    self.refresh_leads()
+                    logger.info(f"Stored {stored} leads")
                     return
             else:
                 logger.error("No JSON array found in response")
@@ -281,38 +404,51 @@ Hard rules:
         self.leadsTable.setRowCount(len(leads))
         for row, lead in enumerate(leads):
             self.leadsTable.setRowHeight(row, 40)
-            
+
+            lead_id = lead.get("id")
+
             name_item = QTableWidgetItem(lead.get('name', ''))
+            name_item.setData(Qt.ItemDataRole.UserRole + 2, lead_id)
             if lead.get('linkedin_url'):
-                name_item.setData(Qt.ItemDataRole.UserRole, lead['linkedin_url'])
-                name_item.setData(Qt.ItemDataRole.UserRole + 1, "linkedin")
+                name_item.setData(Qt.ItemDataRole.UserRole, lead.get('linkedin_url', ''))
                 name_item.setForeground(QColor("#0077B5"))
             self.leadsTable.setItem(row, 0, name_item)
-            
+
             self.leadsTable.setItem(row, 1, QTableWidgetItem(lead.get('company', '')))
             self.leadsTable.setItem(row, 2, QTableWidgetItem(lead.get('title', '')))
-            
+
+            score = int(lead.get("total_score", 0) or 0)
+            score_item = QTableWidgetItem(str(score))
+            score_item.setData(Qt.ItemDataRole.EditRole, score)
+            self.leadsTable.setItem(row, 3, score_item)
+
+            self.leadsTable.setItem(row, 4, QTableWidgetItem(lead.get("status", "new")))
+
             contacted_checkbox = QCheckBox()
-            contacted_checkbox.setChecked(lead.get('contacted', False))
-            contacted_checkbox.stateChanged.connect(lambda state, r=row: self.toggle_contacted(r, state == Qt.CheckState.Checked.value))
-            self.leadsTable.setCellWidget(row, 3, contacted_checkbox)
-            
-            contact_date = QTableWidgetItem(lead.get('contact_date', ''))
-            self.leadsTable.setItem(row, 4, contact_date)
-            
+            contacted_checkbox.setChecked(bool(lead.get('contacted', False)))
+            contacted_checkbox.stateChanged.connect(
+                lambda state, lid=lead_id: self.toggle_contacted_by_id(lid, state == Qt.CheckState.Checked.value)
+            )
+            self.leadsTable.setCellWidget(row, 5, contacted_checkbox)
+
+            self.leadsTable.setItem(row, 6, QTableWidgetItem(lead.get('contact_date', '') or ''))
+            self.leadsTable.setItem(row, 7, QTableWidgetItem(lead.get('next_action_date', '') or ''))
+
             message_btn = QPushButton("View Message")
             message_btn.clicked.connect(lambda _, msg=lead.get('message', ''): self.show_message_dialog(msg))
-            self.leadsTable.setCellWidget(row, 5, message_btn)
-            
+            self.leadsTable.setCellWidget(row, 8, message_btn)
+
+            sources_btn = QPushButton("Sources")
+            sources_btn.clicked.connect(lambda _, l=lead: self.show_sources_dialog(l))
+            self.leadsTable.setCellWidget(row, 9, sources_btn)
+
             delete_btn = QPushButton("Delete")
-            delete_btn.clicked.connect(lambda _, r=row: self.delete_lead(r))
-            self.leadsTable.setCellWidget(row, 6, delete_btn)
-            
+            delete_btn.clicked.connect(lambda _, lid=lead_id: self.delete_lead_by_id(lid))
+            self.leadsTable.setCellWidget(row, 10, delete_btn)
+
             rationale_item = QTableWidgetItem(lead.get('rationale', ''))
             rationale_item.setToolTip(lead.get('rationale', ''))
-            self.leadsTable.setItem(row, 7, rationale_item)
-        
-        self.leadsTable.cellClicked.connect(self.on_cell_clicked)
+            self.leadsTable.setItem(row, 11, rationale_item)
 
     def on_cell_clicked(self, row, column):
         if column == 0:
@@ -321,23 +457,14 @@ Hard rules:
             if url:
                 QDesktopServices.openUrl(QUrl(url))
 
-    def toggle_contacted(self, row, checked):
-        name = self.leadsTable.item(row, 0).text()
-        company = self.leadsTable.item(row, 1).text()
-        
-        leads_file = os.path.join(self.data_dir, 'leads.json')
-        if os.path.exists(leads_file):
-            with open(leads_file, 'r') as f:
-                leads = json.load(f)
-            
-            for lead in leads:
-                if lead['name'] == name and lead['company'] == company:
-                    lead['contacted'] = checked
-                    lead['contact_date'] = datetime.now().strftime("%Y-%m-%d") if checked else None
-                    break
-            
-            with open(leads_file, 'w') as f:
-                json.dump(leads, f, indent=2)
+    def toggle_contacted_by_id(self, lead_id, checked: bool):
+        if not self.db or lead_id is None:
+            return
+        try:
+            self.db.set_lead_contacted(int(lead_id), bool(checked))
+        except Exception as e:
+            logger.error(f"Failed to update lead contacted state: {e}")
+        self.refresh_leads()
 
     def show_message_dialog(self, message):
         msg = QMessageBox(self)
@@ -345,23 +472,49 @@ Hard rules:
         msg.setText(message)
         msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Copy)
         msg.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        msg.exec()
+        ret = msg.exec()
+        if ret == QMessageBox.StandardButton.Copy:
+            try:
+                QApplication.clipboard().setText(message or "")
+            except Exception:
+                pass
 
-    def delete_lead(self, row):
-        name = self.leadsTable.item(row, 0).text()
-        company = self.leadsTable.item(row, 1).text()
-        
-        reply = QMessageBox.question(self, 'Confirm Delete', f"Are you sure you want to delete {name} from {company}?",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            leads_file = os.path.join(self.data_dir, 'leads.json')
-            if os.path.exists(leads_file):
-                with open(leads_file, 'r') as f:
-                    leads = json.load(f)
-                
-                leads = [lead for lead in leads if not (lead['name'] == name and lead['company'] == company)]
-                
-                with open(leads_file, 'w') as f:
-                    json.dump(leads, f, indent=2)
-                
-                self.update_leads_table(leads)
+    def delete_lead_by_id(self, lead_id):
+        if not self.db or lead_id is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Confirm Delete",
+            "Are you sure you want to delete this lead?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.db.delete_lead_by_id(int(lead_id))
+        except Exception as e:
+            logger.error(f"Failed to delete lead: {e}")
+        self.refresh_leads()
+
+    def show_sources_dialog(self, lead: dict):
+        sources = lead.get("sources") or []
+        signals = lead.get("signals") or []
+        html = "<div style='font-family: Segoe UI, Arial; font-size: 12px;'>"
+        html += f"<h3>{lead.get('name','')} — {lead.get('company','')}</h3>"
+        if signals:
+            html += "<b>Signals</b><ul>"
+            for s in signals[:20]:
+                html += f"<li>{str(s)}</li>"
+            html += "</ul>"
+        if sources:
+            html += "<b>Sources</b><ul>"
+            for u in sources[:30]:
+                uu = str(u)
+                html += f"<li><a href='{uu}'>{uu}</a></li>"
+            html += "</ul>"
+        else:
+            html += "<p><i>No sources stored.</i></p>"
+        html += "</div>"
+        dlg = self._HtmlDialog(self, "Lead Evidence", html)
+        dlg.resize(720, 520)
+        dlg.exec()
