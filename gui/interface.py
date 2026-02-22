@@ -496,13 +496,51 @@ class ChatWindow(QMainWindow):
         else:
             self.chat_panel.show()
 
+    def _get_dashboard_cos_chat_id(self) -> int:
+        """Return a stable cos_chat id used by the Dashboard chat panel."""
+        try:
+            existing = self.db.get_setting("cos_dashboard_chat_id", "") if hasattr(self.db, "get_setting") else ""
+            if existing:
+                try:
+                    cid = int(str(existing).strip())
+                    if cid > 0:
+                        return cid
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Create a chat record and persist it.
+        cid = self.db.cos_create_chat(title="Dashboard", project=None)
+        try:
+            if hasattr(self.db, "set_setting"):
+                self.db.set_setting("cos_dashboard_chat_id", str(cid))
+        except Exception:
+            pass
+        return cid
+
+    def _dashboard_session_id(self) -> str:
+        return f"cos_{self._get_dashboard_cos_chat_id()}"
+
     def sendMessage(self):
         message = self.chat_input.text().strip()
         if message:
             self.chat_display.append(f"<b>You:</b> {message}<br>")
             self.chat_input.clear()
-            
-            self.chat_thread = ChatThread(self.chat_handler, message, "main_session", [])
+
+            # Chief of Staff replaces Navi in the dashboard chat.
+            session_id = self._dashboard_session_id()
+            try:
+                self.db.save_message(session_id, "user", message)
+            except Exception:
+                pass
+            history = []
+            try:
+                history = self.db.get_chat_history(session_id, limit=50)
+            except Exception:
+                history = []
+
+            self.chat_thread = ChatThread(self.chat_handler, message, session_id, history)
             self.chat_thread.response_signal.connect(self.handle_response)
             self.chat_thread.start()
 
@@ -512,12 +550,15 @@ class ChatWindow(QMainWindow):
     
     def _handle_response_safe(self, response):
         """Thread-safe version of handle_response."""
-        self.chat_display.append(f"<b>Navi:</b> {response}<br>")
+        self.chat_display.append(f"<b>Chief of Staff:</b> {response}<br>")
 
     def load_chat_history(self):
-        history = self.db.get_chat_history()
-        for sender, message in history:
-            self.chat_display.append(f"<b>{sender}:</b> {message}<br>")
+        # Load Dashboard chat history from the persistent CoS session.
+        session_id = self._dashboard_session_id()
+        history = self.db.get_chat_history(session_id, limit=100)
+        for role, message in history:
+            label = "You" if role == "user" else "Chief of Staff"
+            self.chat_display.append(f"<b>{label}:</b> {message}<br>")
 
     def closeEvent(self, event):
         if hasattr(self, "projects_tab") and hasattr(self.projects_tab, "save_state"):

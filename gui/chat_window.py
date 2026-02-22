@@ -20,7 +20,47 @@ class ChatThread(QThread):
 
     def run(self):
         try:
-            # This step triggers the task addition logic
+            sid = str(self.session_id or "")
+
+            # Chief of Staff replaces Navi for main/dashboard chat:
+            # - If session_id is a CoS session, route directly to cos_response.
+            # - This avoids the legacy "Added..." parsing and keeps CoS memory/calendar/tool loop behavior.
+            if sid.startswith("cos_") or sid == "main_session":
+                try:
+                    from core.chief_of_staff_service import cos_response
+                    db = getattr(self.chat_handler, "db", None)
+                    if db is None:
+                        raise RuntimeError("DatabaseManager not available for CoS chat")
+
+                    chat_id = None
+                    if sid.startswith("cos_"):
+                        try:
+                            chat_id = int(sid.split("_", 1)[1])
+                        except Exception:
+                            chat_id = None
+
+                    response = cos_response(db, self.message, conversation_history=self.history, chat_id=chat_id)
+
+                    # Persist assistant reply to the same session.
+                    try:
+                        self.chat_handler.save_message(sid, "assistant", response)
+                    except Exception:
+                        pass
+
+                    # Update chat list timestamp (if we have a real chat_id)
+                    if chat_id is not None:
+                        try:
+                            db.cos_update_chat(chat_id)
+                        except Exception:
+                            pass
+
+                    self.response_signal.emit(response or "")
+                    return
+                except Exception as e:
+                    self.response_signal.emit(f"Error: {str(e)}")
+                    return
+
+            # Legacy Navi pipeline (non-CoS sessions)
             response = self.chat_handler.get_response(self.message, self.session_id, self.history)
             
             if response:
