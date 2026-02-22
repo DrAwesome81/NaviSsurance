@@ -12,7 +12,7 @@ See `docs/diagrams/architecture.png` for a visual representation.
 - **Dashboard Tab** (`gui/interface.py`): Comprehensive dashboard with task list (interactive with double-click completion), schedule display (Google Calendar integration), and news feed (AI-powered MedTech news with 7-day persistence and hyperlinks). Features auto-refresh timers and real-time updates.
 - **Workspace Tab** (`gui/interface.py`): Advanced document workspace with QSplitter layout: left panel (Dropbox file tree), center panel (document preview), and right sidebar (analysis tools for compliance, chunking, and document generation).
 - **Note-Taking System** (`gui/interface.py`): AI-powered note-taking with context setting, automatic formatting, dynamic categorization, and export capabilities. Uses local Llama model for processing with robust JSON response handling.
-- **Tasks Tab** (`gui/tasks_tab.py`): Professional task management with Vikunja API integration. Features connection management, project selection with hierarchical display, task creation and management with all fields visible (title, description, priority, due date, start date, end date, percent done, favorite, estimated duration), task editing and deletion, estimated duration input, and natural language task creation via chat. Fully implemented with comprehensive test coverage (75 automated tests passing). VikunjaClient API (`core/vikunja_client.py`) fully implemented and tested.
+- **Tasks Tab** (`gui/tasks_tab.py`): Local (SQLite-backed) task manager. Uses the same task store as the Dashboard + CoS task capture. Supports search, filters, quick add, completion toggling, and deletion.
 - **Compliance Tab** (`interface.py`): Three-column UI for uploading SOPs/URLs, analyzing with Grok, and displaying JSON results (`[{section, issue, fix, reference}]`).
 - **Leads Tab** (`gui/leads_tab.py`): DB-backed lead generation with evidence-first web research, openFDA 510(k) enrichment, scoring/filters, and follow-up task creation (see `docs/lead_generation.md`).
 - **Email Fetching** (`core/fetch_all_emails.py`): Fetches Gmail, MSN/Outlook, IMAP emails; planned folder access for DistilBERT filtering.
@@ -31,7 +31,7 @@ See `docs/diagrams/architecture.png` for a visual representation.
 - **xAI Grok**: Lead generation; endpoints: `https://api.x.ai` (`interface.py`).
 - **LinkedIn (Share, Sign In, Community Management)**: Posts content, authenticates users; endpoints: `https://api.linkedin.com/v2` (`interface.py`).
 - **AssemblyAI**: Meeting transcription; endpoints: `https://api.assemblyai.com` (`interface.py`).
-- **Vikunja API**: Task and project management; endpoints: Self-hosted instance (default: `http://localhost:3456/api/v1`). Fully implemented in `gui/tasks_tab.py` (UI) and `core/vikunja_client.py` (API client). Supports natural language task creation via chat, task editing/deletion, and custom fields (estimated duration) stored locally.
+- **Task storage (SQLite)**: Tasks are persisted in `core/db.py` (`tasks` table) and surfaced in Dashboard + Tasks tab. The Chief of Staff can create tasks via `ADD_TASK`.
 
 ## Database Schema
 - **Tasks**: `id`, `session_id`, `task`, `due_date`, `completed`, `created_at`
@@ -39,7 +39,7 @@ See `docs/diagrams/architecture.png` for a visual representation.
 - **Notes**: `id`, `formatted_note`, `category`, `context`, `timestamp`, `created_at`
 - **Dropbox Files**: `id`, `name`, `path`, `link`, `modified_time`, `size`
 - **Conversations**: FTS5 virtual table for full-text search
-- **Vikunja Task Metadata**: `id`, `vikunja_task_id`, `estimated_duration_minutes`, `custom_fields_json`, `created_at`, `updated_at` (for custom task fields not supported by Vikunja API)
+- **Task Metadata**: Tasks are stored in SQLite with `id`, `task_text`, `due_date`, `category`, `recurrence`, `completed`, `created_at`.
 
 ## Diagram
 See `docs/diagrams/architecture.png`.

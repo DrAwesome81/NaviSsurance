@@ -13,7 +13,7 @@ NaviSsurance is an AI-powered medical device regulatory consulting platform, ser
 - **Email Fetching**: Fetches Gmail, MSN/Outlook, and custom IMAP inboxes (`fetch_all_emails.py`); planned folder access (e.g., "Clients," "Leads") for DistilBERT training to filter emails (8-class: Response Needed, Personal, etc.).
 - **Meeting Transcription**: AssemblyAI processes speaker-separated transcripts (`interface.py`, lines 248–312).
 - **Task Management**: Manual and chat-based task addition, archiving, and persistence (`core.db.DatabaseManager`), with interactive dashboard integration and double-click completion.
-- **Tasks Tab (Vikunja Integration)**: Professional task management with fully implemented Vikunja API integration. Features include connection management with persistent credentials, project creation and hierarchical display, comprehensive task table showing all fields (title, description, priority, due date, start date, end date, percent done, favorite, estimated duration), task creation with estimated duration input, task editing and deletion, natural language task creation via chat window, and comprehensive test coverage (75 automated tests passing).
+- **Tasks Tab (Local)**: SQLite-backed tasks manager (no external task system required). Provides search, filters, quick add, completion toggling, and deletion.
 - **CRM Integration (Planned)**: SQLite-based (`crm.py`) to unify leads, compliance results, and filtered emails.
 
 ## Tech Stack
@@ -25,6 +25,5 @@ NaviSsurance is an AI-powered medical device regulatory consulting platform, ser
 ## Status
 - **Fully Operational**: Dashboard tab with task management, schedule display, and news feed; Workspace tab with document management and analysis tools; Note-taking system with AI formatting and categorization; Lead generation and transcription are fully functional.
 - **Operational with Improvements**: Task management is now functional with dashboard integration and interactive features; Email fetching is limited to inboxes, needing folder access.
-- **Fully Operational**: Tasks Tab (Vikunja integration) - Fully implemented with comprehensive test coverage (75 passing tests). VikunjaClient API (`core/vikunja_client.py`) is complete and tested. Features include natural language task creation, task editing/deletion, estimated duration tracking, and full field visibility.
 - **In Development**: Clinical study design optimizer, CRM integration, and DistilBERT email filtering.
 - **Next Steps**: Debug `fetch_all_emails.py` for folder access, launch clinical study design optimizer to expand client base (diagnostics, CROs), enhance CRM integration.

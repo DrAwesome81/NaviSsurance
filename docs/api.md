@@ -98,40 +98,14 @@ Update .env with token
 Code: core/api.py, core/index_dropbox.py
 Notes: Used for document workspace, file preview, and storage integration.
 
-Vikunja API
+Task storage (local)
 
-Purpose: Task and project management for professional task organization.
-Endpoints: Self-hosted Vikunja instance (default: http://localhost:3456/api/v1).
-Authentication: Username/password via login endpoint, or registration for new users.
-Setup:
-Deploy Vikunja instance (Docker recommended, see vikunja/docker-compose.yml)
-Configure server URL in Tasks tab UI
-Login or register new account via UI
-Credentials are persisted using QSettings (remain populated across sessions)
+Purpose: Task persistence and management in NaviSsurance without external task systems.
 
-Implemented Methods (VikunjaClient class):
-- test_connection(): Test API connectivity
-- login(username, password): Authenticate user (endpoint: /api/v1/login)
-- register(username, email, password): Create new account (endpoint: /api/v1/register)
-- get_projects(): Fetch all projects (supports nested projects)
-- create_project(title, description, hex_color, parent_project_id, is_favorite, is_archived, position): Create new project
-- get_tasks(project_id): Fetch tasks for a project
-- create_task(project_id, title, description, due_date, start_date, end_date, priority, hex_color, percent_done, is_favorite, done, bucket_id): Create new task
-- update_task(task_id, title, description, due_date, start_date, end_date, priority, hex_color, percent_done, is_favorite, done, bucket_id): Update existing task
-- toggle_task_done(task_id, done): Update task completion status
-- delete_task(task_id): Delete a task
+Storage: SQLite (`core/db.py`, `tasks` table).
+UI: Dashboard task list and `gui/tasks_tab.py`.
 
-Features:
-- Full task table with all fields visible (Description, Due Date, Start Date, End Date, % Done, Favorite, Estimated Duration)
-- Task editing dialog with all fields including estimated duration
-- Task deletion with confirmation
-- Estimated duration input in task creation and editing (stored locally in SQLite)
-- Natural language task creation via chat window (when on Tasks tab)
-- Persistent credentials using QSettings
-- Enter key support for login
-
-Code: gui/tasks_tab.py (UI implementation), core/vikunja_client.py (API client - fully implemented)
-Notes: Fully implemented with comprehensive test coverage (75 automated tests passing). Local development instance available via Docker (vikunja/docker-compose.yml). Registration must be enabled in Vikunja instance (VIKUNJA_SERVICE_ENABLEREGISTRATION: "true").
+Notes: Chief of Staff task capture uses `ADD_TASK` and stores tasks locally.
 
 Notes
 
@@ -139,5 +113,5 @@ API keys are stored in .env, not hardcoded, ensuring GDPR/HIPAA compliance.
 Buyers must secure their own API keys due to non-transferable ToS.
 Transition support (30–60 days) recommended for buyer setup.
 Review ToS for commercial use and transfer policies before sale.
-All API integrations are currently functional and tested in the application. VikunjaClient is fully implemented with comprehensive test coverage (75 automated tests passing).
+All API integrations are currently functional and tested in the application.
 
