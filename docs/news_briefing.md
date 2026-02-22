@@ -1,75 +1,81 @@
-# External News in Daily Briefing
+# External News Feed (Dashboard) + Dedup / Suppression
 
 ## Goal
-Add a **relevant external headlines** section to the daily briefing that:
+Show a **relevant external headlines** feed on the Dashboard that:
 - pulls recent web headlines relevant to NaviSure’s work (FDA/MedTech/AI SaMD/IVD)
-- uses the Gmail **“News”** label as a personalization signal (seed topics)
-- avoids repeating the same headlines (dedup + “already shown” suppression)
+- optionally uses the Gmail **“News”** label as a personalization signal (seed topics)
+- avoids duplicate stories (canonical URL + title-based dedup)
+- avoids “Groundhog Day” repeats (don’t re-show items for \(N\) days)
 
 ## How it works (runtime)
 
-### 1) Seeds from Gmail “News” label (optional)
-If Gmail is configured, NaviSsurance reads recent subjects from the Gmail label `"News"` and uses them to extract keywords. These keywords are used to build one additional web query (e.g., “PCCP FDA draft guidance medical device regulatory news”).
+### 1) Fetch: web search via the agent toolchain
+The Dashboard spawns a `NewsWorker` thread which calls the agent with a single request shaped like:
+- `WEB_SEARCH:<query>`
 
-Code: `core/data_fetch.py:get_gmail_news_seeds()`
+The query is a baseline MedTech/regulatory query, with optional extra keywords extracted from recent Gmail `"News"` label subjects (if Gmail is configured).
 
-### 2) Web search for headlines (structured JSON)
-The app uses Anthropic web search to retrieve headlines and requires a **JSON array** response (title/url/source/published_at/summary).
+Code:
+- `gui/dashboard_tab.py:NewsWorker.run()`
+- `core/response_handler.py` (handles `WEB_SEARCH:`)
 
-Code: `core/news.py:NewsService._web_search_headlines()`
+### 2) Parse + store
+The Dashboard expects either:
+- a JSON array of items (preferred), or
+- a simple text fallback (paragraphs / title+body)
 
-#### Planned: migrate from Anthropic to Grok (xAI)
-Today this uses Anthropic web search because it provides a convenient integrated search tool. Longer-term, it would be cleaner to standardize on **Grok (xAI)** for this step as well.
+Before storing:
+- URLs are validated, then **canonicalized early** (strip fragments + common tracking params) to reduce DB churn and improve dedup.
 
-Implementation notes for that swap:
-- Replace the Anthropic client call in `NewsService._web_search_headlines()` with a Grok call (same pattern as `core/response_handler.py:chat_with_grok`).
-- Keep the **same output contract**: a JSON array of `{title, url, source, published_at, summary}` so the dedup/cache layer stays unchanged.
-- Ensure the Grok request uses a timeout + retries and does not log sensitive responses.
+Code:
+- `gui/dashboard_tab.py:DashboardTab.process_and_store_news()`
+- `core/news_dedup.py:canonicalize_url()`
 
-### 3) Dedup + cache in SQLite
-Each headline is normalized and stored in SQLite:
-- **Canonical URL** removes tracking parameters (`utm_*`, `gclid`, `fbclid`, etc.) and fragments.
-- A stable **dedup_key** is computed (prefers canonical URL).
-- `news_items` table stores `first_seen`, `last_seen`, and `last_shown`.
+### 3) Dedup at the database layer
+News is stored in `news_items`, with a separate `news_dedup` table maintaining stable dedup keys.
 
-This allows the app to:
-- avoid duplicates in a single run (same dedup key)
-- suppress showing the same story repeatedly for a few days
+Dedup keys are computed two ways (both stored):
+- **URL key** (preferred): canonicalized URL
+- **Title key** (fallback): normalized title (+ date when available)
 
-Code: `core/news.py:NewsStore`
+This allows “same story, different site” and “same story, tracking params” to collapse correctly.
 
-### 4) Briefing selection + “don’t repeat”
-When building the daily briefing, the app selects up to 5 items:
-- not shown in the last 2 days (configurable)
-- not older than 7 days (configurable)
+Code:
+- `core/db.py:DatabaseManager.store_news_item()`
+- `core/news_dedup.py:make_dedup_key()`
 
-Selected items are immediately marked `last_shown = now`.
+### 4) Dashboard selection + “don’t repeat”
+When rendering the feed, the Dashboard pulls from:
+- `DatabaseManager.get_news_for_dashboard(days=7, suppress_days=N, limit=50)`
 
-Code: `core/news.py:NewsStore.select_for_briefing()` / `mark_shown()`
+Then it immediately marks displayed items as shown:
+- `DatabaseManager.mark_news_shown([news_id, ...])`
 
-### 5) Daily briefing integration
-The daily briefing adds a new section:
+The suppression window \(N\) is configurable in the Dashboard UI (defaults to 2 days) and persisted in SQLite.
 
-- `[SECTION:News]`
+Code:
+- `core/db.py:get_news_for_dashboard()` / `mark_news_shown()`
+- `gui/dashboard_tab.py:DashboardTab.display_stored_news()`
+- `core/db.py:get_setting()` / `set_setting()` (stores `news_suppress_days`)
 
-with bullet lines containing title + source + link. The assistant then formats it.
+### 5) Lightweight relevance ranking (no new infra)
+After sorting by recency, the Dashboard applies a stable “relevance” rerank:
+- boosts items matching MedTech/FDA/regulatory keywords
+- boosts items matching keywords extracted from recent Gmail `"News"` subjects (if available)
 
-Code: `core/chat_handler.py:daily_briefing()`
+This keeps the feed “fresh” while nudging it toward *your* current topics.
 
-## Configuration & tuning knobs (current defaults)
-- **Max headlines**: 5
-- **Repeat suppression window**: 2 days
-- **Max age window**: 7 days
-- **Fetch interval**: 120 minutes (cache refresh throttle)
-- **Queries**: 2–3 baseline domain queries + 0–1 Gmail-seeded query
+Code:
+- `gui/dashboard_tab.py:DashboardTab._get_news_seed_keywords()` / `_score_news_item()`
 
-These can be tuned in `core/news.py` (`build_news_queries`, `select_for_briefing`, `min_interval_minutes`).
+## Planned: include in Daily Briefing
+Right now this is implemented for the **Dashboard news feed**. If/when you want the **daily briefing** to include a `[SECTION:News]`, the simplest path is:
+- reuse `DatabaseManager.get_news_for_dashboard(...)` to select items,
+- render 3–5 bullet lines,
+- call `mark_news_shown(...)` after the briefing is generated.
 
-## Failure modes
-- **No Anthropic API key**: returns “News unavailable” (no crash).
-- **Gmail not configured**: still works using baseline queries.
-- **JSON parse failures from the model**: search results may be dropped; tighten the system prompt if this happens frequently.
-
-## Privacy/safety notes
-- Retrieved text is treated as **untrusted reference**.
-- Do not log raw search responses containing sensitive content.
+## Planned: migrate “search” to Grok (xAI) cleanly
+The current mechanism relies on the agent’s `WEB_SEARCH:` tool path. Longer-term we should standardize on **Grok (xAI)** for search as well:
+- keep the same output contract (JSON array of `{title, content/summary, url, source, published_date}`),
+- keep canonicalization + DB dedup unchanged,
+- ensure timeouts/retries and avoid logging raw tool outputs.

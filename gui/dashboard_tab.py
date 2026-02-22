@@ -25,6 +25,29 @@ class NewsWorker(QThread):
             
             # Use a direct search query to avoid multiple API calls
             direct_search_query = "recent MedTech news AI machine learning IVD SaMD FDA regulations guidances medical devices EHR electronic health records clinical decision support generative AI"
+
+            # Optional: seed relevance from Gmail label "News" subjects
+            try:
+                subjects = []
+                if hasattr(self.chat_handler, "chat_handler") and hasattr(self.chat_handler.chat_handler, "data_fetcher"):
+                    df = self.chat_handler.chat_handler.data_fetcher
+                    if hasattr(df, "get_gmail_news_seeds"):
+                        subjects = df.get_gmail_news_seeds(days=3, max_messages=15) or []
+                if subjects:
+                    # Light keyword extraction: take frequent tokens
+                    import re
+                    counts = {}
+                    for s in subjects:
+                        for w in re.findall(r"[A-Za-z0-9][A-Za-z0-9\\-]{2,}", s or ""):
+                            lw = w.lower()
+                            if lw in {"the","and","for","with","your","from","this","that","news","update","weekly","daily"}:
+                                continue
+                            counts[lw] = counts.get(lw, 0) + 1
+                    keywords = [w for w, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:6]]
+                    if keywords:
+                        direct_search_query = direct_search_query + " " + " ".join(keywords)
+            except Exception:
+                pass
             
             # Use the chat handler to get news
             if hasattr(self.chat_handler, 'get_response'):
@@ -982,6 +1005,43 @@ class DashboardTab(QWidget):
         news_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         news_header.setMaximumHeight(25)
         layout.addWidget(news_header)
+
+        # Settings row
+        settings_row = QHBoxLayout()
+        settings_row.setContentsMargins(0, 0, 0, 0)
+        settings_row.setSpacing(6)
+        settings_label = QLabel("Hide repeats:")
+        settings_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        settings_row.addWidget(settings_label)
+
+        self.news_suppress_combo = QComboBox()
+        self.news_suppress_combo.addItems(["1 day", "2 days", "3 days", "7 days"])
+        self.news_suppress_combo.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 4px; padding: 2px 6px; font-size: 11px;")
+        settings_row.addWidget(self.news_suppress_combo)
+        settings_row.addStretch()
+        layout.addLayout(settings_row)
+
+        # Load persisted setting
+        try:
+            val = self.db.get_setting("news_suppress_days", "2")
+            days = int(val) if val is not None else 2
+        except Exception:
+            days = 2
+        self.news_suppress_days = days
+        idx_map = {1: 0, 2: 1, 3: 2, 7: 3}
+        self.news_suppress_combo.setCurrentIndex(idx_map.get(days, 1))
+
+        def _on_suppress_changed(_text):
+            try:
+                text = self.news_suppress_combo.currentText()
+                d = int(text.split()[0])
+                self.news_suppress_days = d
+                self.db.set_setting("news_suppress_days", str(d))
+                self.display_stored_news()
+            except Exception:
+                pass
+
+        self.news_suppress_combo.currentTextChanged.connect(_on_suppress_changed)
         
         # News display
         self.news_display = QTextBrowser()
@@ -1847,6 +1907,12 @@ class DashboardTab(QWidget):
                                         print(f"Invalid URL detected after cleaning, removing: {url}")
                                         url = None
                                     else:
+                                        # Canonicalize URLs early (strip tracking params/fragments) for better dedup.
+                                        try:
+                                            from core.news_dedup import canonicalize_url
+                                            url = canonicalize_url(url) or url
+                                        except Exception:
+                                            pass
                                         print(f"Cleaned URL: {url}")
                                 
                                 if not self.db.check_news_exists(title, url):
@@ -1887,6 +1953,12 @@ class DashboardTab(QWidget):
                         content = re.sub(r'https?://[^\s]+', '', content).strip()
                     else:
                         url = None
+                    if url:
+                        try:
+                            from core.news_dedup import canonicalize_url
+                            url = canonicalize_url(url) or url
+                        except Exception:
+                            pass
                     
                     print(f"Processing news item: '{title[:50]}...'")
                     if not self.db.check_news_exists(title, url):
@@ -1901,6 +1973,45 @@ class DashboardTab(QWidget):
         
         # News items stored successfully
 
+    def _get_news_seed_keywords(self, max_keywords: int = 8) -> list[str]:
+        """Best-effort personalization keywords for news relevance."""
+        subjects = []
+        try:
+            if hasattr(self.chat_handler, "chat_handler") and hasattr(self.chat_handler.chat_handler, "data_fetcher"):
+                df = self.chat_handler.chat_handler.data_fetcher
+                if hasattr(df, "get_gmail_news_seeds"):
+                    subjects = df.get_gmail_news_seeds(days=3, max_messages=20) or []
+        except Exception:
+            subjects = []
+
+        import re
+        stop = {
+            "fda", "and", "the", "for", "with", "your", "from", "this", "that",
+            "you", "are", "new", "update", "updates", "weekly", "daily",
+            "newsletter", "news",
+        }
+        counts = {}
+        for s in subjects:
+            for w in re.findall(r"[A-Za-z0-9][A-Za-z0-9\\-]{2,}", s or ""):
+                lw = w.lower()
+                if lw in stop:
+                    continue
+                counts[lw] = counts.get(lw, 0) + 1
+        return [w for w, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:max_keywords]]
+
+    def _score_news_item(self, title: str, content: str, keywords: list[str]) -> int:
+        text = f"{title or ''} {content or ''}".lower()
+        score = 0
+        # Always-relevant domain boosts
+        for kw in ("fda", "guidance", "draft", "ivd", "samd", "samd", "pccp", "clinical", "medtech", "medical device"):
+            if kw in text:
+                score += 1
+        # Personalization boosts
+        for kw in keywords:
+            if kw and kw.lower() in text:
+                score += 3
+        return score
+
     def display_stored_news(self):
         try:
             
@@ -1912,7 +2023,8 @@ class DashboardTab(QWidget):
             # Clean up old news items first
             self.db.cleanup_old_news(days=7)
             # Suppress repeats that have been shown recently
-            recent_news = self.db.get_news_for_dashboard(days=7, suppress_days=2, limit=50)
+            suppress_days = getattr(self, "news_suppress_days", 2) or 2
+            recent_news = self.db.get_news_for_dashboard(days=7, suppress_days=int(suppress_days), limit=50)
             
             # Filter out items with old published dates (older than 7 days)
             from datetime import datetime, timedelta
@@ -1948,6 +2060,16 @@ class DashboardTab(QWidget):
             if recent_news:
                 # Sort news items by published date (newest first)
                 display_news = self.sort_news_by_date(recent_news)
+
+                # Stable re-rank by relevance (keeps date order within same score)
+                seed_keywords = self._get_news_seed_keywords()
+                display_news.sort(
+                    key=lambda it: -self._score_news_item(
+                        it[1] if len(it) == 7 else it[0],
+                        it[2] if len(it) == 7 else it[1],
+                        seed_keywords,
+                    )
+                )
                 
                 news_text = "<div style='color: #e8eaed; font-family: Segoe UI, Arial, sans-serif;'>"
                 news_text += "<h3 style='color: #6b8cae; margin-bottom: 15px;'>Latest News</h3>"

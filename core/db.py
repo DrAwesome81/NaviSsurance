@@ -129,6 +129,13 @@ class DatabaseManager:
             )''')
 
             conn.execute("CREATE INDEX IF NOT EXISTS idx_news_dedup_news_id ON news_dedup(news_id)")
+
+            # App settings (simple persistent key/value store)
+            conn.execute('''CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )''')
             
             # Dropbox index tables removed - using RAG index instead
             
@@ -173,6 +180,31 @@ class DatabaseManager:
 
         # Best-effort: backfill dedup keys for existing news items
         self.backfill_news_dedup()
+
+    def get_setting(self, key: str, default=None):
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+                return row[0] if row and row[0] is not None else default
+        except Exception:
+            return default
+
+    def set_setting(self, key: str, value) -> None:
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO app_settings (key, value, updated_at)
+                    VALUES (?, ?, datetime('now'))
+                    ON CONFLICT(key) DO UPDATE SET
+                        value=excluded.value,
+                        updated_at=excluded.updated_at
+                    """,
+                    (key, str(value)),
+                )
+                conn.commit()
+        except Exception:
+            return
 
     def create_indexes(self):
         """Create database indexes for optimal query performance."""

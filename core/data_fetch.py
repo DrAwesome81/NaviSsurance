@@ -67,6 +67,33 @@ class DataFetcher:
         calendar = build('calendar', 'v3', credentials=creds)
         return gmail, calendar
 
+    def get_gmail_news_seeds(self, days: int = 3, max_messages: int = 20) -> list[str]:
+        """
+        Return recent Gmail subjects from the 'News' label to use as relevance seeds for external headlines.
+        Best-effort: returns [] on any error.
+        """
+        try:
+            if not getattr(self, "gmail", None):
+                return []
+            q = f'newer_than:{int(days)}d label:"News"'
+            results = self.gmail.users().messages().list(userId="me", q=q, maxResults=int(max_messages)).execute()
+            msg_ids = [m["id"] for m in results.get("messages", []) if isinstance(m, dict) and "id" in m]
+            subjects: list[str] = []
+            for mid in msg_ids:
+                msg = self.gmail.users().messages().get(
+                    userId="me",
+                    id=mid,
+                    format="metadata",
+                    metadataHeaders=["Subject"],
+                ).execute()
+                headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+                subj = str(headers.get("Subject") or "").strip()
+                if subj:
+                    subjects.append(subj)
+            return subjects
+        except Exception:
+            return []
+
     def get_available_calendars(self):
         """
         Get a list of all available calendars, including shared calendars.
