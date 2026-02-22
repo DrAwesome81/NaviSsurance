@@ -394,6 +394,16 @@ Return only the relevant emails, nothing else."""
             except Exception:
                 suppress_days = 2
 
+            # Briefing item count (prefer 5–10); default 8.
+            try:
+                briefing_limit = int(self.db.get_setting("news_briefing_limit", "8") or 8)
+            except Exception:
+                briefing_limit = 8
+            if briefing_limit < 1:
+                briefing_limit = 8
+            if briefing_limit > 10:
+                briefing_limit = 10
+
             # Best-effort: pull seed keywords from Gmail "News" label, if available.
             seed_keywords = []
             try:
@@ -429,7 +439,7 @@ Return only the relevant emails, nothing else."""
                         score += 3
                 return score
 
-            items = self.db.get_news_for_dashboard(days=7, suppress_days=suppress_days, limit=15) or []
+            items = self.db.get_news_for_dashboard(days=7, suppress_days=suppress_days, limit=50) or []
             if items:
                 def _ts(published_date, created_at):
                     try:
@@ -456,7 +466,7 @@ Return only the relevant emails, nothing else."""
                         )
                     )
                 ranked.sort(key=lambda r: (-r[0], -r[1]))
-                top = ranked[:5]
+                top = ranked[:briefing_limit]
 
                 lines = []
                 shown_ids = []

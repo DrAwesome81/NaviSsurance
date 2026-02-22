@@ -1018,6 +1018,15 @@ class DashboardTab(QWidget):
         self.news_suppress_combo.addItems(["1 day", "2 days", "3 days", "7 days"])
         self.news_suppress_combo.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 4px; padding: 2px 6px; font-size: 11px;")
         settings_row.addWidget(self.news_suppress_combo)
+
+        max_label = QLabel("Max items:")
+        max_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        settings_row.addWidget(max_label)
+
+        self.news_max_items_combo = QComboBox()
+        self.news_max_items_combo.addItems(["5", "8", "10"])
+        self.news_max_items_combo.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 4px; padding: 2px 6px; font-size: 11px;")
+        settings_row.addWidget(self.news_max_items_combo)
         settings_row.addStretch()
         layout.addLayout(settings_row)
 
@@ -1031,6 +1040,18 @@ class DashboardTab(QWidget):
         idx_map = {1: 0, 2: 1, 3: 2, 7: 3}
         self.news_suppress_combo.setCurrentIndex(idx_map.get(days, 1))
 
+        # Load max items setting (default 8)
+        try:
+            val = self.db.get_setting("news_display_limit", "8")
+            max_items = int(val) if val is not None else 8
+        except Exception:
+            max_items = 8
+        if max_items not in (5, 8, 10):
+            max_items = 8
+        self.news_display_limit = max_items
+        idx_map2 = {5: 0, 8: 1, 10: 2}
+        self.news_max_items_combo.setCurrentIndex(idx_map2.get(max_items, 1))
+
         def _on_suppress_changed(_text):
             try:
                 text = self.news_suppress_combo.currentText()
@@ -1042,6 +1063,19 @@ class DashboardTab(QWidget):
                 pass
 
         self.news_suppress_combo.currentTextChanged.connect(_on_suppress_changed)
+
+        def _on_max_items_changed(_text):
+            try:
+                d = int(self.news_max_items_combo.currentText().strip())
+                if d not in (5, 8, 10):
+                    d = 8
+                self.news_display_limit = d
+                self.db.set_setting("news_display_limit", str(d))
+                self.display_stored_news()
+            except Exception:
+                pass
+
+        self.news_max_items_combo.currentTextChanged.connect(_on_max_items_changed)
         
         # News display
         self.news_display = QTextBrowser()
@@ -2024,7 +2058,8 @@ class DashboardTab(QWidget):
             self.db.cleanup_old_news(days=7)
             # Suppress repeats that have been shown recently
             suppress_days = getattr(self, "news_suppress_days", 2) or 2
-            recent_news = self.db.get_news_for_dashboard(days=7, suppress_days=int(suppress_days), limit=50)
+            # Pull more candidates than we display so suppression + rerank still yields a full set.
+            recent_news = self.db.get_news_for_dashboard(days=7, suppress_days=int(suppress_days), limit=200)
             
             # Filter out items with old published dates (older than 7 days)
             from datetime import datetime, timedelta
@@ -2070,6 +2105,12 @@ class DashboardTab(QWidget):
                         seed_keywords,
                     )
                 )
+
+                # Apply display limit (default 8; user-configurable)
+                lim = int(getattr(self, "news_display_limit", 8) or 8)
+                if lim < 1:
+                    lim = 8
+                display_news = display_news[:lim]
                 
                 news_text = "<div style='color: #e8eaed; font-family: Segoe UI, Arial, sans-serif;'>"
                 news_text += "<h3 style='color: #6b8cae; margin-bottom: 15px;'>Latest News</h3>"
