@@ -109,6 +109,9 @@ class WorkspaceTab(QWidget):
         self._current_file_contents = {}  # Store file contents for API calls
         self._collaboration_worker = None  # Worker thread for running collaboration
         self._current_markdown = ""  # Store current markdown for saving
+        # For persistence of the last run
+        self._last_task_spec = None
+        self._last_workspace_files = []
         
         self.setup_ui()
 
@@ -580,6 +583,13 @@ class WorkspaceTab(QWidget):
                 max_rounds=max_rounds,
             )
 
+            # Save context for persistence on completion
+            self._last_task_spec = task_spec
+            self._last_workspace_files = [
+                {"path": wf.path, "display_name": wf.display_name, "file_type": wf.file_type}
+                for wf in workspace_files
+            ]
+
             # Store file contents for use in API calls
             self._current_file_contents = file_contents
 
@@ -704,6 +714,26 @@ class WorkspaceTab(QWidget):
         collaboration_history = result.get("collaboration_history", [])
         rounds = result.get("rounds", 0)
         status = result.get("status", "unknown")
+
+        # Persist the run (best-effort)
+        try:
+            ts = getattr(self, "_last_task_spec", None)
+            if ts and hasattr(self.db, "workspace_collab_insert_run"):
+                self.db.workspace_collab_insert_run(
+                    goal=str(getattr(ts, "goal", "") or ""),
+                    context=str(getattr(ts, "context", "") or ""),
+                    style=getattr(ts, "style", None),
+                    audience=getattr(ts, "audience", None),
+                    files=getattr(self, "_last_workspace_files", []) or [],
+                    rounds=int(rounds or 0),
+                    status=str(status or ""),
+                    markdown=str(markdown_doc or ""),
+                    grok_output=str(grok_output or ""),
+                    chatgpt_output=str(chatgpt_output or ""),
+                    collaboration_history=collaboration_history if isinstance(collaboration_history, list) else [],
+                )
+        except Exception as e:
+            logger.warning(f"Could not persist workspace collaboration run: {e}")
         
         # Store markdown for saving
         self._current_markdown = markdown_doc

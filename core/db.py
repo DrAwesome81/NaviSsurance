@@ -14,6 +14,11 @@ class DatabaseManager:
         self.current_schema_version = 10  # Increment this when making schema changes
         self.setup_db()
         self.create_indexes()
+        # Additive tables for newer features (safe for legacy DBs)
+        try:
+            self.init_workspace_collab_tables()
+        except Exception:
+            pass
 
     def setup_db(self):
         with sqlite3.connect(self.db_name) as conn:
@@ -517,6 +522,103 @@ class DatabaseManager:
                 )
             """)
             conn.commit()
+
+    def init_workspace_collab_tables(self):
+        """
+        Persist Dual-LLM Workspace collaboration runs (Grok <-> ChatGPT).
+        Additive, best-effort: safe to call on every startup.
+        """
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workspace_collab_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    goal TEXT,
+                    context TEXT,
+                    style TEXT,
+                    audience TEXT,
+                    files_json TEXT,
+                    rounds INTEGER,
+                    status TEXT,
+                    markdown TEXT,
+                    grok_output TEXT,
+                    chatgpt_output TEXT,
+                    collaboration_json TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_workspace_collab_runs_created_at ON workspace_collab_runs(created_at)"
+            )
+            conn.commit()
+
+    def workspace_collab_insert_run(
+        self,
+        *,
+        goal: str,
+        context: str | None,
+        style: str | None,
+        audience: str | None,
+        files: list[dict] | None,
+        rounds: int,
+        status: str,
+        markdown: str,
+        grok_output: str,
+        chatgpt_output: str,
+        collaboration_history: list[dict] | None,
+    ) -> int:
+        """Insert a completed collaboration run. Returns run id."""
+        payload_files = json.dumps(files or [], ensure_ascii=False)
+        payload_hist = json.dumps(collaboration_history or [], ensure_ascii=False)
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO workspace_collab_runs
+                    (goal, context, style, audience, files_json, rounds, status, markdown, grok_output, chatgpt_output, collaboration_json)
+                VALUES
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    goal,
+                    context,
+                    style,
+                    audience,
+                    payload_files,
+                    int(rounds),
+                    status,
+                    markdown,
+                    grok_output,
+                    chatgpt_output,
+                    payload_hist,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def workspace_collab_list_runs(self, *, limit: int = 50) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                """
+                SELECT id, created_at, goal, rounds, status
+                FROM workspace_collab_runs
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def workspace_collab_get_run(self, run_id: int) -> dict | None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                "SELECT * FROM workspace_collab_runs WHERE id = ?",
+                (int(run_id),),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
 
     def store_dataset_entry(self, file_path, jsonl_path="data/fine_tune.jsonl"):
         # Lazy import: document extraction deps are heavy and optional for most runtime paths.
