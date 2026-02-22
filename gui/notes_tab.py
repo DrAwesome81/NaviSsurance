@@ -120,10 +120,30 @@ class NoteTakingSystem(QWidget):
 
     def setup_ui(self):
         layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        # Shared styles (keep consistent with other tabs)
+        input_style = (
+            "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
+            "padding: 8px 10px; border-radius: 6px;"
+        )
+        box_style = (
+            "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
+            "border-radius: 6px;"
+        )
+        btn_style = (
+            "QPushButton { background-color: #FD6262; color: white; border: none; padding: 8px 12px; "
+            "border-radius: 6px; font-weight: 500; }"
+            "QPushButton:hover { background-color: rgba(253, 98, 98, 0.92); }"
+            "QPushButton:disabled { background-color: #3a3d46; color: #9aa0a6; }"
+        )
         
         # Left: Chat Window
         chat_widget = QWidget()
         chat_layout = QVBoxLayout(chat_widget)
+        chat_layout.setContentsMargins(0, 0, 0, 0)
+        chat_layout.setSpacing(6)
         
         # Add context input field
         context_label = QLabel("Context (what you're working on):")
@@ -132,7 +152,7 @@ class NoteTakingSystem(QWidget):
         
         self.context_input = QLineEdit()
         self.context_input.setPlaceholderText("Enter context (e.g., 'Working on FDA protocol review')")
-        self.context_input.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; padding: 8px 12px; border-radius: 6px;")
+        self.context_input.setStyleSheet(input_style)
         self.context_input.returnPressed.connect(self.update_context)
         chat_layout.addWidget(self.context_input)
         
@@ -154,27 +174,35 @@ class NoteTakingSystem(QWidget):
         
         self.chat_input = CustomTextEdit(self)
         self.chat_input.setPlaceholderText("Enter thoughts (e.g., 'Section 5 should be in the protocol; not this report')")
+        self.chat_input.setStyleSheet(box_style)
         chat_layout.addWidget(self.chat_input)
         layout.addWidget(chat_widget, stretch=1)
 
         # Right: Notes Pane (browse + categories + detail)
         notes_widget = QWidget()
         notes_layout = QVBoxLayout(notes_widget)
+        notes_layout.setContentsMargins(0, 0, 0, 0)
+        notes_layout.setSpacing(6)
 
         # Controls row
         controls = QHBoxLayout()
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(6)
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search notes…")
+        self.search_input.setStyleSheet(input_style)
         self.search_input.textChanged.connect(self.refresh_notes)
         controls.addWidget(self.search_input, 2)
 
         self.context_filter = QComboBox()
         self.context_filter.addItem("All contexts")
+        self.context_filter.setStyleSheet(input_style)
         self.context_filter.currentTextChanged.connect(self.refresh_notes)
         controls.addWidget(self.context_filter, 1)
 
         self.range_filter = QComboBox()
         self.range_filter.addItems(["All time", "Last 7 days", "Last 30 days", "Last 90 days"])
+        self.range_filter.setStyleSheet(input_style)
         self.range_filter.currentTextChanged.connect(self.refresh_notes)
         controls.addWidget(self.range_filter)
 
@@ -183,10 +211,12 @@ class NoteTakingSystem(QWidget):
         controls.addWidget(self.pinned_only)
 
         self.reorg_btn = QPushButton("Re-organize")
+        self.reorg_btn.setStyleSheet(btn_style)
         self.reorg_btn.clicked.connect(self.reorganize_notes)
         controls.addWidget(self.reorg_btn)
 
         export_btn = QPushButton("Export…")
+        export_btn.setStyleSheet(btn_style)
         export_btn.clicked.connect(self.export_notes)
         controls.addWidget(export_btn)
 
@@ -198,6 +228,7 @@ class NoteTakingSystem(QWidget):
 
         # Timeline list
         self.notes_list = QListWidget()
+        self.notes_list.setStyleSheet(box_style)
         self.notes_list.itemSelectionChanged.connect(self._on_note_selected)
         splitter.addWidget(self.notes_list)
 
@@ -206,31 +237,40 @@ class NoteTakingSystem(QWidget):
         detail_layout = QVBoxLayout(detail)
         self.note_detail = QTextEdit()
         self.note_detail.setReadOnly(True)
+        self.note_detail.setStyleSheet(box_style)
         detail_layout.addWidget(self.note_detail, 1)
 
         actions = QHBoxLayout()
         self.pin_btn = QPushButton("Pin/Unpin")
+        self.pin_btn.setStyleSheet(btn_style)
         self.pin_btn.clicked.connect(self.toggle_pin_selected)
         actions.addWidget(self.pin_btn)
         self.edit_btn = QPushButton("Edit")
+        self.edit_btn.setStyleSheet(btn_style)
         self.edit_btn.clicked.connect(self.edit_selected_note)
         actions.addWidget(self.edit_btn)
         self.del_btn = QPushButton("Delete")
+        self.del_btn.setStyleSheet(btn_style)
         self.del_btn.clicked.connect(self.delete_selected_note)
         actions.addWidget(self.del_btn)
         self.retry_btn = QPushButton("Retry")
+        self.retry_btn.setStyleSheet(btn_style)
         self.retry_btn.clicked.connect(self.retry_selected_note)
         actions.addWidget(self.retry_btn)
         self.move_btn = QPushButton("Move Category")
+        self.move_btn.setStyleSheet(btn_style)
         self.move_btn.clicked.connect(self.move_selected_note_category)
         actions.addWidget(self.move_btn)
         self.copy_btn = QPushButton("Copy")
+        self.copy_btn.setStyleSheet(btn_style)
         self.copy_btn.clicked.connect(self.copy_selected_note)
         actions.addWidget(self.copy_btn)
         self.task_btn = QPushButton("Create Task")
+        self.task_btn.setStyleSheet(btn_style)
         self.task_btn.clicked.connect(self.create_task_from_selected)
         actions.addWidget(self.task_btn)
         self.remember_btn = QPushButton("Remember")
+        self.remember_btn.setStyleSheet(btn_style)
         self.remember_btn.clicked.connect(self.remember_selected_note)
         actions.addWidget(self.remember_btn)
         actions.addStretch()
@@ -240,6 +280,7 @@ class NoteTakingSystem(QWidget):
         # Categories tree (collapsible + clickable)
         self.categories_tree = QTreeWidget()
         self.categories_tree.setHeaderLabels(["Category / Note"])
+        self.categories_tree.setStyleSheet(box_style)
         self.categories_tree.itemClicked.connect(self._on_category_item_clicked)
         splitter.addWidget(self.categories_tree)
 
@@ -376,6 +417,7 @@ IMPORTANT: Respond with ONLY the JSON. No other text or explanations."""
                 except Exception:
                     pass
                 QMessageBox.warning(self, "Notes", "Could not parse note formatting response. The raw text was saved; select the note and click Retry.")
+                self.refresh_notes()
                 self.chat_input.setEnabled(True)
 
         except Exception as e:
@@ -385,6 +427,7 @@ IMPORTANT: Respond with ONLY the JSON. No other text or explanations."""
             except Exception:
                 pass
             QMessageBox.warning(self, "Notes", f"Error processing note: {e}")
+            self.refresh_notes()
         finally:
             # Make absolutely sure input is enabled again
             self.chat_input.setEnabled(True)
@@ -399,6 +442,7 @@ IMPORTANT: Respond with ONLY the JSON. No other text or explanations."""
             except Exception:
                 pass
         QMessageBox.warning(self, "Notes", f"Error processing note: {error}")
+        self.refresh_notes()
         self.chat_input.setEnabled(True)
 
     # -------------------------------------------------------------------------
@@ -738,6 +782,7 @@ IMPORTANT: Respond with ONLY the JSON. No other text or explanations."""
             notes = self.db.list_notes(context=ctx, limit=2000)
             ready = [n for n in notes if (n.get("state") or "") == "ready"]
             if len(ready) < 2:
+                self._organize_in_progress = False
                 return
 
             # Build prompt using stable IDs to avoid ambiguity
@@ -765,47 +810,9 @@ or if no clear patterns:
             self.organize_thread.result_signal.connect(self.handle_organization_result)
             self.organize_thread.error_signal.connect(self.handle_organization_error)
             self.organize_thread.start()
-        finally:
-            # UI remains usable; just prevent concurrent organize runs.
-            pass
-        
-        context_info = f"Context: {self.context}" if self.context else "No context set"
-        prompt = f"""{context_info}. 
-
-INSTRUCTION: Categorize the existing notes into logical groups.
-
-EXISTING NOTES TO CATEGORIZE:
-{chr(10).join([f"- {note}" for note in self.notes])}
-
-INSTRUCTIONS:
-- These are the actual notes that need to be categorized
-- Look for common themes or topics among these specific notes
-- If you can identify 2 or more clear categories, organize the notes accordingly
-- If the notes are too diverse or no clear patterns emerge, return empty JSON
-- Use the EXACT note text as provided - do not modify or summarize the notes
-- Do NOT add commentary about the categorization process
-- Do NOT respond with meta-comments about the notes
-- Do NOT generate new content - only categorize the existing notes
-- Even with just 2 notes, try to find a logical grouping if possible
-RESPONSE FORMAT: You must respond with ONLY valid JSON in one of these formats:
-If categories are found:
-{{"categories": {{"Category Name": ["exact note text 1", "exact note text 2"], "Another Category": ["exact note text 3"]}}}}
-If no clear patterns (return empty):
-{{}}
-Example categories might be: "Protocol Review", "Documentation", "Follow-up Tasks", "Questions", "Data Handling", "Requirements", etc.
-IMPORTANT: 
-- Use the exact note text as provided above
-- Respond with ONLY the JSON. No other text or explanations."""
-
-        # Start background thread for organization
-        self.organize_thread = NoteProcessingThread(self.chat_handler, prompt, "notes_session")
-        self.organize_thread.result_signal.connect(self.handle_organization_result)
-        self.organize_thread.error_signal.connect(self.handle_organization_error)
-        self.organize_thread.start()
-
-        # Disable UI while processing
-        self.chat_input.setEnabled(False)
-        self.notes_display.append("<i>Organizing notes...</i><br>")
+        except Exception:
+            self._organize_in_progress = False
+            raise
 
     def handle_organization_result(self, response):
         QTimer.singleShot(0, lambda: self._handle_organization_result_safe(response))
