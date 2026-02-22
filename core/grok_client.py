@@ -7,6 +7,7 @@ Uses xai_sdk.Client for chat and optional web_search tool for live search.
 
 import logging
 import os
+import time
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,9 @@ def grok_completion_messages(
 def grok_web_search(
     user_prompt: str,
     model: str = MODEL_FAST,
+    timeout: int = 120,
+    retries: int = 1,
+    retry_backoff_s: float = 2.0,
 ) -> str:
     """
     Call Grok with web_search server-side tool. Returns response content.
@@ -143,18 +147,46 @@ def grok_web_search(
         logger.warning("Grok API key not available")
         return ""
 
-    try:
-        client = Client(api_key=key, timeout=120)
-        chat = client.chat.create(
-            model=model,
-            tools=[web_search()],
+    def _is_deadline_exceeded(err: Exception) -> bool:
+        s = str(err).lower()
+        return (
+            "deadline_exceeded" in s
+            or "deadline exceeded" in s
+            or "statuscode.deadline_exceeded" in s
         )
-        chat.append(user_msg(user_prompt))
-        response = chat.sample()
-        out = (response.content or "").strip()
-        if getattr(response, "citations", None):
-            out += "\n\nSources: " + ", ".join(response.citations[:15])
-        return out
-    except Exception as e:
-        logger.exception("Grok web search failed: %s", e)
-        raise
+
+    last_err: Exception | None = None
+    attempts = max(1, int(retries) + 1)
+    for attempt in range(attempts):
+        try:
+            client = Client(api_key=key, timeout=int(timeout))
+            chat = client.chat.create(
+                model=model,
+                tools=[web_search()],
+            )
+            chat.append(user_msg(user_prompt))
+            response = chat.sample()
+            out = (response.content or "").strip()
+            if getattr(response, "citations", None):
+                out += "\n\nSources: " + ", ".join(response.citations[:15])
+            return out
+        except Exception as e:
+            last_err = e
+            # Retry on common transient gRPC timeouts.
+            if attempt < attempts - 1 and _is_deadline_exceeded(e):
+                sleep_s = float(retry_backoff_s) * (2**attempt)
+                logger.warning(
+                    "Grok web search deadline exceeded; retrying in %.1fs (attempt %s/%s)",
+                    sleep_s,
+                    attempt + 1,
+                    attempts,
+                )
+                time.sleep(sleep_s)
+                continue
+            logger.exception("Grok web search failed: %s", e)
+            raise
+
+    # Defensive fallback (shouldn't happen due to raise above).
+    if last_err:
+        raise last_err
+    return ""

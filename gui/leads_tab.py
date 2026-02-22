@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QLineEdit,
 )
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
 import os
 import json
 import requests
@@ -41,18 +41,30 @@ def robust_json_parse_array(response_text, logger=None):
     Returns:
         tuple: (parsed_json_array, success_flag)
     """
-    if logger is None:
-        logger = print  # Fallback to print for debug messages
+    def _log(msg: str) -> None:
+        if logger is None:
+            print(msg)
+            return
+        if callable(logger):
+            logger(msg)
+            return
+        if hasattr(logger, "info"):
+            try:
+                logger.info(msg)
+                return
+            except Exception:
+                pass
+        print(msg)
     
     # Step 1: Try direct JSON parsing first
     try:
         clean_response = response_text.strip()
         data = json.loads(clean_response)
         if isinstance(data, list):
-            logger(f"Direct JSON array parsing successful")
+            _log("Direct JSON array parsing successful")
             return data, True
     except json.JSONDecodeError:
-        logger(f"Direct JSON array parsing failed, attempting extraction...")
+        _log("Direct JSON array parsing failed, attempting extraction...")
     
     # Step 2: Try extracting JSON from markdown code blocks
     try:
@@ -63,10 +75,10 @@ def robust_json_parse_array(response_text, logger=None):
             json_str = match.group(1).strip()
             data = json.loads(json_str)
             if isinstance(data, list):
-                logger(f"JSON array extraction from code block successful")
+                _log("JSON array extraction from code block successful")
                 return data, True
     except (json.JSONDecodeError, AttributeError):
-        logger(f"Code block array extraction failed")
+        _log("Code block array extraction failed")
     
     # Step 3: Try regex extraction of JSON array
     try:
@@ -77,10 +89,10 @@ def robust_json_parse_array(response_text, logger=None):
             json_str = match.group(0).strip()
             data = json.loads(json_str)
             if isinstance(data, list):
-                logger(f"Regex JSON array extraction successful")
+                _log("Regex JSON array extraction successful")
                 return data, True
     except (json.JSONDecodeError, AttributeError):
-        logger(f"Regex array extraction failed")
+        _log("Regex array extraction failed")
     
     # Step 4: Try finding array boundaries manually
     try:
@@ -97,13 +109,259 @@ def robust_json_parse_array(response_text, logger=None):
             
             data = json.loads(json_str)
             if isinstance(data, list):
-                logger(f"Manual array extraction successful")
+                _log("Manual array extraction successful")
                 return data, True
     except (json.JSONDecodeError, AttributeError):
-        logger(f"Manual array extraction failed")
+        _log("Manual array extraction failed")
     
-    logger(f"All JSON array parsing attempts failed")
+    _log("All JSON array parsing attempts failed")
     return None, False
+
+
+class _LeadsSearchWorker(QThread):
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(int)  # stored count
+    error = pyqtSignal(str)
+
+    def __init__(self, *, db, data_dir: str, user_system_message: str):
+        super().__init__()
+        self._db = db
+        self._data_dir = data_dir
+        self._user_system_message = (user_system_message or "").strip()
+
+    @staticmethod
+    def _friendly_error(e: Exception) -> str:
+        s = str(e)
+        sl = s.lower()
+        if "deadline_exceeded" in sl or "deadline exceeded" in sl:
+            return "Grok request timed out (deadline exceeded). Please try again."
+        if "api key" in sl or "not set" in sl:
+            return "Grok API key is missing or not configured (XAI_API_KEY / GROK_API_KEY)."
+        return f"Lead search failed: {type(e).__name__}: {s}"
+
+    def run(self):
+        try:
+            if self._db is None:
+                self.error.emit("Database is not available; cannot store leads.")
+                return
+
+            from core.grok_client import grok_available, grok_web_search, grok_completion, MODEL_WEB
+
+            ok, msg = grok_available()
+            if not ok:
+                self.error.emit(msg or "Grok is not available.")
+                return
+
+            user_system_message = self._user_system_message or (
+                "You are a lead generation assistant for a medical device regulatory consulting firm. "
+                "Focus on companies in the AI SaMD and/or IVD/LDT space."
+            )
+
+            # Two-pass pipeline:
+            # A) Discover candidate leads (verifiable, but minimal fields)
+            # B) Verify/enrich: tighten evidence, add personalized message, incorporate openFDA signals
+            discover_prompt = f"""{user_system_message}
+
+Use web search to find *verifiable* leads. Only include leads where you found evidence in sources.
+
+Return ONLY a JSON array of 8-20 CANDIDATE leads. Each lead object must include:
+- name
+- company
+- title
+- rationale
+- linkedin_url (or empty string)
+- company_url (or empty string)
+- sources: [url1, url2] (must have at least 1)
+
+Optional:
+- signals: ["signal 1", "signal 2"]
+
+Hard rules:
+- Do not invent people, titles, or URLs.
+- If you can’t find sources for a lead, omit it.
+"""
+
+            self.progress.emit("Searching for candidate leads (web)…")
+            response_content = ""
+            try:
+                response_content = grok_web_search(
+                    discover_prompt,
+                    model=MODEL_WEB,
+                    timeout=180,
+                    retries=1,
+                )
+            except Exception:
+                response_content = ""
+
+            if not response_content:
+                self.progress.emit("Searching for candidate leads (fallback)…")
+                try:
+                    response_content = grok_completion(
+                        system="You are a lead generation assistant. Return only JSON as instructed.",
+                        user=discover_prompt,
+                        model=MODEL_WEB,
+                    )
+                except Exception as e:
+                    self.error.emit(self._friendly_error(e))
+                    return
+
+            if not response_content:
+                self.error.emit("Grok returned no content (check XAI_API_KEY / GROK_API_KEY).")
+                return
+
+            # Persist raw response for debugging (best-effort)
+            try:
+                os.makedirs(self._data_dir, exist_ok=True)
+                response_file = os.path.join(self._data_dir, "grok_response.txt")
+                with open(response_file, "w", encoding="utf-8") as f:
+                    f.write("Response content:\n")
+                    f.write(response_content + "\n")
+            except Exception:
+                pass
+
+            self.progress.emit("Parsing candidate leads…")
+            candidates, success = robust_json_parse_array(response_content, logger)
+            if not success or not isinstance(candidates, list) or not candidates:
+                self.error.emit("No JSON array of candidate leads found in response.")
+                return
+
+            # Enrich with openFDA signals before verification pass
+            self.progress.emit("Enriching candidates with openFDA signals…")
+            enriched_candidates = []
+            try:
+                from core.openfda import search_510k_by_applicant, summarize_510k_records
+            except Exception:
+                search_510k_by_applicant = None
+                summarize_510k_records = None
+
+            for idx, lead in enumerate(candidates[:50], start=1):
+                if not isinstance(lead, dict):
+                    continue
+                if not all(k in lead for k in ["name", "company", "title", "rationale"]):
+                    continue
+
+                sources = lead.get("sources") or []
+                if not isinstance(sources, list):
+                    sources = []
+                if len(sources) == 0:
+                    continue
+
+                lead.setdefault("signals", [])
+                lead.setdefault("linkedin_url", "")
+                lead.setdefault("company_url", "")
+                lead.setdefault("status", "new")
+                lead.setdefault("contacted", False)
+                lead.setdefault("contact_date", None)
+                lead.setdefault("next_action_date", None)
+                lead.setdefault("notes", "")
+
+                company = str(lead.get("company") or "").strip()
+                if company and search_510k_by_applicant and summarize_510k_records:
+                    try:
+                        self.progress.emit(f"openFDA lookup ({idx}/{min(len(candidates),50)}): {company}")
+                        recs, req_url = search_510k_by_applicant(company, limit=5)
+                        summ = summarize_510k_records(company, recs, req_url)
+                        lead["signals"] = list(
+                            dict.fromkeys((lead.get("signals") or []) + (summ.get("signals") or []))
+                        )
+                        lead["sources"] = list(
+                            dict.fromkeys((lead.get("sources") or []) + (summ.get("sources") or []))
+                        )
+                        lead["openfda_meta"] = summ.get("meta") or {}
+                    except Exception:
+                        pass
+
+                enriched_candidates.append(lead)
+
+            self.progress.emit("Verifying and enriching final leads (web)…")
+            verify_prompt = f"""{user_system_message}
+
+You will be given a JSON array of candidate leads (with some sources and possible openFDA signals).
+
+Task:
+- Verify each lead is real and current using web search.
+- Keep only leads with strong evidence.
+- Produce a FINAL JSON array of up to 15 leads with:
+  - name, company, title, rationale, linkedin_url, company_url
+  - signals: [..]
+  - sources: [..] (must have at least 2 when possible; never empty)
+  - message: personalized LinkedIn message (2-5 sentences) referencing a specific signal and offering help
+
+Hard rules:
+- Do not invent. If not verifiable, omit the lead.
+- Return ONLY the JSON array.
+
+Candidates JSON:
+{json.dumps(enriched_candidates, ensure_ascii=False)}
+"""
+
+            final_text = ""
+            try:
+                final_text = grok_web_search(
+                    verify_prompt,
+                    model=MODEL_WEB,
+                    timeout=180,
+                    retries=1,
+                )
+            except Exception:
+                final_text = ""
+            if not final_text:
+                self.progress.emit("Verifying and enriching final leads (fallback)…")
+                try:
+                    final_text = grok_completion(
+                        system="You are a lead generation assistant. Return only JSON as instructed.",
+                        user=verify_prompt,
+                        model=MODEL_WEB,
+                    )
+                except Exception as e:
+                    self.error.emit(self._friendly_error(e))
+                    return
+
+            final_leads = []
+            if final_text:
+                final_leads, ok2 = robust_json_parse_array(final_text, logger)
+                if not ok2 or not isinstance(final_leads, list):
+                    final_leads = []
+
+            try:
+                from core.lead_scoring import score_lead
+            except Exception:
+                score_lead = None
+
+            self.progress.emit("Storing leads…")
+            stored = 0
+            for lead in (final_leads or []):
+                if not isinstance(lead, dict):
+                    continue
+                if not all(k in lead for k in ["name", "company", "title", "rationale", "message"]):
+                    continue
+                sources = lead.get("sources") or []
+                if not isinstance(sources, list) or len(sources) == 0:
+                    continue
+
+                lead.setdefault("signals", [])
+                lead.setdefault("linkedin_url", "")
+                lead.setdefault("company_url", "")
+                lead.setdefault("status", "new")
+                lead.setdefault("contacted", False)
+                lead.setdefault("contact_date", None)
+                lead.setdefault("next_action_date", None)
+                lead.setdefault("notes", "")
+
+                if score_lead:
+                    try:
+                        lead.update(score_lead(lead))
+                    except Exception:
+                        pass
+                try:
+                    self._db.upsert_lead(lead)
+                    stored += 1
+                except Exception:
+                    continue
+
+            self.finished.emit(int(stored))
+        except Exception as e:
+            self.error.emit(self._friendly_error(e))
 
 class LeadsTab(QWidget):
     def __init__(self, chat_handler, data_dir, parent=None):
@@ -111,6 +369,7 @@ class LeadsTab(QWidget):
         self.chat_handler = chat_handler
         self.data_dir = data_dir
         self.parent = parent
+        self._search_worker: _LeadsSearchWorker | None = None
         # Prefer the app's DatabaseManager (ChatWindow.db) if available.
         try:
             if self.parent is not None and hasattr(self.parent, "db"):
@@ -213,6 +472,11 @@ class LeadsTab(QWidget):
         leads_button_layout.addWidget(self.refreshButton)
         
         layout.addLayout(leads_button_layout)
+
+        # Lightweight status line for long-running searches
+        self.search_status_label = QLabel("")
+        self.search_status_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        layout.addWidget(self.search_status_label)
 
         # Filters (DB-backed)
         filters_layout = QHBoxLayout()
@@ -339,20 +603,28 @@ class LeadsTab(QWidget):
         self.update_leads_table(leads)
 
     def search_leads(self):
-        """Run Grok API search for leads based on system message."""
+        """Run lead search in a background thread (non-blocking)."""
+        if self._search_worker is not None and self._search_worker.isRunning():
+            return
+        if not self.db:
+            QMessageBox.warning(self, "Leads", "Database is not available; cannot run lead search.")
+            return
+
+        # Load system message from config (quick; keep on UI thread)
+        user_system_message = ""
         try:
-            # Load system message from config
             from config import CONFIG_DIR
             config_path = os.path.join(CONFIG_DIR, "lead_gen_config.json")
             config = {}
             if os.path.exists(config_path):
-                with open(config_path, 'r', encoding='utf-8') as f:
+                with open(config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
-
-            user_system_message = (config.get('system_message') or "").strip()
-            
+            user_system_message = (config.get("system_message") or "").strip()
             if not user_system_message:
-                user_system_message = "You are a lead generation assistant for a medical device regulatory consulting firm. Focus on companies in the AI SaMD and/or IVD/LDT space."
+                user_system_message = (
+                    "You are a lead generation assistant for a medical device regulatory consulting firm. "
+                    "Focus on companies in the AI SaMD and/or IVD/LDT space."
+                )
                 # Best-effort: create a default config file so the UI works out of the box.
                 try:
                     os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -360,211 +632,38 @@ class LeadsTab(QWidget):
                         json.dump({"system_message": user_system_message}, f, indent=2)
                 except Exception:
                     pass
+        except Exception:
+            user_system_message = (
+                "You are a lead generation assistant for a medical device regulatory consulting firm. "
+                "Focus on companies in the AI SaMD and/or IVD/LDT space."
+            )
 
-            # Two-pass pipeline:
-            # A) Discover candidate leads (verifiable, but minimal fields)
-            # B) Verify/enrich: tighten evidence, add personalized message, incorporate openFDA signals
-            discover_prompt = f"""{user_system_message}
+        self.runSearchButton.setEnabled(False)
+        self.refreshButton.setEnabled(False)
+        self.search_status_label.setText("Searching…")
 
-Use web search to find *verifiable* leads. Only include leads where you found evidence in sources.
+        self._search_worker = _LeadsSearchWorker(
+            db=self.db,
+            data_dir=self.data_dir,
+            user_system_message=user_system_message,
+        )
+        self._search_worker.progress.connect(self.search_status_label.setText)
 
-Return ONLY a JSON array of 8-20 CANDIDATE leads. Each lead object must include:
-- name
-- company
-- title
-- rationale
-- linkedin_url (or empty string)
-- company_url (or empty string)
-- sources: [url1, url2] (must have at least 1)
+        def _on_done(stored: int):
+            self.runSearchButton.setEnabled(True)
+            self.refreshButton.setEnabled(True)
+            self.search_status_label.setText(f"Stored {stored} lead(s).")
+            self.refresh_leads()
 
-Optional:
-- signals: [\"signal 1\", \"signal 2\"]
+        def _on_err(msg: str):
+            self.runSearchButton.setEnabled(True)
+            self.refreshButton.setEnabled(True)
+            self.search_status_label.setText("Lead search failed.")
+            QMessageBox.warning(self, "Lead Search", msg or "Lead search failed.")
 
-Hard rules:
-- Do not invent people, titles, or URLs.
-- If you can’t find sources for a lead, omit it.
-"""
-
-            response_content = ""
-            try:
-                from core.grok_client import grok_available, grok_web_search, grok_completion, MODEL_WEB
-                ok, msg = grok_available()
-                if not ok:
-                    logger.error(msg)
-                    return
-                try:
-                    response_content = grok_web_search(discover_prompt, model=MODEL_WEB)
-                except Exception:
-                    response_content = ""
-                if not response_content:
-                    # Fallback without web_search tool
-                    response_content = grok_completion(
-                        system="You are a lead generation assistant. Return only JSON as instructed.",
-                        user=discover_prompt,
-                        model=MODEL_WEB,
-                    )
-            except Exception as e:
-                logger.error(f"Grok lead generation failed: {e}")
-                response_content = ""
-
-            if not response_content:
-                logger.error("Grok API returned no content (check XAI_API_KEY or GROK_API_KEY).")
-                return
-
-            logger.info("Grok API Response:")
-            logger.info(f"Response content: {response_content}")
-
-            response_file = os.path.join(self.data_dir, 'grok_response.txt')
-            with open(response_file, 'w', encoding='utf-8') as f:
-                f.write("Response content:\n")
-                f.write(response_content + "\n")
-            logger.info(f"Raw response written to {response_file}")
-
-            # Use robust JSON parsing for leads array (candidates)
-            candidates, success = robust_json_parse_array(response_content, logger)
-            
-            if success and candidates:
-                logger.info(f"Parsed leads: {candidates}")
-
-                if isinstance(candidates, list):
-                    logger.info(f"Successfully parsed JSON array with {len(candidates)} candidate leads")
-
-                    # Enrich with openFDA signals before verification pass
-                    enriched_candidates = []
-                    try:
-                        from core.openfda import search_510k_by_applicant, summarize_510k_records
-                    except Exception:
-                        search_510k_by_applicant = None
-                        summarize_510k_records = None
-
-                    for lead in candidates:
-                        if not isinstance(lead, dict):
-                            continue
-                        if not all(k in lead for k in ['name', 'company', 'title', 'rationale']):
-                            logger.warning(f"Skipping lead with missing required fields: {lead}")
-                            continue
-
-                        sources = lead.get("sources") or []
-                        if not isinstance(sources, list):
-                            sources = []
-                        # Enforce evidence: no sources, no lead.
-                        if len(sources) == 0:
-                            logger.warning(f"Skipping unverifiable lead (no sources): {lead.get('name')} @ {lead.get('company')}")
-                            continue
-
-                        lead.setdefault("signals", [])
-                        lead.setdefault("linkedin_url", "")
-                        lead.setdefault("company_url", "")
-                        lead.setdefault("status", "new")
-                        lead.setdefault("contacted", False)
-                        lead.setdefault("contact_date", None)
-                        lead.setdefault("next_action_date", None)
-                        lead.setdefault("notes", "")
-
-                        company = str(lead.get("company") or "").strip()
-                        if company and search_510k_by_applicant and summarize_510k_records:
-                            try:
-                                recs, req_url = search_510k_by_applicant(company, limit=5)
-                                summ = summarize_510k_records(company, recs, req_url)
-                                # Merge signals and sources (dedup)
-                                lead["signals"] = list(dict.fromkeys((lead.get("signals") or []) + (summ.get("signals") or [])))
-                                lead["sources"] = list(dict.fromkeys((lead.get("sources") or []) + (summ.get("sources") or [])))
-                                lead["openfda_meta"] = summ.get("meta") or {}
-                            except Exception:
-                                pass
-
-                        enriched_candidates.append(lead)
-
-                    # Verification / enrichment pass: add message + tighten evidence
-                    verify_prompt = f"""{user_system_message}
-
-You will be given a JSON array of candidate leads (with some sources and possible openFDA signals).
-
-Task:
-- Verify each lead is real and current using web search.
-- Keep only leads with strong evidence.
-- Produce a FINAL JSON array of up to 15 leads with:
-  - name, company, title, rationale, linkedin_url, company_url
-  - signals: [..]
-  - sources: [..] (must have at least 2 when possible; never empty)
-  - message: personalized LinkedIn message (2-5 sentences) referencing a specific signal and offering help
-
-Hard rules:
-- Do not invent. If not verifiable, omit the lead.
-- Return ONLY the JSON array.
-
-Candidates JSON:
-{json.dumps(enriched_candidates, ensure_ascii=False)}
-"""
-
-                    final_text = ""
-                    try:
-                        from core.grok_client import grok_web_search, MODEL_WEB
-                        final_text = grok_web_search(verify_prompt, model=MODEL_WEB)
-                    except Exception:
-                        final_text = ""
-                    if not final_text:
-                        try:
-                            from core.grok_client import grok_completion, MODEL_WEB
-                            final_text = grok_completion(
-                                system="You are a lead generation assistant. Return only JSON as instructed.",
-                                user=verify_prompt,
-                                model=MODEL_WEB,
-                            )
-                        except Exception:
-                            final_text = ""
-
-                    final_leads = []
-                    if final_text:
-                        final_leads, ok2 = robust_json_parse_array(final_text, logger)
-                        if not ok2 or not isinstance(final_leads, list):
-                            final_leads = []
-
-                    stored = 0
-                    try:
-                        from core.lead_scoring import score_lead
-                    except Exception:
-                        score_lead = None
-
-                    for lead in (final_leads or []):
-                        if not isinstance(lead, dict):
-                            continue
-                        if not all(k in lead for k in ['name', 'company', 'title', 'rationale', 'message']):
-                            continue
-
-                        sources = lead.get("sources") or []
-                        if not isinstance(sources, list) or len(sources) == 0:
-                            continue
-
-                        lead.setdefault("signals", [])
-                        lead.setdefault("linkedin_url", "")
-                        lead.setdefault("company_url", "")
-                        lead.setdefault("status", "new")
-                        lead.setdefault("contacted", False)
-                        lead.setdefault("contact_date", None)
-                        lead.setdefault("next_action_date", None)
-                        lead.setdefault("notes", "")
-
-                        if score_lead:
-                            lead.update(score_lead(lead))
-
-                        if self.db:
-                            try:
-                                self.db.upsert_lead(lead)
-                                stored += 1
-                            except Exception as e:
-                                logger.warning(f"Failed to store lead: {e}")
-                                continue
-
-                    self.refresh_leads()
-                    logger.info(f"Stored {stored} leads")
-                    return
-            else:
-                logger.error("No JSON array found in response")
-                logger.error(f"Raw response: {response_content[:500]}...")  # Truncate for logging
-        except Exception as e:
-            logger.error(f"Search leads error: {e}")
-            QMessageBox.warning(self, "API Error", "The Grok API is currently experiencing issues. Please try again in a few minutes.")
+        self._search_worker.finished.connect(_on_done)
+        self._search_worker.error.connect(_on_err)
+        self._search_worker.start()
 
     def update_leads_table(self, leads):
         self.leadsTable.setRowCount(len(leads))
