@@ -287,16 +287,6 @@ class DatabaseManager:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
             
-            # Vikunja task metadata table for custom fields not in Vikunja
-            conn.execute('''CREATE TABLE IF NOT EXISTS vikunja_task_metadata (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                vikunja_task_id INTEGER NOT NULL UNIQUE,
-                estimated_duration_minutes INTEGER,
-                custom_fields_json TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )''')
-            
             conn.commit()
         
         # Multi-agent tables are created in migration 2 -> 3 (see _migrate_schema)
@@ -362,9 +352,6 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_contacted ON leads(contacted)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_total_score ON leads(total_score)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_last_seen ON leads(last_seen)")
-            
-            # Indexes for vikunja_task_metadata table
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_vikunja_task_metadata_task_id ON vikunja_task_metadata(vikunja_task_id)")
             
             # Indexes for multi-agent tables
             conn.execute("CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)")

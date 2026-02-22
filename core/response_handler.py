@@ -279,7 +279,7 @@ class ResponseHandler:
                 # If no tasks were added but ADD_TASK was in response, we need to handle it
                 # Don't return raw ADD_TASK: string - ChatThread will try to parse it for old system
                 if "ADD_TASK:" in grok_response:
-                    print(f"DEBUG: ADD_TASK found but no tasks parsed - this shouldn't happen if Vikunja path worked")
+                    print("DEBUG: ADD_TASK found but no tasks parsed - likely parse error")
                     logger.warning("ADD_TASK: found in response but no tasks were parsed")
                     # Return a message instead of raw ADD_TASK to prevent ChatThread from parsing it
                     return "I received a task creation request, but couldn't parse it. Please try again with a clearer task description and due date."
@@ -390,152 +390,18 @@ All Tasks:
         
         return summary
     
-    def _handle_vikunja_task_creation(self, task_segments, original_message, conversation_history, session_id):
-        """Handle task creation for Vikunja when on Tasks tab."""
-        try:
-            tasks_tab = self.chat_window.tasks_tab
-            
-            # Check if user is logged into Vikunja
-            if not tasks_tab.client or not tasks_tab.current_project_id:
-                return "I need you to be logged into Vikunja and have a project selected to create tasks. Please log in and select a project first."
-            
-            # Get available projects for context
-            try:
-                projects = tasks_tab.client.get_projects()
-                project_names = [p.get("title", "") for p in projects]
-            except:
-                project_names = []
-            
-            created_tasks = []
-            missing_info = []
-            
-            for segment in task_segments:
-                if "|" not in segment:
-                    continue
-                
-                task_info = segment.split("|", 1)
-                if len(task_info) != 2:
-                    continue
-                
-                task_description = task_info[0].strip()
-                due_date_raw = task_info[1].strip()
-                
-                # Use Llama to parse task details from the original message and task description
-                parse_prompt = [
-                    {"role": "system", "content": f"""You are parsing a task creation request. Extract task details and return a JSON object with:
-- title: Task title (required)
-- description: Task description (optional, can be empty string)
-- priority: Priority level 0-5 (0 = no priority, 5 = urgent, default 0)
-- due_date: Due date in ISO format YYYY-MM-DD (or null if not specified)
-- estimated_duration_minutes: Estimated duration in minutes (or null if not specified)
-- project_name: Project name to assign to (must match one of: {', '.join(project_names) if project_names else 'any available project'}, or null to use current project)
-
-Available projects: {', '.join(project_names) if project_names else 'none'}
-Current date: {datetime.now().strftime('%Y-%m-%d')}
-
-Return ONLY valid JSON, no other text."""},
-                    {"role": "user", "content": f"Original request: {original_message}\nTask: {task_description}\nDue date mentioned: {due_date_raw}"}
-                ]
-                
-                try:
-                    parse_response = self.chat_with_llama(parse_prompt, "task_parse")
-                    print(f"DEBUG: Llama parse response: {parse_response[:200]}...")
-                    # Extract JSON from response (might have extra text)
-                    import json
-                    import re
-                    json_match = re.search(r'\{[^{}]*\}', parse_response, re.DOTALL)
-                    if json_match:
-                        task_data = json.loads(json_match.group(0))
-                        print(f"DEBUG: Parsed task_data: {task_data}")
-                    else:
-                        # Fallback: try to parse the whole response
-                        task_data = json.loads(parse_response)
-                        print(f"DEBUG: Parsed task_data (fallback): {task_data}")
-                    
-                    # Validate required fields
-                    if not task_data.get('title'):
-                        missing_info.append(f"Task '{task_description}': missing title")
-                        continue
-                    
-                    # Determine project
-                    project_id = tasks_tab.current_project_id
-                    print(f"DEBUG: Starting with project_id from current_project_id: {project_id}")
-                    if task_data.get('project_name') and project_names:
-                        # Try to find matching project
-                        for proj in projects:
-                            if proj.get("title", "").lower() == task_data.get('project_name', '').lower():
-                                new_project_id = proj.get("id")
-                                print(f"DEBUG: Matched project name '{task_data.get('project_name')}' to project_id: {new_project_id}")
-                                project_id = new_project_id
-                                break
-                    
-                    # Ensure project_id is valid
-                    if not project_id:
-                        print(f"DEBUG: ERROR - project_id is None or invalid!")
-                        missing_info.append(f"Task '{task_description}': no project selected")
-                        continue
-                    
-                    print(f"DEBUG: Final project_id before API call: {project_id} (type: {type(project_id)})")
-                    
-                    # Parse due date
-                    due_date_iso = None
-                    if task_data.get('due_date'):
-                        try:
-                            due_date_obj = parser.parse(task_data['due_date'], default=datetime.now())
-                            due_date_iso = due_date_obj.strftime('%Y-%m-%d')
-                        except:
-                            pass
-                    
-                    # Create task in Vikunja
-                    print(f"DEBUG: Calling create_task with project_id={project_id}, title='{task_data['title']}'")
-                    task_result = tasks_tab.client.create_task(
-                        project_id=project_id,
-                        title=task_data['title'],
-                        description=task_data.get('description', ''),
-                        priority=task_data.get('priority', 0),
-                        due_date=due_date_iso
-                    )
-                    
-                    # Save estimated duration if provided
-                    estimated_duration = task_data.get('estimated_duration_minutes')
-                    if estimated_duration and estimated_duration > 0:
-                        task_id = task_result.get('id') if isinstance(task_result, dict) else None
-                        if task_id:
-                            tasks_tab._save_estimated_duration(task_id, estimated_duration)
-                    
-                    # Reload tasks to show the new task
-                    tasks_tab.load_tasks()
-                    
-                    created_tasks.append(task_data['title'])
-                    
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse task JSON: {e}, response: {parse_response}")
-                    missing_info.append(f"Task '{task_description}': parsing error")
-                except Exception as e:
-                    logger.error(f"Error creating Vikunja task: {e}")
-                    missing_info.append(f"Task '{task_description}': {str(e)}")
-            
-            # Build response
-            if created_tasks:
-                response = f"I've created {len(created_tasks)} task(s) in Vikunja: {', '.join(created_tasks)}."
-                if missing_info:
-                    response += f"\n\nHowever, I had issues with: {', '.join(missing_info)}. Please provide more details."
-                return response
-            elif missing_info:
-                return f"I couldn't create the task(s). Issues: {', '.join(missing_info)}. Please provide more details or check your Vikunja connection."
-            else:
-                return "I couldn't parse the task details. Please try again with more specific information."
-                
-        except Exception as e:
-            logger.error(f"Error in Vikunja task creation: {e}")
-            return f"I encountered an error creating the task: {str(e)}"
+    def _handle_vikunja_task_creation(self, *args, **kwargs):
+        """
+        Deprecated: Vikunja integration has been removed.
+        Tasks are stored locally in SQLite and created via the CoS/Dashboard flows.
+        """
+        return "Vikunja integration has been removed. Tasks are now stored locally in NaviSsurance."
     
     def handle_task_added(self, task_text, due_date):
         """Handle task added signal (for backward compatibility with old task system).
         
         This method is called when a task is added via the old task system.
-        The new system handles tasks through Vikunja or the get_response method.
+        Tasks are persisted locally in SQLite via DatabaseManager.
         """
-        # Tasks are now handled through Vikunja or get_response, so this is a no-op
-        # Kept for backward compatibility with signal connections
+        # Kept for backward compatibility with signal connections.
         pass
