@@ -13,14 +13,19 @@ This plan is intentionally pragmatic: it fits the current Python + PyQt + SQLite
   - `!search <terms>` searches stored conversation content (FTS).
   - `!history <date-ish>` returns messages for a given day (today/yesterday/last weekday/parseable date).
 - **Daily briefing**: `daily_briefing()` composes a snapshot (calendar/tasks/emails) and asks Grok to format it.
-- **Web research**: `WEB_SEARCH:<query>` triggers Claude web search; results are fed back to Grok to summarize.
+- **Web research**: `WEB_SEARCH:<query>` is supported in the Chief of Staff tool loop (read-only).
 - **Local search**: `DROPBOX_SEARCH:<query>` queries the Dropbox index in SQLite and returns top matches.
+- **Chief of Staff tab (dedicated)**:
+  - Persistent CoS chats (sidebar list) + Preferences (constraints, blocked times, deep work hours)
+  - Calendar-aware read-only context (today + next 7 days) when Google token exists
+  - Document search (`DOC_SEARCH:<query>`) over local docs/notes (optional RAG if enabled)
+  - Structured memory extraction (summary/facts/tags/open loops/decisions) stored in SQLite + retrievable via `MEMORY_SEARCH:<query>`
 
 ### Constraints / Known Gaps
 - Prioritization is implicit (lists), not a first-class model (urgency/importance/effort/constraints).
-- Memory is “raw retrieval” (FTS search), not structured facts + summaries.
-- Delegation to other agents is not implemented (no job queue / agent registry / artifacts).
-- Calendar write-back and email sending are not implemented (read-only posture).
+- Memory is improving (structured memory exists), but still heuristic and not yet embeddings-backed.
+- Delegation to other agents is not implemented (no job runner / agent registry / artifacts workflow in the CoS UI).
+- Calendar write-back and email sending are not implemented (read-only posture by design).
 - Search is not yet unified across Dropbox + local + Google Drive, and dedup across sources is not implemented (see `docs/unified_search.md`).
 - External news headlines can be included in the daily briefing with dedup and caching (see `docs/news_briefing.md`).
 
