@@ -11,7 +11,7 @@ from config import DATABASE_PATH, ARTIFACTS_DIR
 class DatabaseManager:
     def __init__(self):
         self.db_name = DATABASE_PATH
-        self.current_schema_version = 9  # Increment this when making schema changes
+        self.current_schema_version = 10  # Increment this when making schema changes
         self.setup_db()
         self.create_indexes()
 
@@ -164,6 +164,30 @@ class DatabaseManager:
                 last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
                 last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
+
+            # Chief of Staff memory (structured, searchable)
+            conn.execute('''CREATE TABLE IF NOT EXISTS cos_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER,
+                kind TEXT NOT NULL,
+                content TEXT NOT NULL,
+                json_data TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )''')
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_memory_chat_id ON cos_memory(chat_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_memory_kind ON cos_memory(kind)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_memory_created_at ON cos_memory(created_at)")
+
+            # FTS for cos_memory (mem_id used to retrieve full row)
+            conn.execute('''CREATE VIRTUAL TABLE IF NOT EXISTS cos_memory_fts
+                USING fts5 (
+                    mem_id UNINDEXED,
+                    chat_id UNINDEXED,
+                    kind UNINDEXED,
+                    content,
+                    created_at UNINDEXED,
+                    tokenize='porter'
+                )''')
             
             # Dropbox index tables removed - using RAG index instead
             
@@ -290,6 +314,8 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_projects_client ON cos_projects(client)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_weekly_plans_week_start ON cos_weekly_plans(week_start)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_daily_plans_date ON cos_daily_plans(date)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_chats_updated_at ON cos_chats(updated_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_memory_chat_kind ON cos_memory(chat_id, kind)")
             
             conn.commit()
 
@@ -1143,6 +1169,35 @@ class DatabaseManager:
                 print("    - leads table created")
             except Exception as e:
                 print(f"    - Error creating leads table: {e}")
+
+        # Version 9 to 10: Chief of Staff structured memory tables
+        if from_version < 10 and to_version >= 10:
+            print("  - Creating Chief of Staff memory tables: cos_memory, cos_memory_fts")
+            try:
+                conn.execute('''CREATE TABLE IF NOT EXISTS cos_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER,
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    json_data TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )''')
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_memory_chat_id ON cos_memory(chat_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_memory_kind ON cos_memory(kind)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_memory_created_at ON cos_memory(created_at)")
+                conn.execute('''CREATE VIRTUAL TABLE IF NOT EXISTS cos_memory_fts
+                    USING fts5 (
+                        mem_id UNINDEXED,
+                        chat_id UNINDEXED,
+                        kind UNINDEXED,
+                        content,
+                        created_at UNINDEXED,
+                        tokenize='porter'
+                    )''')
+                conn.commit()
+                print("    - cos_memory tables created")
+            except Exception as e:
+                print(f"    - Error creating cos_memory tables: {e}")
         
         print(f"Schema migration from version {from_version} to {to_version} completed.")
 
@@ -1903,6 +1958,110 @@ class DatabaseManager:
             conn.execute("DELETE FROM conversation WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM cos_chats WHERE id = ?", (chat_id,))
             conn.commit()
+
+    # -------------------------------------------------------------------------
+    # CoS structured memory methods
+    # -------------------------------------------------------------------------
+
+    def cos_memory_add(self, *, chat_id: int | None, kind: str, content: str, json_data: str | None = None) -> int:
+        """Insert one memory item and index it in FTS. Returns memory id."""
+        if not content:
+            return 0
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                "INSERT INTO cos_memory (chat_id, kind, content, json_data, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+                (int(chat_id) if chat_id is not None else None, str(kind), str(content), json_data),
+            )
+            mem_id = int(cur.lastrowid)
+            try:
+                conn.execute(
+                    "INSERT INTO cos_memory_fts (mem_id, chat_id, kind, content, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+                    (mem_id, int(chat_id) if chat_id is not None else None, str(kind), str(content)),
+                )
+            except Exception:
+                # FTS table might not exist in edge DB states; keep base row anyway.
+                pass
+            conn.commit()
+            return mem_id
+
+    def cos_memory_add_many(self, *, chat_id: int | None, items: list[dict]) -> int:
+        """Insert many memory items. Returns count inserted."""
+        if not items:
+            return 0
+        added = 0
+        for it in items:
+            try:
+                kind = (it.get("kind") or "").strip() or "note"
+                content = (it.get("content") or "").strip()
+                json_data = it.get("json_data")
+                if isinstance(json_data, (dict, list)):
+                    json_data = json.dumps(json_data, ensure_ascii=False)
+                self.cos_memory_add(chat_id=chat_id, kind=kind, content=content, json_data=json_data)
+                added += 1
+            except Exception:
+                continue
+        return added
+
+    def cos_memory_recent(self, *, chat_id: int | None = None, limit: int = 20) -> list[tuple]:
+        """Return recent cos_memory rows, optionally filtered by chat_id."""
+        with sqlite3.connect(self.db_name) as conn:
+            if chat_id is None:
+                return conn.execute(
+                    "SELECT id, chat_id, kind, content, json_data, created_at FROM cos_memory ORDER BY created_at DESC LIMIT ?",
+                    (int(limit),),
+                ).fetchall()
+            return conn.execute(
+                "SELECT id, chat_id, kind, content, json_data, created_at FROM cos_memory WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?",
+                (int(chat_id), int(limit)),
+            ).fetchall()
+
+    def cos_memory_search(self, *, query: str, chat_id: int | None = None, kind: str | None = None, limit: int = 10) -> list[tuple]:
+        """
+        Full-text search over cos_memory_fts content. Returns rows:
+        (id, chat_id, kind, content, json_data, created_at)
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
+
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                where = "cos_memory_fts MATCH ?"
+                params = [q]
+                if chat_id is not None:
+                    where += " AND chat_id = ?"
+                    params.append(int(chat_id))
+                if kind is not None:
+                    where += " AND kind = ?"
+                    params.append(str(kind))
+                params.append(int(limit))
+                rows = conn.execute(
+                    f"""
+                    SELECT m.id, m.chat_id, m.kind, m.content, m.json_data, m.created_at
+                    FROM cos_memory_fts f
+                    JOIN cos_memory m ON m.id = f.mem_id
+                    WHERE {where}
+                    ORDER BY bm25(cos_memory_fts)
+                    LIMIT ?
+                    """,
+                    params,
+                ).fetchall()
+                return rows
+        except Exception:
+            # Fallback: LIKE search without FTS
+            like = f"%{q}%"
+            with sqlite3.connect(self.db_name) as conn:
+                base = "SELECT id, chat_id, kind, content, json_data, created_at FROM cos_memory WHERE content LIKE ?"
+                params = [like]
+                if chat_id is not None:
+                    base += " AND chat_id = ?"
+                    params.append(int(chat_id))
+                if kind is not None:
+                    base += " AND kind = ?"
+                    params.append(str(kind))
+                base += " ORDER BY created_at DESC LIMIT ?"
+                params.append(int(limit))
+                return conn.execute(base, params).fetchall()
 
     def close(self):
         """Close database connection."""
