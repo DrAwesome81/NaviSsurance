@@ -1,6 +1,27 @@
 NaviSsurance Testing
 Test Cases
 
+Manual Test Prerequisites (common)
+
+- Grok access:
+  - Set `XAI_API_KEY` or `GROK_API_KEY` (and have `xai-sdk` installed) to test Chief of Staff, lead gen, and news/web search features.
+- Daily briefing:
+  - If daily briefing shows “disabled”, set `BRIEFING_AND_EMAIL_DISABLED = False` in `config.py`, then restart the app.
+- Google Calendar (read-only):
+  - Calendar reads require an existing token at `config/navi_token.pkl`. If it’s missing, calendar-aware features should gracefully show “unavailable” (no OAuth popups).
+- Optional RAG search:
+  - `DOC_SEARCH` can use a semantic index only if it exists (`chroma_index/`) and `COS_ENABLE_RAG_SEARCH=1` is set.
+
+Manual Smoke Test (10–15 minutes)
+
+- TC-001 (Dashboard tasks display)
+- TC-003 (Dashboard schedule display)
+- TC-004 (Dashboard news feed + suppression)
+- TC-017 (Daily briefing includes News)
+- TC-025 (Leads: Run Search → evidence + message)
+- TC-054 (Chief of Staff: chat + persistence)
+- TC-058 (Chief of Staff: task capture via `ADD_TASK`)
+
 Dashboard Tab Tests (NEW - IMPLEMENTED)
 TC-001: Dashboard Task List Display
 
@@ -49,9 +70,11 @@ Open NaviSsurance (interface.py).
 Navigate to Dashboard Tab.
 Check news feed for MedTech industry news.
 Verify hyperlinks are clickable.
-Check for duplicate prevention.
+Set “Hide repeats” to 2 days (or another value) and click Refresh News.
+Refresh again and verify recently shown items are suppressed (do not immediately repeat).
+Check for duplicate prevention (tracking params / same title across sources).
 
-Expected Result: News displays with clickable links, no duplicates, 7-day persistence.
+Expected Result: News displays with clickable links, deduped items, and repeat suppression respects the “Hide repeats” setting. Items persist for ~7 days.
 Actual Result: [Pending: Test not run], 2025-08-11.
 Status: Pending
 
@@ -231,11 +254,12 @@ TC-017: Daily Briefing
 Description: Verify Navi provides a daily briefing.
 Steps:
 Open NaviSsurance (interface.py).
-Ask Navi via chat for the daily briefing.
+If daily briefing is disabled, set `BRIEFING_AND_EMAIL_DISABLED = False` in `config.py`, restart, and retry.
+Ask Navi via chat for the daily briefing (or use the Dashboard briefing widget if present).
 
-Expected Result: Navi provides an update on tasks, meetings, and emails.
-Actual Result: Fail: Error "ChatHandler.task_added_signal[str, str] signal has 2 argument(s) but 3 provided", 2025-06-02 (Issue #18).
-Status: Fail
+Expected Result: Briefing includes tasks, meetings, emails, and a `[SECTION:News]` section (deduped/suppressed). If calendar/email credentials are missing, it degrades gracefully (no crash).
+Actual Result: [Pending: Re-test on current Workspace], 2026-02-22.
+Status: Pending
 
 TC-018: Add Task from Chat
 
@@ -453,7 +477,10 @@ Open NaviSsurance (interface.py).
 Navigate to Leads Tab.
 Click "Run Search" button.
 
-Expected Result: Claude generates JSON ({name, company, title, LinkedIn_url, rationale}).
+Expected Result:
+- Grok returns verifiable leads and the app stores them in SQLite.
+- Leads table populates with Score/Status and each stored lead has **Sources** available.
+- Leads without sources are not stored.
 Actual Result: [Pending: Test not run], 2025-06-03.
 Status: Pending
 
@@ -465,8 +492,9 @@ Open NaviSsurance (interface.py).
 Navigate to Leads Tab.
 Modify settings (e.g., industry filter).
 Save settings.
+Run Search again.
 
-Expected Result: Settings are updated and applied to next search.
+Expected Result: Settings persist to `config/lead_gen_config.json` and affect the next lead search results.
 Actual Result: [Pending: Test not run], 2025-06-03.
 Status: Pending
 
@@ -478,8 +506,9 @@ Open NaviSsurance (interface.py).
 Navigate to Leads Tab.
 Run a search.
 Click "View Message" for a lead.
+Click “Copy”.
 
-Expected Result: Personalized LinkedIn message displays for copy/paste.
+Expected Result: Personalized LinkedIn message displays and can be copied to clipboard.
 Actual Result: [Pending: Test not run], 2025-06-03.
 Status: Pending
 
@@ -492,20 +521,20 @@ Navigate to Leads Tab.
 Run a search.
 Click "Delete" button for a lead.
 
-Expected Result: Lead is removed from Leads Tab.
+Expected Result: Lead is removed from the UI and deleted from the SQLite `leads` table.
 Actual Result: [Pending: Test not run], 2025-06-03.
 Status: Pending
 
-TC-029: Leads Tab View Rationale Functionality
+TC-029: Leads Tab Sources/Evidence Viewer
 
-Description: Verify viewing a lead's rationale.
+Description: Verify viewing a lead's evidence sources and signals.
 Steps:
 Open NaviSsurance (interface.py).
 Navigate to Leads Tab.
 Run a search.
-Click "View Rationale" for a lead.
+Click "Sources" for a lead.
 
-Expected Result: Rationale text displays explaining lead selection.
+Expected Result: A dialog shows signals + clickable sources (URLs). openFDA 510(k) query URL may appear when enrichment found matches.
 Actual Result: [Pending: Test not run], 2025-06-03.
 Status: Pending
 
@@ -516,9 +545,9 @@ Steps:
 Open NaviSsurance (interface.py).
 Navigate to Leads Tab.
 Run a search.
-Click LinkedIn URL for a lead.
+Click the lead Name (row 0, column “Name”).
 
-Expected Result: Browser opens to the lead's LinkedIn profile.
+Expected Result: Browser opens to the lead's LinkedIn profile URL (if present).
 Actual Result: [Pending: Test not run], 2025-06-03.
 Status: Pending
 
@@ -530,9 +559,88 @@ Open NaviSsurance (interface.py).
 Navigate to Leads Tab.
 Run a search.
 Check "Contacted" box for a lead.
+Toggle “Hide contacted” and verify the row hides/shows.
 
-Expected Result: Lead is marked contacted with a date stamp in database.
+Expected Result: Lead is marked contacted with a date stamp, status updates to contacted, and filtering works.
 Actual Result: [Pending: Test not run], 2025-06-03.
+Status: Pending
+
+Chief of Staff Tab Tests
+
+TC-054: Chief of Staff — New Chat + Persistence
+
+Description: Verify CoS chat creation, persistence, and sidebar navigation.
+Steps:
+Open NaviSsurance.
+Navigate to Chief of Staff tab.
+Click “New chat”.
+Send a message (e.g., “I’m working on client X; help me prioritize.”).
+Close and reopen the app.
+Return to Chief of Staff tab and click the chat in the sidebar.
+
+Expected Result: Chat is saved and reloads with the previous messages.
+Actual Result: [Pending: Test not run], 2026-02-22.
+Status: Pending
+
+TC-055: Chief of Staff — Preferences Affect Responses
+
+Description: Verify CoS preferences are saved and used as context.
+Steps:
+Open Chief of Staff tab.
+Open Options → Preferences.
+Set deep work hours and add a constraint (e.g., “No meetings before 10am; family time 5–8pm”).
+Save.
+Ask CoS for a plan for today.
+
+Expected Result: Response references the saved constraints (without taking autonomous actions).
+Actual Result: [Pending: Test not run], 2026-02-22.
+Status: Pending
+
+TC-056: Chief of Staff — Calendar Read-Only Context (token present vs missing)
+
+Description: Verify calendar-aware planning is read-only and degrades gracefully.
+Steps:
+If `config/navi_token.pkl` exists, ask: “What meetings do I have today?”
+If it does not exist, ask the same question.
+
+Expected Result:
+- With token: CoS includes today’s schedule and upcoming week context in its advice.
+- Without token: CoS reports calendar unavailable (no crash, no OAuth popups).
+Actual Result: [Pending: Test not run], 2026-02-22.
+Status: Pending
+
+TC-057: Chief of Staff — Tool Loop (WEB_SEARCH / DOC_SEARCH)
+
+Description: Verify CoS can use read-only tools when needed.
+Steps:
+Ask a question that should require web research (e.g., “What’s the latest FDA update on PCCP this month?”).
+Ask a question that should require doc search (e.g., “What did our docs say about unified search?”).
+
+Expected Result: CoS either answers directly or triggers tool use internally and returns an answer grounded in results. No side effects.
+Actual Result: [Pending: Test not run], 2026-02-22.
+Status: Pending
+
+TC-058: Chief of Staff — Task Capture from CoS (`ADD_TASK`)
+
+Description: Verify CoS can add tasks to the dashboard task list.
+Steps:
+In Chief of Staff tab, ask: “Add a task to follow up with Acme next Tuesday.”
+Go to Dashboard → Task List and verify the task exists.
+
+Expected Result: CoS inserts a task via `ADD_TASK` and it appears in the main tasks table.
+Actual Result: [Pending: Test not run], 2026-02-22.
+Status: Pending
+
+TC-059: Chief of Staff — Structured Memory (facts/tags/open loops)
+
+Description: Verify memory is extracted and can be recalled later.
+Steps:
+In a CoS chat, state a stable preference (e.g., “I prefer deep work before noon.”).
+Continue conversation for 2–3 turns.
+Later in the same chat, ask: “What preference did I mention about deep work?”
+
+Expected Result: CoS recalls the preference (from structured memory) without you repeating it.
+Actual Result: [Pending: Test not run], 2026-02-22.
 Status: Pending
 
 Document Generation Tab Tests
@@ -725,6 +833,9 @@ Task Management
 TC-025, TC-026, TC-027, TC-028, TC-029, TC-030, TC-031
 Lead Generation
 
+TC-054, TC-055, TC-056, TC-057, TC-058, TC-059
+Chief of Staff
+
 TC-032, TC-033, TC-034
 Document Generation
 
@@ -742,7 +853,7 @@ Notes
 Tests are manual, executed via UI (interface.py) or scripts (e.g., fetch_all_emails.py), except Tasks Tab tests which are automated using pytest.
 Failures linked to GitHub Issues (e.g., #18, #19).
 Update Actual Result and Status after testing, using ISO dates (YYYY-MM-DD).
-New test cases (TC-051+) will be appended sequentially for future features (e.g., Clinical Study Design).
+New test cases (TC-054+) will be appended sequentially for future features (e.g., Chief of Staff, Lead Gen enhancements, Clinical Study Design).
 Dashboard and Workspace tabs are newly implemented and require comprehensive testing.
 Schedule display formatting has been improved to remove visible markup and improve readability.
 News feed includes AI-powered query generation, duplicate prevention, and 7-day persistence.
