@@ -456,6 +456,21 @@ class DatabaseManager:
 
             return results
 
+    def update_task_completed_by_id(self, task_id: int, completed: int) -> None:
+        """Mark a task complete/incomplete by id."""
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                "UPDATE tasks SET completed = ? WHERE id = ?",
+                (int(completed), int(task_id)),
+            )
+            conn.commit()
+
+    def delete_task_by_id(self, task_id: int) -> None:
+        """Delete a task by id."""
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute("DELETE FROM tasks WHERE id = ?", (int(task_id),))
+            conn.commit()
+
     def get_task_category(self, task_text):
         with sqlite3.connect(self.db_name) as conn:
             cursor = conn.execute("SELECT category FROM tasks WHERE task_text = ?", (task_text,))

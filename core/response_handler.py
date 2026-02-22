@@ -258,44 +258,7 @@ class ResponseHandler:
             print(f"DEBUG: task_segments count: {len(task_segments)}, has ADD_TASK: {'ADD_TASK:' in grok_response}")
             added_tasks = []
             if task_segments and "ADD_TASK:" in grok_response:
-                print(f"DEBUG: Found ADD_TASK in response, checking Vikunja routing...")
-                # Check if we're on the Tasks tab and should create Vikunja tasks
-                should_use_vikunja = False
-                if self.chat_window and hasattr(self.chat_window, 'tasks_tab') and self.chat_window.tasks_tab:
-                    tasks_tab = self.chat_window.tasks_tab
-                    print(f"DEBUG: tasks_tab exists: {tasks_tab is not None}")
-                    # Check if Tasks tab is currently active
-                    if hasattr(self.chat_window, 'tab_widget'):
-                        current_tab_index = self.chat_window.tab_widget.currentIndex()
-                        tasks_tab_index = -1
-                        for i in range(self.chat_window.tab_widget.count()):
-                            if self.chat_window.tab_widget.tabText(i) == "Tasks":
-                                tasks_tab_index = i
-                                break
-                        
-                        has_client = tasks_tab.client is not None
-                        has_project = tasks_tab.current_project_id is not None
-                        print(f"DEBUG: Task creation check: current_tab={current_tab_index}, tasks_tab={tasks_tab_index}, has_client={has_client}, has_project={has_project}, project_id={tasks_tab.current_project_id}")
-                        
-                        if current_tab_index == tasks_tab_index and has_client and has_project:
-                            # We're on Tasks tab and logged in - create Vikunja tasks
-                            print(f"DEBUG: Routing to Vikunja task creation")
-                            logger.info("Routing to Vikunja task creation")
-                            should_use_vikunja = True
-                        else:
-                            print(f"DEBUG: Not using Vikunja: current_tab={current_tab_index}, tasks_tab={tasks_tab_index}, has_client={has_client}, has_project={has_project}")
-                    else:
-                        print(f"DEBUG: No tab_widget found on chat_window")
-                else:
-                    print(f"DEBUG: No chat_window or tasks_tab available")
-                
-                if should_use_vikunja:
-                    result = self._handle_vikunja_task_creation(task_segments, message, conversation_history, session_id)
-                    print(f"DEBUG: Vikunja task creation returned: {result}")
-                    return result
-                
-                # Otherwise, use the old task system
-                logger.debug("Using old task system (not on Tasks tab or Vikunja not available)")
+                # Local tasks only (Vikunja integration removed).
                 for segment in task_segments:
                     task_info = segment.split("|", 1)
                     if len(task_info) != 2:
@@ -319,7 +282,7 @@ class ResponseHandler:
                     print(f"DEBUG: ADD_TASK found but no tasks parsed - this shouldn't happen if Vikunja path worked")
                     logger.warning("ADD_TASK: found in response but no tasks were parsed")
                     # Return a message instead of raw ADD_TASK to prevent ChatThread from parsing it
-                    return "I received a task creation request, but couldn't process it. Please make sure you're logged into Vikunja and have a project selected if you're on the Tasks tab."
+                    return "I received a task creation request, but couldn't parse it. Please try again with a clearer task description and due date."
                 print(f"DEBUG: Returning grok_response (no ADD_TASK): {grok_response[:100]}...")
                 return grok_response
         except Exception as e:

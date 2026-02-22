@@ -1,712 +1,277 @@
 """
-Tasks tab - Vikunja integration for task management.
+Tasks tab (local).
+
+This replaces the previous Vikunja integration. Tasks are stored in SQLite via
+core.db.DatabaseManager (same task store used by Dashboard + CoS task capture).
 """
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
-    QPushButton, QComboBox, QTableWidget, QTableWidgetItem,
-    QMessageBox, QGroupBox, QFormLayout, QSpinBox, QDateEdit, QTextEdit, QDialog, QDialogButtonBox
-)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDate, QSettings
-from datetime import datetime
+
+from __future__ import annotations
+
 import logging
+from datetime import datetime
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QComboBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QCheckBox,
+    QMessageBox,
+)
+
+from core.db import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
-# Try to import VikunjaClient, but handle import errors gracefully
-try:
-    from core.vikunja_client import VikunjaClient
-    VIKUNJA_AVAILABLE = True
-except (ImportError, SyntaxError) as e:
-    logger.warning(f"VikunjaClient not available: {e}")
-    VIKUNJA_AVAILABLE = False
-    VikunjaClient = None
 
-# Try to import DatabaseManager for custom task metadata
-try:
-    from core.db import DatabaseManager
-    DB_AVAILABLE = True
-except (ImportError, SyntaxError) as e:
-    logger.warning(f"DatabaseManager not available: {e}")
-    DB_AVAILABLE = False
-    DatabaseManager = None
+def _parse_due_date(value: str) -> str | None:
+    """
+    Accept empty (None) or a date-like string. Persist in MM-DD-YYYY (project convention).
+    """
+    s = (value or "").strip()
+    if not s:
+        return None
+    # allow already-canonical MM-DD-YYYY
+    try:
+        dt = datetime.strptime(s, "%m-%d-%Y")
+        return dt.strftime("%m-%d-%Y")
+    except Exception:
+        pass
+    # allow YYYY-MM-DD
+    try:
+        dt = datetime.strptime(s, "%Y-%m-%d")
+        return dt.strftime("%m-%d-%Y")
+    except Exception:
+        pass
+    # best-effort: let dateutil parse if available
+    try:
+        from dateutil import parser  # type: ignore
+
+        dt = parser.parse(s, default=datetime.now())
+        return dt.strftime("%m-%d-%Y")
+    except Exception:
+        return "unknown"
 
 
 class TasksTab(QWidget):
-    """Tasks tab with Vikunja integration."""
-    
+    """Local SQLite-backed tasks manager."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.client = None
-        self.current_project_id = None
-        self.settings = QSettings("NaviSsurance", "TasksTab")
-        # Initialize DatabaseManager for custom task metadata
-        self.db = DatabaseManager() if DB_AVAILABLE else None
-        self.init_ui()
-        
-        # Load saved connection settings
-        self.url_input.setText(self.settings.value("vikunja_url", "http://localhost:3456"))
-        self.username_input.setText(self.settings.value("vikunja_username", ""))
-        self.password_input.setText(self.settings.value("vikunja_password", ""))
-    
-    def init_ui(self):
-        """Initialize the UI."""
-        layout = QVBoxLayout()
+        self._parent = parent
+        self.db = getattr(parent, "db", None) if parent is not None else None
+        if self.db is None:
+            # Fallback: create our own DB manager (same path via config.DATABASE_PATH)
+            self.db = DatabaseManager()
+        self._setup_ui()
+        self.refresh_tasks()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
-        
-        # Show error message if VikunjaClient is not available
-        if not VIKUNJA_AVAILABLE:
-            error_label = QLabel(
-                "⚠️ Vikunja client not available. Please check that core/vikunja_client.py is valid.\n"
-                "The Tasks tab will not function until this is fixed."
-            )
-            error_label.setStyleSheet("color: #e07a7a; padding: 10px; font-size: 13px;")
-            error_label.setWordWrap(True)
-            layout.addWidget(error_label)
-            self.setLayout(layout)
-            return
-        
-        # Connection panel
-        conn_group = QGroupBox("Vikunja Connection")
-        conn_layout = QFormLayout()
-        
-        self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("http://localhost:3456")
-        conn_layout.addRow("Server URL:", self.url_input)
-        
-        self.username_input = QLineEdit()
-        self.username_input.setPlaceholderText("username")
-        self.username_input.returnPressed.connect(self.login)  # Enter key triggers login
-        conn_layout.addRow("Username:", self.username_input)
-        
-        self.password_input = QLineEdit()
-        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_input.setPlaceholderText("password")
-        self.password_input.returnPressed.connect(self.login)  # Enter key triggers login
-        conn_layout.addRow("Password:", self.password_input)
-        
-        self.email_input = QLineEdit()
-        self.email_input.setPlaceholderText("email (for registration)")
-        conn_layout.addRow("Email:", self.email_input)
-        
-        button_layout = QHBoxLayout()
-        button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.setSpacing(8)
-        self.test_btn = QPushButton("Test Connection")
-        self.test_btn.clicked.connect(self.test_connection)
-        button_layout.addWidget(self.test_btn)
-        
-        self.login_btn = QPushButton("Login")
-        self.login_btn.clicked.connect(self.login)
-        button_layout.addWidget(self.login_btn)
-        
-        self.register_btn = QPushButton("Register")
-        self.register_btn.clicked.connect(self.register)
-        button_layout.addWidget(self.register_btn)
-        
-        conn_layout.addRow(button_layout)
-        
-        self.conn_status = QLabel("Not connected")
-        self.conn_status.setStyleSheet("color: #9aa0a6; font-size: 13px;")
-        conn_layout.addRow("Status:", self.conn_status)
-        
-        conn_group.setLayout(conn_layout)
-        layout.addWidget(conn_group)
-        
-        # Project selector
-        project_layout = QHBoxLayout()
-        project_layout.setContentsMargins(0, 0, 0, 0)
-        project_layout.setSpacing(8)
-        project_layout.addWidget(QLabel("Project:"))
-        self.project_combo = QComboBox()
-        self.project_combo.currentIndexChanged.connect(self.load_tasks)
-        project_layout.addWidget(self.project_combo, 1)
-        
+
+        header = QLabel("Tasks")
+        header.setStyleSheet("color: #e8eaed; font-weight: 700; font-size: 14px; margin: 0;")
+        layout.addWidget(header)
+
+        # Filters row
+        filters = QHBoxLayout()
+        filters.setContentsMargins(0, 0, 0, 0)
+        filters.setSpacing(8)
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search tasks…")
+        self.search_input.textChanged.connect(self.refresh_tasks)
+        filters.addWidget(self.search_input, 2)
+
+        filters.addWidget(QLabel("Category:"))
+        self.category_filter = QComboBox()
+        self.category_filter.addItems(["All", "Business", "Personal"])
+        self.category_filter.currentTextChanged.connect(self.refresh_tasks)
+        filters.addWidget(self.category_filter)
+
+        filters.addWidget(QLabel("Date:"))
+        self.date_filter = QComboBox()
+        self.date_filter.addItems(["All", "Today", "Overdue", "No Date"])
+        self.date_filter.currentTextChanged.connect(self.refresh_tasks)
+        filters.addWidget(self.date_filter)
+
+        self.show_completed = QCheckBox("Show completed")
+        self.show_completed.stateChanged.connect(self.refresh_tasks)
+        filters.addWidget(self.show_completed)
+
+        filters.addStretch(1)
+
         self.refresh_btn = QPushButton("Refresh")
-        self.refresh_btn.clicked.connect(self.load_projects)
-        self.refresh_btn.setEnabled(False)
-        project_layout.addWidget(self.refresh_btn)
-        
-        self.new_project_btn = QPushButton("New Project")
-        self.new_project_btn.clicked.connect(self.create_project)
-        self.new_project_btn.setEnabled(False)
-        project_layout.addWidget(self.new_project_btn)
-        
-        layout.addLayout(project_layout)
-        
-        # Task creation panel
-        create_group = QGroupBox("Create Task")
-        create_layout = QVBoxLayout()
-        create_layout.setContentsMargins(8, 8, 8, 8)
-        create_layout.setSpacing(8)
-        
-        title_layout = QHBoxLayout()
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(8)
-        title_layout.addWidget(QLabel("Title:"))
-        self.task_title_input = QLineEdit()
-        title_layout.addWidget(self.task_title_input, 1)
-        create_layout.addLayout(title_layout)
-        
-        priority_layout = QHBoxLayout()
-        priority_layout.setContentsMargins(0, 0, 0, 0)
-        priority_layout.setSpacing(8)
-        priority_layout.addWidget(QLabel("Priority:"))
-        self.priority_spin = QSpinBox()
-        self.priority_spin.setRange(0, 5)
-        self.priority_spin.setValue(0)
-        priority_layout.addWidget(self.priority_spin)
-        priority_layout.addStretch()
-        create_layout.addLayout(priority_layout)
-        
-        # Estimated Duration (in minutes)
-        duration_layout = QHBoxLayout()
-        duration_layout.setContentsMargins(0, 0, 0, 0)
-        duration_layout.setSpacing(8)
-        duration_layout.addWidget(QLabel("Est. Duration (minutes):"))
-        self.estimated_duration_spin = QSpinBox()
-        self.estimated_duration_spin.setRange(0, 10080)  # 0 to 7 days (in minutes)
-        self.estimated_duration_spin.setValue(0)
-        self.estimated_duration_spin.setSuffix(" min")
-        duration_layout.addWidget(self.estimated_duration_spin)
-        duration_layout.addStretch()
-        create_layout.addLayout(duration_layout)
-        
-        self.create_task_btn = QPushButton("Create Task")
-        self.create_task_btn.clicked.connect(self.create_task)
-        self.create_task_btn.setEnabled(False)
-        create_layout.addWidget(self.create_task_btn)
-        
-        create_group.setLayout(create_layout)
-        layout.addWidget(create_group)
-        
-        # Task list
-        self.task_table = QTableWidget()
-        # Columns: ID, Title, Description, Priority, Due Date, Start Date, End Date, Percent Done, Done, Favorite, Estimated Duration, Actions
-        self.task_table.setColumnCount(12)
-        self.task_table.setHorizontalHeaderLabels([
-            "ID", "Title", "Description", "Priority", "Due Date", 
-            "Start Date", "End Date", "% Done", "Done", "Favorite", 
-            "Est. Duration", "Actions"
-        ])
-        self.task_table.setColumnHidden(0, True)  # Hide ID column
-        self.task_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        # Enable horizontal scrolling for wide tables
-        self.task_table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
-        # Store task data for editing
-        self.task_data = {}  # Maps task_id to full task data
-        layout.addWidget(self.task_table, 1)
-        
+        self.refresh_btn.clicked.connect(self.refresh_tasks)
+        filters.addWidget(self.refresh_btn)
+
+        layout.addLayout(filters)
+
+        # Quick add row
+        add_row = QHBoxLayout()
+        add_row.setContentsMargins(0, 0, 0, 0)
+        add_row.setSpacing(8)
+
+        self.new_task_input = QLineEdit()
+        self.new_task_input.setPlaceholderText("New task…")
+        self.new_task_input.returnPressed.connect(self.add_task)
+        add_row.addWidget(self.new_task_input, 2)
+
+        self.new_task_category = QComboBox()
+        self.new_task_category.addItems(["Business", "Personal"])
+        add_row.addWidget(self.new_task_category)
+
+        self.new_task_due = QLineEdit()
+        self.new_task_due.setPlaceholderText("Due (MM-DD-YYYY, optional)")
+        self.new_task_due.returnPressed.connect(self.add_task)
+        add_row.addWidget(self.new_task_due)
+
+        self.add_btn = QPushButton("Add")
+        self.add_btn.clicked.connect(self.add_task)
+        add_row.addWidget(self.add_btn)
+
+        layout.addLayout(add_row)
+
+        # Table
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["ID", "Task", "Category", "Due", "Done", "Actions"])
+        self.table.setColumnHidden(0, True)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setWordWrap(True)
+        self.table.setSortingEnabled(False)  # we do stable ordering in code
+
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+
+        layout.addWidget(self.table, 1)
+
         self.setLayout(layout)
-    
-    def test_connection(self):
-        """Test connection to Vikunja."""
-        url = self.url_input.text().strip()
-        if not url:
-            QMessageBox.warning(self, "Error", "Please enter a server URL")
+
+    def add_task(self):
+        text = (self.new_task_input.text() or "").strip()
+        if not text:
             return
-        
+        due = _parse_due_date(self.new_task_due.text())
+        category = (self.new_task_category.currentText() or "Business").strip() or "Business"
         try:
-            client = VikunjaClient(base_url=url)
-            if client.test_connection():
-                self.conn_status.setText("Connection OK (not authenticated)")
-                self.conn_status.setStyleSheet("color: #6b8cae;")
-                QMessageBox.information(self, "Success", "Connection test successful!")
-            else:
-                self.conn_status.setText("Connection failed")
-                self.conn_status.setStyleSheet("color: #e07a7a;")
-                QMessageBox.warning(self, "Error", "Connection test failed")
+            # session_id not currently used by UI; keep a stable value.
+            self.db.add_task("tasks_tab", text, due, category=category)
         except Exception as e:
-            self.conn_status.setText("Connection error")
-            self.conn_status.setStyleSheet("color: #e07a7a;")
-            QMessageBox.critical(self, "Error", f"Connection error: {e}")
-    
-    def login(self):
-        """Login to Vikunja."""
-        url = self.url_input.text().strip()
-        username = self.username_input.text().strip()
-        password = self.password_input.text()
-        
-        if not all([url, username, password]):
-            QMessageBox.warning(self, "Error", "Please fill in all fields")
+            QMessageBox.warning(self, "Tasks", f"Could not add task:\n\n{type(e).__name__}: {e}")
             return
-        
+        self.new_task_input.clear()
+        self.new_task_due.clear()
+        self.refresh_tasks()
+
+    def refresh_tasks(self):
         try:
-            self.client = VikunjaClient(base_url=url)
-            self.client.login(username, password)
-            self.conn_status.setText(f"Connected as {username}")
-            self.conn_status.setStyleSheet("color: #6bae6b;")
-            self.refresh_btn.setEnabled(True)
-            self.new_project_btn.setEnabled(True)
-            self.create_task_btn.setEnabled(True)
-            self.load_projects()
-            # Save credentials for next session (no success popup - only show errors)
-            self.settings.setValue("vikunja_url", url)
-            self.settings.setValue("vikunja_username", username)
-            self.settings.setValue("vikunja_password", password)
+            category = self.category_filter.currentText()
+            category_val = None if category == "All" else category
+
+            date = self.date_filter.currentText()
+            date_val = None if date == "All" else date
+
+            rows = self.db.get_tasks(category=category_val, date_filter=date_val)
+
+            query = (self.search_input.text() or "").strip().lower()
+            show_done = self.show_completed.isChecked()
+
+            tasks = []
+            for (task_id, task_text, due_date, cat, recurrence, completed) in rows:
+                if not show_done and int(completed or 0) == 1:
+                    continue
+                if query and query not in str(task_text or "").lower():
+                    continue
+                tasks.append((int(task_id), str(task_text or ""), due_date, str(cat or ""), str(recurrence or ""), int(completed or 0)))
+
+            # Stable ordering: incomplete first, then due_date (None last), then id desc
+            def _k(t):
+                _id, _txt, _due, _cat, _rec, _done = t
+                due_sort = _due if _due else "99-99-9999"
+                return (_done, due_sort, -_id)
+
+            tasks.sort(key=_k)
+
+            self.table.setRowCount(0)
+            for t in tasks:
+                task_id, task_text, due_date, cat, _rec, done = t
+                r = self.table.rowCount()
+                self.table.insertRow(r)
+
+                it_id = QTableWidgetItem(str(task_id))
+                it_id.setData(Qt.ItemDataRole.UserRole, task_id)
+                self.table.setItem(r, 0, it_id)
+
+                it_task = QTableWidgetItem(task_text)
+                it_task.setFlags(it_task.flags() ^ Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(r, 1, it_task)
+
+                it_cat = QTableWidgetItem(cat)
+                it_cat.setFlags(it_cat.flags() ^ Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(r, 2, it_cat)
+
+                it_due = QTableWidgetItem(due_date or "")
+                it_due.setFlags(it_due.flags() ^ Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(r, 3, it_due)
+
+                it_done = QTableWidgetItem("Yes" if done else "")
+                it_done.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                it_done.setFlags(it_done.flags() ^ Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(r, 4, it_done)
+
+                # Actions
+                actions = QWidget()
+                row = QHBoxLayout(actions)
+                row.setContentsMargins(0, 0, 0, 0)
+                row.setSpacing(6)
+                btn_toggle = QPushButton("Undo" if done else "Complete")
+                btn_toggle.clicked.connect(lambda _=False, tid=task_id, cur=done: self._toggle_done(tid, cur))
+                row.addWidget(btn_toggle)
+                btn_del = QPushButton("Delete")
+                btn_del.clicked.connect(lambda _=False, tid=task_id: self._delete_task(tid))
+                row.addWidget(btn_del)
+                self.table.setCellWidget(r, 5, actions)
+
+            self.table.resizeRowsToContents()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Login failed: {e}")
-    
-    def register(self):
-        """Register a new Vikunja user."""
-        url = self.url_input.text().strip()
-        username = self.username_input.text().strip()
-        email = self.email_input.text().strip()
-        password = self.password_input.text()
-        
-        if not all([url, username, email, password]):
-            QMessageBox.warning(self, "Error", "Please fill in all fields (including email)")
-            return
-        
+            logger.exception("refresh_tasks failed: %s", e)
+
+    def _toggle_done(self, task_id: int, current_done: int):
         try:
-            self.client = VikunjaClient(base_url=url)
-            self.client.register(username, email, password)
-            self.conn_status.setText(f"Connected as {username}")
-            self.conn_status.setStyleSheet("color: #6bae6b;")
-            self.refresh_btn.setEnabled(True)
-            self.new_project_btn.setEnabled(True)
-            self.create_task_btn.setEnabled(True)
-            self.load_projects()
-            # Save credentials for next session (no success popup - only show errors)
-            self.settings.setValue("vikunja_url", url)
-            self.settings.setValue("vikunja_username", username)
-            self.settings.setValue("vikunja_password", password)
+            self.db.update_task_completed_by_id(int(task_id), 0 if int(current_done) else 1)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Registration failed: {e}")
-    
-    def load_projects(self):
-        """Load projects from Vikunja."""
-        if not self.client:
+            QMessageBox.warning(self, "Tasks", f"Could not update task:\n\n{type(e).__name__}: {e}")
             return
-        
-        try:
-            projects = self.client.get_projects()
-            self.project_combo.clear()
-            for proj in projects:
-                self.project_combo.addItem(proj.get("title", "Untitled"), proj.get("id"))
-            
-            if projects:
-                self.load_tasks()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load projects: {e}")
-    
-    def create_project(self):
-        """Create a new project."""
-        from PyQt6.QtWidgets import QInputDialog
-        
-        if not self.client:
-            return
-        
-        title, ok = QInputDialog.getText(self, "New Project", "Project name:")
-        if ok and title:
-            try:
-                self.client.create_project(title)
-                self.load_projects()
-                QMessageBox.information(self, "Success", f"Project ''{title}'' created!")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to create project: {e}")
-    
-    def _format_date(self, date_str):
-        """Format ISO date string to readable format."""
-        if not date_str:
-            return ""
-        try:
-            # Handle ISO format with or without timezone
-            date_str = date_str.replace('Z', '+00:00')
-            date_obj = datetime.fromisoformat(date_str)
-            return date_obj.strftime("%Y-%m-%d")
-        except Exception:
-            return str(date_str)
-    
-    def _get_estimated_duration(self, task_id):
-        """Get estimated duration in minutes from database."""
-        if not self.db or not task_id:
-            return None
-        try:
-            import sqlite3
-            conn = sqlite3.connect(self.db.db_name)
-            cursor = conn.execute(
-                "SELECT estimated_duration_minutes FROM vikunja_task_metadata WHERE vikunja_task_id = ?",
-                (task_id,)
-            )
-            result = cursor.fetchone()
-            conn.close()
-            return result[0] if result else None
-        except Exception as e:
-            logger.warning(f"Failed to load estimated duration for task {task_id}: {e}")
-            return None
-    
-    def _save_estimated_duration(self, task_id, estimated_duration_minutes):
-        """Save estimated duration to database."""
-        if not self.db or not task_id:
-            return
-        try:
-            import sqlite3
-            conn = sqlite3.connect(self.db.db_name)
-            # Use INSERT OR REPLACE to handle both new and existing records
-            conn.execute('''INSERT OR REPLACE INTO vikunja_task_metadata 
-                          (vikunja_task_id, estimated_duration_minutes, updated_at) 
-                          VALUES (?, ?, CURRENT_TIMESTAMP)''',
-                       (task_id, estimated_duration_minutes if estimated_duration_minutes > 0 else None))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            logger.warning(f"Failed to save estimated duration for task {task_id}: {e}")
-    
-    def load_tasks(self):
-        """Load tasks for the selected project."""
-        if not self.client:
-            return
-        
-        project_id = self.project_combo.currentData()
-        if not project_id:
-            self.task_table.setRowCount(0)
-            return
-        
-        self.current_project_id = project_id
-        
-        try:
-            tasks = self.client.get_tasks(project_id)
-            self.task_table.setRowCount(len(tasks))
-            
-            for row, task in enumerate(tasks):
-                task_id = task.get("id")
-                if task_id:
-                    # Store full task data for editing
-                    self.task_data[task_id] = task
-                
-                col = 0
-                
-                # ID (hidden)
-                id_item = QTableWidgetItem(str(task_id or ""))
-                self.task_table.setItem(row, col, id_item)
-                col += 1
-                
-                # Title
-                title_item = QTableWidgetItem(task.get("title", ""))
-                self.task_table.setItem(row, col, title_item)
-                col += 1
-                
-                # Description
-                description = task.get("description", "")
-                # Truncate long descriptions for display
-                if len(description) > 100:
-                    description = description[:97] + "..."
-                desc_item = QTableWidgetItem(description)
-                self.task_table.setItem(row, col, desc_item)
-                col += 1
-                
-                # Priority
-                priority_item = QTableWidgetItem(str(task.get("priority", 0)))
-                priority_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.task_table.setItem(row, col, priority_item)
-                col += 1
-                
-                # Due Date
-                due_date = self._format_date(task.get("due_date"))
-                due_item = QTableWidgetItem(due_date)
-                self.task_table.setItem(row, col, due_item)
-                col += 1
-                
-                # Start Date
-                start_date = self._format_date(task.get("start_date"))
-                start_item = QTableWidgetItem(start_date)
-                self.task_table.setItem(row, col, start_item)
-                col += 1
-                
-                # End Date
-                end_date = self._format_date(task.get("end_date"))
-                end_item = QTableWidgetItem(end_date)
-                self.task_table.setItem(row, col, end_item)
-                col += 1
-                
-                # Percent Done
-                percent_done = task.get("percent_done", 0)
-                percent_item = QTableWidgetItem(f"{percent_done}%")
-                percent_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.task_table.setItem(row, col, percent_item)
-                col += 1
-                
-                # Done status
-                done = task.get("done", False)
-                done_item = QTableWidgetItem("Yes" if done else "")
-                done_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.task_table.setItem(row, col, done_item)
-                col += 1
-                
-                # Favorite
-                is_favorite = task.get("is_favorite", False)
-                favorite_item = QTableWidgetItem("*" if is_favorite else "")
-                favorite_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.task_table.setItem(row, col, favorite_item)
-                col += 1
-                
-                # Estimated Duration (from local database)
-                est_duration = self._get_estimated_duration(task_id)
-                if est_duration:
-                    # Format as hours and minutes if >= 60 minutes
-                    if est_duration >= 60:
-                        hours = est_duration // 60
-                        minutes = est_duration % 60
-                        if minutes > 0:
-                            duration_str = f"{hours}h {minutes}m"
-                        else:
-                            duration_str = f"{hours}h"
-                    else:
-                        duration_str = f"{est_duration}m"
-                else:
-                    duration_str = ""
-                duration_item = QTableWidgetItem(duration_str)
-                duration_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.task_table.setItem(row, col, duration_item)
-                col += 1
-                
-                # Actions - create button layout with Edit, Delete, and Toggle
-                actions_widget = QWidget()
-                actions_layout = QHBoxLayout()
-                actions_layout.setContentsMargins(2, 2, 2, 2)
-                actions_layout.setSpacing(2)
-                
-                edit_btn = QPushButton("Edit")
-                edit_btn.setMaximumWidth(60)
-                edit_btn.clicked.connect(lambda checked, tid=task_id: self.edit_task(tid))
-                actions_layout.addWidget(edit_btn)
-                
-                delete_btn = QPushButton("Delete")
-                delete_btn.setMaximumWidth(60)
-                delete_btn.clicked.connect(lambda checked, tid=task_id: self.delete_task(tid))
-                actions_layout.addWidget(delete_btn)
-                
-                toggle_btn = QPushButton("Toggle")
-                toggle_btn.setMaximumWidth(60)
-                toggle_btn.clicked.connect(lambda checked, tid=task_id, d=done: self.toggle_task(tid, not d))
-                actions_layout.addWidget(toggle_btn)
-                
-                actions_widget.setLayout(actions_layout)
-                self.task_table.setCellWidget(row, col, actions_widget)
-            
-            # Resize columns to fit content, but set minimum widths for readability
-            self.task_table.resizeColumnsToContents()
-            # Set minimum column widths for better readability
-            self.task_table.setColumnWidth(1, max(150, self.task_table.columnWidth(1)))  # Title
-            self.task_table.setColumnWidth(2, max(200, self.task_table.columnWidth(2)))  # Description
-            self.task_table.setColumnWidth(4, max(100, self.task_table.columnWidth(4)))  # Due Date
-            self.task_table.setColumnWidth(5, max(100, self.task_table.columnWidth(5)))  # Start Date
-            self.task_table.setColumnWidth(6, max(100, self.task_table.columnWidth(6)))  # End Date
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load tasks: {e}")
-    
-    def create_task(self):
-        """Create a new task."""
-        if not self.client or not self.current_project_id:
-            QMessageBox.warning(self, "Error", "Please select a project first")
-            return
-        
-        title = self.task_title_input.text().strip()
-        if not title:
-            QMessageBox.warning(self, "Error", "Please enter a task title")
-            return
-        
-        priority = self.priority_spin.value()
-        estimated_duration = self.estimated_duration_spin.value()
-        
-        try:
-            # Create task via API
-            task_result = self.client.create_task(self.current_project_id, title, priority=priority)
-            
-            # Save estimated duration to local database if provided
-            task_id = task_result.get("id") if isinstance(task_result, dict) else None
-            if task_id and estimated_duration > 0:
-                self._save_estimated_duration(task_id, estimated_duration)
-            
-            # Clear inputs
-            self.task_title_input.clear()
-            self.estimated_duration_spin.setValue(0)
-            
-            # Reload tasks to show the new task
-            self.load_tasks()
-            # No success popup - only show errors
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to create task: {e}")
-    
-    def toggle_task(self, task_id: int, done: bool):
-        """Toggle task done status."""
-        if not self.client:
-            return
-        
-        try:
-            self.client.toggle_task_done(task_id, done)
-            self.load_tasks()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to update task: {e}")
-    
-    def edit_task(self, task_id: int):
-        """Edit an existing task."""
-        if not self.client or not task_id:
-            return
-        
-        # Get task data
-        task = self.task_data.get(task_id)
-        if not task:
-            QMessageBox.warning(self, "Error", "Task data not found")
-            return
-        
-        # Create edit dialog
-        dialog = TaskEditDialog(self, task)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            try:
-                # Get updated values from dialog
-                updates = dialog.get_task_data()
-                
-                # Convert dates to ISO format if provided
-                due_date = None
-                if updates.get('due_date'):
-                    due_date = updates['due_date'].toString(Qt.DateFormat.ISODate)
-                
-                # Update task via API
-                self.client.update_task(
-                    task_id=task_id,
-                    title=updates.get('title'),
-                    description=updates.get('description'),
-                    priority=updates.get('priority'),
-                    due_date=due_date,
-                    done=updates.get('done', False)
-                )
-                
-                # Save estimated duration to local database if provided
-                estimated_duration = updates.get('estimated_duration', 0)
-                if estimated_duration > 0:
-                    self._save_estimated_duration(task_id, estimated_duration)
-                else:
-                    # If set to 0, remove the record (optional - could keep it)
-                    self._save_estimated_duration(task_id, None)
-                
-                # Reload tasks to show updates
-                self.load_tasks()
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to update task: {e}")
-    
-    def delete_task(self, task_id: int):
-        """Delete a task."""
-        if not self.client or not task_id:
-            return
-        
-        # Get task title for confirmation
-        task = self.task_data.get(task_id)
-        task_title = task.get('title', 'this task') if task else 'this task'
-        
-        # Confirm deletion
+        self.refresh_tasks()
+
+    def _delete_task(self, task_id: int):
         reply = QMessageBox.question(
             self,
-            "Confirm Delete",
-            f"Are you sure you want to delete task '{task_title}'?",
+            "Delete Task",
+            "Delete this task? This cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
         )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            try:
-                self.client.delete_task(task_id)
-                # Remove from local cache
-                if task_id in self.task_data:
-                    del self.task_data[task_id]
-                # Reload tasks
-                self.load_tasks()
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to delete task: {e}")
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.db.delete_task_by_id(int(task_id))
+        except Exception as e:
+            QMessageBox.warning(self, "Tasks", f"Could not delete task:\n\n{type(e).__name__}: {e}")
+            return
+        self.refresh_tasks()
 
-
-class TaskEditDialog(QDialog):
-    """Dialog for editing a task."""
-    
-    def __init__(self, parent=None, task_data=None):
-        super().__init__(parent)
-        self.setWindowTitle("Edit Task")
-        self.task_data = task_data or {}
-        self.parent_tab = parent  # Store reference to parent TasksTab
-        self.init_ui()
-    
-    def init_ui(self):
-        """Initialize the dialog UI."""
-        layout = QVBoxLayout()
-        
-        form_layout = QFormLayout()
-        
-        # Title
-        self.title_input = QLineEdit()
-        self.title_input.setText(self.task_data.get('title', ''))
-        form_layout.addRow("Title:", self.title_input)
-        
-        # Description
-        self.description_input = QTextEdit()
-        self.description_input.setMaximumHeight(100)
-        self.description_input.setPlainText(self.task_data.get('description', ''))
-        form_layout.addRow("Description:", self.description_input)
-        
-        # Priority
-        self.priority_spin = QSpinBox()
-        self.priority_spin.setRange(0, 5)
-        self.priority_spin.setValue(self.task_data.get('priority', 0))
-        form_layout.addRow("Priority:", self.priority_spin)
-        
-        # Due date
-        self.due_date_input = QDateEdit()
-        self.due_date_input.setCalendarPopup(True)
-        due_date_str = self.task_data.get('due_date')
-        if due_date_str:
-            try:
-                # Try to parse ISO date format
-                from datetime import datetime
-                date_obj = datetime.fromisoformat(due_date_str.replace('Z', '+00:00'))
-                self.due_date_input.setDate(QDate(date_obj.year, date_obj.month, date_obj.day))
-            except:
-                self.due_date_input.setDate(QDate.currentDate())
-        else:
-            self.due_date_input.setDate(QDate.currentDate())
-        form_layout.addRow("Due Date:", self.due_date_input)
-        
-        # Done status
-        from PyQt6.QtWidgets import QCheckBox
-        self.done_checkbox = QCheckBox()
-        self.done_checkbox.setChecked(self.task_data.get('done', False))
-        form_layout.addRow("Completed:", self.done_checkbox)
-        
-        # Estimated Duration (in minutes)
-        # Load existing estimated duration from database if available
-        task_id = self.task_data.get('id')
-        existing_duration = None
-        if task_id and self.parent_tab and hasattr(self.parent_tab, '_get_estimated_duration'):
-            existing_duration = self.parent_tab._get_estimated_duration(task_id)
-        
-        duration_layout = QHBoxLayout()
-        duration_layout.addWidget(QLabel("Est. Duration (minutes):"))
-        self.estimated_duration_spin = QSpinBox()
-        self.estimated_duration_spin.setRange(0, 10080)  # 0 to 7 days (in minutes)
-        self.estimated_duration_spin.setValue(existing_duration if existing_duration else 0)
-        self.estimated_duration_spin.setSuffix(" min")
-        duration_layout.addWidget(self.estimated_duration_spin)
-        duration_layout.addStretch()
-        form_layout.addRow("", duration_layout)  # Empty label since we have label in layout
-        
-        layout.addLayout(form_layout)
-        
-        # Buttons
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        
-        self.setLayout(layout)
-    
-    def get_task_data(self):
-        """Get the task data from the dialog."""
-        return {
-            'title': self.title_input.text().strip(),
-            'description': self.description_input.toPlainText().strip(),
-            'priority': self.priority_spin.value(),
-            'due_date': self.due_date_input.date(),
-            'done': self.done_checkbox.isChecked(),
-            'estimated_duration': self.estimated_duration_spin.value()
-        }
