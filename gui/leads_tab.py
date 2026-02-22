@@ -13,6 +13,8 @@ from PyQt6.QtWidgets import (
     QDialog,
     QTextBrowser,
     QApplication,
+    QTextEdit,
+    QLineEdit,
 )
 from PyQt6.QtCore import Qt, QUrl
 import os
@@ -136,6 +138,57 @@ class LeadsTab(QWidget):
             btn_row.addWidget(close_btn)
             layout.addLayout(btn_row)
 
+    class _EditLeadDialog(QDialog):
+        def __init__(self, parent, lead: dict):
+            super().__init__(parent)
+            self.setWindowTitle("Edit Lead")
+            self._lead = lead
+
+            layout = QVBoxLayout(self)
+            layout.addWidget(QLabel(f"{lead.get('name','')} — {lead.get('company','')}"))
+
+            row1 = QHBoxLayout()
+            row1.addWidget(QLabel("Status:"))
+            self.status = QComboBox()
+            self.status.addItems(["new", "contacted", "nurturing", "disqualified"])
+            cur = (lead.get("status") or "new").strip()
+            if cur in {"new", "contacted", "nurturing", "disqualified"}:
+                self.status.setCurrentText(cur)
+            row1.addWidget(self.status)
+            row1.addStretch()
+            layout.addLayout(row1)
+
+            row2 = QHBoxLayout()
+            row2.addWidget(QLabel("Next action (YYYY-MM-DD):"))
+            self.next_action = QLineEdit()
+            self.next_action.setPlaceholderText("e.g. 2026-02-28")
+            self.next_action.setText(lead.get("next_action_date") or "")
+            row2.addWidget(self.next_action)
+            layout.addLayout(row2)
+
+            layout.addWidget(QLabel("Notes:"))
+            self.notes = QTextEdit()
+            self.notes.setPlainText(lead.get("notes") or "")
+            self.notes.setMinimumHeight(120)
+            layout.addWidget(self.notes)
+
+            btns = QHBoxLayout()
+            btns.addStretch()
+            cancel_btn = QPushButton("Cancel")
+            cancel_btn.clicked.connect(self.reject)
+            save_btn = QPushButton("Save")
+            save_btn.clicked.connect(self.accept)
+            btns.addWidget(cancel_btn)
+            btns.addWidget(save_btn)
+            layout.addLayout(btns)
+
+        def values(self) -> dict:
+            return {
+                "status": (self.status.currentText() or "new").strip(),
+                "next_action_date": (self.next_action.text() or "").strip() or None,
+                "notes": (self.notes.toPlainText() or "").strip(),
+            }
+
     def setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 5, 5, 5)
@@ -184,9 +237,22 @@ class LeadsTab(QWidget):
         layout.addLayout(filters_layout)
         
         # Configure the leads table
-        self.leadsTable = QTableWidget(0, 12)
+        self.leadsTable = QTableWidget(0, 14)
         self.leadsTable.setHorizontalHeaderLabels([
-            "Name", "Company", "Title", "Score", "Status", "Contacted", "Contact Date", "Next Action", "Message", "Sources", "Delete", "Rationale"
+            "Name",
+            "Company",
+            "Title",
+            "Score",
+            "Status",
+            "Contacted",
+            "Contact Date",
+            "Next Action",
+            "Message",
+            "Sources",
+            "Follow-up Task",
+            "Edit",
+            "Delete",
+            "Rationale",
         ])
         
         # Set column widths and behavior
@@ -201,7 +267,9 @@ class LeadsTab(QWidget):
         self.leadsTable.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.Fixed)
         self.leadsTable.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeMode.Fixed)
         self.leadsTable.horizontalHeader().setSectionResizeMode(10, QHeaderView.ResizeMode.Fixed)
-        self.leadsTable.horizontalHeader().setSectionResizeMode(11, QHeaderView.ResizeMode.Stretch)
+        self.leadsTable.horizontalHeader().setSectionResizeMode(11, QHeaderView.ResizeMode.Fixed)
+        self.leadsTable.horizontalHeader().setSectionResizeMode(12, QHeaderView.ResizeMode.Fixed)
+        self.leadsTable.horizontalHeader().setSectionResizeMode(13, QHeaderView.ResizeMode.Stretch)
         
         self.leadsTable.setColumnWidth(3, 65)
         self.leadsTable.setColumnWidth(5, 80)
@@ -209,7 +277,9 @@ class LeadsTab(QWidget):
         self.leadsTable.setColumnWidth(7, 95)
         self.leadsTable.setColumnWidth(8, 120)
         self.leadsTable.setColumnWidth(9, 90)
-        self.leadsTable.setColumnWidth(10, 70)
+        self.leadsTable.setColumnWidth(10, 110)
+        self.leadsTable.setColumnWidth(11, 70)
+        self.leadsTable.setColumnWidth(12, 70)
         
         self.leadsTable.setWordWrap(True)
         self.leadsTable.setSortingEnabled(True)
@@ -538,13 +608,21 @@ Candidates JSON:
             sources_btn.clicked.connect(lambda _, l=lead: self.show_sources_dialog(l))
             self.leadsTable.setCellWidget(row, 9, sources_btn)
 
+            task_btn = QPushButton("Create Task")
+            task_btn.clicked.connect(lambda _, l=lead: self.create_followup_task(l))
+            self.leadsTable.setCellWidget(row, 10, task_btn)
+
+            edit_btn = QPushButton("Edit")
+            edit_btn.clicked.connect(lambda _, l=lead: self.edit_lead(l))
+            self.leadsTable.setCellWidget(row, 11, edit_btn)
+
             delete_btn = QPushButton("Delete")
             delete_btn.clicked.connect(lambda _, lid=lead_id: self.delete_lead_by_id(lid))
-            self.leadsTable.setCellWidget(row, 10, delete_btn)
+            self.leadsTable.setCellWidget(row, 12, delete_btn)
 
             rationale_item = QTableWidgetItem(lead.get('rationale', ''))
             rationale_item.setToolTip(lead.get('rationale', ''))
-            self.leadsTable.setItem(row, 11, rationale_item)
+            self.leadsTable.setItem(row, 13, rationale_item)
 
     def on_cell_clicked(self, row, column):
         if column == 0:
@@ -614,3 +692,65 @@ Candidates JSON:
         dlg = self._HtmlDialog(self, "Lead Evidence", html)
         dlg.resize(720, 520)
         dlg.exec()
+
+    def edit_lead(self, lead: dict):
+        if not self.db:
+            return
+        dlg = self._EditLeadDialog(self, lead)
+        dlg.resize(640, 420)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        vals = dlg.values()
+        lead_id = lead.get("id")
+        if lead_id is None:
+            return
+        try:
+            self.db.update_lead_by_id(
+                int(lead_id),
+                status=vals.get("status"),
+                next_action_date=vals.get("next_action_date"),
+                notes=vals.get("notes"),
+            )
+        except Exception as e:
+            logger.error(f"Failed updating lead: {e}")
+        self.refresh_leads()
+
+    def create_followup_task(self, lead: dict):
+        """
+        Create a local task to do outreach/follow-up.
+        LinkedIn DM sending is not automated here; this is the scheduling hook.
+        """
+        if not self.db:
+            return
+        name = (lead.get("name") or "").strip()
+        company = (lead.get("company") or "").strip()
+        if not name or not company:
+            return
+
+        # Tasks table expects MM-dd-YYYY in several UI paths; keep consistent.
+        due_iso = (lead.get("next_action_date") or "").strip()
+        try:
+            if due_iso:
+                dt = datetime.strptime(due_iso[:10], "%Y-%m-%d").date()
+            else:
+                dt = datetime.now().date()
+        except Exception:
+            dt = datetime.now().date()
+        # Default: 2 days from now if no next_action_date
+        if not due_iso:
+            from datetime import timedelta
+            dt = dt + timedelta(days=2)
+            due_iso = dt.isoformat()
+
+        due_mmddyyyy = dt.strftime("%m-%d-%Y")
+        task_text = f"Lead gen: reach out to {name} at {company} (LinkedIn)"
+        try:
+            self.db.add_task("lead_gen", task_text, due_mmddyyyy, category="Business")
+            # Keep lead's next_action_date in sync (ISO)
+            lead_id = lead.get("id")
+            if lead_id is not None:
+                self.db.update_lead_by_id(int(lead_id), next_action_date=due_iso)
+        except Exception as e:
+            logger.error(f"Failed creating follow-up task: {e}")
+            return
+        self.refresh_leads()

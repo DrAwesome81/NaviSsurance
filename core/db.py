@@ -1388,6 +1388,33 @@ class DatabaseManager:
             conn.execute("DELETE FROM leads WHERE id = ?", (int(lead_id),))
             conn.commit()
 
+    def update_lead_by_id(
+        self,
+        lead_id: int,
+        *,
+        status: str | None = None,
+        next_action_date: str | None = None,
+        notes: str | None = None,
+    ) -> None:
+        sets = []
+        vals = []
+        if status is not None:
+            sets.append("status = ?")
+            vals.append(str(status))
+        if next_action_date is not None:
+            sets.append("next_action_date = ?")
+            vals.append(next_action_date)
+        if notes is not None:
+            sets.append("notes = ?")
+            vals.append(notes)
+        if not sets:
+            return
+        sets.append("last_updated = datetime('now')")
+        vals.append(int(lead_id))
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(f"UPDATE leads SET {', '.join(sets)} WHERE id = ?", vals)
+            conn.commit()
+
     # -------------------------------------------------------------------------
     # Multi-agent project / task / run / artifact / log methods
     # -------------------------------------------------------------------------
