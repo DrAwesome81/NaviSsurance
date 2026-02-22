@@ -385,11 +385,108 @@ Return only the relevant emails, nothing else."""
             print(f"Error generating scheduling suggestions: {e}")
             scheduling_str = ""
 
+        # ========== NEWS (Dashboard store + dedup/suppression) ==========
+        news_str = ""
+        try:
+            # Keep in sync with Dashboard defaults; use persisted suppression setting if present.
+            try:
+                suppress_days = int(self.db.get_setting("news_suppress_days", "2") or 2)
+            except Exception:
+                suppress_days = 2
+
+            # Best-effort: pull seed keywords from Gmail "News" label, if available.
+            seed_keywords = []
+            try:
+                if hasattr(self.data_fetcher, "get_gmail_news_seeds"):
+                    subjects = self.data_fetcher.get_gmail_news_seeds(days=3, max_messages=20) or []
+                else:
+                    subjects = []
+                import re
+                stop = {
+                    "fda", "and", "the", "for", "with", "your", "from", "this", "that",
+                    "you", "are", "new", "update", "updates", "weekly", "daily",
+                    "newsletter", "news",
+                }
+                counts = {}
+                for s in subjects:
+                    for w in re.findall(r"[A-Za-z0-9][A-Za-z0-9\\-]{2,}", s or ""):
+                        lw = w.lower()
+                        if lw in stop:
+                            continue
+                        counts[lw] = counts.get(lw, 0) + 1
+                seed_keywords = [w for w, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]]
+            except Exception:
+                seed_keywords = []
+
+            def _score_item(title: str, content: str) -> int:
+                text = f"{title or ''} {content or ''}".lower()
+                score = 0
+                for kw in ("fda", "guidance", "draft", "ivd", "samd", "pccp", "clinical", "medtech", "medical device"):
+                    if kw in text:
+                        score += 1
+                for kw in seed_keywords:
+                    if kw and kw.lower() in text:
+                        score += 3
+                return score
+
+            items = self.db.get_news_for_dashboard(days=7, suppress_days=suppress_days, limit=15) or []
+            if items:
+                def _ts(published_date, created_at):
+                    try:
+                        if published_date:
+                            return parser.parse(str(published_date)).timestamp()
+                    except Exception:
+                        pass
+                    try:
+                        return datetime.strptime(str(created_at), "%Y-%m-%d %H:%M:%S").timestamp()
+                    except Exception:
+                        return 0
+
+                ranked = []
+                for news_id, title, content, url, source, published_date, created_at in items:
+                    ranked.append(
+                        (
+                            _score_item(title, content),
+                            _ts(published_date, created_at),
+                            news_id,
+                            title,
+                            url,
+                            source,
+                            published_date,
+                        )
+                    )
+                ranked.sort(key=lambda r: (-r[0], -r[1]))
+                top = ranked[:5]
+
+                lines = []
+                shown_ids = []
+                for score, ts, news_id, title, url, source, published_date in top:
+                    shown_ids.append(news_id)
+                    src = source or "web"
+                    link = url or ""
+                    if link:
+                        lines.append(f"- {title} ({src}) - {link}")
+                    else:
+                        lines.append(f"- {title} ({src})")
+                news_str = "\n".join(lines) if lines else "No relevant headlines found."
+
+                # Mark as shown to suppress repeats in both briefing + dashboard feed.
+                try:
+                    self.db.mark_news_shown(shown_ids)
+                except Exception:
+                    pass
+            else:
+                news_str = "No recent headlines available yet."
+        except Exception as e:
+            print(f"Error loading news for briefing: {e}")
+            news_str = "News unavailable right now."
+
         # ========== BUILD BRIEFING ==========
         briefing = f"Daily Briefing for {today.strftime('%B %d, %Y')}:\n\n" \
                   f"[SECTION:Meetings]\n{events_str}\n\n" \
                   f"[SECTION:Tasks]\n{tasks_str}\n\n" \
-                  f"[SECTION:New Emails]\n{emails_str}\n"
+                  f"[SECTION:New Emails]\n{emails_str}\n\n" \
+                  f"[SECTION:News]\n{news_str}\n"
         
         if urgent_emails_str:
             briefing += f"[SECTION:Urgent Emails]\n{urgent_emails_str}\n\n"

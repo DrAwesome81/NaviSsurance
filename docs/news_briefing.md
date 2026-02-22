@@ -68,11 +68,17 @@ This keeps the feed “fresh” while nudging it toward *your* current topics.
 Code:
 - `gui/dashboard_tab.py:DashboardTab._get_news_seed_keywords()` / `_score_news_item()`
 
-## Planned: include in Daily Briefing
-Right now this is implemented for the **Dashboard news feed**. If/when you want the **daily briefing** to include a `[SECTION:News]`, the simplest path is:
-- reuse `DatabaseManager.get_news_for_dashboard(...)` to select items,
-- render 3–5 bullet lines,
-- call `mark_news_shown(...)` after the briefing is generated.
+## Daily Briefing integration
+The daily briefing now includes:
+- `[SECTION:News]`
+
+It pulls from the same dedup/suppression-backed store as the Dashboard:
+- selects items via `DatabaseManager.get_news_for_dashboard(...)`
+- formats 3–5 bullet lines
+- calls `mark_news_shown(...)` so the same stories won’t repeat immediately (including across Dashboard + briefing)
+
+Code:
+- `core/chat_handler.py:ChatHandler.daily_briefing()`
 
 ## Planned: migrate “search” to Grok (xAI) cleanly
 The current mechanism relies on the agent’s `WEB_SEARCH:` tool path. Longer-term we should standardize on **Grok (xAI)** for search as well:
