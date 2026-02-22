@@ -19,8 +19,9 @@ load_dotenv(ENV_FILE)
 # Deepseek usage removed - now using Llama model directly via llama_cpp
 USE_DEEPSEEK = False
 
-# Daily briefing and email checking (Gmail/Outlook/Yahoo fetch) — set True to disable
-BRIEFING_AND_EMAIL_DISABLED = True
+# Daily briefing and email checking (Gmail/Outlook/Yahoo fetch)
+# Default is enabled; set BRIEFING_AND_EMAIL_DISABLED=1 to disable without code edits.
+BRIEFING_AND_EMAIL_DISABLED = str(os.getenv("BRIEFING_AND_EMAIL_DISABLED", "0")).strip().lower() in ("1", "true", "yes", "y")
 
 API_KEY = os.getenv('GROK_API_KEY')
 if API_KEY is None:
