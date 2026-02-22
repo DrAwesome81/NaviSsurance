@@ -436,6 +436,28 @@ class DatabaseManager:
                     source TEXT
                 )
             """)
+            # Backfill/extend email schema (legacy DBs) with additional metadata used by briefing + reply tracking.
+            try:
+                cursor = conn.execute("PRAGMA table_info(emails)")
+                cols = {row[1] for row in cursor.fetchall()}
+                if "folder" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN folder TEXT")
+                if "account" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN account TEXT")
+                if "rfc822_message_id" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN rfc822_message_id TEXT")
+                if "rfc822_in_reply_to" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN rfc822_in_reply_to TEXT")
+                if "rfc822_references" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN rfc822_references TEXT")
+                if "thread_id" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN thread_id TEXT")
+                # Helpful indexes (best-effort)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_timestamp ON emails(timestamp)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_replied ON emails(replied)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_rfc822_message_id ON emails(rfc822_message_id)")
+            except Exception:
+                pass
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS calendar_events (
                     id TEXT PRIMARY KEY,
