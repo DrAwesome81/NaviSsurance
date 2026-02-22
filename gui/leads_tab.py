@@ -157,38 +157,70 @@ class LeadsTab(QWidget):
         """Run Grok API search for leads based on system message."""
         try:
             # Load system message from config
-            config_path = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/lead_gen_config.json'
-            if not os.path.exists(config_path):
-                logger.error("Lead gen config not found.")
-                return
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-            user_system_message = config.get('system_message', '')
+            from config import CONFIG_DIR
+            config_path = os.path.join(CONFIG_DIR, "lead_gen_config.json")
+            config = {}
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+
+            user_system_message = (config.get('system_message') or "").strip()
             
             if not user_system_message:
                 user_system_message = "You are a lead generation assistant for a medical device regulatory consulting firm. Focus on companies in the AI SaMD and/or IVD/LDT space."
+                # Best-effort: create a default config file so the UI works out of the box.
+                try:
+                    os.makedirs(CONFIG_DIR, exist_ok=True)
+                    with open(config_path, "w", encoding="utf-8") as f:
+                        json.dump({"system_message": user_system_message}, f, indent=2)
+                except Exception:
+                    pass
 
-            system_message = f"""{user_system_message}
+            # Use web search when available so results can be verified (less hallucination).
+            prompt = f"""{user_system_message}
 
-IMPORTANT: When processing search results:
-1. Verify each company's current status and leadership team
-2. Include a clear rationale for why each lead is relevant
-3. Generate a personalized LinkedIn message for each lead based on your research
-4. Return results as a JSON array with the following fields for each lead:
-   - name: Full name of the key decision maker
-   - company: Company name
-   - title: Their current title
-   - rationale: Why this person/company is a good lead
-   - linkedin_url: Their LinkedIn profile URL (if found)
-   - message: A personalized LinkedIn message referencing their specific regulatory needs and how NaviSure can help
-Only include leads that have been verified through the search results.
+Use web search to find *verifiable* leads. Only include leads where you found evidence in sources.
+
+Return ONLY a JSON array of 5-15 leads. Each lead object must include:
+- name: Full name of key decision maker
+- company: Company name
+- title: Current title
+- rationale: Why this person/company is a good lead for NaviSure (MedTech regulatory consulting)
+- linkedin_url: LinkedIn profile URL if found, else empty string
+- message: A personalized LinkedIn message (2-5 sentences) referencing a specific signal you found
+
+Optional fields (if you can support them with sources):
+- company_url
+- signals: [\"signal 1\", \"signal 2\"]
+- sources: [\"url1\", \"url2\"]
+
+Hard rules:
+- Do not invent people, titles, or URLs.
+- If you can’t find sources for a lead, omit it.
 """
 
-            from core.grok_client import grok_completion
-            response_content = grok_completion(
-                system_message, user_system_message,
-                model="grok-4-latest"
-            )
+            response_content = ""
+            try:
+                from core.grok_client import grok_available, grok_web_search, grok_completion, MODEL_WEB
+                ok, msg = grok_available()
+                if not ok:
+                    logger.error(msg)
+                    return
+                try:
+                    response_content = grok_web_search(prompt, model=MODEL_WEB)
+                except Exception:
+                    response_content = ""
+                if not response_content:
+                    # Fallback without web_search tool
+                    response_content = grok_completion(
+                        system="You are a lead generation assistant. Return only JSON as instructed.",
+                        user=prompt,
+                        model=MODEL_WEB,
+                    )
+            except Exception as e:
+                logger.error(f"Grok lead generation failed: {e}")
+                response_content = ""
+
             if not response_content:
                 logger.error("Grok API returned no content (check XAI_API_KEY or GROK_API_KEY).")
                 return

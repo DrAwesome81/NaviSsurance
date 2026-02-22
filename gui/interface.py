@@ -251,7 +251,8 @@ class SettingsDialog(QDialog):
         self.system_message_input = QTextEdit(self)
         
         # Load existing system message from config
-        config_path = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/lead_gen_config.json'
+        from config import CONFIG_DIR
+        config_path = os.path.join(CONFIG_DIR, "lead_gen_config.json")
         if os.path.exists(config_path):
             try:
                 with open(config_path, 'r') as f:
@@ -282,8 +283,22 @@ class SettingsDialog(QDialog):
         
         self.setLayout(layout)
 
-        """Refresh the file list from Dropbox."""
-        self.load_dropbox_files()
+    def accept(self):
+        """Persist lead-gen settings to config/lead_gen_config.json."""
+        try:
+            from config import CONFIG_DIR
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            config_path = os.path.join(CONFIG_DIR, "lead_gen_config.json")
+            payload = {"system_message": (self.system_message_input.toPlainText() or "").strip()}
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "Save Error", f"Could not save lead gen settings:\n{e}")
+            except Exception:
+                pass
+            return
+        super().accept()
 
 class ChatWindow(QMainWindow):
     task_added_signal = pyqtSignal(str, str)
