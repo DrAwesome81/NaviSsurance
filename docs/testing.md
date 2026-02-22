@@ -6,7 +6,7 @@ Manual Test Prerequisites (common)
 - Grok access:
   - Set `XAI_API_KEY` or `GROK_API_KEY` (and have `xai-sdk` installed) to test Chief of Staff, lead gen, and news/web search features.
 - Daily briefing:
-  - If daily briefing shows “disabled”, set `BRIEFING_AND_EMAIL_DISABLED = False` in `config.py`, then restart the app.
+  - If daily briefing shows “disabled”, set `BRIEFING_AND_EMAIL_DISABLED=0` (or unset) in `config/.env`, then restart the app.
 - Google Calendar (read-only):
   - Calendar reads require an existing token at `config/navi_token.pkl`. If it’s missing, calendar-aware features should gracefully show “unavailable” (no OAuth popups).
 - Optional RAG search:
@@ -254,7 +254,26 @@ TC-017: Daily Briefing
 Description: Verify Navi provides a daily briefing.
 Steps:
 Open NaviSsurance (interface.py).
-If daily briefing is disabled, set `BRIEFING_AND_EMAIL_DISABLED = False` in `config.py`, restart, and retry.
+If daily briefing is disabled, set `BRIEFING_AND_EMAIL_DISABLED=0` (or unset) in `config/.env`, restart, and retry.
+
+Email Fetching Configuration (Folders/Labels)
+
+Email fetching runs as part of the daily briefing (and is capped to the last 7 days).
+You can configure which folders/labels are included via environment variables in `config/.env`:
+- `EMAIL_GMAIL_LABELS`: comma-separated Gmail labels to include. Use `INBOX` to include inbox.
+  - Example: `EMAIL_GMAIL_LABELS=INBOX,Clients,Leads,News,NaviSure Admin`
+- `EMAIL_YAHOO_FOLDERS`: comma-separated IMAP folder names (Yahoo). Default: `INBOX`
+  - Example: `EMAIL_YAHOO_FOLDERS=INBOX,Clients,Leads`
+- `EMAIL_OUTLOOK_FOLDERS`: comma-separated folder names (best-effort via EWS). Default: `INBOX`
+  - Example: `EMAIL_OUTLOOK_FOLDERS=INBOX,Clients,Leads`
+
+Email Filtering Configuration (Client/Potential)
+
+Unreplied emails are shown when they’re marked as client or potential-lead emails. You can configure this via `config/.env`:
+- `EMAIL_CLIENT_DOMAINS`: comma-separated sender domains treated as clients (default includes `goldbugstrategies.com,dovahealth.ca`)
+- `EMAIL_POTENTIAL_DOMAINS`: comma-separated sender domains treated as potential leads
+- `EMAIL_CLIENT_LABELS`: comma-separated labels/folders treated as client mail (default `Clients,Client`)
+- `EMAIL_POTENTIAL_LABELS`: comma-separated labels/folders treated as lead mail (default `Leads,Lead`)
 Ask Navi via chat for the daily briefing (or use the Dashboard briefing widget if present).
 
 Expected Result: Briefing includes tasks, meetings, emails, and a `[SECTION:News]` section (deduped/suppressed). If calendar/email credentials are missing, it degrades gracefully (no crash).
