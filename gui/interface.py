@@ -550,14 +550,14 @@ class ChatWindow(QMainWindow):
     
     def _handle_response_safe(self, response):
         """Thread-safe version of handle_response."""
-        self.chat_display.append(f"<b>Chief of Staff:</b> {response}<br>")
+        self.chat_display.append(f"<b>Navi:</b> {response}<br>")
 
     def load_chat_history(self):
         # Load Dashboard chat history from the persistent CoS session.
         session_id = self._dashboard_session_id()
         history = self.db.get_chat_history(session_id, limit=100)
         for role, message in history:
-            label = "You" if role == "user" else "Chief of Staff"
+            label = "You" if role == "user" else "Navi"
             self.chat_display.append(f"<b>{label}:</b> {message}<br>")
 
     def closeEvent(self, event):

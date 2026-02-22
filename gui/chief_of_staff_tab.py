@@ -259,7 +259,7 @@ class ChiefOfStaffTab(QWidget):
             if role == "user":
                 html_parts.append(f"<p><b>You:</b></p><p>{content.replace('<', '&lt;').replace('>', '&gt;')}</p>")
             else:
-                html_parts.append(f"<p><b>Chief of Staff:</b></p>{_md_to_html(content)}")
+                html_parts.append(f"<p><b>Navi:</b></p>{_md_to_html(content)}")
         self.chat_display.setHtml("<br>".join(html_parts) if html_parts else "<p style='color:#9aa0a6;'>(No messages yet.)</p>")
         self.ask_input.clear()
 
@@ -299,7 +299,7 @@ class ChiefOfStaffTab(QWidget):
             if role == "user":
                 html_parts.append(f"<p><b>You:</b></p><p>{content.replace('<', '&lt;').replace('>', '&gt;')}</p>")
             else:
-                html_parts.append(f"<p><b>Chief of Staff:</b></p>{_md_to_html(content)}")
+                html_parts.append(f"<p><b>Navi:</b></p>{_md_to_html(content)}")
         self.chat_display.setHtml("<br>".join(html_parts))
         self.ask_output = self.chat_display  # for tests that expect ask_output
 
