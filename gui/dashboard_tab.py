@@ -1566,9 +1566,20 @@ class DashboardTab(QWidget):
                 response_handler = ResponseHandler(chat_handler_obj, None)
                 
                 # Format the briefing with LLM
-                formatted_briefing = response_handler.chat_with_llama([
-                    {"role": "user", "content": f"Turn this briefing into a snarky rundown: {briefing} Use <br><br> sections, punchy. The emails have already been intelligently filtered by AI - focus on presenting them well and suggesting actions for urgent items. MedTech focus. For any empty sections, generate appropriate snarky commentary instead of leaving them blank."}
-                ], "briefing_session")
+                formatted_briefing = response_handler.chat_with_llama(
+                    [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Turn this briefing into a concise, helpful rundown in Navi's tone (direct, professional, calm; no snark). "
+                                "Use <br><br> between sections and keep it skimmable. "
+                                "Suggest concrete next actions for urgent items. "
+                                f"Briefing:\n\n{briefing}"
+                            ),
+                        }
+                    ],
+                    "briefing_session",
+                )
                 
                 # Clean up formatting
                 formatted_briefing = re.sub(r'\n+', '\n', formatted_briefing)

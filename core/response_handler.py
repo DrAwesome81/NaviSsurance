@@ -178,7 +178,20 @@ class ResponseHandler:
             if "daily briefing" in message.lower():
                 print("Manual briefing requested")
                 briefing = self.chat_handler.daily_briefing()
-                formatted_briefing = self.hybrid_wrapper([{"role": "user", "content": f"Turn this briefing into snarky rundown: {briefing} Use <br><br> sections, punchy. The emails have already been intelligently filtered by AI - focus on presenting them well and suggesting actions for urgent items. MedTech focus. For any empty sections, generate appropriate snarky commentary instead of leaving them blank."}], "briefing_session")
+                formatted_briefing = self.hybrid_wrapper(
+                    [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Turn this briefing into a concise, helpful rundown in Navi's tone (direct, professional, calm; no snark). "
+                                "Use <br><br> between sections and keep it skimmable. "
+                                "Suggest concrete next actions for urgent items. "
+                                f"Briefing:\n\n{briefing}"
+                            ),
+                        }
+                    ],
+                    "briefing_session",
+                )
                 formatted_briefing = re.sub(r'\n+', '\n', formatted_briefing)
                 formatted_briefing = re.sub(
                     r'(\*\*([A-Za-z\s]+):?\*\*|\[SECTION:([A-Za-z\s]+)\])',
