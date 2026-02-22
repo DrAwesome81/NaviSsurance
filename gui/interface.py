@@ -471,7 +471,7 @@ class ChatWindow(QMainWindow):
         self.projects_tab = ProjectsTab(self.db)
         self.tab_widget.addTab(self.projects_tab, "Projects")
         
-        self.compliance_tab = ComplianceTab(self.db, self.chat_handler, [])
+        self.compliance_tab = ComplianceTab(self.db, self.chat_handler)
         self.tab_widget.addTab(self.compliance_tab, "Compliance")
         
         self.meetings_tab = MeetingsTab(self.chat_handler)

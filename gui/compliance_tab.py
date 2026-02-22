@@ -25,21 +25,23 @@ class ComplianceThread(QThread):
             self.result_signal.emit({"success": False, "error": str(e)})
 
 class ComplianceTab(QWidget):
-    def __init__(self, chat_handler, session_id, conversation_history):
+    def __init__(self, db, chat_handler, session_id: str = "compliance_session", conversation_history=None):
         super().__init__()
+        self.db = db
         self.chat_handler = chat_handler
         self.session_id = session_id
-        self.conversation_history = conversation_history
+        self.conversation_history = conversation_history or []
         self.data_dir = 'data'
         os.makedirs(self.data_dir, exist_ok=True)
         self.setup_ui()
 
     def setup_ui(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
         
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(6)
         layout.addWidget(splitter)
         
         # Column 1: Reference Documents
@@ -114,6 +116,12 @@ class ComplianceTab(QWidget):
         crm_btn.clicked.connect(self.link_to_crm)
         results_layout.addWidget(crm_btn)
         splitter.addWidget(results_widget)
+
+        # Proportions: results wider than inputs
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 2)
+        splitter.setSizes([320, 320, 640])
         
         # Load existing documents
         self.load_document_lists()
@@ -132,7 +140,11 @@ class ComplianceTab(QWidget):
         if file_path:
             self.ref_list.addItem(file_path)
             self.save_document_lists()
-            self.db.store_dataset_entry(file_path)
+            try:
+                if self.db is not None and hasattr(self.db, "store_dataset_entry"):
+                    self.db.store_dataset_entry(file_path)
+            except Exception:
+                pass
 
     def add_assess_url(self):
         url = self.assess_url_input.text().strip()
@@ -148,7 +160,11 @@ class ComplianceTab(QWidget):
         if file_path:
             self.assess_list.addItem(file_path)
             self.save_document_lists()
-            self.db.store_dataset_entry(file_path)
+            try:
+                if self.db is not None and hasattr(self.db, "store_dataset_entry"):
+                    self.db.store_dataset_entry(file_path)
+            except Exception:
+                pass
 
     def save_document_lists(self):
         ref_items = [self.ref_list.item(i).text() for i in range(self.ref_list.count())]
