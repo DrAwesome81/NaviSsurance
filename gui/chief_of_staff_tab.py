@@ -54,15 +54,16 @@ class CosAskWorker(QThread):
     finished_signal = pyqtSignal(str)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, db: DatabaseManager, user_message: str, conversation_history: list):
+    def __init__(self, db: DatabaseManager, user_message: str, conversation_history: list, chat_id: int = None):
         super().__init__()
         self.db = db
         self.user_message = user_message
         self.conversation_history = conversation_history or []
+        self.chat_id = chat_id
 
     def run(self):
         try:
-            result = cos_response(self.db, self.user_message, self.conversation_history)
+            result = cos_response(self.db, self.user_message, self.conversation_history, chat_id=self.chat_id)
             if result.startswith("Error"):
                 self.error_signal.emit(result)
                 return
@@ -275,7 +276,7 @@ class ChiefOfStaffTab(QWidget):
         session_id = f"cos_{self._current_chat_id}"
         self.db.save_message(session_id, "user", msg)
         history = self.db.get_chat_history(session_id, limit=50)
-        self._ask_worker = CosAskWorker(self.db, msg, history)
+        self._ask_worker = CosAskWorker(self.db, msg, history, chat_id=self._current_chat_id)
         self._ask_worker.finished_signal.connect(self._on_ask_finished)
         self._ask_worker.error_signal.connect(self._on_ask_error)
         self.ask_btn.setEnabled(False)

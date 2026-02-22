@@ -187,14 +187,15 @@ class TestChiefOfStaffService:
         from core.chief_of_staff_service import cos_response
         result = cos_response(cos_db, "What should I focus on right now?")
         assert "Focus" in result or "Project" in result
-        mock_grok.assert_called_once()
+        # Calendar/memory extraction may be gated; core response should still call Grok at least once.
+        assert mock_grok.call_count >= 1
 
     def test_cos_response_default_prompt_when_empty_message(self, mock_grok, cos_db):
         mock_grok.return_value = "Here’s what I recommend."
         from core.chief_of_staff_service import cos_response
         result = cos_response(cos_db, "")
         assert "recommend" in result or "Here" in result
-        mock_grok.assert_called_once()
+        assert mock_grok.call_count >= 1
         # grok_completion(system, user, ...) — user is second positional
         user_passed = mock_grok.call_args[0][1]
         assert "What should I focus on right now" in user_passed
@@ -272,7 +273,7 @@ def test_cos_response_with_history_uses_multi_turn(mock_grok_messages, cos_db):
     history = [("user", "I'm on the DHF."), ("assistant", "Focus 90 min on it.")]
     result = cos_response(cos_db, "But the client asked for a quote by Friday.", conversation_history=history)
     assert "prioritize" in result or "DHF" in result
-    mock_grok_messages.assert_called_once()
+    assert mock_grok_messages.call_count >= 1
     call_messages = mock_grok_messages.call_args[0][0]
     assert any(m.get("role") == "assistant" and "Focus 90" in (m.get("content") or "") for m in call_messages)
 
