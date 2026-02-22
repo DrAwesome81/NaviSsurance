@@ -153,6 +153,7 @@ class ChiefOfStaffTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(6)
         splitter.addWidget(self._build_chat_panel())
         sidebar = self._build_sidebar()
         sidebar.setMinimumWidth(220)

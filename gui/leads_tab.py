@@ -450,10 +450,12 @@ class LeadsTab(QWidget):
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
         
         leads_button_layout = QHBoxLayout()
+        leads_button_layout.setContentsMargins(0, 0, 0, 0)
+        leads_button_layout.setSpacing(8)
         self.settingsButton = QPushButton("Settings", self)
         if self.parent and hasattr(self.parent, 'open_settings'):
             self.settingsButton.clicked.connect(self.parent.open_settings)
@@ -461,6 +463,8 @@ class LeadsTab(QWidget):
             self.settingsButton.clicked.connect(self.open_settings)  # Fallback or define if needed
         self.settingsButton.setToolTip("Open application settings (Ctrl+,)")
         leads_button_layout.addWidget(self.settingsButton)
+
+        leads_button_layout.addStretch(1)
         
         self.runSearchButton = QPushButton("Run Search", self)
         self.runSearchButton.clicked.connect(self.search_leads)
@@ -480,6 +484,8 @@ class LeadsTab(QWidget):
 
         # Filters (DB-backed)
         filters_layout = QHBoxLayout()
+        filters_layout.setContentsMargins(0, 0, 0, 0)
+        filters_layout.setSpacing(8)
         filters_layout.addWidget(QLabel("Status:"))
         self.status_filter = QComboBox()
         self.status_filter.addItems(["All", "new", "contacted", "nurturing", "disqualified"])

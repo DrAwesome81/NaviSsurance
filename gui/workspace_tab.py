@@ -117,11 +117,12 @@ class WorkspaceTab(QWidget):
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
         
         # Main splitter
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter.setHandleWidth(6)
         layout.addWidget(main_splitter)
         
         # Left: File Selection Area
@@ -141,6 +142,7 @@ class WorkspaceTab(QWidget):
         file_widget.setAcceptDrops(True)
         file_layout = QVBoxLayout(file_widget)
         file_layout.setContentsMargins(0, 0, 0, 0)
+        file_layout.setSpacing(8)
         
         file_header = QLabel("Files")
         file_header.setStyleSheet("color: #e8eaed; font-weight: 600; padding: 8px; background-color: #22252c; border: 1px solid #2e2f32; border-radius: 6px;")
@@ -149,6 +151,8 @@ class WorkspaceTab(QWidget):
         
         # Status and progress
         status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(8)
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("color: #9aa0a6; padding: 5px; font-size: 13px;")
         status_layout.addWidget(self.status_label)

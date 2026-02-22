@@ -429,8 +429,8 @@ class DashboardTab(QWidget):
         """)
         
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
         
         # Header
         dashboard_header = QLabel("Dashboard - Overview")
@@ -444,11 +444,11 @@ class DashboardTab(QWidget):
         
         # Main horizontal layout for left and right columns
         main_layout = QHBoxLayout()
-        main_layout.setSpacing(10)
+        main_layout.setSpacing(12)
         
         # Left column: Schedule and Task List
         left_column = QVBoxLayout()
-        left_column.setSpacing(10)
+        left_column.setSpacing(12)
         
         # Top: Schedule
         schedule_widget = self.create_schedule_widget()
@@ -499,7 +499,8 @@ class DashboardTab(QWidget):
     def create_task_widget(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
         
         # Header
         task_header = QLabel("Task List")

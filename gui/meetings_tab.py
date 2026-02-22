@@ -14,36 +14,44 @@ class MeetingsTab(QWidget):
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
-        
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        controls = QHBoxLayout()
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(8)
+
         self.recordButton = QPushButton("Start Recording", self)
         self.recordButton.clicked.connect(self.start_recording)
-        layout.addWidget(self.recordButton)
+        controls.addWidget(self.recordButton)
         
         self.stopButton = QPushButton("Stop Recording", self)
         self.stopButton.clicked.connect(self.stop_recording)
         self.stopButton.setEnabled(False)
-        layout.addWidget(self.stopButton)
+        controls.addWidget(self.stopButton)
         
         self.transcribeButton = QPushButton("Generate Transcript", self)
         self.transcribeButton.clicked.connect(self.transcribe_meeting)
         self.transcribeButton.setEnabled(False)
-        layout.addWidget(self.transcribeButton)
+        controls.addWidget(self.transcribeButton)
+
+        controls.addStretch(1)
         
         self.selectFileButton = QPushButton("Load File", self)
         self.selectFileButton.clicked.connect(self.select_file)
-        layout.addWidget(self.selectFileButton)
-        
-        self.meetingTranscript = QTextEdit(self)
-        self.meetingTranscript.setReadOnly(True)
-        layout.addWidget(self.meetingTranscript)
-        self._check_recording_deps()
-        
+        controls.addWidget(self.selectFileButton)
+
         self.saveTranscriptButton = QPushButton("Save Transcript", self)
         self.saveTranscriptButton.clicked.connect(self.save_transcript)
         self.saveTranscriptButton.setEnabled(False)
-        layout.addWidget(self.saveTranscriptButton)
+        controls.addWidget(self.saveTranscriptButton)
+
+        layout.addLayout(controls)
+        
+        self.meetingTranscript = QTextEdit(self)
+        self.meetingTranscript.setReadOnly(True)
+        layout.addWidget(self.meetingTranscript, 1)
+        self._check_recording_deps()
 
     def _check_recording_deps(self):
         """Show a hint if sounddevice is not installed."""

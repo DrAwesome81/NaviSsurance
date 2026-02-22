@@ -275,6 +275,23 @@ QTabBar::tab:hover {
     background: transparent;
 }
 
+/* Splitter handles (make draggable areas visible) */
+QSplitter::handle {
+    background: #2e2f32;
+}
+
+QSplitter::handle:hover {
+    background: #3a3b3e;
+}
+
+QSplitter::handle:horizontal {
+    width: 6px;
+}
+
+QSplitter::handle:vertical {
+    height: 6px;
+}
+
 /* Progress bar */
 QProgressBar {
     border: 2px solid #2e2f32;

@@ -51,6 +51,8 @@ class TasksTab(QWidget):
     def init_ui(self):
         """Initialize the UI."""
         layout = QVBoxLayout()
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
         
         # Show error message if VikunjaClient is not available
         if not VIKUNJA_AVAILABLE:
@@ -88,6 +90,8 @@ class TasksTab(QWidget):
         conn_layout.addRow("Email:", self.email_input)
         
         button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(8)
         self.test_btn = QPushButton("Test Connection")
         self.test_btn.clicked.connect(self.test_connection)
         button_layout.addWidget(self.test_btn)
@@ -111,6 +115,8 @@ class TasksTab(QWidget):
         
         # Project selector
         project_layout = QHBoxLayout()
+        project_layout.setContentsMargins(0, 0, 0, 0)
+        project_layout.setSpacing(8)
         project_layout.addWidget(QLabel("Project:"))
         self.project_combo = QComboBox()
         self.project_combo.currentIndexChanged.connect(self.load_tasks)
@@ -131,14 +137,20 @@ class TasksTab(QWidget):
         # Task creation panel
         create_group = QGroupBox("Create Task")
         create_layout = QVBoxLayout()
+        create_layout.setContentsMargins(8, 8, 8, 8)
+        create_layout.setSpacing(8)
         
         title_layout = QHBoxLayout()
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(8)
         title_layout.addWidget(QLabel("Title:"))
         self.task_title_input = QLineEdit()
         title_layout.addWidget(self.task_title_input, 1)
         create_layout.addLayout(title_layout)
         
         priority_layout = QHBoxLayout()
+        priority_layout.setContentsMargins(0, 0, 0, 0)
+        priority_layout.setSpacing(8)
         priority_layout.addWidget(QLabel("Priority:"))
         self.priority_spin = QSpinBox()
         self.priority_spin.setRange(0, 5)
@@ -149,6 +161,8 @@ class TasksTab(QWidget):
         
         # Estimated Duration (in minutes)
         duration_layout = QHBoxLayout()
+        duration_layout.setContentsMargins(0, 0, 0, 0)
+        duration_layout.setSpacing(8)
         duration_layout.addWidget(QLabel("Est. Duration (minutes):"))
         self.estimated_duration_spin = QSpinBox()
         self.estimated_duration_spin.setRange(0, 10080)  # 0 to 7 days (in minutes)
