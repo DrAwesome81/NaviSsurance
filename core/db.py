@@ -11,7 +11,7 @@ from config import DATABASE_PATH, ARTIFACTS_DIR
 class DatabaseManager:
     def __init__(self):
         self.db_name = DATABASE_PATH
-        self.current_schema_version = 8  # Increment this when making schema changes
+        self.current_schema_version = 9  # Increment this when making schema changes
         self.setup_db()
         self.create_indexes()
 
@@ -136,6 +136,34 @@ class DatabaseManager:
                 value TEXT,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )''')
+
+            # Lead generation tables
+            conn.execute('''CREATE TABLE IF NOT EXISTS leads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_key TEXT NOT NULL UNIQUE,
+                company_key TEXT,
+                name TEXT NOT NULL,
+                company TEXT NOT NULL,
+                title TEXT,
+                linkedin_url TEXT,
+                company_url TEXT,
+                rationale TEXT,
+                message TEXT,
+                status TEXT NOT NULL DEFAULT 'new',
+                contacted INTEGER DEFAULT 0,
+                contact_date TEXT,
+                next_action_date TEXT,
+                notes TEXT,
+                signals_json TEXT,
+                sources_json TEXT,
+                signals_score INTEGER DEFAULT 0,
+                fit_score INTEGER DEFAULT 0,
+                confidence_score INTEGER DEFAULT 0,
+                total_score INTEGER DEFAULT 0,
+                first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+            )''')
             
             # Dropbox index tables removed - using RAG index instead
             
@@ -232,6 +260,13 @@ class DatabaseManager:
             # Indexes for news_items table
             conn.execute("CREATE INDEX IF NOT EXISTS idx_news_created_at ON news_items(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_news_source ON news_items(source)")
+
+            # Indexes for leads table
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_company_key ON leads(company_key)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_contacted ON leads(contacted)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_total_score ON leads(total_score)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_last_seen ON leads(last_seen)")
             
             # Indexes for vikunja_task_metadata table
             conn.execute("CREATE INDEX IF NOT EXISTS idx_vikunja_task_metadata_task_id ON vikunja_task_metadata(vikunja_task_id)")
@@ -1073,8 +1108,285 @@ class DatabaseManager:
                 print("    - cos_chats created")
             except Exception as e:
                 print(f"    - Error creating cos_chats: {e}")
+
+        # Version 8 to 9: Leads table for lead generation
+        if from_version < 9 and to_version >= 9:
+            print("  - Creating leads table for lead generation")
+            try:
+                conn.execute('''CREATE TABLE IF NOT EXISTS leads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lead_key TEXT NOT NULL UNIQUE,
+                    company_key TEXT,
+                    name TEXT NOT NULL,
+                    company TEXT NOT NULL,
+                    title TEXT,
+                    linkedin_url TEXT,
+                    company_url TEXT,
+                    rationale TEXT,
+                    message TEXT,
+                    status TEXT NOT NULL DEFAULT 'new',
+                    contacted INTEGER DEFAULT 0,
+                    contact_date TEXT,
+                    next_action_date TEXT,
+                    notes TEXT,
+                    signals_json TEXT,
+                    sources_json TEXT,
+                    signals_score INTEGER DEFAULT 0,
+                    fit_score INTEGER DEFAULT 0,
+                    confidence_score INTEGER DEFAULT 0,
+                    total_score INTEGER DEFAULT 0,
+                    first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+                )''')
+                conn.commit()
+                print("    - leads table created")
+            except Exception as e:
+                print(f"    - Error creating leads table: {e}")
         
         print(f"Schema migration from version {from_version} to {to_version} completed.")
+
+    # -------------------------------------------------------------------------
+    # Lead generation methods
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_key(s: str | None) -> str:
+        import re
+        t = (s or "").strip().lower()
+        t = re.sub(r"\s+", " ", t)
+        t = re.sub(r"[“”\"'’]", "", t)
+        t = re.sub(r"[^a-z0-9\\s\\-\\.]", "", t)
+        return t.strip()
+
+    @classmethod
+    def make_company_key(cls, company: str | None) -> str:
+        return cls._normalize_key(company)
+
+    @classmethod
+    def make_lead_key(cls, *, name: str | None, company: str | None, linkedin_url: str | None = None) -> str:
+        # Prefer LinkedIn URL if available; else name+company.
+        li = (linkedin_url or "").strip()
+        if li:
+            try:
+                from core.news_dedup import canonicalize_url
+                li = canonicalize_url(li) or li
+            except Exception:
+                pass
+            return "li:" + li.lower()
+        return "nc:" + cls._normalize_key(name) + "|" + cls._normalize_key(company)
+
+    def upsert_lead(self, lead: dict) -> int:
+        """
+        Insert/update a lead. Returns lead id.
+        Expects: name, company, title?, rationale?, message?, linkedin_url?, company_url?, sources(list), signals(list), scores.
+        """
+        import json as _json
+        name = (lead.get("name") or "").strip()
+        company = (lead.get("company") or "").strip()
+        if not name or not company:
+            raise ValueError("Lead must include name and company")
+
+        linkedin_url = (lead.get("linkedin_url") or "").strip()
+        company_url = (lead.get("company_url") or "").strip()
+
+        lead_key = self.make_lead_key(name=name, company=company, linkedin_url=linkedin_url)
+        company_key = self.make_company_key(company)
+
+        sources = lead.get("sources") or []
+        signals = lead.get("signals") or []
+        sources_json = _json.dumps(sources, ensure_ascii=False)
+        signals_json = _json.dumps(signals, ensure_ascii=False)
+
+        status = (lead.get("status") or "new").strip() or "new"
+        contacted = 1 if bool(lead.get("contacted")) else 0
+        contact_date = lead.get("contact_date")
+        next_action_date = lead.get("next_action_date")
+        notes = lead.get("notes")
+
+        signals_score = int(lead.get("signals_score") or 0)
+        fit_score = int(lead.get("fit_score") or 0)
+        confidence_score = int(lead.get("confidence_score") or 0)
+        total_score = int(lead.get("total_score") or (signals_score + fit_score + confidence_score))
+
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO leads (
+                    lead_key, company_key, name, company, title, linkedin_url, company_url,
+                    rationale, message, status, contacted, contact_date, next_action_date, notes,
+                    signals_json, sources_json, signals_score, fit_score, confidence_score, total_score,
+                    first_seen, last_seen, last_updated
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    datetime('now'), datetime('now'), datetime('now')
+                )
+                ON CONFLICT(lead_key) DO UPDATE SET
+                    company_key=excluded.company_key,
+                    name=excluded.name,
+                    company=excluded.company,
+                    title=COALESCE(excluded.title, leads.title),
+                    linkedin_url=COALESCE(excluded.linkedin_url, leads.linkedin_url),
+                    company_url=COALESCE(excluded.company_url, leads.company_url),
+                    rationale=COALESCE(excluded.rationale, leads.rationale),
+                    message=COALESCE(excluded.message, leads.message),
+                    signals_json=COALESCE(excluded.signals_json, leads.signals_json),
+                    sources_json=COALESCE(excluded.sources_json, leads.sources_json),
+                    signals_score=MAX(leads.signals_score, excluded.signals_score),
+                    fit_score=MAX(leads.fit_score, excluded.fit_score),
+                    confidence_score=MAX(leads.confidence_score, excluded.confidence_score),
+                    total_score=MAX(leads.total_score, excluded.total_score),
+                    status=CASE WHEN leads.status = 'contacted' THEN leads.status ELSE excluded.status END,
+                    contacted=CASE WHEN leads.contacted = 1 THEN leads.contacted ELSE excluded.contacted END,
+                    contact_date=COALESCE(leads.contact_date, excluded.contact_date),
+                    next_action_date=COALESCE(leads.next_action_date, excluded.next_action_date),
+                    notes=COALESCE(leads.notes, excluded.notes),
+                    last_seen=datetime('now'),
+                    last_updated=datetime('now')
+                """,
+                (
+                    lead_key,
+                    company_key,
+                    name,
+                    company,
+                    (lead.get("title") or None),
+                    (linkedin_url or None),
+                    (company_url or None),
+                    (lead.get("rationale") or None),
+                    (lead.get("message") or None),
+                    status,
+                    contacted,
+                    contact_date,
+                    next_action_date,
+                    notes,
+                    signals_json,
+                    sources_json,
+                    signals_score,
+                    fit_score,
+                    confidence_score,
+                    total_score,
+                ),
+            )
+            conn.commit()
+
+            row = conn.execute("SELECT id FROM leads WHERE lead_key = ?", (lead_key,)).fetchone()
+            return int(row[0]) if row else int(cur.lastrowid)
+
+    def list_leads(
+        self,
+        *,
+        status: str | None = None,
+        contacted: int | None = None,
+        min_score: int | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        import json as _json
+        q = """
+            SELECT id, name, company, title, linkedin_url, company_url, rationale, message,
+                   status, contacted, contact_date, next_action_date, notes,
+                   signals_json, sources_json,
+                   signals_score, fit_score, confidence_score, total_score,
+                   first_seen, last_seen, last_updated
+            FROM leads
+            WHERE 1=1
+        """
+        params = []
+        if status:
+            q += " AND status = ?"
+            params.append(status)
+        if contacted is not None:
+            q += " AND contacted = ?"
+            params.append(int(contacted))
+        if min_score is not None:
+            q += " AND total_score >= ?"
+            params.append(int(min_score))
+        q += " ORDER BY last_seen DESC, total_score DESC LIMIT ?"
+        params.append(int(limit))
+
+        with sqlite3.connect(self.db_name) as conn:
+            rows = conn.execute(q, params).fetchall()
+        out = []
+        for r in rows:
+            (
+                lead_id,
+                name,
+                company,
+                title,
+                linkedin_url,
+                company_url,
+                rationale,
+                message,
+                status,
+                contacted,
+                contact_date,
+                next_action_date,
+                notes,
+                signals_json,
+                sources_json,
+                signals_score,
+                fit_score,
+                confidence_score,
+                total_score,
+                first_seen,
+                last_seen,
+                last_updated,
+            ) = r
+            try:
+                sources = _json.loads(sources_json) if sources_json else []
+            except Exception:
+                sources = []
+            try:
+                signals = _json.loads(signals_json) if signals_json else []
+            except Exception:
+                signals = []
+            out.append(
+                {
+                    "id": lead_id,
+                    "name": name,
+                    "company": company,
+                    "title": title,
+                    "linkedin_url": linkedin_url or "",
+                    "company_url": company_url or "",
+                    "rationale": rationale or "",
+                    "message": message or "",
+                    "status": status,
+                    "contacted": bool(contacted),
+                    "contact_date": contact_date,
+                    "next_action_date": next_action_date,
+                    "notes": notes or "",
+                    "signals": signals,
+                    "sources": sources,
+                    "signals_score": int(signals_score or 0),
+                    "fit_score": int(fit_score or 0),
+                    "confidence_score": int(confidence_score or 0),
+                    "total_score": int(total_score or 0),
+                    "first_seen": first_seen,
+                    "last_seen": last_seen,
+                    "last_updated": last_updated,
+                }
+            )
+        return out
+
+    def set_lead_contacted(self, lead_id: int, contacted: bool) -> None:
+        with sqlite3.connect(self.db_name) as conn:
+            if contacted:
+                conn.execute(
+                    "UPDATE leads SET contacted = 1, status = 'contacted', contact_date = COALESCE(contact_date, date('now')), last_updated=datetime('now') WHERE id = ?",
+                    (int(lead_id),),
+                )
+            else:
+                conn.execute(
+                    "UPDATE leads SET contacted = 0, last_updated=datetime('now') WHERE id = ?",
+                    (int(lead_id),),
+                )
+            conn.commit()
+
+    def delete_lead_by_id(self, lead_id: int) -> None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute("DELETE FROM leads WHERE id = ?", (int(lead_id),))
+            conn.commit()
 
     # -------------------------------------------------------------------------
     # Multi-agent project / task / run / artifact / log methods
