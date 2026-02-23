@@ -327,6 +327,38 @@ class ChiefOfStaffTab(QWidget):
         refresh_asg_btn.clicked.connect(self._refresh_assignment_list)
         asg_head.addWidget(refresh_asg_btn)
         asg_layout.addLayout(asg_head)
+
+        filters = QHBoxLayout()
+        filters.setContentsMargins(0, 0, 0, 0)
+        filters.setSpacing(6)
+        self.assignment_status_filter = QComboBox()
+        self.assignment_status_filter.addItems(
+            ["All", "queued", "in_progress", "awaiting_review", "blocked", "done", "cancelled"]
+        )
+        self.assignment_status_filter.currentTextChanged.connect(lambda _t: self._refresh_assignment_list())
+        filters.addWidget(self.assignment_status_filter)
+
+        self.assignment_assignee_filter = QComboBox()
+        self.assignment_assignee_filter.addItem("All assignees", "")
+        for a in self.db.agents_list_active():
+            code = str(a.get("code") or "").strip().lower()
+            if not code or code == "navi":
+                continue
+            label = f"{a.get('display_name') or code} ({code})"
+            self.assignment_assignee_filter.addItem(label, code)
+        self.assignment_assignee_filter.currentTextChanged.connect(lambda _t: self._refresh_assignment_list())
+        filters.addWidget(self.assignment_assignee_filter)
+
+        self.assignment_search_input = QLineEdit()
+        self.assignment_search_input.setPlaceholderText("Search title / brief / A-####")
+        self.assignment_search_input.textChanged.connect(lambda _t: self._refresh_assignment_list())
+        filters.addWidget(self.assignment_search_input, 1)
+        asg_layout.addLayout(filters)
+
+        self.assignment_count_label = QLabel("")
+        self.assignment_count_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        asg_layout.addWidget(self.assignment_count_label)
+
         self.assignment_list = QListWidget()
         self.assignment_list.itemClicked.connect(self._on_assignment_clicked)
         asg_layout.addWidget(self.assignment_list, 1)
@@ -512,7 +544,33 @@ class ChiefOfStaffTab(QWidget):
         if not hasattr(self, "assignment_list"):
             return
         self.assignment_list.clear()
-        rows = self.db.agent_list_assignments(limit=300)
+        status = None
+        assignee = None
+        query = ""
+        if hasattr(self, "assignment_status_filter"):
+            st = (self.assignment_status_filter.currentText() or "").strip().lower()
+            status = None if st in ("", "all") else st
+        if hasattr(self, "assignment_assignee_filter"):
+            assignee = (self.assignment_assignee_filter.currentData() or "").strip().lower() or None
+        if hasattr(self, "assignment_search_input"):
+            query = (self.assignment_search_input.text() or "").strip().lower()
+
+        rows = self.db.agent_list_assignments(status=status, assignee_code=assignee, limit=500)
+        if query:
+            qnorm = query.replace("a-", "").lstrip("0")
+            filtered = []
+            for r in rows:
+                aid = int(r.get("id") or 0)
+                title = str(r.get("title") or "").lower()
+                brief = str(r.get("brief_md") or "").lower()
+                if query in title or query in brief:
+                    filtered.append(r)
+                    continue
+                if qnorm and qnorm.isdigit() and int(qnorm) == aid:
+                    filtered.append(r)
+                    continue
+            rows = filtered
+
         for r in rows:
             aid = int(r.get("id") or 0)
             title = str(r.get("title") or "Untitled")
@@ -526,6 +584,8 @@ class ChiefOfStaffTab(QWidget):
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, aid)
             self.assignment_list.addItem(item)
+        if hasattr(self, "assignment_count_label"):
+            self.assignment_count_label.setText(f"{len(rows)} assignment(s)")
 
     def _on_assignment_clicked(self, item):
         aid = item.data(Qt.ItemDataRole.UserRole)
@@ -599,6 +659,20 @@ class ChiefOfStaffTab(QWidget):
         self._refresh_assignment_list()
         if hasattr(self, "sidebar_tabs"):
             self.sidebar_tabs.setCurrentIndex(1)  # Assignments tab
+        for i in range(self.assignment_list.count()):
+            item = self.assignment_list.item(i)
+            if item and int(item.data(Qt.ItemDataRole.UserRole) or 0) == aid:
+                self.assignment_list.setCurrentItem(item)
+                self._on_assignment_clicked(item)
+                return True
+        # If filters hide the target assignment, reset filters and retry once.
+        if hasattr(self, "assignment_status_filter"):
+            self.assignment_status_filter.setCurrentText("All")
+        if hasattr(self, "assignment_assignee_filter"):
+            self.assignment_assignee_filter.setCurrentIndex(0)
+        if hasattr(self, "assignment_search_input"):
+            self.assignment_search_input.clear()
+        self._refresh_assignment_list()
         for i in range(self.assignment_list.count()):
             item = self.assignment_list.item(i)
             if item and int(item.data(Qt.ItemDataRole.UserRole) or 0) == aid:
