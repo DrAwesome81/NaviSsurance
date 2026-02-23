@@ -126,6 +126,7 @@ class DashboardTab(QWidget):
         self.chat_handler = chat_handler
         self.todo_list = todo_list
         self.db = db
+        self.tasks_panel = None
         # Update TodoList's parent to point to this dashboard tab
         if self.todo_list:
             self.todo_list.parent = self
@@ -176,6 +177,14 @@ class DashboardTab(QWidget):
 
     def load_tasks_filtered(self):
         """Load tasks with current filter settings using batch optimization."""
+        # Use canonical TasksTab behavior when embedded.
+        if self.tasks_panel is not None:
+            try:
+                self.tasks_panel.refresh_tasks()
+            except Exception as e:
+                print(f"Error refreshing embedded tasks panel: {e}")
+            return
+
         try:
             category_filter = self.category_filter.currentText()
             date_filter = self.date_filter.currentText()
@@ -509,6 +518,13 @@ class DashboardTab(QWidget):
 
     def add_task(self):
         """Add a new task from the input field."""
+        if self.tasks_panel is not None:
+            try:
+                self.tasks_panel.add_task()
+            except Exception as e:
+                print(f"Error adding task via embedded tasks panel: {e}")
+            return
+
         task_text = self.taskInput.text().strip()
         if not task_text:
             return
@@ -632,6 +648,31 @@ class DashboardTab(QWidget):
             QTimer.singleShot(500, self._show_briefing_disabled)
 
     def create_task_widget(self):
+        # Keep Dashboard and Tasks tab aligned by reusing the same task manager UI.
+        try:
+            from gui.tasks_tab import TasksTab
+
+            widget = QWidget()
+            layout = QVBoxLayout(widget)
+            layout.setContentsMargins(8, 8, 8, 8)
+            layout.setSpacing(8)
+
+            task_header = QLabel("Tasks (shared with Tasks tab)")
+            task_header.setStyleSheet(
+                "color: #e8eaed; font-weight: 600; padding: 3px; "
+                "background-color: transparent; border: none; font-size: 13px;"
+            )
+            task_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            task_header.setMaximumHeight(25)
+            layout.addWidget(task_header)
+
+            self.tasks_panel = TasksTab(self)
+            layout.addWidget(self.tasks_panel, 1)
+            return widget
+        except Exception as e:
+            print(f"Warning: could not embed TasksTab in Dashboard, using legacy task widget: {e}")
+            self.tasks_panel = None
+
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(8, 8, 8, 8)

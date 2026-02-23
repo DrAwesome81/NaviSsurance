@@ -1,8 +1,9 @@
 """
-Projects tab for the multi-agent AI ops workflow.
+AI Projects tab for the multi-agent research workflow.
 
-Create a project (name, goals, mode), run pipeline (research -> synthesis -> parallel Grok+ChatGPT),
-review research artifacts, then continue to draft (4-step exchange -> QA -> done) and view final draft.
+Create an AI project (research objective + mode), run pipeline
+(research -> synthesis -> parallel Grok+ChatGPT), review artifacts,
+then continue to draft (4-step exchange -> QA -> done) and view final draft.
 """
 
 import json
@@ -112,7 +113,7 @@ def _format_artifact_for_display(artifact_type: str, content_json: str) -> str:
 
 
 class ProjectsTab(QWidget):
-    """Tab for creating and running multi-agent projects (research -> review -> draft)."""
+    """Tab for creating and running AI research projects (research -> review -> draft)."""
 
     def __init__(self, db: DatabaseManager, parent=None):
         super().__init__(parent)
@@ -128,8 +129,19 @@ class ProjectsTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
 
+        title = QLabel("AI Projects (Research & Drafting Pipeline)")
+        title.setStyleSheet("color: #e8eaed; font-weight: 700; font-size: 14px; margin: 0;")
+        layout.addWidget(title)
+        subtitle = QLabel(
+            "Use this for multi-step AI research and draft generation. "
+            "This is separate from task management."
+        )
+        subtitle.setStyleSheet("color: #9aa0a6; font-size: 12px;")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
         # --- Form ---
-        form_group = QGroupBox("New project")
+        form_group = QGroupBox("New AI research project")
         form_layout = QVBoxLayout(form_group)
         name_layout = QHBoxLayout()
         name_layout.addWidget(QLabel("Project name:"))
@@ -137,25 +149,25 @@ class ProjectsTab(QWidget):
         self.name_edit.setPlaceholderText("e.g. EEG devices memo")
         name_layout.addWidget(self.name_edit)
         form_layout.addLayout(name_layout)
-        form_layout.addWidget(QLabel("Goals / research question:"))
+        form_layout.addWidget(QLabel("Research objective / question:"))
         self.goals_edit = QTextEdit()
         self.goals_edit.setPlaceholderText("e.g. cleared medical devices that analyze EEG data")
         self.goals_edit.setMaximumHeight(80)
         form_layout.addWidget(self.goals_edit)
         mode_layout = QHBoxLayout()
-        mode_layout.addWidget(QLabel("Mode:"))
+        mode_layout.addWidget(QLabel("Research mode:"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["internal_only", "internal_web", "web_only"])
         self.mode_combo.setToolTip("internal_only = RAG only; internal_web = RAG + web; web_only = web only")
         mode_layout.addWidget(self.mode_combo)
         form_layout.addLayout(mode_layout)
-        self.start_btn = QPushButton("Start project")
+        self.start_btn = QPushButton("Start AI project")
         self.start_btn.clicked.connect(self.on_start_project)
         form_layout.addWidget(self.start_btn)
         layout.addWidget(form_group)
 
         # --- Status ---
-        self.status_label = QLabel("Status: —")
+        self.status_label = QLabel("AI project status: —")
         self.status_label.setStyleSheet("color: #6b8cae; font-weight: 600; font-size: 13px;")
         layout.addWidget(self.status_label)
         self.progress_bar = QProgressBar()
@@ -169,26 +181,26 @@ class ProjectsTab(QWidget):
         # Review area (artifacts + continue to draft)
         review_widget = QWidget()
         review_layout = QVBoxLayout(review_widget)
-        review_layout.addWidget(QLabel("Research to review (after pipeline runs):"))
+        review_layout.addWidget(QLabel("Research artifacts to review (after pipeline runs):"))
         self.artifact_tabs = QTabWidget()
         self.artifact_tabs.addTab(QTextBrowser(), "Internal brief")
         self.artifact_tabs.addTab(QTextBrowser(), "Web brief")
         self.artifact_tabs.addTab(QTextBrowser(), "Grok synthesis")
         self.artifact_tabs.addTab(QTextBrowser(), "ChatGPT synthesis")
         review_layout.addWidget(self.artifact_tabs)
-        review_layout.addWidget(QLabel("Optional feedback for the draft (e.g. emphasize FDA guidance):"))
+        review_layout.addWidget(QLabel("Optional draft instructions (e.g. emphasize FDA guidance):"))
         self.feedback_edit = QTextEdit()
         self.feedback_edit.setMaximumHeight(60)
         self.feedback_edit.setPlaceholderText("Optional instructions for the writer...")
         review_layout.addWidget(self.feedback_edit)
-        self.continue_btn = QPushButton("Continue to draft")
+        self.continue_btn = QPushButton("Generate draft from research")
         self.continue_btn.clicked.connect(self.on_continue_to_draft)
         self.continue_btn.setEnabled(False)
         review_layout.addWidget(self.continue_btn)
         splitter.addWidget(review_widget)
 
         # Final draft area
-        draft_group = QGroupBox("Final draft")
+        draft_group = QGroupBox("AI-generated draft")
         draft_layout = QVBoxLayout(draft_group)
         self.draft_browser = QTextBrowser()
         self.draft_browser.setOpenExternalLinks(True)
@@ -221,12 +233,12 @@ class ProjectsTab(QWidget):
             row = self.db.get_project(last_project_id) if self.db else None
             if row:
                 _id, name, _mode, status, _created, _config = row
-                self.status_label.setText(f"Status: Last project {last_project_id} ({name}) — {status}.")
+                self.status_label.setText(f"AI project status: Last project {last_project_id} ({name}) — {status}.")
                 if status == STATUS_AWAITING_RESEARCH_REVIEW:
                     self.continue_btn.setEnabled(True)
                     self.refresh_artifact_display(last_project_id)
             else:
-                self.status_label.setText(f"Status: Last project {last_project_id} (not found in DB).")
+                self.status_label.setText(f"AI project status: Last project {last_project_id} (not found in DB).")
 
     def save_state(self):
         """Persist current field values and last project id for next session."""
@@ -250,7 +262,7 @@ class ProjectsTab(QWidget):
         try:
             pid = self.db.create_project(name, mode)
             self._current_project_id = pid
-            self.status_label.setText(f"Status: Running pipeline for project {pid}...")
+            self.status_label.setText(f"AI project status: Running pipeline for project {pid}...")
             self.progress_bar.setVisible(True)
             self.start_btn.setEnabled(False)
             self.continue_btn.setEnabled(False)
@@ -264,7 +276,7 @@ class ProjectsTab(QWidget):
             logger.exception("Start project failed: %s", e)
 
     def on_status(self, msg: str):
-        self.status_label.setText(f"Status: {msg}")
+        self.status_label.setText(f"AI project status: {msg}")
 
     def on_pipeline_finished(self, project_id: int):
         self._pipeline_worker = None
@@ -275,7 +287,7 @@ class ProjectsTab(QWidget):
         if not row:
             return
         _id, name, mode, status, _created, _config = row
-        self.status_label.setText(f"Status: Research ready for review (project {project_id}).")
+        self.status_label.setText(f"AI project status: Research ready for review (project {project_id}).")
         if status == STATUS_AWAITING_RESEARCH_REVIEW:
             self.continue_btn.setEnabled(True)
             self.refresh_artifact_display(project_id)
@@ -287,7 +299,7 @@ class ProjectsTab(QWidget):
         self.progress_bar.setVisible(False)
         self.start_btn.setEnabled(True)
         self.continue_btn.setEnabled(False)
-        self.status_label.setText("Status: Pipeline failed.")
+        self.status_label.setText("AI project status: Pipeline failed.")
         QMessageBox.critical(self, "Pipeline error", err)
 
     def refresh_artifact_display(self, project_id: int):
@@ -334,7 +346,7 @@ class ProjectsTab(QWidget):
         feedback = self.feedback_edit.toPlainText().strip() or None
         self.continue_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
-        self.status_label.setText("Status: Drafting...")
+        self.status_label.setText("AI project status: Drafting...")
         self._draft_worker = ContinueDraftWorker(self.db, self._current_project_id, feedback)
         self._draft_worker.finished_signal.connect(self.on_draft_finished)
         self._draft_worker.error_signal.connect(self.on_draft_error)
@@ -345,12 +357,12 @@ class ProjectsTab(QWidget):
         self._draft_worker = None
         self.progress_bar.setVisible(False)
         self.continue_btn.setEnabled(False)
-        self.status_label.setText(f"Status: Done (project {project_id}).")
+        self.status_label.setText(f"AI project status: Done (project {project_id}).")
         self.refresh_artifact_display(project_id)
 
     def on_draft_error(self, err: str):
         self._draft_worker = None
         self.progress_bar.setVisible(False)
         self.continue_btn.setEnabled(True)
-        self.status_label.setText("Status: Draft failed.")
+        self.status_label.setText("AI project status: Draft failed.")
         QMessageBox.critical(self, "Draft error", err)

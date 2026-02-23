@@ -469,7 +469,7 @@ class ChatWindow(QMainWindow):
         self.tab_widget.addTab(self.workspace_tab, "Workspace")
         
         self.projects_tab = ProjectsTab(self.db)
-        self.tab_widget.addTab(self.projects_tab, "Projects")
+        self.tab_widget.addTab(self.projects_tab, "AI Projects")
         
         self.compliance_tab = ComplianceTab(self.db, self.chat_handler)
         self.tab_widget.addTab(self.compliance_tab, "Compliance")
