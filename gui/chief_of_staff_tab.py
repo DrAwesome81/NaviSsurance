@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QPushButton, QLabel, QTextEdit,
     QTextBrowser, QListWidget, QListWidgetItem, QFormLayout, QSpinBox, QTabWidget,
     QMessageBox, QProgressBar, QDialog, QDialogButtonBox, QMenu, QToolButton,
-    QSizePolicy
+    QSizePolicy, QComboBox, QLineEdit, QInputDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
 from PyQt6.QtGui import QAction, QKeyEvent
@@ -143,6 +143,78 @@ class CosPreferencesDialog(QDialog):
         self.accept()
 
 
+class CosAssignmentDialog(QDialog):
+    """Create a delegation assignment from the CoS board."""
+
+    def __init__(self, db: DatabaseManager, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.setWindowTitle("New Assignment")
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.title_edit = QLineEdit()
+        self.title_edit.setPlaceholderText("Assignment title")
+        form.addRow("Title:", self.title_edit)
+
+        self.assignee_combo = QComboBox()
+        self._assignees: list[dict] = []
+        for a in self.db.agents_list_active():
+            code = str(a.get("code") or "").strip().lower()
+            if code == "navi":
+                continue
+            label = f"{a.get('display_name') or code} ({code})"
+            self.assignee_combo.addItem(label, code)
+            self._assignees.append(a)
+        form.addRow("Assignee:", self.assignee_combo)
+
+        self.priority_spin = QSpinBox()
+        self.priority_spin.setRange(1, 5)
+        self.priority_spin.setValue(3)
+        form.addRow("Priority (P1-P5):", self.priority_spin)
+
+        self.due_edit = QLineEdit()
+        self.due_edit.setPlaceholderText("YYYY-MM-DD or leave blank")
+        form.addRow("Due date:", self.due_edit)
+
+        self.brief_edit = QTextEdit()
+        self.brief_edit.setPlaceholderText("Task brief and expected output")
+        self.brief_edit.setMinimumHeight(120)
+        form.addRow("Brief:", self.brief_edit)
+
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._validate_then_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _validate_then_accept(self):
+        title = (self.title_edit.text() or "").strip()
+        brief = (self.brief_edit.toPlainText() or "").strip()
+        if not title:
+            QMessageBox.warning(self, "Assignment", "Title is required.")
+            return
+        if not brief:
+            QMessageBox.warning(self, "Assignment", "Brief is required.")
+            return
+        due = (self.due_edit.text() or "").strip()
+        if due and not re.match(r"^\d{4}-\d{2}-\d{2}$", due):
+            QMessageBox.warning(self, "Assignment", "Due date must be YYYY-MM-DD or blank.")
+            return
+        self.accept()
+
+    def values(self) -> dict:
+        due = (self.due_edit.text() or "").strip()
+        return {
+            "title": (self.title_edit.text() or "").strip(),
+            "brief_md": (self.brief_edit.toPlainText() or "").strip(),
+            "assignee_code": (self.assignee_combo.currentData() or "").strip().lower(),
+            "priority": int(self.priority_spin.value()),
+            "due_date": due if due else None,
+        }
+
+
 class ChiefOfStaffTab(QWidget):
     def __init__(self, db: DatabaseManager, parent=None):
         super().__init__(parent)
@@ -245,6 +317,12 @@ class ChiefOfStaffTab(QWidget):
         asg_head = QHBoxLayout()
         asg_head.addWidget(QLabel("Delegation Board"))
         asg_head.addStretch()
+        new_asg_btn = QPushButton("New")
+        new_asg_btn.clicked.connect(self._create_assignment_from_board)
+        asg_head.addWidget(new_asg_btn)
+        reassign_btn = QPushButton("Reassign")
+        reassign_btn.clicked.connect(self._reassign_selected_assignment)
+        asg_head.addWidget(reassign_btn)
         refresh_asg_btn = QPushButton("Refresh")
         refresh_asg_btn.clicked.connect(self._refresh_assignment_list)
         asg_head.addWidget(refresh_asg_btn)
@@ -281,6 +359,108 @@ class ChiefOfStaffTab(QWidget):
         self._refresh_chat_list()
         self._refresh_assignment_list()
         return panel
+
+    def _create_assignment_from_board(self):
+        d = CosAssignmentDialog(self.db, self)
+        if d.exec() != QDialog.DialogCode.Accepted:
+            return
+        vals = d.values()
+        assignee = str(vals.get("assignee_code") or "").strip().lower()
+        title = str(vals.get("title") or "").strip()
+        brief = str(vals.get("brief_md") or "").strip()
+        priority = int(vals.get("priority") or 3)
+        due_date = vals.get("due_date")
+        if not assignee or not title or not brief:
+            QMessageBox.warning(self, "Assignments", "Missing required assignment fields.")
+            return
+
+        context_obj = {"source": "manual_cos_board"}
+        if self._current_chat_id is not None:
+            context_obj["cos_chat_id"] = int(self._current_chat_id)
+        thread_id = None
+        try:
+            thread_id = self.db.agent_create_thread(
+                agent_code=assignee,
+                title=title,
+                context_json=context_obj,
+            )
+        except Exception:
+            thread_id = None
+
+        aid = self.db.agent_create_assignment(
+            title=title,
+            brief_md=brief,
+            requester_code="navi",
+            assignee_code=assignee,
+            priority=priority,
+            due_date=due_date,
+            source_thread_id=(int(thread_id) if thread_id else None),
+            context_json=context_obj,
+        )
+        if not aid:
+            QMessageBox.warning(self, "Assignments", "Could not create assignment.")
+            return
+        self._refresh_assignment_list()
+        self._focus_assignment_by_id(int(aid))
+
+    def _reassign_selected_assignment(self):
+        if not self._current_assignment_id:
+            QMessageBox.information(self, "Assignments", "Select an assignment first.")
+            return
+        current = self.db.agent_get_assignment(int(self._current_assignment_id))
+        if not current:
+            QMessageBox.warning(self, "Assignments", "Assignment not found.")
+            return
+
+        options: list[tuple[str, str]] = []
+        for a in self.db.agents_list_active():
+            code = str(a.get("code") or "").strip().lower()
+            if not code or code == "navi":
+                continue
+            label = f"{a.get('display_name') or code} ({code})"
+            options.append((label, code))
+        if not options:
+            QMessageBox.information(self, "Assignments", "No assignees available.")
+            return
+
+        current_assignee = str(current.get("assignee_code") or "").strip().lower()
+        labels = [x[0] for x in options]
+        default_idx = 0
+        for i, (_label, code) in enumerate(options):
+            if code == current_assignee:
+                default_idx = i
+                break
+
+        picked, ok = QInputDialog.getItem(
+            self,
+            "Reassign Assignment",
+            "Assign to:",
+            labels,
+            default_idx,
+            False,
+        )
+        if not ok or not picked:
+            return
+        new_code = ""
+        for label, code in options:
+            if label == picked:
+                new_code = code
+                break
+        if not new_code:
+            return
+        if new_code == current_assignee:
+            return
+        ok = self.db.agent_reassign_assignment(
+            assignment_id=int(self._current_assignment_id),
+            new_assignee_code=new_code,
+            actor_code="navi",
+            note="Reassigned from CoS board",
+        )
+        if not ok:
+            QMessageBox.warning(self, "Assignments", "Could not reassign assignment.")
+            return
+        self._refresh_assignment_list()
+        self._focus_assignment_by_id(int(self._current_assignment_id))
 
     def _refresh_chat_list(self):
         """Reload sidebar: list all CoS chats, optionally grouped by project."""
