@@ -294,6 +294,33 @@ class TestChiefOfStaffService:
         assert mock_create.call_count == 0
         assert "Could not schedule 1 calendar block(s)" in result
 
+    def test_cos_response_parses_assign_and_creates_assignment(self, mock_grok, cos_db):
+        """ASSIGN line creates one delegation assignment and strips command line from output."""
+        mock_grok.return_value = (
+            "Done.\n"
+            "ASSIGN: Atlas | FDA PCCP research brief | Summarize latest FDA PCCP guidance with citations. | P1 | 2026-03-01"
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Please delegate this research.")
+        rows = cos_db.agent_list_assignments(assignee_code="atlas", limit=10)
+        assert len(rows) == 1
+        assert rows[0]["title"] == "FDA PCCP research brief"
+        assert rows[0]["priority"] == 1
+        assert rows[0]["due_date"] == "2026-03-01"
+        assert "Created 1 assignment(s)" in result
+        assert "ASSIGN:" not in result
+
+    def test_cos_response_assign_unknown_agent_reports_failure(self, mock_grok, cos_db):
+        """ASSIGN with unknown assignee should not create assignment and should report failure."""
+        mock_grok.return_value = "ASSIGN: NotARealAgent | Task | Brief | P2 | none"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Delegate this.")
+        rows = cos_db.agent_list_assignments(limit=10)
+        assert len(rows) == 0
+        assert "Could not create 1 assignment(s)" in result
+
 
 @patch("core.chief_of_staff_service.grok_completion_messages")
 def test_cos_response_with_history_uses_multi_turn(mock_grok_messages, cos_db):

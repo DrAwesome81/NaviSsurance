@@ -37,6 +37,9 @@ ADD_CAL_BLOCK_PATTERN = re.compile(
     r"ADD_CAL_BLOCK:\s*(.+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)(?:\s*\|\s*([^|]+?)\s*)?$",
     re.IGNORECASE,
 )
+# Pattern for CoS delegation action:
+# ASSIGN: agent | title | brief | P1..P5 | due_date_or_none
+ASSIGN_PATTERN = re.compile(r"^\s*ASSIGN:\s*(.+?)\s*$", re.IGNORECASE)
 
 # CoS tool triggers (tool loop)
 WEB_SEARCH_TRIGGER = re.compile(r"^\s*WEB_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
@@ -279,6 +282,12 @@ Example: ADD_CAL_BLOCK: Deep work - client report | 2026-02-25T13:00:00-05:00 | 
 Prefer ISO-8601 datetimes with timezone offsets.
 Omit ADD_CAL_BLOCK lines if you are not scheduling calendar blocks.
 
+You may also delegate work to named team members by writing one or more lines in this exact format:
+ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>
+Example: ASSIGN: Atlas | FDA PCCP research brief | Research latest guidance and summarize with citations. | P1 | 2026-03-01
+Available agent names: Atlas, Quill, Sentinel, Lex, Scout, Mason, Ledger, Archive, Pulse, Shield.
+Omit ASSIGN lines if you are not delegating work.
+
 If you need more information to answer well, you may request one of these tools by returning EXACTLY ONE line with one of:
 - WEB_SEARCH:<query>
 - DOC_SEARCH:<query>   (searches local docs/notes and optional RAG index)
@@ -385,7 +394,7 @@ If you request a tool, you must return only that single tool line (no other text
 {user_message or "What should I focus on right now?"}"""
         try:
             out = _run_tool_loop_single(system, user)
-            cleaned = _parse_and_add_tasks(db, out)
+            cleaned = _parse_and_add_tasks(db, out, chat_id=chat_id)
             _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=cleaned)
             return cleaned
         except Exception as e:
@@ -408,7 +417,7 @@ If you request a tool, you must return only that single tool line (no other text
 
     try:
         out = _run_tool_loop_messages(messages)
-        cleaned = _parse_and_add_tasks(db, (out or "").strip())
+        cleaned = _parse_and_add_tasks(db, (out or "").strip(), chat_id=chat_id)
         _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=cleaned)
         return cleaned
     except Exception as e:
@@ -416,11 +425,12 @@ If you request a tool, you must return only that single tool line (no other text
         return f"Error: {e}"
 
 
-def _parse_and_add_tasks(db: DatabaseManager, response: str) -> str:
+def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optional[int] = None) -> str:
     """
     Parse action lines from the model response:
     - ADD_TASK: add dashboard tasks
     - ADD_CAL_BLOCK: create Google Calendar events
+    - ASSIGN: create delegation assignments
     Return cleaned response text with action lines removed.
     """
     if not response:
@@ -428,6 +438,8 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str) -> str:
     session_id = f"dashboard_cos_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     added_tasks = 0
     added_blocks = 0
+    created_assignments: list[str] = []
+    assignment_failures: list[str] = []
     block_failures = 0
     block_failure_reasons: list[str] = []
     cleaned_lines = []
@@ -492,6 +504,66 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str) -> str:
                 logger.warning("CoS ADD_CAL_BLOCK failed: %s", msg or "unknown error")
             continue
 
+        m_assign = ASSIGN_PATTERN.match(stripped)
+        if m_assign:
+            payload = (m_assign.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 4)]
+            if len(parts) != 5:
+                assignment_failures.append("invalid ASSIGN format")
+                logger.warning("CoS ASSIGN rejected due to invalid format: %r", stripped)
+                continue
+
+            assignee_name, title, brief, priority_raw, due_raw = parts
+            if not assignee_name or not title or not brief:
+                assignment_failures.append("missing assignee/title/brief")
+                logger.warning("CoS ASSIGN rejected due to missing required fields: %r", stripped)
+                continue
+
+            priority_digits = "".join(ch for ch in str(priority_raw) if ch.isdigit())
+            try:
+                priority = int(priority_digits) if priority_digits else 3
+            except Exception:
+                priority = 3
+            if priority < 1:
+                priority = 1
+            if priority > 5:
+                priority = 5
+
+            due_date = (due_raw or "").strip()
+            if due_date.lower() in ("none", "null", "n/a", ""):
+                due_date = None
+
+            agent = db.agent_resolve_by_name(assignee_name)
+            if not agent:
+                assignment_failures.append(f"unknown agent '{assignee_name}'")
+                logger.warning("CoS ASSIGN failed: unknown agent %r", assignee_name)
+                continue
+
+            context_obj = {"source": "chief_of_staff"}
+            if chat_id is not None:
+                context_obj["cos_chat_id"] = int(chat_id)
+            try:
+                assignment_id = db.agent_create_assignment(
+                    title=title,
+                    brief_md=brief,
+                    requester_code="navi",
+                    assignee_code=str(agent.get("code") or "").strip().lower(),
+                    priority=priority,
+                    due_date=due_date,
+                    status="queued",
+                    context_json=context_obj,
+                )
+            except Exception as e:
+                assignment_id = 0
+                logger.warning("CoS ASSIGN create failed: %s", e)
+
+            if assignment_id:
+                disp = str(agent.get("display_name") or agent.get("code") or assignee_name).strip()
+                created_assignments.append(f"{disp} (A-{int(assignment_id):04d})")
+            else:
+                assignment_failures.append(f"failed creating assignment for {assignee_name}")
+            continue
+
         cleaned_lines.append(line)
     out = "\n".join(cleaned_lines).strip()
     action_notes = []
@@ -503,6 +575,16 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str) -> str:
         reason = block_failure_reasons[0] if block_failure_reasons else "unknown error"
         action_notes.append(
             f"— *Could not schedule {block_failures} calendar block(s): {reason}.*"
+        )
+    if created_assignments:
+        preview = ", ".join(created_assignments[:3])
+        more = " ..." if len(created_assignments) > 3 else ""
+        action_notes.append(
+            f"— *Created {len(created_assignments)} assignment(s): {preview}{more}.*"
+        )
+    if assignment_failures:
+        action_notes.append(
+            f"— *Could not create {len(assignment_failures)} assignment(s): {assignment_failures[0]}.*"
         )
     if action_notes:
         if out:
