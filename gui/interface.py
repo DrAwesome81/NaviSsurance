@@ -138,6 +138,7 @@ from gui.workspace_tab import WorkspaceTab
 from gui.projects_tab import ProjectsTab
 from gui.chief_of_staff_tab import ChiefOfStaffTab
 from gui.agent_tab import AgentTab
+from gui.team_directory_tab import TeamDirectoryTab
 from gui.utils import *
 
 logger = logging.getLogger(__name__)
@@ -516,6 +517,9 @@ class ChatWindow(QMainWindow):
             parent=self,
         )
         self.tab_widget.addTab(self.security_tab, "Security")
+
+        self.team_tab = TeamDirectoryTab(self.db, self)
+        self.tab_widget.addTab(self.team_tab, "Team")
         
         self.notes_tab = NoteTakingSystem(self.chat_handler)
         self.tab_widget.addTab(self.notes_tab, "Notes")
