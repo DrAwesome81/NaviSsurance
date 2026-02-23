@@ -116,75 +116,90 @@ Return only the relevant emails, nothing else."""
 
         # ========== TASKS ==========
         try:
-            # FIX: Use correct date format and get more relevant tasks
-            today_str = today.strftime('%m-%d-%Y')  # Match database format
-            
-            with sqlite3.connect(self.db.db_name) as conn:  # Use self.db.db_name instead of data_fetcher.DB_FILE
-                # Get overdue tasks
-                cursor = conn.execute("""
-                    SELECT task_text, due_date, category, completed 
-                    FROM tasks 
-                    WHERE due_date < ? AND completed = 0
-                    ORDER BY due_date ASC
-                """, (today_str,))
-                overdue = cursor.fetchall()
-                
-                # Get tasks due today
-                cursor = conn.execute("""
-                    SELECT task_text, due_date, category, completed 
-                    FROM tasks 
-                    WHERE due_date = ? AND completed = 0
-                    ORDER BY category, task_text
-                """, (today_str,))
-                due_today = cursor.fetchall()
-                
-                # Get upcoming tasks (next 3 days)
-                upcoming_dates = [
-                    (today + timedelta(days=i)).strftime('%m-%d-%Y') 
-                    for i in range(1, 4)
-                ]
-                placeholders = ','.join(['?' for _ in upcoming_dates])
-                cursor = conn.execute(f"""
-                    SELECT task_text, due_date, category, completed 
-                    FROM tasks 
-                    WHERE due_date IN ({placeholders}) AND completed = 0
-                    ORDER BY due_date ASC, category
-                """, upcoming_dates)
-                upcoming = cursor.fetchall()
-                
-                # Get tasks without due dates (high priority)
-                cursor = conn.execute("""
-                    SELECT task_text, due_date, category, completed 
-                    FROM tasks 
-                    WHERE due_date IS NULL AND completed = 0
-                    ORDER BY category, task_text
-                    LIMIT 5
-                """)
-                no_date = cursor.fetchall()
-            
-            # Format tasks with better organization
+            from datetime import datetime as _dt
+
+            def _parse(s: str | None) -> _dt | None:
+                ss = (s or "").strip()
+                if not ss or ss.lower() == "unknown":
+                    return None
+                try:
+                    return _dt.strptime(ss, "%m-%d-%Y")
+                except Exception:
+                    return None
+
+            today_str = today.strftime("%m-%d-%Y")
+            today_dt = _parse(today_str) or _dt.now()
+
+            rows = self.db.list_tasks_rich(include_completed=False, include_snoozed=False, limit=500)
+
+            overdue = []
+            due_today = []
+            upcoming = []
+            no_due = []
+            next_action_today = []
+
+            for r in rows:
+                due_dt = _parse(r.get("due_date"))
+                next_dt = _parse(r.get("next_action_date"))
+                if next_dt and next_dt.date() == today_dt.date():
+                    next_action_today.append(r)
+                if due_dt is None:
+                    no_due.append(r)
+                elif due_dt.date() < today_dt.date():
+                    overdue.append(r)
+                elif due_dt.date() == today_dt.date():
+                    due_today.append(r)
+                elif due_dt.date() <= (today_dt + timedelta(days=3)).date():
+                    upcoming.append(r)
+
+            def _fmt(r: dict, *, show_due: bool = True) -> str:
+                pr = int(r.get("priority") or 0)
+                pr_s = f"[P{pr}] " if pr > 0 else ""
+                txt = str(r.get("task_text") or "").strip()
+                cat = str(r.get("category") or "").strip()
+                due = (r.get("due_date") or "").strip()
+                na = (r.get("next_action_date") or "").strip()
+                parts = [f"{pr_s}{txt}"]
+                if show_due and due:
+                    parts.append(f"(due {due})")
+                if na and na != due:
+                    parts.append(f"(next {na})")
+                if cat:
+                    parts.append(f"[{cat}]")
+                return " ".join(parts).strip()
+
             tasks_parts = []
-            
+            top = [r for r in rows if int(r.get("priority") or 0) >= 4]
+            if top:
+                tasks_parts.append("TOP PRIORITIES:")
+                for r in top[:6]:
+                    tasks_parts.append("  • " + _fmt(r, show_due=True))
+
             if overdue:
-                tasks_parts.append("OVERDUE:")
-                for t in overdue:
-                    tasks_parts.append(f"  ⚠️ {t[0]} (was due {t[1]}) [{t[2]}]")
-            
+                tasks_parts.append("\nOVERDUE:")
+                for r in overdue[:10]:
+                    tasks_parts.append("  ⚠️ " + _fmt(r, show_due=True))
+
             if due_today:
                 tasks_parts.append("\nDUE TODAY:")
-                for t in due_today:
-                    tasks_parts.append(f"  • {t[0]} [{t[2]}]")
-            
+                for r in due_today[:10]:
+                    tasks_parts.append("  • " + _fmt(r, show_due=False))
+
+            if next_action_today:
+                tasks_parts.append("\nNEXT ACTIONS TODAY:")
+                for r in next_action_today[:10]:
+                    tasks_parts.append("  • " + _fmt(r, show_due=True))
+
             if upcoming:
                 tasks_parts.append("\nUPCOMING (next 3 days):")
-                for t in upcoming:
-                    tasks_parts.append(f"  • {t[0]} (due {t[1]}) [{t[2]}]")
-            
-            if no_date:
+                for r in upcoming[:10]:
+                    tasks_parts.append("  • " + _fmt(r, show_due=True))
+
+            if no_due:
                 tasks_parts.append("\nNO DUE DATE (consider scheduling):")
-                for t in no_date:
-                    tasks_parts.append(f"  • {t[0]} [{t[2]}]")
-            
+                for r in no_due[:8]:
+                    tasks_parts.append("  • " + _fmt(r, show_due=False))
+
             tasks_str = "\n".join(tasks_parts) if tasks_parts else "No active tasks found. Great job staying on top of things!"
             
         except sqlite3.Error as e:
@@ -284,12 +299,16 @@ Return only the relevant emails, nothing else."""
                                 rfc822_refs = (headers.get("references") or "").strip() or None
                                 thread_id = str(details.get("threadId") or details.get("thread_id") or "") or None
 
-                            # Classify to support Unreplied Emails view
-                            import os
-                            client_domains = (os.getenv("EMAIL_CLIENT_DOMAINS") or "goldbugstrategies.com,dovahealth.ca").split(",")
-                            potential_domains = (os.getenv("EMAIL_POTENTIAL_DOMAINS") or "").split(",")
-                            client_labels = (os.getenv("EMAIL_CLIENT_LABELS") or "Clients,Client").split(",")
-                            potential_labels = (os.getenv("EMAIL_POTENTIAL_LABELS") or "Leads,Lead").split(",")
+                            # Classify to support Unreplied Emails view (configurable in-app via app_settings)
+                            rules = {}
+                            try:
+                                rules = self.db.get_email_rules() if hasattr(self.db, "get_email_rules") else {}
+                            except Exception:
+                                rules = {}
+                            client_domains = rules.get("client_domains") or []
+                            potential_domains = rules.get("potential_domains") or []
+                            client_labels = rules.get("client_labels") or []
+                            potential_labels = rules.get("potential_labels") or []
                             is_client, is_potential = classify_email(
                                 sender_header=sender,
                                 folder=folder,

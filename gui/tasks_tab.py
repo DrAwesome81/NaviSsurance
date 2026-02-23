@@ -7,6 +7,7 @@ core.db.DatabaseManager (same task store used by Dashboard + CoS task capture).
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 
@@ -24,9 +25,12 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QCheckBox,
     QMessageBox,
+    QDialog,
+    QDateEdit,
 )
 
 from core.db import DatabaseManager
+from gui.task_edit_dialog import TaskEditDialog
 
 logger = logging.getLogger(__name__)
 
@@ -100,13 +104,29 @@ class TasksTab(QWidget):
 
         filters.addWidget(QLabel("Date:"))
         self.date_filter = QComboBox()
-        self.date_filter.addItems(["All", "Today", "Overdue", "No Date"])
+        self.date_filter.addItems(["All", "Today", "Overdue", "No Date", "Specific Date"])
         self.date_filter.currentTextChanged.connect(self.refresh_tasks)
         filters.addWidget(self.date_filter)
+
+        self.specific_date = QDateEdit()
+        self.specific_date.setCalendarPopup(True)
+        try:
+            from PyQt6.QtCore import QDate
+
+            self.specific_date.setDate(QDate.currentDate())
+        except Exception:
+            pass
+        self.specific_date.dateChanged.connect(self.refresh_tasks)
+        self.specific_date.setVisible(False)
+        filters.addWidget(self.specific_date)
 
         self.show_completed = QCheckBox("Show completed")
         self.show_completed.stateChanged.connect(self.refresh_tasks)
         filters.addWidget(self.show_completed)
+
+        self.show_snoozed = QCheckBox("Show snoozed")
+        self.show_snoozed.stateChanged.connect(self.refresh_tasks)
+        filters.addWidget(self.show_snoozed)
 
         filters.addStretch(1)
 
@@ -142,8 +162,10 @@ class TasksTab(QWidget):
         layout.addLayout(add_row)
 
         # Table
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["ID", "Task", "Category", "Due", "Done", "Actions"])
+        self.table = QTableWidget(0, 9)
+        self.table.setHorizontalHeaderLabels(
+            ["ID", "Task", "Priority", "Tags", "Next action", "Due", "Category", "Done", "Actions"]
+        )
         self.table.setColumnHidden(0, True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -153,10 +175,8 @@ class TasksTab(QWidget):
 
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        for c in range(2, 9):
+            hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
 
         layout.addWidget(self.table, 1)
 
@@ -180,36 +200,51 @@ class TasksTab(QWidget):
 
     def refresh_tasks(self):
         try:
+            # Toggle specific date control
+            try:
+                self.specific_date.setVisible(self.date_filter.currentText() == "Specific Date")
+            except Exception:
+                pass
+
             category = self.category_filter.currentText()
             category_val = None if category == "All" else category
 
             date = self.date_filter.currentText()
             date_val = None if date == "All" else date
-
-            rows = self.db.get_tasks(category=category_val, date_filter=date_val)
+            specific_date = self.specific_date.date().toString("MM-dd-yyyy") if date == "Specific Date" else None
 
             query = (self.search_input.text() or "").strip().lower()
             show_done = self.show_completed.isChecked()
+            show_snoozed = self.show_snoozed.isChecked()
 
-            tasks = []
-            for (task_id, task_text, due_date, cat, recurrence, completed) in rows:
-                if not show_done and int(completed or 0) == 1:
-                    continue
-                if query and query not in str(task_text or "").lower():
-                    continue
-                tasks.append((int(task_id), str(task_text or ""), due_date, str(cat or ""), str(recurrence or ""), int(completed or 0)))
-
-            # Stable ordering: incomplete first, then due_date (None last), then id desc
-            def _k(t):
-                _id, _txt, _due, _cat, _rec, _done = t
-                due_sort = _due if _due else "99-99-9999"
-                return (_done, due_sort, -_id)
-
-            tasks.sort(key=_k)
+            tasks = self.db.list_tasks_rich(
+                category=category_val,
+                date_filter=date_val,
+                specific_date=specific_date,
+                include_completed=bool(show_done),
+                include_snoozed=bool(show_snoozed),
+                search=query or None,
+                limit=500,
+            )
 
             self.table.setRowCount(0)
-            for t in tasks:
-                task_id, task_text, due_date, cat, _rec, done = t
+            for rdict in tasks:
+                task_id = int(rdict.get("id") or 0)
+                task_text = str(rdict.get("task_text") or "")
+                due_date = rdict.get("due_date") or ""
+                cat = str(rdict.get("category") or "")
+                done = int(rdict.get("completed") or 0)
+                priority = int(rdict.get("priority") or 0)
+                tags_json = str(rdict.get("tags_json") or "[]")
+                tags_display = tags_json
+                try:
+                    arr = json.loads(tags_json)
+                    if isinstance(arr, list):
+                        tags_display = ", ".join(str(x) for x in arr if str(x).strip())
+                except Exception:
+                    pass
+                next_action = rdict.get("next_action_date") or ""
+
                 r = self.table.rowCount()
                 self.table.insertRow(r)
 
@@ -221,31 +256,50 @@ class TasksTab(QWidget):
                 it_task.setFlags(it_task.flags() ^ Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(r, 1, it_task)
 
+                it_pr = QTableWidgetItem(str(priority))
+                it_pr.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                it_pr.setFlags(it_pr.flags() ^ Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(r, 2, it_pr)
+
+                it_tags = QTableWidgetItem(tags_display)
+                it_tags.setFlags(it_tags.flags() ^ Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(r, 3, it_tags)
+
+                it_next = QTableWidgetItem(next_action)
+                it_next.setFlags(it_next.flags() ^ Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(r, 4, it_next)
+
+                it_due = QTableWidgetItem(due_date)
+                it_due.setFlags(it_due.flags() ^ Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(r, 5, it_due)
+
                 it_cat = QTableWidgetItem(cat)
                 it_cat.setFlags(it_cat.flags() ^ Qt.ItemFlag.ItemIsEditable)
-                self.table.setItem(r, 2, it_cat)
-
-                it_due = QTableWidgetItem(due_date or "")
-                it_due.setFlags(it_due.flags() ^ Qt.ItemFlag.ItemIsEditable)
-                self.table.setItem(r, 3, it_due)
+                self.table.setItem(r, 6, it_cat)
 
                 it_done = QTableWidgetItem("Yes" if done else "")
                 it_done.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 it_done.setFlags(it_done.flags() ^ Qt.ItemFlag.ItemIsEditable)
-                self.table.setItem(r, 4, it_done)
+                self.table.setItem(r, 7, it_done)
 
                 # Actions
                 actions = QWidget()
                 row = QHBoxLayout(actions)
                 row.setContentsMargins(0, 0, 0, 0)
                 row.setSpacing(6)
+                btn_edit = QPushButton("Edit")
+                btn_edit.clicked.connect(lambda _=False, rr=rdict: self._edit_task(rr))
+                row.addWidget(btn_edit)
                 btn_toggle = QPushButton("Undo" if done else "Complete")
                 btn_toggle.clicked.connect(lambda _=False, tid=task_id, cur=done: self._toggle_done(tid, cur))
                 row.addWidget(btn_toggle)
+                btn_snooze = QPushButton("Snooze 1d")
+                btn_snooze.clicked.connect(lambda _=False, tid=task_id: self._snooze_task(tid, days=1))
+                row.addWidget(btn_snooze)
                 btn_del = QPushButton("Delete")
                 btn_del.clicked.connect(lambda _=False, tid=task_id: self._delete_task(tid))
                 row.addWidget(btn_del)
-                self.table.setCellWidget(r, 5, actions)
+                self.table.setCellWidget(r, 8, actions)
 
             self.table.resizeRowsToContents()
         except Exception as e:
@@ -253,10 +307,34 @@ class TasksTab(QWidget):
 
     def _toggle_done(self, task_id: int, current_done: int):
         try:
-            self.db.update_task_completed_by_id(int(task_id), 0 if int(current_done) else 1)
+            self.db.update_task_by_id(int(task_id), completed=0 if int(current_done) else 1)
         except Exception as e:
             QMessageBox.warning(self, "Tasks", f"Could not update task:\n\n{type(e).__name__}: {e}")
             return
+        self.refresh_tasks()
+
+    def _snooze_task(self, task_id: int, days: int = 1):
+        try:
+            from datetime import timedelta
+
+            d = (datetime.now() + timedelta(days=int(days))).strftime("%m-%d-%Y")
+            self.db.update_task_by_id(int(task_id), snoozed_until=d)
+        except Exception as e:
+            QMessageBox.warning(self, "Tasks", f"Could not snooze task:\n\n{type(e).__name__}: {e}")
+            return
+        self.refresh_tasks()
+
+    def _edit_task(self, task_row: dict):
+        try:
+            dlg = TaskEditDialog(parent=self, task=task_row)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            vals = dlg.values()
+            if not vals.get("task_text"):
+                return
+            self.db.update_task_by_id(int(task_row["id"]), **vals)
+        except Exception as e:
+            QMessageBox.warning(self, "Tasks", f"Could not edit task:\n\n{type(e).__name__}: {e}")
         self.refresh_tasks()
 
     def _delete_task(self, task_id: int):

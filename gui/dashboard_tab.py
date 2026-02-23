@@ -159,6 +159,15 @@ class DashboardTab(QWidget):
         self.date_range.dateChanged.connect(self.load_tasks_filtered)
         filter_layout.addWidget(QLabel("Specific Date:"))
         filter_layout.addWidget(self.date_range)
+
+        # Additional toggles (kept lightweight)
+        self.show_completed_cb = QCheckBox("Show completed")
+        self.show_completed_cb.stateChanged.connect(self.load_tasks_filtered)
+        filter_layout.addWidget(self.show_completed_cb)
+
+        self.show_snoozed_cb = QCheckBox("Show snoozed")
+        self.show_snoozed_cb.stateChanged.connect(self.load_tasks_filtered)
+        filter_layout.addWidget(self.show_snoozed_cb)
         filter_layout.addStretch()
 
         # Add the filter layout to the dashboard's left column layout
@@ -174,12 +183,37 @@ class DashboardTab(QWidget):
 
             print(f"DEBUG: Filter values - category: '{category_filter}', date_filter: '{date_filter}', specific_date: '{specific_date}'")
 
-            # Get filtered tasks from database
-            tasks = self.db.get_tasks(
-                category=category_filter if category_filter != "All" else None,
-                date_filter=date_filter,
-                specific_date=specific_date
-            )
+            tasks = []
+            try:
+                tasks = self.db.list_tasks_rich(
+                    category=category_filter if category_filter != "All" else None,
+                    date_filter=date_filter,
+                    specific_date=specific_date,
+                    include_completed=bool(self.show_completed_cb.isChecked()) if hasattr(self, "show_completed_cb") else False,
+                    include_snoozed=bool(self.show_snoozed_cb.isChecked()) if hasattr(self, "show_snoozed_cb") else False,
+                    limit=500,
+                )
+            except Exception:
+                # Fallback (legacy)
+                tasks = [
+                    {
+                        "id": tid,
+                        "task_text": ttext,
+                        "due_date": d,
+                        "category": c,
+                        "recurrence": r,
+                        "completed": comp,
+                        "priority": 0,
+                        "tags_json": "[]",
+                        "next_action_date": None,
+                        "snoozed_until": None,
+                    }
+                    for (tid, ttext, d, c, r, comp) in self.db.get_tasks(
+                        category=category_filter if category_filter != "All" else None,
+                        date_filter=date_filter,
+                        specific_date=specific_date,
+                    )
+                ]
 
             print(f"DEBUG: Retrieved {len(tasks)} tasks from database")
 
@@ -196,13 +230,35 @@ class DashboardTab(QWidget):
                     # BATCH OPTIMIZATION: Load all rows first, then style in one pass
                     # Step 1: Create all rows and widgets without styling
                     styling_data_list = []
-                    for task_id, task_text, due_date, category, recurrence, completed in tasks:
+                    for t in tasks:
+                        task_id = int(t.get("id") or 0)
+                        task_text = str(t.get("task_text") or "")
+                        due_date = t.get("due_date")
+                        category = str(t.get("category") or "Business")
+                        recurrence = str(t.get("recurrence") or "None")
+                        completed = int(t.get("completed") or 0)
+                        priority = int(t.get("priority") or 0)
+                        tags_json = str(t.get("tags_json") or "[]")
+                        next_action_date = t.get("next_action_date")
+                        snoozed_until = t.get("snoozed_until")
                         row_position = self.task_list.rowCount()
                         self.task_list.insertRow(row_position)
                         print(f"DEBUG: Creating row {row_position} for task {task_id}: {task_text[:30]}...")
                         
                         # Create and set widgets without styling
-                        self._create_task_row_widgets(row_position, task_id, task_text, due_date, category, recurrence, completed)
+                        self._create_task_row_widgets(
+                            row_position,
+                            task_id,
+                            task_text,
+                            due_date,
+                            category,
+                            recurrence,
+                            completed,
+                            priority=priority,
+                            tags_json=tags_json,
+                            next_action_date=next_action_date,
+                            snoozed_until=snoozed_until,
+                        )
                         
                         # Store styling data for batch processing
                         styling_data_list.append((row_position, due_date, completed))
@@ -228,7 +284,21 @@ class DashboardTab(QWidget):
             import traceback
             traceback.print_exc()
 
-    def _create_task_row_widgets(self, row_position, task_id, task_text, due_date, category, recurrence, completed):
+    def _create_task_row_widgets(
+        self,
+        row_position,
+        task_id,
+        task_text,
+        due_date,
+        category,
+        recurrence,
+        completed,
+        *,
+        priority: int = 0,
+        tags_json: str = "[]",
+        next_action_date: str | None = None,
+        snoozed_until: str | None = None,
+    ):
         """Create task row widgets without applying styling (for batch loading)."""
         try:
             # Create task widget with checkbox and label
@@ -264,7 +334,9 @@ class DashboardTab(QWidget):
             task_layout.addWidget(checkbox)
 
             # Task label
-            task_label = QLabel(f"  {task_text}")  # Add spaces at the beginning for left alignment
+            pr = int(priority or 0)
+            prefix = f"[P{pr}] " if pr > 0 else ""
+            task_label = QLabel(f"  {prefix}{task_text}")  # Add spaces at the beginning for left alignment
             task_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             task_label.setStyleSheet("""
                 QLabel {
@@ -278,6 +350,21 @@ class DashboardTab(QWidget):
                 }
             """)
             task_layout.addWidget(task_label)
+            # Tooltips for richer fields
+            try:
+                tip = []
+                if pr:
+                    tip.append(f"Priority: {pr}")
+                if next_action_date:
+                    tip.append(f"Next action: {next_action_date}")
+                if snoozed_until:
+                    tip.append(f"Snoozed until: {snoozed_until}")
+                if tags_json and tags_json != "[]":
+                    tip.append(f"Tags: {tags_json}")
+                if tip:
+                    task_label.setToolTip("\n".join(tip))
+            except Exception:
+                pass
 
             # CRITICAL: Set parent before adding to table to prevent widget detachment
             task_widget.setParent(self.task_list)
@@ -325,6 +412,38 @@ class DashboardTab(QWidget):
             edit_btn.clicked.connect(lambda checked, r=row_position, tid=task_id: self.edit_task(r, tid))
             actions_layout.addWidget(edit_btn)
 
+            # Snooze button (1 day)
+            snooze_btn = QPushButton("Snooze")
+            snooze_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            snooze_btn.setMinimumSize(60, 35)
+            snooze_btn.setMaximumSize(90, 45)
+            snooze_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #3a3b3e;
+                    color: #e8eaed;
+                    border: 1px solid #2e2f32;
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                    font-weight: 500;
+                    font-size: 12px;
+                    margin: 2px;
+                    min-width: 60px;
+                }
+                QPushButton:hover {
+                    background-color: #4a4a4e;
+                }
+            """)
+            def _snooze_one_day():
+                try:
+                    from datetime import timedelta
+                    d = (datetime.now() + timedelta(days=1)).strftime("%m-%d-%Y")
+                    self.db.update_task_by_id(int(task_id), snoozed_until=d)
+                    self.load_tasks_filtered()
+                except Exception:
+                    return
+            snooze_btn.clicked.connect(_snooze_one_day)
+            actions_layout.addWidget(snooze_btn)
+
             # Delete button
             delete_btn = QPushButton("Delete")
             delete_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -360,7 +479,11 @@ class DashboardTab(QWidget):
                 'due_date': due_date,
                 'category': category,
                 'recurrence': recurrence,
-                'completed': completed
+                'completed': completed,
+                'priority': pr,
+                'tags_json': tags_json,
+                'next_action_date': next_action_date,
+                'snoozed_until': snoozed_until,
             }
 
             print(f"DEBUG: Created widgets for row {row_position}, task: {task_text[:30]}...")
@@ -458,12 +581,21 @@ class DashboardTab(QWidget):
         task_widget = self.create_task_widget()
         left_column.addWidget(task_widget)
         
-        # Right column: News Feed
+        # Right column: Unreplied emails + News Feed
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(12)
+
+        unreplied_widget = self.create_unreplied_emails_widget()
+        right_layout.addWidget(unreplied_widget)
+
         news_widget = self.create_news_widget()
+        right_layout.addWidget(news_widget, 1)
         
         # Add columns to main layout
         main_layout.addLayout(left_column, 2)  # Left column takes 2/3 of space
-        main_layout.addWidget(news_widget, 1)  # Right column takes 1/3 of space
+        main_layout.addWidget(right_widget, 1)  # Right column takes 1/3 of space
         
         layout.addLayout(main_layout)
         
@@ -486,6 +618,10 @@ class DashboardTab(QWidget):
         # Initial loads
         self.load_schedule()
         self.load_news()
+        try:
+            self.load_unreplied_emails()
+        except Exception:
+            pass
         # Load daily briefing if available (with delay to let other components initialize)
         try:
             from config import BRIEFING_AND_EMAIL_DISABLED
@@ -647,172 +783,49 @@ class DashboardTab(QWidget):
 
 
     def edit_task(self, row, column=None):
-        """Edit a task using a custom dialog with calendar."""
+        """Edit a task (including priority/tags/next-action/snooze)."""
         try:
-            # Get task data from the task widget
             task_widget = self.task_list.cellWidget(row, 0)
-            if not task_widget or not hasattr(task_widget, 'task_data'):
+            if not task_widget or not hasattr(task_widget, "task_data"):
                 return
-            
-            task_data = task_widget.task_data
-            task_text = task_data['text']  # Changed from 'task_text' to 'text'
-            due_date = task_data['due_date']
-            
-            # Create custom edit dialog
-            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QDateEdit
-            from PyQt6.QtCore import QDate
-            
-            edit_dialog = QDialog(self)
-            edit_dialog.setWindowTitle("Edit Task")
-            edit_dialog.setModal(True)
-            edit_dialog.setStyleSheet("""
-                QDialog {
-                    background-color: #15171c;
-                    color: #e8eaed;
+            td = task_widget.task_data
+            task_id = int(td.get("id") or 0)
+            if task_id <= 0:
+                return
+
+            # Load current task row from DB if available (to include new fields).
+            task_row = None
+            try:
+                rows = self.db.list_tasks_rich(include_completed=True, include_snoozed=True, limit=2000)
+                for r in rows:
+                    if int(r.get("id") or 0) == task_id:
+                        task_row = r
+                        break
+            except Exception:
+                task_row = {
+                    "id": task_id,
+                    "task_text": td.get("text") or "",
+                    "due_date": td.get("due_date"),
+                    "category": td.get("category") or "Business",
+                    "priority": td.get("priority") or 0,
+                    "tags_json": td.get("tags_json") or "[]",
+                    "next_action_date": td.get("next_action_date"),
+                    "snoozed_until": td.get("snoozed_until"),
                 }
-                QLabel {
-                    color: #e8eaed;
-                    font-weight: 600;
-                }
-                QLineEdit {
-                    background-color: #22252c;
-                    color: #e8eaed;
-                    border: 1px solid #2e2f32;
-                    padding: 8px;
-                    border-radius: 6px;
-                    font-size: 13px;
-                }
-                QDateEdit {
-                    background-color: #22252c;
-                    color: #e8eaed;
-                    border: 1px solid #2e2f32;
-                    padding: 8px;
-                    border-radius: 6px;
-                    font-size: 13px;
-                    min-height: 30px;
-                }
-                QPushButton {
-                    background-color: #FD6262;
-                    color: white;
-                    border: none;
-                    padding: 8px 16px;
-                    border-radius: 6px;
-                    font-size: 13px;
-                    font-weight: 500;
-                }
-                QPushButton:hover {
-                    background-color: #e85555;
-                }
-                QPushButton#cancelButton {
-                    background-color: #3a3b3e;
-                }
-                QPushButton#cancelButton:hover {
-                    background-color: #4a4a4e;
-                }
-            """)
-            
-            # Set responsive dialog size and center it
-            edit_dialog.setMinimumSize(400, 320)
-            edit_dialog.resize(450, 350)
-            
-            layout = QVBoxLayout(edit_dialog)
-            layout.setSpacing(15)
-            layout.setContentsMargins(20, 20, 20, 20)
-            
-            # Task text input
-            task_label = QLabel("Task:")
-            layout.addWidget(task_label)
-            
-            task_input = QLineEdit()
-            task_input.setText(task_text)
-            task_input.setPlaceholderText("Enter task description...")
-            layout.addWidget(task_input)
-            
-            # Due date input with calendar
-            date_label = QLabel("Due Date:")
-            layout.addWidget(date_label)
-            
-            date_input = QDateEdit()
-            date_input.setCalendarPopup(True)
-            if due_date and due_date != "No due date":
-                try:
-                    # Parse the existing date
-                    date_obj = datetime.strptime(due_date, "%m-%d-%Y")
-                    date_input.setDate(QDate(date_obj.year, date_obj.month, date_obj.day))
-                except ValueError:
-                    date_input.setDate(QDate.currentDate())
-            else:
-                date_input.setDate(QDate.currentDate())
-            layout.addWidget(date_input)
-            
-            # Category input
-            category_label = QLabel("Category:")
-            layout.addWidget(category_label)
-            
-            category_input = QComboBox()
-            category_input.addItems(["Business", "Personal"])
-            # Set current category
-            current_category = task_data.get('category', 'Business')
-            if current_category == "Personal":
-                category_input.setCurrentIndex(1)
-            else:
-                category_input.setCurrentIndex(0)
-            layout.addWidget(category_input)
-            
-            # Buttons
-            button_layout = QHBoxLayout()
-            button_layout.addStretch()
-            
-            cancel_btn = QPushButton("Cancel")
-            cancel_btn.setObjectName("cancelButton")
-            cancel_btn.clicked.connect(edit_dialog.reject)
-            button_layout.addWidget(cancel_btn)
-            
-            save_btn = QPushButton("Save Changes")
-            save_btn.clicked.connect(edit_dialog.accept)
-            button_layout.addWidget(save_btn)
-            
-            layout.addLayout(button_layout)
-            
-            # Set focus to task input and select all text
-            task_input.setFocus()
-            task_input.selectAll()
-            
-            # Show dialog and handle result
-            if edit_dialog.exec() == QDialog.DialogCode.Accepted:
-                new_text = task_input.text().strip()
-                new_date = date_input.date().toString("MM-dd-yyyy")
-                new_category = category_input.currentText()
-                
-                if not new_text:
-                    QMessageBox.warning(self, "Error", "Task text cannot be empty")
-                    return
-                
-                # Update the task in the database
-                try:
-                    db_name = DATABASE_PATH
-                    task_id = task_data['id']
-                    with sqlite3.connect(db_name) as conn:
-                        conn.execute("""
-                            UPDATE tasks SET task_text = ?, due_date = ?, category = ? WHERE id = ?
-                        """, (new_text, new_date, new_category, task_id))
-                        conn.commit()
-                    
-                    # Update the task widget and refresh the display
-                    task_data['text'] = new_text
-                    task_data['due_date'] = new_date
-                    task_data['category'] = new_category
-                    task_widget.task_data = task_data
-                    
-                    # Refresh the entire task list to show changes
-                    print(f"DEBUG: About to call load_tasks() from edit_task at {time.time():.6f}")
-                    self.load_tasks_filtered()
-                    
-                except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Failed to update task: {str(e)}")
-                    
+
+            from gui.task_edit_dialog import TaskEditDialog
+
+            dlg = TaskEditDialog(parent=self, task=task_row or {})
+            from PyQt6.QtWidgets import QDialog
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            vals = dlg.values()
+            if not vals.get("task_text"):
+                QMessageBox.warning(self, "Error", "Task text cannot be empty")
+                return
+            self.db.update_task_by_id(task_id, **vals)
+            self.load_tasks_filtered()
         except Exception as e:
-            print(f"Error editing task: {e}")
             QMessageBox.critical(self, "Error", f"Failed to edit task: {str(e)}")
 
     def delete_task(self, row, column=None):
@@ -831,11 +844,20 @@ class DashboardTab(QWidget):
                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             
             if reply == QMessageBox.StandardButton.Yes:
-                db_name = DATABASE_PATH
                 task_id = task_data['id']
-                with sqlite3.connect(db_name) as conn:
-                    conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-                    conn.commit()
+                try:
+                    if hasattr(self.db, "delete_task_by_id"):
+                        self.db.delete_task_by_id(int(task_id))
+                    else:
+                        db_name = DATABASE_PATH
+                        with sqlite3.connect(db_name) as conn:
+                            conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+                            conn.commit()
+                except Exception:
+                    db_name = DATABASE_PATH
+                    with sqlite3.connect(db_name) as conn:
+                        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+                        conn.commit()
                 
                 # Remove the row from the table
                 self.task_list.removeRow(row)
@@ -849,14 +871,15 @@ class DashboardTab(QWidget):
         item = self.task_list.itemAt(position)
         if item is None:
             return
-            
-        # Check if it's a valid task item (not error messages)
-        task_data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not task_data:
-            return
-        
+
         # Get row index (item may be in any column)
         row = item.row()
+        task_widget = self.task_list.cellWidget(row, 0)
+        if not task_widget or not hasattr(task_widget, "task_data"):
+            return
+        task_id = int(task_widget.task_data.get("id") or 0)
+        if task_id <= 0:
+            return
         from PyQt6.QtWidgets import QMenu
         from PyQt6.QtGui import QAction
         
@@ -866,6 +889,32 @@ class DashboardTab(QWidget):
         edit_action = QAction("Edit Task", self)
         edit_action.triggered.connect(lambda: self.edit_task(row, 0))
         context_menu.addAction(edit_action)
+
+        # Snooze actions
+        from datetime import timedelta
+        try:
+            today = datetime.now()
+            snooze_1 = (today + timedelta(days=1)).strftime("%m-%d-%Y")
+            snooze_3 = (today + timedelta(days=3)).strftime("%m-%d-%Y")
+        except Exception:
+            snooze_1, snooze_3 = None, None
+
+        if snooze_1:
+            snooze1_action = QAction("Snooze 1 day", self)
+            snooze1_action.triggered.connect(
+                lambda: (self.db.update_task_by_id(task_id, snoozed_until=snooze_1), self.load_tasks_filtered())
+            )
+            context_menu.addAction(snooze1_action)
+        if snooze_3:
+            snooze3_action = QAction("Snooze 3 days", self)
+            snooze3_action.triggered.connect(
+                lambda: (self.db.update_task_by_id(task_id, snoozed_until=snooze_3), self.load_tasks_filtered())
+            )
+            context_menu.addAction(snooze3_action)
+
+        unsnooze_action = QAction("Unsnooze", self)
+        unsnooze_action.triggered.connect(lambda: (self.db.update_task_by_id(task_id, snoozed_until=None), self.load_tasks_filtered()))
+        context_menu.addAction(unsnooze_action)
         
         # Delete action
         delete_action = QAction("Delete Task", self)
@@ -913,10 +962,19 @@ class DashboardTab(QWidget):
             return
             
         try:
-            db_name = DATABASE_PATH
-            with sqlite3.connect(db_name) as conn:
-                conn.execute("UPDATE tasks SET completed = ? WHERE id = ?", (completed, task_id))
-                conn.commit()
+            try:
+                if hasattr(self.db, "update_task_by_id"):
+                    self.db.update_task_by_id(int(task_id), completed=1 if completed else 0)
+                else:
+                    db_name = DATABASE_PATH
+                    with sqlite3.connect(db_name) as conn:
+                        conn.execute("UPDATE tasks SET completed = ? WHERE id = ?", (completed, task_id))
+                        conn.commit()
+            except Exception:
+                db_name = DATABASE_PATH
+                with sqlite3.connect(db_name) as conn:
+                    conn.execute("UPDATE tasks SET completed = ? WHERE id = ?", (completed, task_id))
+                    conn.commit()
             
             # Find the row with this task and update styling
             print(f"TIMING: About to search for task_id {task_id} at {time.time():.6f}")
@@ -1097,6 +1155,146 @@ class DashboardTab(QWidget):
         self.news_cleanup_timer.start(86400000)  # 24 hours
         
         return widget
+
+    def create_unreplied_emails_widget(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        header_row = QHBoxLayout()
+        header = QLabel("Unreplied Emails")
+        header.setStyleSheet("color: #e8eaed; font-weight: 600; padding: 3px; background-color: transparent; border: none; font-size: 13px;")
+        header_row.addWidget(header)
+        header_row.addStretch(1)
+
+        rules_btn = QPushButton("Email rules…")
+        rules_btn.setStyleSheet("background-color: #3a3b3e; color: #e8eaed; border: 1px solid #2e2f32; padding: 6px 10px; border-radius: 6px; font-size: 11px;")
+        rules_btn.clicked.connect(self.open_email_rules)
+        header_row.addWidget(rules_btn)
+
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 6px 10px; border-radius: 6px; font-size: 11px; font-weight: 500;")
+        refresh_btn.clicked.connect(self.load_unreplied_emails)
+        header_row.addWidget(refresh_btn)
+
+        layout.addLayout(header_row)
+
+        controls = QHBoxLayout()
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(8)
+
+        self.unreplied_only_client = QCheckBox("Only clients/leads")
+        self.unreplied_only_client.setChecked(True)
+        self.unreplied_only_client.stateChanged.connect(self.load_unreplied_emails)
+        controls.addWidget(self.unreplied_only_client)
+
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.unreplied_table = QTableWidget(0, 6)
+        self.unreplied_table.setHorizontalHeaderLabels(["From", "Subject", "Age", "Folder", "Source", "Actions"])
+        self.unreplied_table.verticalHeader().setVisible(False)
+        self.unreplied_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.unreplied_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        hdr = self.unreplied_table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.unreplied_table, 1)
+
+        return widget
+
+    def open_email_rules(self):
+        try:
+            from gui.email_rules_dialog import EmailRulesDialog
+
+            dlg = EmailRulesDialog(parent=self, db=self.db)
+            res = dlg.exec()
+            try:
+                # If saved, reclassify recent emails so the view updates immediately.
+                from PyQt6.QtWidgets import QDialog
+
+                if res == QDialog.DialogCode.Accepted and hasattr(self.db, "reclassify_emails"):
+                    self.db.reclassify_emails(days=30)
+            except Exception:
+                pass
+            self.load_unreplied_emails()
+        except Exception as e:
+            try:
+                QMessageBox.warning(self, "Email Rules", f"Could not open rules:\n\n{type(e).__name__}: {e}")
+            except Exception:
+                pass
+
+    def load_unreplied_emails(self):
+        try:
+            only_cp = True
+            try:
+                only_cp = bool(self.unreplied_only_client.isChecked())
+            except Exception:
+                only_cp = True
+            rows = self.db.list_unreplied_emails(limit=30, only_clients_or_potentials=only_cp, days=14)
+
+            # Clear
+            self.unreplied_table.setRowCount(0)
+            if not rows:
+                self.unreplied_table.setRowCount(1)
+                self.unreplied_table.setItem(0, 0, QTableWidgetItem("No unreplied emails"))
+                return
+
+            from datetime import datetime, UTC
+            now = datetime.now(UTC).timestamp()
+
+            for r in rows:
+                email_id = str(r.get("id") or "")
+                sender = str(r.get("sender") or "")
+                subject = str(r.get("subject") or "")
+                folder = str(r.get("folder") or "")
+                source = str(r.get("source") or "")
+                ts = int(r.get("timestamp") or 0)
+                age_h = 0
+                try:
+                    age_h = int(max(0, (now - ts) // 3600))
+                except Exception:
+                    age_h = 0
+
+                row = self.unreplied_table.rowCount()
+                self.unreplied_table.insertRow(row)
+                it_from = QTableWidgetItem(sender)
+                it_from.setData(Qt.ItemDataRole.UserRole, email_id)
+                self.unreplied_table.setItem(row, 0, it_from)
+                self.unreplied_table.setItem(row, 1, QTableWidgetItem(subject))
+                self.unreplied_table.setItem(row, 2, QTableWidgetItem(f"{age_h}h"))
+                self.unreplied_table.setItem(row, 3, QTableWidgetItem(folder))
+                self.unreplied_table.setItem(row, 4, QTableWidgetItem(source))
+
+                actions = QWidget()
+                al = QHBoxLayout(actions)
+                al.setContentsMargins(0, 0, 0, 0)
+                al.setSpacing(6)
+                btn = QPushButton("Mark replied")
+                btn.clicked.connect(lambda _=False, mid=email_id: self._mark_email_replied(mid))
+                al.addWidget(btn)
+                self.unreplied_table.setCellWidget(row, 5, actions)
+
+            self.unreplied_table.resizeRowsToContents()
+        except Exception as e:
+            try:
+                self.unreplied_table.setRowCount(1)
+                self.unreplied_table.setItem(0, 0, QTableWidgetItem(f"Error loading emails: {e}"))
+            except Exception:
+                pass
+
+    def _mark_email_replied(self, email_id: str):
+        try:
+            self.db.mark_email_replied(str(email_id), replied=1)
+        except Exception as e:
+            QMessageBox.warning(self, "Emails", f"Could not mark replied:\n\n{type(e).__name__}: {e}")
+            return
+        self.load_unreplied_emails()
 
     def load_tasks(self):
         start_time = time.time()

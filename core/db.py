@@ -91,6 +91,20 @@ class DatabaseManager:
                     conn.execute("ALTER TABLE tasks ADD COLUMN session_id TEXT")
                     print("DEBUG: Added 'session_id' column")
 
+                # Backfill/extend tasks schema with richer fields (legacy DBs)
+                cursor.execute("PRAGMA table_info(tasks)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if "priority" not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+                if "tags_json" not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN tags_json TEXT")
+                if "next_action_date" not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN next_action_date TEXT")
+                if "snoozed_until" not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN snoozed_until TEXT")
+                if "updated_at" not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN updated_at DATETIME")
+
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -319,6 +333,157 @@ class DatabaseManager:
         except Exception:
             return
 
+    # ------------------------------------------------------------------
+    # Email rules + unreplied emails (UI support)
+    # ------------------------------------------------------------------
+
+    def get_email_rules(self) -> dict:
+        """
+        Return email classification rules for client/potential detection.
+        Stored in app_settings as JSON under key 'email_rules_json'.
+        Falls back to environment variables for backward compatibility.
+        """
+        import json
+        import os
+
+        raw = ""
+        try:
+            raw = str(self.get_setting("email_rules_json", "") or "").strip()
+        except Exception:
+            raw = ""
+
+        if raw:
+            try:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    return {
+                        "client_domains": data.get("client_domains") or [],
+                        "potential_domains": data.get("potential_domains") or [],
+                        "client_labels": data.get("client_labels") or [],
+                        "potential_labels": data.get("potential_labels") or [],
+                    }
+            except Exception:
+                pass
+
+        # Env fallback
+        def _split(name: str, default: str = "") -> list[str]:
+            try:
+                v = os.getenv(name) or default
+                return [s.strip() for s in v.split(",") if s.strip()]
+            except Exception:
+                return [s.strip() for s in default.split(",") if s.strip()]
+
+        return {
+            "client_domains": _split("EMAIL_CLIENT_DOMAINS", "goldbugstrategies.com,dovahealth.ca"),
+            "potential_domains": _split("EMAIL_POTENTIAL_DOMAINS", ""),
+            "client_labels": _split("EMAIL_CLIENT_LABELS", "Clients,Client"),
+            "potential_labels": _split("EMAIL_POTENTIAL_LABELS", "Leads,Lead"),
+        }
+
+    def set_email_rules(
+        self,
+        *,
+        client_domains: list[str],
+        potential_domains: list[str],
+        client_labels: list[str],
+        potential_labels: list[str],
+    ) -> None:
+        import json
+
+        payload = {
+            "client_domains": [str(s).strip() for s in (client_domains or []) if str(s).strip()],
+            "potential_domains": [str(s).strip() for s in (potential_domains or []) if str(s).strip()],
+            "client_labels": [str(s).strip() for s in (client_labels or []) if str(s).strip()],
+            "potential_labels": [str(s).strip() for s in (potential_labels or []) if str(s).strip()],
+        }
+        self.set_setting("email_rules_json", json.dumps(payload, ensure_ascii=False))
+
+    def list_unreplied_emails(
+        self,
+        *,
+        limit: int = 50,
+        only_clients_or_potentials: bool = True,
+        days: int = 14,
+    ) -> list[dict]:
+        """Return unreplied emails (best-effort) for a dedicated UI view."""
+        from datetime import datetime, UTC, timedelta
+
+        cutoff = int((datetime.now(UTC) - timedelta(days=int(days))).timestamp())
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            if only_clients_or_potentials:
+                cur = conn.execute(
+                    """
+                    SELECT id, sender, subject, timestamp, content, replied, is_client, is_potential, source, folder, account
+                    FROM emails
+                    WHERE replied = 0
+                      AND timestamp >= ?
+                      AND (is_client = 1 OR is_potential = 1)
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                    """,
+                    (cutoff, int(limit)),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    SELECT id, sender, subject, timestamp, content, replied, is_client, is_potential, source, folder, account
+                    FROM emails
+                    WHERE replied = 0
+                      AND timestamp >= ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                    """,
+                    (cutoff, int(limit)),
+                )
+            return [dict(r) for r in cur.fetchall()]
+
+    def mark_email_replied(self, email_id: str, replied: int = 1) -> None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute("UPDATE emails SET replied = ? WHERE id = ?", (int(replied), str(email_id)))
+            conn.commit()
+
+    def reclassify_emails(self, *, days: int = 30) -> int:
+        """
+        Recompute is_client/is_potential for recent emails using current rules.
+        Returns number of rows updated (best-effort).
+        """
+        from datetime import datetime, UTC, timedelta
+        from core.email_utils import classify_email
+
+        rules = self.get_email_rules()
+        cutoff = int((datetime.now(UTC) - timedelta(days=int(days))).timestamp())
+        updated = 0
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                SELECT id, sender, folder
+                FROM emails
+                WHERE timestamp >= ?
+                """,
+                (cutoff,),
+            )
+            rows = cur.fetchall()
+            for email_id, sender, folder in rows:
+                try:
+                    is_client, is_potential = classify_email(
+                        sender_header=sender,
+                        folder=folder,
+                        client_domains=rules.get("client_domains") or [],
+                        potential_domains=rules.get("potential_domains") or [],
+                        client_labels=rules.get("client_labels") or [],
+                        potential_labels=rules.get("potential_labels") or [],
+                    )
+                    conn.execute(
+                        "UPDATE emails SET is_client = ?, is_potential = ? WHERE id = ?",
+                        (int(is_client), int(is_potential), str(email_id)),
+                    )
+                    updated += 1
+                except Exception:
+                    continue
+            conn.commit()
+        return int(updated)
+
     def create_indexes(self):
         """Create database indexes for optimal query performance."""
         with sqlite3.connect(self.db_name) as conn:
@@ -326,6 +491,9 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_next_action_date ON tasks(next_action_date)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_snoozed_until ON tasks(snoozed_until)")
             
             # Composite indexes for common query patterns
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due_completed ON tasks(due_date, completed)")
@@ -413,10 +581,179 @@ class DatabaseManager:
 
     def add_task(self, session_id, task_text, due_date, category="Business", recurrence="None", completed=0):
         with sqlite3.connect(self.db_name) as conn:
-            cursor = conn.execute('INSERT INTO tasks (session_id, task_text, due_date, category, recurrence, completed) VALUES (?, ?, ?, ?, ?, ?)',
-                        (session_id, task_text, due_date, category, recurrence, completed))
+            cursor = conn.execute(
+                """
+                INSERT INTO tasks
+                    (session_id, task_text, due_date, category, recurrence, completed, priority, tags_json, next_action_date, snoozed_until, created_at, updated_at)
+                VALUES
+                    (?, ?, ?, ?, ?, ?, COALESCE(?, 0), COALESCE(?, '[]'), ?, ?, datetime('now'), datetime('now'))
+                """,
+                (session_id, task_text, due_date, category, recurrence, completed, 0, "[]", None, None),
+            )
             conn.commit()
             return cursor.lastrowid
+
+    _UNSET = object()
+
+    def update_task_by_id(
+        self,
+        task_id: int,
+        *,
+        task_text: str | object = _UNSET,
+        due_date: str | None | object = _UNSET,
+        category: str | object = _UNSET,
+        completed: int | object = _UNSET,
+        priority: int | object = _UNSET,
+        tags_json: str | None | object = _UNSET,
+        next_action_date: str | None | object = _UNSET,
+        snoozed_until: str | None | object = _UNSET,
+    ) -> None:
+        fields = []
+        params = []
+        if task_text is not self._UNSET:
+            fields.append("task_text = ?")
+            params.append(str(task_text))
+        if due_date is not self._UNSET:
+            fields.append("due_date = ?")
+            params.append(due_date)
+        if category is not self._UNSET:
+            fields.append("category = ?")
+            params.append(str(category))
+        if completed is not self._UNSET:
+            fields.append("completed = ?")
+            params.append(int(completed))
+        if priority is not self._UNSET:
+            fields.append("priority = ?")
+            params.append(int(priority))
+        if tags_json is not self._UNSET:
+            fields.append("tags_json = ?")
+            params.append(str(tags_json))
+        if next_action_date is not self._UNSET:
+            fields.append("next_action_date = ?")
+            params.append(next_action_date)
+        if snoozed_until is not self._UNSET:
+            fields.append("snoozed_until = ?")
+            params.append(snoozed_until)
+        if not fields:
+            return
+        fields.append("updated_at = datetime('now')")
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                f"UPDATE tasks SET {', '.join(fields)} WHERE id = ?",
+                tuple(params + [int(task_id)]),
+            )
+            conn.commit()
+
+    def list_tasks_rich(
+        self,
+        *,
+        category: str | None = None,
+        date_filter: str | None = None,
+        specific_date: str | None = None,
+        include_completed: bool = False,
+        include_snoozed: bool = False,
+        search: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """
+        Return task rows as dicts including richer fields (priority/tags/next_action/snooze).
+        Filtering and sorting is done in Python for correctness with MM-DD-YYYY legacy date strings.
+        """
+        import json
+        from datetime import datetime
+
+        def _parse_mmddyyyy(s: str | None) -> datetime | None:
+            ss = (s or "").strip()
+            if not ss or ss.lower() == "unknown":
+                return None
+            try:
+                return datetime.strptime(ss, "%m-%d-%Y")
+            except Exception:
+                return None
+
+        today = datetime.now()
+        today_str = today.strftime("%m-%d-%Y")
+        search_l = (search or "").strip().lower()
+
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                """
+                SELECT
+                    id, session_id, task_text, due_date, category, recurrence, completed,
+                    COALESCE(priority, 0) AS priority,
+                    COALESCE(tags_json, '[]') AS tags_json,
+                    next_action_date,
+                    snoozed_until,
+                    created_at
+                FROM tasks
+                WHERE 1=1
+                """
+                + (" AND category = ?" if category else "")
+                + " ORDER BY id DESC LIMIT ?",
+                tuple(([category] if category else []) + [int(limit) * 5]),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+
+        out = []
+        for r in rows:
+            if not include_completed and int(r.get("completed") or 0) == 1:
+                continue
+
+            due_dt = _parse_mmddyyyy(r.get("due_date"))
+            next_dt = _parse_mmddyyyy(r.get("next_action_date"))
+            snooze_dt = _parse_mmddyyyy(r.get("snoozed_until"))
+
+            # Snooze filter
+            if not include_snoozed and snooze_dt and snooze_dt.date() > today.date():
+                continue
+
+            # Date filters (apply to due date)
+            df = (date_filter or "").strip()
+            if df and df != "All":
+                if df == "Today":
+                    if (r.get("due_date") or "") != today_str:
+                        continue
+                elif df == "Overdue":
+                    if not due_dt or not (due_dt.date() < today.date()):
+                        continue
+                elif df == "No Date":
+                    if due_dt is not None:
+                        continue
+                elif df == "Specific Date" and specific_date:
+                    if (r.get("due_date") or "") != specific_date:
+                        continue
+
+            # Search filter
+            if search_l:
+                tt = (r.get("task_text") or "").lower()
+                tags = ""
+                try:
+                    tj = json.loads(r.get("tags_json") or "[]")
+                    if isinstance(tj, list):
+                        tags = " ".join(str(x) for x in tj).lower()
+                except Exception:
+                    tags = (r.get("tags_json") or "").lower()
+                if search_l not in tt and search_l not in tags:
+                    continue
+
+            r["_due_dt"] = due_dt
+            r["_next_dt"] = next_dt
+            r["_snooze_dt"] = snooze_dt
+            out.append(r)
+
+        # Sort: priority desc, next action asc (if present), due asc (if present), newest last
+        def _key(r):
+            pr = int(r.get("priority") or 0)
+            nd = r.get("_next_dt")
+            dd = r.get("_due_dt")
+            # push None dates to end
+            nd_sort = nd if nd is not None else datetime.max
+            dd_sort = dd if dd is not None else datetime.max
+            return (-pr, nd_sort, dd_sort, -int(r.get("id") or 0))
+
+        out.sort(key=_key)
+        return out[: int(limit)]
 
     def get_tasks(self, category=None, date_filter=None, specific_date=None):
         with sqlite3.connect(self.db_name) as conn:
