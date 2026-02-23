@@ -30,6 +30,21 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QHeaderView
 from datetime import datetime
 
+
+def _s(v) -> str:
+    return str(v or "")
+
+
+def _safe_url_for_open(v) -> str:
+    u = _s(v).strip()
+    if not u:
+        return ""
+    # Let Qt normalize typical user inputs (scheme-less, etc.)
+    q = QUrl.fromUserInput(u)
+    if not q.isValid():
+        return ""
+    return q.toString()
+
 def robust_json_parse_array(response_text, logger=None):
     """
     Robust JSON parsing for arrays that handles various API response formats.
@@ -237,7 +252,15 @@ Hard rules:
             for idx, lead in enumerate(candidates[:50], start=1):
                 if not isinstance(lead, dict):
                     continue
-                if not all(k in lead for k in ["name", "company", "title", "rationale"]):
+                # Normalize common key variants and coerce Nones
+                lead = dict(lead)
+                if not lead.get("company") and lead.get("company_name"):
+                    lead["company"] = lead.get("company_name")
+                if not lead.get("title") and lead.get("position"):
+                    lead["title"] = lead.get("position")
+                if lead.get("LinkedIn_url") and not lead.get("linkedin_url"):
+                    lead["linkedin_url"] = lead.get("LinkedIn_url")
+                if not all((lead.get(k) or "").strip() for k in ["name", "company", "title", "rationale"]):
                     continue
 
                 sources = lead.get("sources") or []
@@ -247,8 +270,8 @@ Hard rules:
                     continue
 
                 lead.setdefault("signals", [])
-                lead.setdefault("linkedin_url", "")
-                lead.setdefault("company_url", "")
+                lead["linkedin_url"] = str(lead.get("linkedin_url") or "")
+                lead["company_url"] = str(lead.get("company_url") or "")
                 lead.setdefault("status", "new")
                 lead.setdefault("contacted", False)
                 lead.setdefault("contact_date", None)
@@ -333,15 +356,22 @@ Candidates JSON:
             for lead in (final_leads or []):
                 if not isinstance(lead, dict):
                     continue
-                if not all(k in lead for k in ["name", "company", "title", "rationale", "message"]):
+                lead = dict(lead)
+                if not lead.get("company") and lead.get("company_name"):
+                    lead["company"] = lead.get("company_name")
+                if not lead.get("title") and lead.get("position"):
+                    lead["title"] = lead.get("position")
+                if lead.get("LinkedIn_url") and not lead.get("linkedin_url"):
+                    lead["linkedin_url"] = lead.get("LinkedIn_url")
+                if not all((lead.get(k) or "").strip() for k in ["name", "company", "title", "rationale", "message"]):
                     continue
                 sources = lead.get("sources") or []
                 if not isinstance(sources, list) or len(sources) == 0:
                     continue
 
                 lead.setdefault("signals", [])
-                lead.setdefault("linkedin_url", "")
-                lead.setdefault("company_url", "")
+                lead["linkedin_url"] = str(lead.get("linkedin_url") or "")
+                lead["company_url"] = str(lead.get("company_url") or "")
                 lead.setdefault("status", "new")
                 lead.setdefault("contacted", False)
                 lead.setdefault("contact_date", None)
@@ -708,22 +738,23 @@ class LeadsTab(QWidget):
 
             lead_id = lead.get("id")
 
-            name_item = QTableWidgetItem(lead.get('name', ''))
+            name_item = QTableWidgetItem(_s(lead.get("name")))
             name_item.setData(Qt.ItemDataRole.UserRole + 2, lead_id)
-            if lead.get('linkedin_url'):
-                name_item.setData(Qt.ItemDataRole.UserRole, lead.get('linkedin_url', ''))
+            li = _safe_url_for_open(lead.get("linkedin_url"))
+            if li:
+                name_item.setData(Qt.ItemDataRole.UserRole, li)
                 name_item.setForeground(QColor("#0077B5"))
             self.leadsTable.setItem(row, 0, name_item)
 
-            self.leadsTable.setItem(row, 1, QTableWidgetItem(lead.get('company', '')))
-            self.leadsTable.setItem(row, 2, QTableWidgetItem(lead.get('title', '')))
+            self.leadsTable.setItem(row, 1, QTableWidgetItem(_s(lead.get("company"))))
+            self.leadsTable.setItem(row, 2, QTableWidgetItem(_s(lead.get("title"))))
 
             score = int(lead.get("total_score", 0) or 0)
             score_item = QTableWidgetItem(str(score))
             score_item.setData(Qt.ItemDataRole.EditRole, score)
             self.leadsTable.setItem(row, 3, score_item)
 
-            self.leadsTable.setItem(row, 4, QTableWidgetItem(lead.get("status", "new")))
+            self.leadsTable.setItem(row, 4, QTableWidgetItem(_s(lead.get("status") or "new")))
 
             contacted_checkbox = QCheckBox()
             contacted_checkbox.setChecked(bool(lead.get('contacted', False)))
@@ -732,11 +763,11 @@ class LeadsTab(QWidget):
             )
             self.leadsTable.setCellWidget(row, 5, contacted_checkbox)
 
-            self.leadsTable.setItem(row, 6, QTableWidgetItem(lead.get('contact_date', '') or ''))
-            self.leadsTable.setItem(row, 7, QTableWidgetItem(lead.get('next_action_date', '') or ''))
+            self.leadsTable.setItem(row, 6, QTableWidgetItem(_s(lead.get("contact_date") or "")))
+            self.leadsTable.setItem(row, 7, QTableWidgetItem(_s(lead.get("next_action_date") or "")))
 
             message_btn = QPushButton("View Message")
-            message_btn.clicked.connect(lambda _, msg=lead.get('message', ''): self.show_message_dialog(msg))
+            message_btn.clicked.connect(lambda _, msg=_s(lead.get("message") or ""): self.show_message_dialog(msg))
             self.leadsTable.setCellWidget(row, 8, message_btn)
 
             sources_btn = QPushButton("Sources")
@@ -755,16 +786,20 @@ class LeadsTab(QWidget):
             delete_btn.clicked.connect(lambda _, lid=lead_id: self.delete_lead_by_id(lid))
             self.leadsTable.setCellWidget(row, 12, delete_btn)
 
-            rationale_item = QTableWidgetItem(lead.get('rationale', ''))
-            rationale_item.setToolTip(lead.get('rationale', ''))
+            rationale_item = QTableWidgetItem(_s(lead.get("rationale") or ""))
+            rationale_item.setToolTip(_s(lead.get("rationale") or ""))
             self.leadsTable.setItem(row, 13, rationale_item)
 
     def on_cell_clicked(self, row, column):
         if column == 0:
             item = self.leadsTable.item(row, column)
-            url = item.data(Qt.ItemDataRole.UserRole)
-            if url:
-                QDesktopServices.openUrl(QUrl(url))
+            url = _s(item.data(Qt.ItemDataRole.UserRole)).strip()
+            if not url:
+                return
+            q = QUrl.fromUserInput(url)
+            if not q.isValid():
+                return
+            QDesktopServices.openUrl(q)
 
     def toggle_contacted_by_id(self, lead_id, checked: bool):
         if not self.db or lead_id is None:

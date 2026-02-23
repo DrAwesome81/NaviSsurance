@@ -1981,25 +1981,81 @@ class DatabaseManager:
             return "li:" + li.lower()
         return "nc:" + cls._normalize_key(name) + "|" + cls._normalize_key(company)
 
+    @staticmethod
+    def _sanitize_http_url(url: str | None) -> str:
+        """
+        Best-effort URL normalization for UI + keying:
+        - strip whitespace and trailing punctuation
+        - ensure scheme (https://) if it looks like a domain
+        - fix common malformed forms like https:///example.com/...
+        """
+        u = (url or "").strip()
+        if not u:
+            return ""
+        # Strip common trailing punctuation from copy/paste
+        u = u.strip().strip("()[]{}<>,.;\"'")
+        if not u:
+            return ""
+        # Fix accidental triple-slash after scheme
+        if u.startswith("https:///"):
+            u = "https://" + u[len("https:///") :]
+        if u.startswith("http:///"):
+            u = "http://" + u[len("http:///") :]
+        # If no scheme, add https if it looks like a domain
+        if "://" not in u:
+            head = u.split("/", 1)[0]
+            if head.startswith("www."):
+                u = "https://" + u
+            elif "." in head and " " not in head:
+                u = "https://" + u
+        return u
+
+    @classmethod
+    def _sanitize_linkedin_url(cls, url: str | None) -> str:
+        u = cls._sanitize_http_url(url)
+        if not u:
+            return ""
+        ul = u.lower()
+        if "linkedin.com" not in ul:
+            return ""
+        # Prefer only direct profile/company URLs to avoid junk links.
+        if any(p in ul for p in ("/in/", "/company/", "/pub/")):
+            return u
+        return ""
+
     def upsert_lead(self, lead: dict) -> int:
         """
         Insert/update a lead. Returns lead id.
         Expects: name, company, title?, rationale?, message?, linkedin_url?, company_url?, sources(list), signals(list), scores.
         """
         import json as _json
-        name = (lead.get("name") or "").strip()
-        company = (lead.get("company") or "").strip()
+        name = (lead.get("name") or lead.get("full_name") or "").strip()
+        company = (lead.get("company") or lead.get("company_name") or lead.get("organization") or "").strip()
         if not name or not company:
             raise ValueError("Lead must include name and company")
 
-        linkedin_url = (lead.get("linkedin_url") or "").strip()
-        company_url = (lead.get("company_url") or "").strip()
+        linkedin_url = self._sanitize_linkedin_url(
+            (lead.get("linkedin_url") or lead.get("linkedin") or lead.get("LinkedIn_url") or "")
+        )
+        company_url = self._sanitize_http_url((lead.get("company_url") or lead.get("website") or ""))
 
         lead_key = self.make_lead_key(name=name, company=company, linkedin_url=linkedin_url)
         company_key = self.make_company_key(company)
 
         sources = lead.get("sources") or []
+        if isinstance(sources, str):
+            sources = [sources]
+        if not isinstance(sources, list):
+            sources = []
+        sources = [self._sanitize_http_url(str(s)) for s in sources if str(s).strip()]
+        sources = [s for s in sources if s]
+
         signals = lead.get("signals") or []
+        if isinstance(signals, str):
+            signals = [signals]
+        if not isinstance(signals, list):
+            signals = []
+        signals = [str(s).strip() for s in signals if str(s).strip()]
         sources_json = _json.dumps(sources, ensure_ascii=False)
         signals_json = _json.dumps(signals, ensure_ascii=False)
 
@@ -2149,11 +2205,11 @@ class DatabaseManager:
             out.append(
                 {
                     "id": lead_id,
-                    "name": name,
-                    "company": company,
-                    "title": title,
-                    "linkedin_url": linkedin_url or "",
-                    "company_url": company_url or "",
+                    "name": str(name or ""),
+                    "company": str(company or ""),
+                    "title": str(title or ""),
+                    "linkedin_url": self._sanitize_linkedin_url(linkedin_url),
+                    "company_url": self._sanitize_http_url(company_url),
                     "rationale": rationale or "",
                     "message": message or "",
                     "status": status,
