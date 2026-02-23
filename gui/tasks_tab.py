@@ -27,9 +27,11 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QDialog,
     QDateEdit,
+    QGroupBox,
 )
 
 from core.db import DatabaseManager
+from gui.agent_console import AgentConsole
 from gui.task_edit_dialog import TaskEditDialog
 
 logger = logging.getLogger(__name__)
@@ -227,6 +229,19 @@ class TasksTab(QWidget):
             hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
 
         layout.addWidget(self.table, 1)
+
+        if not self._compact:
+            self.mason_chat_group = QGroupBox("Direct chat with Mason (Project Manager)")
+            self.mason_chat_group.setCheckable(True)
+            self.mason_chat_group.setChecked(False)
+            chat_layout = QVBoxLayout(self.mason_chat_group)
+            self.mason_console = AgentConsole(self.db, agent_code="mason", parent=self)
+            self.mason_console.setVisible(False)
+            chat_layout.addWidget(self.mason_console)
+            self.mason_chat_group.toggled.connect(
+                lambda checked: self.mason_console.setVisible(bool(checked))
+            )
+            layout.addWidget(self.mason_chat_group)
 
         self.setLayout(layout)
 

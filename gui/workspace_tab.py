@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
                             QListWidget, QListWidgetItem, QTextEdit, QSplitter, 
-                            QFileDialog, QProgressBar, QMenu, QCheckBox, QInputDialog, QApplication, QSpinBox)
+                            QFileDialog, QProgressBar, QMenu, QCheckBox, QInputDialog, QApplication, QSpinBox, QGroupBox)
 from PyQt6.QtCore import Qt, QMimeData, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QDropEvent, QDragEnterEvent, QPainter, QColor
 from core.api import DropboxClient
@@ -14,6 +14,7 @@ import logging
 # ADD THIS IMPORT (just below the Dropbox imports)
 from core.workspace_orchestrator import WorkspaceFile, WorkspaceTaskSpec, DualLLMOrchestrator, call_grok_api, call_chatgpt_api
 from core.file_handler import extract_text_from_file
+from gui.agent_console import AgentConsole
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,18 @@ class WorkspaceTab(QWidget):
         # Use stretch factors for responsive proportions (20% files, 80% preview)
         main_splitter.setStretchFactor(0, 1)  # Files panel gets 1/5 of space
         main_splitter.setStretchFactor(1, 4)  # Preview panel gets 4/5 of space
+
+        self.quill_chat_group = QGroupBox("Direct chat with Quill (Technical Writer)")
+        self.quill_chat_group.setCheckable(True)
+        self.quill_chat_group.setChecked(False)
+        quill_chat_layout = QVBoxLayout(self.quill_chat_group)
+        self.quill_console = AgentConsole(self.db, agent_code="quill", parent=self)
+        self.quill_console.setVisible(False)
+        quill_chat_layout.addWidget(self.quill_console)
+        self.quill_chat_group.toggled.connect(
+            lambda checked: self.quill_console.setVisible(bool(checked))
+        )
+        layout.addWidget(self.quill_chat_group)
         
         self.setLayout(layout)
 

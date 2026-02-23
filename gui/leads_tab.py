@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QTextEdit,
     QLineEdit,
+    QGroupBox,
 )
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
 import os
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QHeaderView
 from datetime import datetime
+from gui.agent_console import AgentConsole
 
 
 def _s(v) -> str:
@@ -584,6 +586,18 @@ class LeadsTab(QWidget):
         self.leadsTable.setWordWrap(True)
         self.leadsTable.setSortingEnabled(True)
         layout.addWidget(self.leadsTable)
+
+        self.scout_chat_group = QGroupBox("Direct chat with Scout (Lead Finder)")
+        self.scout_chat_group.setCheckable(True)
+        self.scout_chat_group.setChecked(False)
+        scout_chat_layout = QVBoxLayout(self.scout_chat_group)
+        self.scout_console = AgentConsole(self.db, agent_code="scout", parent=self)
+        self.scout_console.setVisible(False)
+        scout_chat_layout.addWidget(self.scout_console)
+        self.scout_chat_group.toggled.connect(
+            lambda checked: self.scout_console.setVisible(bool(checked))
+        )
+        layout.addWidget(self.scout_chat_group)
 
         self.leadsTable.cellClicked.connect(self.on_cell_clicked)
         self.refresh_leads()

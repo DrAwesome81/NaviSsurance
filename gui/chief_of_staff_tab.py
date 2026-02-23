@@ -8,7 +8,7 @@ import logging
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QPushButton, QLabel, QTextEdit,
-    QTextBrowser, QListWidget, QListWidgetItem, QFormLayout, QSpinBox,
+    QTextBrowser, QListWidget, QListWidgetItem, QFormLayout, QSpinBox, QTabWidget,
     QMessageBox, QProgressBar, QDialog, QDialogButtonBox, QMenu, QToolButton,
     QSizePolicy
 )
@@ -147,6 +147,7 @@ class ChiefOfStaffTab(QWidget):
         self.db = db
         self._ask_worker = None
         self._current_chat_id = None
+        self._current_assignment_id = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -213,18 +214,64 @@ class ChiefOfStaffTab(QWidget):
         d.exec()
 
     def _build_sidebar(self):
-        """Right side: New chat + list of chats by project / history."""
+        """Right side: chats and delegation assignments."""
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.addWidget(QLabel("Chats"))
+        tabs = QTabWidget()
+
+        # Chats tab
+        chats_panel = QWidget()
+        chats_layout = QVBoxLayout(chats_panel)
+        chats_layout.setContentsMargins(0, 0, 0, 0)
+        chats_layout.addWidget(QLabel("Chats"))
         new_btn = QPushButton("New chat")
         new_btn.clicked.connect(self._on_new_chat)
-        layout.addWidget(new_btn)
+        chats_layout.addWidget(new_btn)
         self.chat_list = QListWidget()
         self.chat_list.itemClicked.connect(self._on_chat_clicked)
-        layout.addWidget(self.chat_list)
+        chats_layout.addWidget(self.chat_list)
+        tabs.addTab(chats_panel, "Chats")
+
+        # Assignments tab
+        asg_panel = QWidget()
+        asg_layout = QVBoxLayout(asg_panel)
+        asg_layout.setContentsMargins(0, 0, 0, 0)
+        asg_head = QHBoxLayout()
+        asg_head.addWidget(QLabel("Delegation Board"))
+        asg_head.addStretch()
+        refresh_asg_btn = QPushButton("Refresh")
+        refresh_asg_btn.clicked.connect(self._refresh_assignment_list)
+        asg_head.addWidget(refresh_asg_btn)
+        asg_layout.addLayout(asg_head)
+        self.assignment_list = QListWidget()
+        self.assignment_list.itemClicked.connect(self._on_assignment_clicked)
+        asg_layout.addWidget(self.assignment_list, 1)
+        self.assignment_details = QTextBrowser()
+        self.assignment_details.setPlaceholderText("Select an assignment to view details.")
+        asg_layout.addWidget(self.assignment_details, 1)
+        btn_row = QHBoxLayout()
+        self.asg_start_btn = QPushButton("Start")
+        self.asg_start_btn.clicked.connect(lambda: self._set_assignment_status("in_progress"))
+        btn_row.addWidget(self.asg_start_btn)
+        self.asg_review_btn = QPushButton("Awaiting Review")
+        self.asg_review_btn.clicked.connect(lambda: self._set_assignment_status("awaiting_review"))
+        btn_row.addWidget(self.asg_review_btn)
+        self.asg_block_btn = QPushButton("Block")
+        self.asg_block_btn.clicked.connect(lambda: self._set_assignment_status("blocked"))
+        btn_row.addWidget(self.asg_block_btn)
+        self.asg_done_btn = QPushButton("Done")
+        self.asg_done_btn.clicked.connect(lambda: self._set_assignment_status("done"))
+        btn_row.addWidget(self.asg_done_btn)
+        self.asg_cancel_btn = QPushButton("Cancel")
+        self.asg_cancel_btn.clicked.connect(lambda: self._set_assignment_status("cancelled"))
+        btn_row.addWidget(self.asg_cancel_btn)
+        asg_layout.addLayout(btn_row)
+        tabs.addTab(asg_panel, "Assignments")
+
+        layout.addWidget(tabs)
         self._refresh_chat_list()
+        self._refresh_assignment_list()
         return panel
 
     def _refresh_chat_list(self):
@@ -241,6 +288,81 @@ class ChiefOfStaffTab(QWidget):
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, id_)
             self.chat_list.addItem(item)
+
+    def _refresh_assignment_list(self):
+        if not hasattr(self, "assignment_list"):
+            return
+        self.assignment_list.clear()
+        rows = self.db.agent_list_assignments(limit=300)
+        for r in rows:
+            aid = int(r.get("id") or 0)
+            title = str(r.get("title") or "Untitled")
+            assignee = str(r.get("assignee_code") or "agent")
+            status = str(r.get("status") or "queued")
+            pr = int(r.get("priority") or 3)
+            due = str(r.get("due_date") or "")
+            label = f"A-{aid:04d} [{status}] P{pr} {title} → {assignee}"
+            if due:
+                label += f" (due {due})"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, aid)
+            self.assignment_list.addItem(item)
+
+    def _on_assignment_clicked(self, item):
+        aid = item.data(Qt.ItemDataRole.UserRole)
+        if aid is None:
+            return
+        self._current_assignment_id = int(aid)
+        row = self.db.agent_get_assignment(self._current_assignment_id)
+        if not row:
+            self.assignment_details.setPlainText("Assignment not found.")
+            return
+        events = self.db.agent_get_assignment_events(assignment_id=self._current_assignment_id, limit=40)
+        lines = [
+            f"ID: A-{int(row.get('id') or 0):04d}",
+            f"Title: {row.get('title') or ''}",
+            f"Status: {row.get('status') or ''}",
+            f"Requester: {row.get('requester_code') or ''}",
+            f"Assignee: {row.get('assignee_code') or ''}",
+            f"Priority: P{int(row.get('priority') or 3)}",
+            f"Due: {row.get('due_date') or '(none)'}",
+            "",
+            "Brief:",
+            str(row.get("brief_md") or "").strip(),
+            "",
+            "Events:",
+        ]
+        for ev in events:
+            et = str(ev.get("event_type") or "")
+            fr = str(ev.get("from_status") or "")
+            to = str(ev.get("to_status") or "")
+            actor = str(ev.get("actor_code") or "")
+            note = str(ev.get("note") or "")
+            ts = str(ev.get("created_at") or "")
+            move = f"{fr} → {to}" if (fr or to) else ""
+            tail = f" | {note}" if note else ""
+            lines.append(f"- {ts} | {et} {move} | {actor}{tail}".strip())
+        self.assignment_details.setPlainText("\n".join(lines).strip())
+
+    def _set_assignment_status(self, to_status: str):
+        if not self._current_assignment_id:
+            QMessageBox.information(self, "Assignments", "Select an assignment first.")
+            return
+        ok = self.db.agent_update_assignment_status(
+            assignment_id=int(self._current_assignment_id),
+            to_status=str(to_status),
+            actor_code="navi",
+        )
+        if not ok:
+            QMessageBox.warning(self, "Assignments", f"Could not set status to '{to_status}'.")
+            return
+        self._refresh_assignment_list()
+        # Refresh details panel to reflect new status.
+        for i in range(self.assignment_list.count()):
+            it = self.assignment_list.item(i)
+            if it and int(it.data(Qt.ItemDataRole.UserRole) or 0) == int(self._current_assignment_id):
+                self._on_assignment_clicked(it)
+                break
 
     def _on_new_chat(self):
         self._current_chat_id = None

@@ -18,6 +18,7 @@ from PyQt6.QtGui import QFont
 
 from core.db import DatabaseManager
 from core.workflow_engine import WorkflowEngine, STATUS_AWAITING_RESEARCH_REVIEW
+from gui.agent_console import AgentConsole
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,18 @@ class ProjectsTab(QWidget):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter)
+
+        self.atlas_chat_group = QGroupBox("Direct chat with Atlas (Deep Researcher)")
+        self.atlas_chat_group.setCheckable(True)
+        self.atlas_chat_group.setChecked(False)
+        atlas_chat_layout = QVBoxLayout(self.atlas_chat_group)
+        self.atlas_console = AgentConsole(self.db, agent_code="atlas", parent=self)
+        self.atlas_console.setVisible(False)
+        atlas_chat_layout.addWidget(self.atlas_console)
+        self.atlas_chat_group.toggled.connect(
+            lambda checked: self.atlas_console.setVisible(bool(checked))
+        )
+        layout.addWidget(self.atlas_chat_group)
 
     def _load_state(self):
         """Restore persisted field values from last session."""

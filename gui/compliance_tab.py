@@ -1,10 +1,11 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QListWidget, QTextEdit, QProgressBar, QMenu, QFileDialog, QMessageBox
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QListWidget, QTextEdit, QProgressBar, QMenu, QFileDialog, QMessageBox, QGroupBox
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from core.compliance import ComplianceChecker
 import os
 import json
 from PyQt6.QtCore import QDate
 from PyQt6.QtWidgets import QSplitter
+from gui.agent_console import AgentConsole
 
 class ComplianceThread(QThread):
     result_signal = pyqtSignal(dict)
@@ -122,6 +123,18 @@ class ComplianceTab(QWidget):
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 2)
         splitter.setSizes([320, 320, 640])
+
+        self.sentinel_chat_group = QGroupBox("Direct chat with Sentinel (QA & Compliance)")
+        self.sentinel_chat_group.setCheckable(True)
+        self.sentinel_chat_group.setChecked(False)
+        sentinel_chat_layout = QVBoxLayout(self.sentinel_chat_group)
+        self.sentinel_console = AgentConsole(self.db, agent_code="sentinel", parent=self)
+        self.sentinel_console.setVisible(False)
+        sentinel_chat_layout.addWidget(self.sentinel_console)
+        self.sentinel_chat_group.toggled.connect(
+            lambda checked: self.sentinel_console.setVisible(bool(checked))
+        )
+        layout.addWidget(self.sentinel_chat_group)
         
         # Load existing documents
         self.load_document_lists()
