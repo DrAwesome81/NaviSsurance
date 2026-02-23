@@ -604,7 +604,6 @@ class DashboardTab(QWidget):
         refresh_layout.addStretch()
         
         refresh_news_btn = QPushButton("Refresh News")
-        refresh_news_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 500;")
         refresh_news_btn.clicked.connect(self.refresh_news_feed)
         refresh_layout.addWidget(refresh_news_btn)
         
@@ -1017,7 +1016,6 @@ class DashboardTab(QWidget):
         header_layout.addStretch()
         
         refresh_briefing_btn = QPushButton("Refresh")
-        refresh_briefing_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;")
         refresh_briefing_btn.clicked.connect(self.refresh_daily_briefing)
         header_layout.addWidget(refresh_briefing_btn)
         layout.addLayout(header_layout)
@@ -1075,7 +1073,6 @@ class DashboardTab(QWidget):
 
         self.news_suppress_combo = QComboBox()
         self.news_suppress_combo.addItems(["1 day", "2 days", "3 days", "7 days"])
-        self.news_suppress_combo.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 4px; padding: 2px 6px; font-size: 11px;")
         settings_row.addWidget(self.news_suppress_combo)
 
         max_label = QLabel("Max items:")
@@ -1084,7 +1081,6 @@ class DashboardTab(QWidget):
 
         self.news_max_items_combo = QComboBox()
         self.news_max_items_combo.addItems(["5", "8", "10"])
-        self.news_max_items_combo.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 4px; padding: 2px 6px; font-size: 11px;")
         settings_row.addWidget(self.news_max_items_combo)
         settings_row.addStretch()
         layout.addLayout(settings_row)
@@ -1174,7 +1170,6 @@ class DashboardTab(QWidget):
         header_row.addWidget(rules_btn)
 
         refresh_btn = QPushButton("Refresh")
-        refresh_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 6px 10px; border-radius: 6px; font-size: 11px; font-weight: 500;")
         refresh_btn.clicked.connect(self.load_unreplied_emails)
         header_row.addWidget(refresh_btn)
 

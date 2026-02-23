@@ -2,6 +2,15 @@
 /* Main window background */
 QWidget {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #15171c, stop:1 #1a1c21);
+    color: #e8eaed;
+    font-family: "Inter", "Noto Sans", "DejaVu Sans", "Segoe UI", Arial, sans-serif;
+    font-size: 13px;
+}
+
+/* Selected text */
+QWidget {
+    selection-background-color: #6b8cae;
+    selection-color: white;
 }
 
 /* Text browser */
@@ -40,8 +49,6 @@ QLineEdit {
     border: 1px solid #2e2f32;
     border-radius: 6px;
     padding: 8px 12px;
-    font-family: Segoe UI, Arial, sans-serif;
-    font-size: 13px;
     color: #e8eaed;
     min-height: 16px;
 }
@@ -80,8 +87,7 @@ QCheckBox::indicator:hover {
 
 /* Labels */
 QLabel {
-    font-size: 13px;
-    margin: 0 5px;
+    margin: 0;
     color: #e8eaed;
 }
 
@@ -254,6 +260,12 @@ QTabWidget {
     color: #e8eaed;
 }
 
+QTabWidget::pane {
+    border: 1px solid #2e2f32;
+    border-radius: 8px;
+    top: -1px;
+}
+
 QTabBar::tab {
     background: transparent;
     color: #9aa0a6;
@@ -328,6 +340,7 @@ QTextEdit {
     color: #e8eaed;
     border: 1px solid #2e2f32;
     border-radius: 6px;
+    padding: 10px 12px;
 }
 
 QTextEdit:focus {
@@ -357,6 +370,44 @@ QTableWidget::item:selected {
 
 QTableWidget::item:hover {
     background-color: #2e2f32;
+}
+
+QTableWidget::item:focus {
+    outline: none;
+}
+
+/* List + tree widgets */
+QListWidget, QTreeWidget {
+    background: #1c1e24;
+    color: #e8eaed;
+    border: 1px solid #2e2f32;
+    border-radius: 6px;
+}
+
+QTreeWidget::item, QListWidget::item {
+    padding: 6px 8px;
+    border-radius: 4px;
+}
+
+QTreeWidget::item:selected, QListWidget::item:selected {
+    background: #3a3b3e;
+}
+
+QTreeWidget::item:hover, QListWidget::item:hover {
+    background: #2e2f32;
+}
+
+/* Tool buttons */
+QToolButton {
+    color: #e8eaed;
+    background-color: #22252c;
+    border: 1px solid #2e2f32;
+    padding: 6px 12px;
+    border-radius: 6px;
+}
+
+QToolButton:hover {
+    background-color: #3a3b3e;
 }
 
 QTableWidget QCheckBox {
@@ -414,6 +465,7 @@ QHeaderView::section {
     padding: 8px;
     border: 1px solid #2e2f32;
     font-weight: 600;
+    min-height: 26px;
 }
 
 QHeaderView::section:hover {
@@ -426,6 +478,19 @@ QScrollBar:vertical {
     width: 12px;
     border-radius: 6px;
     border: none;
+}
+
+QScrollBar::add-line,
+QScrollBar::sub-line {
+    background: transparent;
+    border: none;
+    height: 0px;
+    width: 0px;
+}
+
+QScrollBar::add-page,
+QScrollBar::sub-page {
+    background: transparent;
 }
 
 QScrollBar::handle:vertical {
@@ -548,7 +613,7 @@ QComboBox {
     background: #22252c;
     border: 1px solid #2e2f32;
     border-radius: 6px;
-    padding: 8px;
+    padding: 6px 10px;
     color: #e8eaed;
 }
 
