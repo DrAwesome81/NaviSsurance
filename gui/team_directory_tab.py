@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.db import DatabaseManager
+from gui.agent_routing import route_for_agent
 
 
 class TeamDirectoryTab(QWidget):
@@ -150,22 +151,6 @@ class TeamDirectoryTab(QWidget):
             lines.append("- (none)")
         self.details.setPlainText("\n".join(lines).strip())
 
-    def _route_for_agent(self, agent_code: str):
-        code = (agent_code or "").strip().lower()
-        return {
-            "atlas": ("projects_tab", "atlas_chat_group", "atlas_console", "AI Projects"),
-            "quill": ("workspace_tab", "quill_chat_group", "quill_console", "Workspace"),
-            "sentinel": ("compliance_tab", "sentinel_chat_group", "sentinel_console", "Compliance"),
-            "lex": ("compliance_tab", "lex_chat_group", "lex_console", "Compliance"),
-            "scout": ("leads_tab", "scout_chat_group", "scout_console", "Leads"),
-            "mason": ("tasks_tab", "mason_chat_group", "mason_console", "Tasks"),
-            "ledger": ("billing_tab", None, "agent_console", "Billing"),
-            "archive": ("library_tab", None, "agent_console", "Library"),
-            "pulse": ("intel_tab", None, "agent_console", "Intel"),
-            "shield": ("security_tab", None, "agent_console", "Security"),
-            "navi": ("chief_of_staff_tab", None, None, "Chief of Staff"),
-        }.get(code)
-
     def _open_selected_agent_workspace(self):
         code = (self._selected_agent_code or "").strip().lower()
         if not code:
@@ -176,7 +161,7 @@ class TeamDirectoryTab(QWidget):
         if tw is None:
             QMessageBox.information(self, "Team", "Could not open agent workspace in this context.")
             return
-        route = self._route_for_agent(code)
+        route = route_for_agent(code)
         if not route:
             QMessageBox.information(self, "Team", f"No workspace route available for '{code}'.")
             return
@@ -213,7 +198,7 @@ class TeamDirectoryTab(QWidget):
         self._open_selected_agent_workspace()
         aid = int(next_row.get("id") or 0)
         host = self.parent()
-        route = self._route_for_agent(code)
+        route = route_for_agent(code)
         if aid <= 0 or route is None:
             return
         tab_attr, _group_attr, console_attr, _tab_label = route
