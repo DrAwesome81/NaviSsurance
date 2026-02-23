@@ -460,8 +460,8 @@ Return only the relevant emails, nothing else."""
                 suggestions.append(f"📋 You have {len(due_today)} tasks due today - consider prioritizing or rescheduling some.")
             
             # Check if there are tasks without due dates
-            if no_date:
-                suggestions.append(f"📅 Consider scheduling {len(no_date)} task(s) without due dates to improve planning.")
+            if no_due:
+                suggestions.append(f"📅 Consider scheduling {len(no_due)} task(s) without due dates to improve planning.")
             
             # Check if there are urgent emails
             if urgent_emails_str:
