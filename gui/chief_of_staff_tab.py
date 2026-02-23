@@ -383,6 +383,12 @@ class ChiefOfStaffTab(QWidget):
         self.asg_cancel_btn.clicked.connect(lambda: self._set_assignment_status("cancelled"))
         btn_row.addWidget(self.asg_cancel_btn)
         asg_layout.addLayout(btn_row)
+        artifact_row = QHBoxLayout()
+        self.asg_view_artifact_btn = QPushButton("View Artifact")
+        self.asg_view_artifact_btn.clicked.connect(self._view_selected_assignment_artifact)
+        artifact_row.addWidget(self.asg_view_artifact_btn)
+        artifact_row.addStretch()
+        asg_layout.addLayout(artifact_row)
         self.asg_open_chat_btn = QPushButton("Open Assignee Chat")
         self.asg_open_chat_btn.clicked.connect(self._open_assignment_in_assignee_console)
         asg_layout.addWidget(self.asg_open_chat_btn)
@@ -654,6 +660,61 @@ class ChiefOfStaffTab(QWidget):
             if it and int(it.data(Qt.ItemDataRole.UserRole) or 0) == int(self._current_assignment_id):
                 self._on_assignment_clicked(it)
                 break
+
+    def _view_selected_assignment_artifact(self):
+        if not self._current_assignment_id:
+            QMessageBox.information(self, "Artifacts", "Select an assignment first.")
+            return
+        arts = self.db.agent_list_artifacts(assignment_id=int(self._current_assignment_id), limit=100)
+        if not arts:
+            QMessageBox.information(self, "Artifacts", "No artifacts linked to this assignment yet.")
+            return
+
+        labels = []
+        for a in arts:
+            aid = int(a.get("id") or 0)
+            art_type = str(a.get("artifact_type") or "artifact")
+            title = str(a.get("title") or "").strip() or "(untitled)"
+            ts = str(a.get("created_at") or "")
+            labels.append(f"#{aid} [{art_type}] {title} ({ts})")
+
+        picked, ok = QInputDialog.getItem(
+            self,
+            "Select Artifact",
+            "Artifact:",
+            labels,
+            0,
+            False,
+        )
+        if not ok or not picked:
+            return
+        index = labels.index(picked)
+        art = arts[index]
+        art_id = int(art.get("id") or 0)
+        art_type = str(art.get("artifact_type") or "artifact")
+        art_title = str(art.get("title") or "").strip() or "(untitled)"
+
+        body = str(art.get("content_md") or "").strip()
+        if not body:
+            body = str(art.get("content_json") or "").strip()
+        if not body:
+            fp = str(art.get("file_path") or "").strip()
+            body = f"(No inline content)\nfile_path: {fp or '(none)'}"
+
+        d = QDialog(self)
+        d.setWindowTitle(f"Artifact #{art_id} — {art_type}")
+        layout = QVBoxLayout(d)
+        layout.addWidget(QLabel(art_title))
+        viewer = QTextBrowser()
+        viewer.setPlainText(body)
+        layout.addWidget(viewer)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(d.reject)
+        buttons.accepted.connect(d.accept)
+        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(d.accept)
+        layout.addWidget(buttons)
+        d.resize(760, 520)
+        d.exec()
 
     def _focus_assignment_by_id(self, assignment_id: int) -> bool:
         aid = int(assignment_id)
