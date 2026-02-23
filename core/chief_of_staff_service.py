@@ -429,6 +429,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str) -> str:
     added_tasks = 0
     added_blocks = 0
     block_failures = 0
+    block_failure_reasons: list[str] = []
     cleaned_lines = []
     for line in response.splitlines():
         stripped = line.strip()
@@ -469,6 +470,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str) -> str:
             end_dt = _parse_calendar_datetime(end_raw)
             if not start_dt or not end_dt or end_dt <= start_dt:
                 block_failures += 1
+                block_failure_reasons.append("invalid start/end datetime")
                 logger.warning(
                     "CoS ADD_CAL_BLOCK rejected due to invalid times: start=%r end=%r",
                     start_raw,
@@ -486,6 +488,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str) -> str:
                 added_blocks += 1
             else:
                 block_failures += 1
+                block_failure_reasons.append((msg or "unknown error").strip())
                 logger.warning("CoS ADD_CAL_BLOCK failed: %s", msg or "unknown error")
             continue
 
@@ -497,7 +500,10 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str) -> str:
     if added_blocks:
         action_notes.append(f"— *Scheduled {added_blocks} calendar block(s).*")
     if block_failures:
-        action_notes.append(f"— *Could not schedule {block_failures} calendar block(s). Please check date/time format.*")
+        reason = block_failure_reasons[0] if block_failure_reasons else "unknown error"
+        action_notes.append(
+            f"— *Could not schedule {block_failures} calendar block(s): {reason}.*"
+        )
     if action_notes:
         if out:
             out += "\n\n"
