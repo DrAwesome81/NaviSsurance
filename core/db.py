@@ -11,12 +11,16 @@ from config import DATABASE_PATH, ARTIFACTS_DIR
 class DatabaseManager:
     def __init__(self):
         self.db_name = DATABASE_PATH
-        self.current_schema_version = 10  # Increment this when making schema changes
+        self.current_schema_version = 11  # Increment this when making schema changes
         self.setup_db()
         self.create_indexes()
         # Additive tables for newer features (safe for legacy DBs)
         try:
             self.init_workspace_collab_tables()
+        except Exception:
+            pass
+        try:
+            self.seed_default_agents()
         except Exception:
             pass
 
@@ -207,6 +211,95 @@ class DatabaseManager:
                     created_at UNINDEXED,
                     tokenize='porter'
                 )''')
+
+            # Agent directory + assignment workflow (Chief of Staff delegation backbone)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_directory (
+                    code TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    role_title TEXT NOT NULL,
+                    home_tab TEXT NOT NULL,
+                    aliases_json TEXT NOT NULL DEFAULT '[]',
+                    capabilities_json TEXT NOT NULL DEFAULT '[]',
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_threads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_code TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT 'New thread',
+                    session_id TEXT NOT NULL UNIQUE,
+                    context_json TEXT,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    last_message_at TEXT,
+                    FOREIGN KEY (agent_code) REFERENCES agent_directory(code)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_assignments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    brief_md TEXT NOT NULL,
+                    requester_code TEXT NOT NULL,
+                    assignee_code TEXT NOT NULL,
+                    priority INTEGER NOT NULL DEFAULT 3,
+                    due_date TEXT,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    source_thread_id INTEGER,
+                    source_project_id INTEGER,
+                    context_json TEXT,
+                    result_summary_md TEXT,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    completed_at TEXT,
+                    FOREIGN KEY (requester_code) REFERENCES agent_directory(code),
+                    FOREIGN KEY (assignee_code) REFERENCES agent_directory(code),
+                    FOREIGN KEY (source_thread_id) REFERENCES agent_threads(id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_assignment_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    assignment_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    from_status TEXT,
+                    to_status TEXT,
+                    actor_code TEXT,
+                    note TEXT,
+                    created_at TEXT,
+                    FOREIGN KEY (assignment_id) REFERENCES agent_assignments(id),
+                    FOREIGN KEY (actor_code) REFERENCES agent_directory(code)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_artifacts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    assignment_id INTEGER,
+                    thread_id INTEGER,
+                    artifact_type TEXT NOT NULL,
+                    title TEXT,
+                    content_md TEXT,
+                    content_json TEXT,
+                    file_path TEXT,
+                    created_at TEXT,
+                    FOREIGN KEY (assignment_id) REFERENCES agent_assignments(id),
+                    FOREIGN KEY (thread_id) REFERENCES agent_threads(id)
+                )
+                """
+            )
             
             # Dropbox index tables removed - using RAG index instead
             
@@ -542,6 +635,36 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_daily_plans_date ON cos_daily_plans(date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_chats_updated_at ON cos_chats(updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_memory_chat_kind ON cos_memory(chat_id, kind)")
+
+            # Delegation / agent workflow tables
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_threads_agent_updated "
+                "ON agent_threads(agent_code, updated_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_assignments_assignee_status "
+                "ON agent_assignments(assignee_code, status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_assignments_status_priority_due "
+                "ON agent_assignments(status, priority, due_date)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_assignments_requester "
+                "ON agent_assignments(requester_code)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_assignment_events_assignment "
+                "ON agent_assignment_events(assignment_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_artifacts_assignment "
+                "ON agent_artifacts(assignment_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_artifacts_thread "
+                "ON agent_artifacts(thread_id)"
+            )
             
             conn.commit()
 
@@ -1948,6 +2071,102 @@ class DatabaseManager:
                 print("    - cos_memory tables created")
             except Exception as e:
                 print(f"    - Error creating cos_memory tables: {e}")
+
+        # Version 10 to 11: Agent directory + delegation workflow tables
+        if from_version < 11 and to_version >= 11:
+            print("  - Creating agent workflow tables: agent_directory, agent_threads, agent_assignments, agent_assignment_events, agent_artifacts")
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_directory (
+                        code TEXT PRIMARY KEY,
+                        display_name TEXT NOT NULL,
+                        role_title TEXT NOT NULL,
+                        home_tab TEXT NOT NULL,
+                        aliases_json TEXT NOT NULL DEFAULT '[]',
+                        capabilities_json TEXT NOT NULL DEFAULT '[]',
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_threads (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        agent_code TEXT NOT NULL,
+                        title TEXT NOT NULL DEFAULT 'New thread',
+                        session_id TEXT NOT NULL UNIQUE,
+                        context_json TEXT,
+                        created_at TEXT,
+                        updated_at TEXT,
+                        last_message_at TEXT,
+                        FOREIGN KEY (agent_code) REFERENCES agent_directory(code)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_assignments (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        title TEXT NOT NULL,
+                        brief_md TEXT NOT NULL,
+                        requester_code TEXT NOT NULL,
+                        assignee_code TEXT NOT NULL,
+                        priority INTEGER NOT NULL DEFAULT 3,
+                        due_date TEXT,
+                        status TEXT NOT NULL DEFAULT 'queued',
+                        source_thread_id INTEGER,
+                        source_project_id INTEGER,
+                        context_json TEXT,
+                        result_summary_md TEXT,
+                        created_at TEXT,
+                        updated_at TEXT,
+                        completed_at TEXT,
+                        FOREIGN KEY (requester_code) REFERENCES agent_directory(code),
+                        FOREIGN KEY (assignee_code) REFERENCES agent_directory(code),
+                        FOREIGN KEY (source_thread_id) REFERENCES agent_threads(id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_assignment_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        assignment_id INTEGER NOT NULL,
+                        event_type TEXT NOT NULL,
+                        from_status TEXT,
+                        to_status TEXT,
+                        actor_code TEXT,
+                        note TEXT,
+                        created_at TEXT,
+                        FOREIGN KEY (assignment_id) REFERENCES agent_assignments(id),
+                        FOREIGN KEY (actor_code) REFERENCES agent_directory(code)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_artifacts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        assignment_id INTEGER,
+                        thread_id INTEGER,
+                        artifact_type TEXT NOT NULL,
+                        title TEXT,
+                        content_md TEXT,
+                        content_json TEXT,
+                        file_path TEXT,
+                        created_at TEXT,
+                        FOREIGN KEY (assignment_id) REFERENCES agent_assignments(id),
+                        FOREIGN KEY (thread_id) REFERENCES agent_threads(id)
+                    )
+                    """
+                )
+                conn.commit()
+                print("    - Agent workflow tables created")
+            except Exception as e:
+                print(f"    - Error creating agent workflow tables: {e}")
         
         print(f"Schema migration from version {from_version} to {to_version} completed.")
 
@@ -2868,6 +3087,640 @@ class DatabaseManager:
                 base += " ORDER BY created_at DESC LIMIT ?"
                 params.append(int(limit))
                 return conn.execute(base, params).fetchall()
+
+    # -------------------------------------------------------------------------
+    # Agent directory + delegation workflow methods
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def seed_default_agents(self) -> None:
+        """Seed/refresh default agent directory entries."""
+        now = self._now_iso()
+        agents = [
+            (
+                "navi",
+                "Navi",
+                "Chief of Staff",
+                "Chief of Staff",
+                ["navi", "chief of staff", "cos"],
+                ["delegate", "prioritize", "orchestrate", "follow_up"],
+            ),
+            (
+                "atlas",
+                "Atlas",
+                "Deep Researcher",
+                "AI Projects",
+                ["atlas", "researcher", "ai projects", "deep research"],
+                ["deep_research", "synthesis", "citations", "briefing"],
+            ),
+            (
+                "quill",
+                "Quill",
+                "Technical Writer",
+                "Workspace",
+                ["quill", "writer", "technical writer", "workspace"],
+                ["drafting", "document_generation", "editing", "light_research"],
+            ),
+            (
+                "sentinel",
+                "Sentinel",
+                "QA & Compliance",
+                "Compliance",
+                ["sentinel", "qa", "compliance", "quality assurance"],
+                ["qa_review", "compliance_checks", "gap_analysis"],
+            ),
+            (
+                "lex",
+                "Lex",
+                "Contracts Specialist",
+                "Compliance",
+                ["lex", "legal", "contracts", "contract review"],
+                ["contract_review", "risk_flags", "redline_guidance"],
+            ),
+            (
+                "scout",
+                "Scout",
+                "Lead Finder",
+                "Leads",
+                ["scout", "leads", "lead finder", "recruiter"],
+                ["lead_discovery", "lead_scoring", "outreach_support"],
+            ),
+            (
+                "mason",
+                "Mason",
+                "Project Manager",
+                "Tasks",
+                ["mason", "pm", "project manager", "tasks"],
+                ["task_planning", "prioritization", "tracking"],
+            ),
+            (
+                "ledger",
+                "Ledger",
+                "Billing Assistant",
+                "Billing",
+                ["ledger", "billing", "invoices", "invoice"],
+                ["invoice_drafts", "billing_followups"],
+            ),
+            (
+                "archive",
+                "Archive",
+                "Knowledge Librarian",
+                "Library",
+                ["archive", "librarian", "knowledge", "search"],
+                ["unified_search", "retrieval", "citation_lookup"],
+            ),
+            (
+                "pulse",
+                "Pulse",
+                "Market Intelligence Analyst",
+                "Intel",
+                ["pulse", "intel", "market intelligence", "analyst"],
+                ["market_watch", "competitor_tracking", "trend_briefing"],
+            ),
+            (
+                "shield",
+                "Shield",
+                "Security Steward",
+                "Security",
+                ["shield", "security", "cybersecurity", "privacy"],
+                ["security_checks", "policy_validation", "sensitive_data_scan"],
+            ),
+        ]
+        with sqlite3.connect(self.db_name) as conn:
+            for code, display_name, role_title, home_tab, aliases, capabilities in agents:
+                conn.execute(
+                    """
+                    INSERT INTO agent_directory
+                        (code, display_name, role_title, home_tab, aliases_json, capabilities_json, is_active, created_at, updated_at)
+                    VALUES
+                        (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    ON CONFLICT(code) DO UPDATE SET
+                        display_name = excluded.display_name,
+                        role_title = excluded.role_title,
+                        home_tab = excluded.home_tab,
+                        aliases_json = excluded.aliases_json,
+                        capabilities_json = excluded.capabilities_json,
+                        is_active = 1,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        str(code),
+                        str(display_name),
+                        str(role_title),
+                        str(home_tab),
+                        json.dumps(aliases, ensure_ascii=False),
+                        json.dumps(capabilities, ensure_ascii=False),
+                        now,
+                        now,
+                    ),
+                )
+            conn.commit()
+
+    def agents_list_active(self) -> list[dict]:
+        """Return active agent directory rows as dicts."""
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT code, display_name, role_title, home_tab, aliases_json, capabilities_json, is_active, created_at, updated_at
+                FROM agent_directory
+                WHERE is_active = 1
+                ORDER BY display_name
+                """
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def agent_get(self, code: str) -> dict | None:
+        """Return one agent row by code."""
+        c = (code or "").strip().lower()
+        if not c:
+            return None
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT code, display_name, role_title, home_tab, aliases_json, capabilities_json, is_active, created_at, updated_at
+                FROM agent_directory
+                WHERE lower(code) = ?
+                LIMIT 1
+                """,
+                (c,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def agent_resolve_by_name(self, name_or_alias: str) -> dict | None:
+        """
+        Resolve an agent by code, display name, or alias (case-insensitive).
+        Returns the agent row dict or None.
+        """
+        q = (name_or_alias or "").strip().lower()
+        if not q:
+            return None
+        agents = self.agents_list_active()
+        if not agents:
+            return None
+
+        # 1) exact code
+        for a in agents:
+            if str(a.get("code") or "").strip().lower() == q:
+                return a
+
+        # 2) exact display name
+        for a in agents:
+            if str(a.get("display_name") or "").strip().lower() == q:
+                return a
+
+        # 3) exact alias
+        for a in agents:
+            aliases = []
+            try:
+                aliases = json.loads(a.get("aliases_json") or "[]")
+            except Exception:
+                aliases = []
+            aliases_l = {str(x).strip().lower() for x in aliases if str(x).strip()}
+            if q in aliases_l:
+                return a
+
+        # 4) contains match in display name / aliases
+        for a in agents:
+            dn = str(a.get("display_name") or "").strip().lower()
+            if q in dn:
+                return a
+            try:
+                aliases = json.loads(a.get("aliases_json") or "[]")
+            except Exception:
+                aliases = []
+            for al in aliases:
+                als = str(al).strip().lower()
+                if als and q in als:
+                    return a
+        return None
+
+    def agent_create_thread(
+        self,
+        *,
+        agent_code: str,
+        title: str | None = None,
+        context_json: str | dict | list | None = None,
+        session_id: str | None = None,
+    ) -> int:
+        """Create an agent thread and return thread id."""
+        import uuid
+
+        code = (agent_code or "").strip().lower()
+        if not code:
+            return 0
+        ag = self.agent_get(code)
+        if not ag:
+            return 0
+        now = self._now_iso()
+        t = (title or "").strip() or f"{ag.get('display_name') or code} thread"
+        sess = (session_id or "").strip() or f"agent_{code}_{uuid.uuid4().hex[:12]}"
+        ctx = context_json
+        if isinstance(ctx, (dict, list)):
+            ctx = json.dumps(ctx, ensure_ascii=False)
+        if ctx is not None:
+            ctx = str(ctx)
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO agent_threads
+                    (agent_code, title, session_id, context_json, created_at, updated_at, last_message_at)
+                VALUES
+                    (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (code, t, sess, ctx, now, now, now),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def agent_list_threads(self, *, agent_code: str, limit: int = 100):
+        """
+        List threads for an agent.
+        Returns [(id, agent_code, title, session_id, context_json, created_at, updated_at, last_message_at), ...].
+        """
+        code = (agent_code or "").strip().lower()
+        with sqlite3.connect(self.db_name) as conn:
+            return conn.execute(
+                """
+                SELECT id, agent_code, title, session_id, context_json, created_at, updated_at, last_message_at
+                FROM agent_threads
+                WHERE agent_code = ?
+                ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC
+                LIMIT ?
+                """,
+                (code, int(limit)),
+            ).fetchall()
+
+    def agent_get_thread(self, thread_id: int):
+        """Return one thread row by id or None."""
+        with sqlite3.connect(self.db_name) as conn:
+            return conn.execute(
+                """
+                SELECT id, agent_code, title, session_id, context_json, created_at, updated_at, last_message_at
+                FROM agent_threads
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (int(thread_id),),
+            ).fetchone()
+
+    def agent_touch_thread(self, thread_id: int, *, bump_last_message: bool = True) -> None:
+        """Update updated_at (and optionally last_message_at) for a thread."""
+        now = self._now_iso()
+        with sqlite3.connect(self.db_name) as conn:
+            if bump_last_message:
+                conn.execute(
+                    "UPDATE agent_threads SET updated_at = ?, last_message_at = ? WHERE id = ?",
+                    (now, now, int(thread_id)),
+                )
+            else:
+                conn.execute(
+                    "UPDATE agent_threads SET updated_at = ? WHERE id = ?",
+                    (now, int(thread_id)),
+                )
+            conn.commit()
+
+    def agent_add_event(
+        self,
+        *,
+        assignment_id: int,
+        event_type: str,
+        from_status: str | None = None,
+        to_status: str | None = None,
+        actor_code: str | None = None,
+        note: str | None = None,
+    ) -> int:
+        """Append one assignment event and return event id."""
+        now = self._now_iso()
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO agent_assignment_events
+                    (assignment_id, event_type, from_status, to_status, actor_code, note, created_at)
+                VALUES
+                    (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(assignment_id),
+                    str(event_type or "").strip() or "note",
+                    from_status,
+                    to_status,
+                    (str(actor_code).strip().lower() if actor_code else None),
+                    (str(note) if note is not None else None),
+                    now,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def agent_create_assignment(
+        self,
+        *,
+        title: str,
+        brief_md: str,
+        requester_code: str,
+        assignee_code: str,
+        priority: int = 3,
+        due_date: str | None = None,
+        status: str = "queued",
+        source_thread_id: int | None = None,
+        source_project_id: int | None = None,
+        context_json: str | dict | list | None = None,
+    ) -> int:
+        """Create one assignment and return assignment id."""
+        now = self._now_iso()
+        rq = (requester_code or "").strip().lower()
+        asg = (assignee_code or "").strip().lower()
+        if not rq or not asg:
+            return 0
+        if not self.agent_get(rq):
+            return 0
+        if not self.agent_get(asg):
+            return 0
+
+        p = int(priority or 3)
+        if p < 1:
+            p = 1
+        if p > 5:
+            p = 5
+
+        st = (status or "queued").strip().lower()
+        if not st:
+            st = "queued"
+
+        ctx = context_json
+        if isinstance(ctx, (dict, list)):
+            ctx = json.dumps(ctx, ensure_ascii=False)
+        if ctx is not None:
+            ctx = str(ctx)
+
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO agent_assignments
+                    (title, brief_md, requester_code, assignee_code, priority, due_date, status,
+                     source_thread_id, source_project_id, context_json, result_summary_md, created_at, updated_at, completed_at)
+                VALUES
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+                """,
+                (
+                    str(title or "").strip() or "Untitled assignment",
+                    str(brief_md or "").strip(),
+                    rq,
+                    asg,
+                    p,
+                    due_date,
+                    st,
+                    int(source_thread_id) if source_thread_id is not None else None,
+                    int(source_project_id) if source_project_id is not None else None,
+                    ctx,
+                    now,
+                    now,
+                ),
+            )
+            assignment_id = int(cur.lastrowid)
+            conn.execute(
+                """
+                INSERT INTO agent_assignment_events
+                    (assignment_id, event_type, from_status, to_status, actor_code, note, created_at)
+                VALUES
+                    (?, 'created', NULL, ?, ?, NULL, ?)
+                """,
+                (assignment_id, st, rq, now),
+            )
+            conn.commit()
+            return assignment_id
+
+    def agent_list_assignments(
+        self,
+        *,
+        assignee_code: str | None = None,
+        requester_code: str | None = None,
+        status: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        """List assignments as dict rows with optional filters."""
+        where = ["1=1"]
+        params: list[object] = []
+        if assignee_code:
+            where.append("assignee_code = ?")
+            params.append(str(assignee_code).strip().lower())
+        if requester_code:
+            where.append("requester_code = ?")
+            params.append(str(requester_code).strip().lower())
+        if status:
+            where.append("status = ?")
+            params.append(str(status).strip().lower())
+        params.append(int(limit))
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"""
+                SELECT id, title, brief_md, requester_code, assignee_code, priority, due_date, status,
+                       source_thread_id, source_project_id, context_json, result_summary_md, created_at, updated_at, completed_at
+                FROM agent_assignments
+                WHERE {' AND '.join(where)}
+                ORDER BY
+                    CASE status
+                        WHEN 'in_progress' THEN 0
+                        WHEN 'queued' THEN 1
+                        WHEN 'awaiting_review' THEN 2
+                        WHEN 'blocked' THEN 3
+                        WHEN 'done' THEN 4
+                        WHEN 'cancelled' THEN 5
+                        ELSE 6
+                    END,
+                    priority ASC,
+                    COALESCE(due_date, '9999-12-31') ASC,
+                    id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def agent_get_assignment(self, assignment_id: int) -> dict | None:
+        """Get one assignment as dict by id."""
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT id, title, brief_md, requester_code, assignee_code, priority, due_date, status,
+                       source_thread_id, source_project_id, context_json, result_summary_md, created_at, updated_at, completed_at
+                FROM agent_assignments
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (int(assignment_id),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def agent_get_assignment_events(self, *, assignment_id: int, limit: int = 200) -> list[dict]:
+        """Get assignment event timeline (oldest first)."""
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT id, assignment_id, event_type, from_status, to_status, actor_code, note, created_at
+                FROM agent_assignment_events
+                WHERE assignment_id = ?
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (int(assignment_id), int(limit)),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def agent_update_assignment_status(
+        self,
+        *,
+        assignment_id: int,
+        to_status: str,
+        actor_code: str,
+        note: str | None = None,
+    ) -> bool:
+        """Transition assignment status and log an event."""
+        to_st = (to_status or "").strip().lower()
+        allowed = {"queued", "in_progress", "awaiting_review", "blocked", "done", "cancelled"}
+        if to_st not in allowed:
+            return False
+
+        current = self.agent_get_assignment(int(assignment_id))
+        if not current:
+            return False
+        from_st = str(current.get("status") or "").strip().lower()
+        now = self._now_iso()
+        completed_at = now if to_st in {"done", "cancelled"} else None
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                "UPDATE agent_assignments SET status = ?, updated_at = ?, completed_at = ? WHERE id = ?",
+                (to_st, now, completed_at, int(assignment_id)),
+            )
+            conn.execute(
+                """
+                INSERT INTO agent_assignment_events
+                    (assignment_id, event_type, from_status, to_status, actor_code, note, created_at)
+                VALUES
+                    (?, 'status_changed', ?, ?, ?, ?, ?)
+                """,
+                (int(assignment_id), from_st or None, to_st, (actor_code or "").strip().lower() or None, note, now),
+            )
+            conn.commit()
+        return True
+
+    def agent_reassign_assignment(
+        self,
+        *,
+        assignment_id: int,
+        new_assignee_code: str,
+        actor_code: str,
+        note: str | None = None,
+    ) -> bool:
+        """Reassign an assignment to another agent and log event."""
+        asg = (new_assignee_code or "").strip().lower()
+        if not asg or not self.agent_get(asg):
+            return False
+        current = self.agent_get_assignment(int(assignment_id))
+        if not current:
+            return False
+        old = str(current.get("assignee_code") or "").strip().lower()
+        now = self._now_iso()
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                "UPDATE agent_assignments SET assignee_code = ?, updated_at = ? WHERE id = ?",
+                (asg, now, int(assignment_id)),
+            )
+            conn.execute(
+                """
+                INSERT INTO agent_assignment_events
+                    (assignment_id, event_type, from_status, to_status, actor_code, note, created_at)
+                VALUES
+                    (?, 'reassigned', ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(assignment_id),
+                    old or None,
+                    asg,
+                    (actor_code or "").strip().lower() or None,
+                    note,
+                    now,
+                ),
+            )
+            conn.commit()
+        return True
+
+    def agent_add_artifact(
+        self,
+        *,
+        artifact_type: str,
+        assignment_id: int | None = None,
+        thread_id: int | None = None,
+        title: str | None = None,
+        content_md: str | None = None,
+        content_json: str | dict | list | None = None,
+        file_path: str | None = None,
+    ) -> int:
+        """Store an agent artifact. Returns artifact id."""
+        now = self._now_iso()
+        cjson = content_json
+        if isinstance(cjson, (dict, list)):
+            cjson = json.dumps(cjson, ensure_ascii=False)
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO agent_artifacts
+                    (assignment_id, thread_id, artifact_type, title, content_md, content_json, file_path, created_at)
+                VALUES
+                    (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(assignment_id) if assignment_id is not None else None,
+                    int(thread_id) if thread_id is not None else None,
+                    str(artifact_type or "").strip() or "artifact",
+                    str(title) if title is not None else None,
+                    str(content_md) if content_md is not None else None,
+                    str(cjson) if cjson is not None else None,
+                    str(file_path) if file_path is not None else None,
+                    now,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def agent_list_artifacts(
+        self,
+        *,
+        assignment_id: int | None = None,
+        thread_id: int | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """List agent artifacts filtered by assignment and/or thread."""
+        where = ["1=1"]
+        params: list[object] = []
+        if assignment_id is not None:
+            where.append("assignment_id = ?")
+            params.append(int(assignment_id))
+        if thread_id is not None:
+            where.append("thread_id = ?")
+            params.append(int(thread_id))
+        params.append(int(limit))
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"""
+                SELECT id, assignment_id, thread_id, artifact_type, title, content_md, content_json, file_path, created_at
+                FROM agent_artifacts
+                WHERE {' AND '.join(where)}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def close(self):
         """Close database connection."""
