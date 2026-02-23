@@ -264,6 +264,36 @@ class TestChiefOfStaffService:
         assert tasks[0][2] in (None, "", "none")
         assert tasks[0][3] == "Personal"
 
+    def test_cos_response_parses_add_cal_block_and_creates_event(self, mock_grok, cos_db):
+        """ADD_CAL_BLOCK creates one Google Calendar event and strips command line from response."""
+        mock_grok.return_value = (
+            "Done.\n"
+            "ADD_CAL_BLOCK: Deep work - DHF | 2026-02-25T13:00:00-05:00 | 2026-02-25T14:30:00-05:00 | primary"
+        )
+        from core.chief_of_staff_service import cos_response
+
+        with patch("core.chief_of_staff_service.create_calendar_event") as mock_create:
+            mock_create.return_value = (True, "", {"id": "evt_123"})
+            result = cos_response(cos_db, "Please schedule this on my calendar.")
+
+        assert mock_create.call_count == 1
+        kwargs = mock_create.call_args.kwargs
+        assert kwargs.get("summary") == "Deep work - DHF"
+        assert kwargs.get("calendar_id") == "primary"
+        assert "ADD_CAL_BLOCK:" not in result
+        assert "Scheduled 1 calendar block(s)" in result
+
+    def test_cos_response_add_cal_block_invalid_time(self, mock_grok, cos_db):
+        """Invalid ADD_CAL_BLOCK datetime input reports failure and does not call calendar API."""
+        mock_grok.return_value = "ADD_CAL_BLOCK: Deep work | not-a-date | still-not-a-date | primary"
+        from core.chief_of_staff_service import cos_response
+
+        with patch("core.chief_of_staff_service.create_calendar_event") as mock_create:
+            result = cos_response(cos_db, "Schedule a block.")
+
+        assert mock_create.call_count == 0
+        assert "Could not schedule 1 calendar block(s)" in result
+
 
 @patch("core.chief_of_staff_service.grok_completion_messages")
 def test_cos_response_with_history_uses_multi_turn(mock_grok_messages, cos_db):

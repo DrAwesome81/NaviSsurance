@@ -97,6 +97,60 @@ def get_calendar_events(
     return all_events
 
 
+def create_calendar_event(
+    *,
+    summary: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    calendar_id: str = "primary",
+    description: str = "",
+) -> tuple[bool, str, dict[str, Any] | None]:
+    """
+    Create a Google Calendar event.
+    Returns (ok, message, created_event_dict_or_none).
+    """
+    ok, msg = calendar_available()
+    if not ok:
+        return False, msg, None
+
+    title = (summary or "").strip()
+    if not title:
+        return False, "Event title is required.", None
+    if end_dt <= start_dt:
+        return False, "Event end time must be after start time.", None
+
+    # If caller passes naive datetimes, assume local timezone.
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=local_tz)
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.replace(tzinfo=local_tz)
+
+    try:
+        from googleapiclient.discovery import build
+
+        token_path, _ = _config_paths()
+        creds = _load_creds(token_path)
+        service = build("calendar", "v3", credentials=creds)
+
+        event_body: dict[str, Any] = {
+            "summary": title,
+            "start": {"dateTime": start_dt.isoformat()},
+            "end": {"dateTime": end_dt.isoformat()},
+        }
+        if description:
+            event_body["description"] = str(description).strip()
+
+        created = (
+            service.events()
+            .insert(calendarId=(calendar_id or "primary").strip(), body=event_body)
+            .execute()
+        )
+        return True, "", created
+    except Exception as e:
+        return False, f"Failed to create calendar event: {e}", None
+
+
 def format_events_brief(events: list[dict[str, Any]], tz=timezone.utc) -> str:
     """
     Convert Google Calendar API events into compact bullet list.

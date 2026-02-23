@@ -19,13 +19,24 @@ from core.grok_client import (
     MODEL_COS,
     MODEL_FAST,
 )
-from core.cos_calendar import calendar_available, get_calendar_events, format_events_brief
+from core.cos_calendar import (
+    calendar_available,
+    create_calendar_event,
+    format_events_brief,
+    get_calendar_events,
+)
 from core.cos_doc_search import doc_search, format_hits
 
 logger = logging.getLogger(__name__)
 
 # Pattern for CoS to add a task: ADD_TASK: text | due_date (MM-DD-YYYY or none) | category (Business or Personal)
 ADD_TASK_PATTERN = re.compile(r"ADD_TASK:\s*(.+?)\s*\|\s*([^|]+?)\s*\|\s*(Business|Personal)", re.IGNORECASE)
+# Pattern for CoS to schedule a calendar block:
+# ADD_CAL_BLOCK: title | start_datetime | end_datetime | optional_calendar_id
+ADD_CAL_BLOCK_PATTERN = re.compile(
+    r"ADD_CAL_BLOCK:\s*(.+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)(?:\s*\|\s*([^|]+?)\s*)?$",
+    re.IGNORECASE,
+)
 
 # CoS tool triggers (tool loop)
 WEB_SEARCH_TRIGGER = re.compile(r"^\s*WEB_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
@@ -35,6 +46,51 @@ MEMORY_SEARCH_TRIGGER = re.compile(r"^\s*MEMORY_SEARCH:\s*(.+?)\s*$", re.IGNOREC
 
 def _now_local():
     return datetime.now()
+
+
+def _parse_calendar_datetime(value: str) -> Optional[datetime]:
+    """
+    Parse common datetime inputs and return timezone-aware datetime when possible.
+    Accepted examples:
+    - 2026-02-25T13:00:00-05:00
+    - 2026-02-25T13:00
+    - 2026-02-25 1:00 PM
+    - 02-25-2026 13:00
+    """
+    s = (value or "").strip().strip('"').strip("'")
+    if not s:
+        return None
+
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+
+    # Handle UTC "Z" suffix explicitly because fromisoformat expects "+00:00".
+    if s.endswith("Z"):
+        try:
+            return datetime.fromisoformat(s[:-1] + "+00:00")
+        except Exception:
+            pass
+
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=local_tz)
+        return dt
+    except Exception:
+        pass
+
+    for fmt in (
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d %I:%M %p",
+        "%m-%d-%Y %H:%M",
+        "%m-%d-%Y %I:%M %p",
+    ):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt.replace(tzinfo=local_tz)
+        except Exception:
+            continue
+
+    return None
 
 
 def _tasks_context(db: DatabaseManager) -> str:
@@ -217,6 +273,12 @@ ADD_TASK: <task description> | <due date as MM-DD-YYYY or "none"> | <Business or
 Example: ADD_TASK: Send follow-up to client | 02-25-2026 | Business
 Omit ADD_TASK lines if you are not adding any tasks.
 
+You may also schedule calendar blocks when he explicitly asks for it. To schedule a block, write one or more lines in this exact format (one block per line):
+ADD_CAL_BLOCK: <title> | <start datetime> | <end datetime> | <calendar id or "primary">
+Example: ADD_CAL_BLOCK: Deep work - client report | 2026-02-25T13:00:00-05:00 | 2026-02-25T14:30:00-05:00 | primary
+Prefer ISO-8601 datetimes with timezone offsets.
+Omit ADD_CAL_BLOCK lines if you are not scheduling calendar blocks.
+
 If you need more information to answer well, you may request one of these tools by returning EXACTLY ONE line with one of:
 - WEB_SEARCH:<query>
 - DOC_SEARCH:<query>   (searches local docs/notes and optional RAG index)
@@ -355,14 +417,23 @@ If you request a tool, you must return only that single tool line (no other text
 
 
 def _parse_and_add_tasks(db: DatabaseManager, response: str) -> str:
-    """Parse ADD_TASK lines from the model response, insert tasks into the dashboard task list, return cleaned response."""
+    """
+    Parse action lines from the model response:
+    - ADD_TASK: add dashboard tasks
+    - ADD_CAL_BLOCK: create Google Calendar events
+    Return cleaned response text with action lines removed.
+    """
     if not response:
         return response
     session_id = f"dashboard_cos_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    added = 0
+    added_tasks = 0
+    added_blocks = 0
+    block_failures = 0
     cleaned_lines = []
     for line in response.splitlines():
-        m = ADD_TASK_PATTERN.search(line.strip())
+        stripped = line.strip()
+
+        m = ADD_TASK_PATTERN.search(stripped)
         if m:
             task_text = m.group(1).strip()
             due_part = m.group(2).strip().lower()
@@ -382,12 +453,53 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str) -> str:
                     recurrence="None",
                     completed=0,
                 )
-                added += 1
+                added_tasks += 1
             except Exception as e:
                 logger.warning("CoS add_task failed: %s", e)
             continue
+
+        m_block = ADD_CAL_BLOCK_PATTERN.search(stripped)
+        if m_block:
+            title = (m_block.group(1) or "").strip()
+            start_raw = (m_block.group(2) or "").strip()
+            end_raw = (m_block.group(3) or "").strip()
+            calendar_id = (m_block.group(4) or "primary").strip() or "primary"
+
+            start_dt = _parse_calendar_datetime(start_raw)
+            end_dt = _parse_calendar_datetime(end_raw)
+            if not start_dt or not end_dt or end_dt <= start_dt:
+                block_failures += 1
+                logger.warning(
+                    "CoS ADD_CAL_BLOCK rejected due to invalid times: start=%r end=%r",
+                    start_raw,
+                    end_raw,
+                )
+                continue
+
+            ok, msg, _created = create_calendar_event(
+                summary=title,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                calendar_id=calendar_id,
+            )
+            if ok:
+                added_blocks += 1
+            else:
+                block_failures += 1
+                logger.warning("CoS ADD_CAL_BLOCK failed: %s", msg or "unknown error")
+            continue
+
         cleaned_lines.append(line)
     out = "\n".join(cleaned_lines).strip()
-    if added:
-        out += f"\n\n— *Added {added} task(s) to your dashboard.*"
+    action_notes = []
+    if added_tasks:
+        action_notes.append(f"— *Added {added_tasks} task(s) to your dashboard.*")
+    if added_blocks:
+        action_notes.append(f"— *Scheduled {added_blocks} calendar block(s).*")
+    if block_failures:
+        action_notes.append(f"— *Could not schedule {block_failures} calendar block(s). Please check date/time format.*")
+    if action_notes:
+        if out:
+            out += "\n\n"
+        out += "\n".join(action_notes)
     return out
