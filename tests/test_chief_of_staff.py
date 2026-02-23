@@ -360,7 +360,49 @@ class TestChiefOfStaffService:
         result = cos_response(cos_db, "Delegate this.")
         rows = cos_db.agent_list_assignments(limit=10)
         assert len(rows) == 0
-        assert "Could not create 1 assignment(s)" in result
+        assert "Could not process 1 assignment action(s)" in result
+
+    def test_cos_response_updates_assignment_status(self, mock_grok, cos_db):
+        """UPDATE_ASSIGNMENT_STATUS updates assignment state by reference id."""
+        aid = cos_db.agent_create_assignment(
+            title="Initial assignment",
+            brief_md="Do work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+        )
+        mock_grok.return_value = f"UPDATE_ASSIGNMENT_STATUS: A-{int(aid):04d} | in_progress | Started"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Mark it started.")
+        row = cos_db.agent_get_assignment(int(aid))
+        assert row is not None
+        assert str(row.get("status") or "") == "in_progress"
+        assert "Updated 1 assignment(s)" in result
+        assert "UPDATE_ASSIGNMENT_STATUS:" not in result
+
+    def test_cos_response_reassigns_assignment(self, mock_grok, cos_db):
+        """REASSIGN moves assignment to a new assignee and relinks source thread."""
+        aid = cos_db.agent_create_assignment(
+            title="Draft document",
+            brief_md="Write draft",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=2,
+        )
+        mock_grok.return_value = f"REASSIGN: A-{int(aid):04d} | Quill | Better fit for writing"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Reassign this one.")
+        row = cos_db.agent_get_assignment(int(aid))
+        assert row is not None
+        assert str(row.get("assignee_code") or "") == "quill"
+        assert row.get("source_thread_id") is not None
+        thread = cos_db.agent_get_thread(int(row.get("source_thread_id")))
+        assert thread is not None
+        assert str(thread[1]).lower() == "quill"
+        assert "Reassigned 1 assignment(s)" in result
+        assert "REASSIGN:" not in result
 
 
 @patch("core.chief_of_staff_service.grok_completion_messages")

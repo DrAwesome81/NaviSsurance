@@ -40,6 +40,14 @@ ADD_CAL_BLOCK_PATTERN = re.compile(
 # Pattern for CoS delegation action:
 # ASSIGN: agent | title | brief | P1..P5 | due_date_or_none
 ASSIGN_PATTERN = re.compile(r"^\s*ASSIGN:\s*(.+?)\s*$", re.IGNORECASE)
+# Pattern for CoS assignment status updates:
+# UPDATE_ASSIGNMENT_STATUS: assignment_ref | status | optional_note
+UPDATE_ASSIGNMENT_STATUS_PATTERN = re.compile(
+    r"^\s*UPDATE_ASSIGNMENT_STATUS:\s*(.+?)\s*$", re.IGNORECASE
+)
+# Pattern for CoS assignment reassignment:
+# REASSIGN: assignment_ref | assignee_name | optional_note
+REASSIGN_PATTERN = re.compile(r"^\s*REASSIGN:\s*(.+?)\s*$", re.IGNORECASE)
 
 # CoS tool triggers (tool loop)
 WEB_SEARCH_TRIGGER = re.compile(r"^\s*WEB_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
@@ -111,6 +119,37 @@ def _tasks_context(db: DatabaseManager) -> str:
     except Exception as e:
         logger.warning("Could not load tasks for CoS context: %s", e)
         return "**Dashboard tasks:** (unable to load)"
+
+
+def _assignments_context(db: DatabaseManager) -> str:
+    """Format open delegation assignments for CoS context."""
+    try:
+        rows = db.agent_list_assignments(limit=300)
+        if not rows:
+            return "**Delegated assignments:** (none)"
+        open_rows = []
+        for r in rows:
+            st = str(r.get("status") or "").strip().lower()
+            if st in {"done", "cancelled"}:
+                continue
+            open_rows.append(r)
+        if not open_rows:
+            return "**Delegated assignments:** (all closed)"
+
+        lines = []
+        for r in open_rows[:60]:
+            aid = int(r.get("id") or 0)
+            title = str(r.get("title") or "Untitled")
+            assignee = str(r.get("assignee_code") or "agent")
+            st = str(r.get("status") or "queued")
+            pr = int(r.get("priority") or 3)
+            due = str(r.get("due_date") or "")
+            due_part = f" due {due}" if due else ""
+            lines.append(f"- A-{aid:04d} [{st}] P{pr} {title} -> {assignee}{due_part}")
+        return "**Delegated assignments (open):**\n" + "\n".join(lines)
+    except Exception as e:
+        logger.warning("Could not load assignments for CoS context: %s", e)
+        return "**Delegated assignments:** (unable to load)"
 
 
 def _preferences_context(prefs_row) -> str:
@@ -249,6 +288,27 @@ Hard rules:
         return
 
 
+def _parse_assignment_ref(value: str) -> Optional[int]:
+    """Parse assignment reference forms like 'A-0007' or '7'."""
+    s = (value or "").strip().upper()
+    if not s:
+        return None
+    m = re.match(r"^A-(\d+)$", s)
+    if m:
+        try:
+            aid = int(m.group(1))
+            return aid if aid > 0 else None
+        except Exception:
+            return None
+    if s.isdigit():
+        try:
+            aid = int(s)
+            return aid if aid > 0 else None
+        except Exception:
+            return None
+    return None
+
+
 def cos_response(
     db: DatabaseManager,
     user_message: str,
@@ -266,6 +326,7 @@ def cos_response(
     prefs_ctx = _preferences_context(prefs)
 
     tasks_ctx = _tasks_context(db)
+    assignments_ctx = _assignments_context(db)
     cal_ctx = _calendar_context()
     mem_ctx = _memory_context(db, user_message, chat_id)
 
@@ -287,6 +348,16 @@ ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>
 Example: ASSIGN: Atlas | FDA PCCP research brief | Research latest guidance and summarize with citations. | P1 | 2026-03-01
 Available agent names: Atlas, Quill, Sentinel, Lex, Scout, Mason, Ledger, Archive, Pulse, Shield.
 Omit ASSIGN lines if you are not delegating work.
+
+You may update assignment status:
+UPDATE_ASSIGNMENT_STATUS: <A-0007 or 7> | <queued|in_progress|awaiting_review|blocked|done|cancelled> | <optional note>
+Example: UPDATE_ASSIGNMENT_STATUS: A-0007 | in_progress | Atlas has started.
+Omit UPDATE_ASSIGNMENT_STATUS lines if you are not changing assignment status.
+
+You may reassign work:
+REASSIGN: <A-0007 or 7> | <AgentName> | <optional note>
+Example: REASSIGN: A-0007 | Quill | Move drafting to writer.
+Omit REASSIGN lines if you are not reassigning work.
 
 If you need more information to answer well, you may request one of these tools by returning EXACTLY ONE line with one of:
 - WEB_SEARCH:<query>
@@ -390,6 +461,8 @@ If you request a tool, you must return only that single tool line (no other text
 
 {tasks_ctx}
 
+{assignments_ctx}
+
 **What he says (main input):**
 {user_message or "What should I focus on right now?"}"""
         try:
@@ -409,7 +482,7 @@ If you request a tool, you must return only that single tool line (no other text
         time_ctx += f"\n\n{cal_ctx}"
     if mem_ctx:
         time_ctx += f"\n\n{mem_ctx}"
-    time_ctx += f"\n\n{tasks_ctx}"
+    time_ctx += f"\n\n{tasks_ctx}\n\n{assignments_ctx}"
     messages = [{"role": "system", "content": system + "\n\n" + time_ctx}]
     for role, content in conversation_history:
         if role in ("user", "assistant") and content:
@@ -439,6 +512,8 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     added_tasks = 0
     added_blocks = 0
     created_assignments: list[str] = []
+    updated_assignments: list[str] = []
+    reassigned_assignments: list[str] = []
     assignment_failures: list[str] = []
     block_failures = 0
     block_failure_reasons: list[str] = []
@@ -575,6 +650,108 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 assignment_failures.append(f"failed creating assignment for {assignee_name}")
             continue
 
+        m_upd = UPDATE_ASSIGNMENT_STATUS_PATTERN.match(stripped)
+        if m_upd:
+            payload = (m_upd.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 2)]
+            if len(parts) < 2:
+                assignment_failures.append("invalid UPDATE_ASSIGNMENT_STATUS format")
+                logger.warning("CoS UPDATE_ASSIGNMENT_STATUS invalid format: %r", stripped)
+                continue
+            assignment_ref = parts[0]
+            to_status = (parts[1] or "").strip().lower()
+            note = (parts[2] if len(parts) > 2 else "").strip() or None
+            aid = _parse_assignment_ref(assignment_ref)
+            if aid is None:
+                assignment_failures.append(f"invalid assignment id '{assignment_ref}'")
+                logger.warning("CoS UPDATE_ASSIGNMENT_STATUS invalid id: %r", assignment_ref)
+                continue
+            ok = False
+            try:
+                ok = db.agent_update_assignment_status(
+                    assignment_id=int(aid),
+                    to_status=to_status,
+                    actor_code="navi",
+                    note=note,
+                )
+            except Exception as e:
+                ok = False
+                logger.warning("CoS UPDATE_ASSIGNMENT_STATUS failed: %s", e)
+            if ok:
+                updated_assignments.append(f"A-{int(aid):04d} -> {to_status}")
+            else:
+                assignment_failures.append(f"failed updating A-{int(aid):04d} to {to_status}")
+            continue
+
+        m_reassign = REASSIGN_PATTERN.match(stripped)
+        if m_reassign:
+            payload = (m_reassign.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 2)]
+            if len(parts) < 2:
+                assignment_failures.append("invalid REASSIGN format")
+                logger.warning("CoS REASSIGN invalid format: %r", stripped)
+                continue
+            assignment_ref = parts[0]
+            assignee_name = (parts[1] or "").strip()
+            note = (parts[2] if len(parts) > 2 else "").strip() or None
+
+            aid = _parse_assignment_ref(assignment_ref)
+            if aid is None:
+                assignment_failures.append(f"invalid assignment id '{assignment_ref}'")
+                logger.warning("CoS REASSIGN invalid id: %r", assignment_ref)
+                continue
+            agent = db.agent_resolve_by_name(assignee_name)
+            if not agent:
+                assignment_failures.append(f"unknown agent '{assignee_name}'")
+                logger.warning("CoS REASSIGN unknown agent: %r", assignee_name)
+                continue
+            assignee_code = str(agent.get("code") or "").strip().lower()
+
+            ok = False
+            try:
+                ok = db.agent_reassign_assignment(
+                    assignment_id=int(aid),
+                    new_assignee_code=assignee_code,
+                    actor_code="navi",
+                    note=note or "Reassigned via CoS action",
+                )
+            except Exception as e:
+                ok = False
+                logger.warning("CoS REASSIGN failed: %s", e)
+            if not ok:
+                assignment_failures.append(f"failed reassigning A-{int(aid):04d}")
+                continue
+
+            # Ensure linked thread points to the new assignee.
+            try:
+                row = db.agent_get_assignment(int(aid)) or {}
+                source_thread_id = row.get("source_thread_id")
+                relink = True
+                if source_thread_id:
+                    src = db.agent_get_thread(int(source_thread_id))
+                    if src and str(src[1] or "").strip().lower() == assignee_code:
+                        relink = False
+                if relink:
+                    title = str(row.get("title") or f"A-{int(aid):04d}")
+                    tid = db.agent_create_thread(
+                        agent_code=assignee_code,
+                        title=title,
+                        context_json={"source": "chief_of_staff_reassign", "assignment_id": int(aid)},
+                    )
+                    if tid:
+                        db.agent_link_assignment_thread(
+                            assignment_id=int(aid),
+                            thread_id=int(tid),
+                            actor_code="navi",
+                            note="Thread relinked after reassignment",
+                        )
+            except Exception:
+                pass
+
+            disp = str(agent.get("display_name") or assignee_code).strip()
+            reassigned_assignments.append(f"A-{int(aid):04d} -> {disp}")
+            continue
+
         cleaned_lines.append(line)
     out = "\n".join(cleaned_lines).strip()
     action_notes = []
@@ -593,9 +770,21 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
         action_notes.append(
             f"— *Created {len(created_assignments)} assignment(s): {preview}{more}.*"
         )
+    if updated_assignments:
+        preview = ", ".join(updated_assignments[:3])
+        more = " ..." if len(updated_assignments) > 3 else ""
+        action_notes.append(
+            f"— *Updated {len(updated_assignments)} assignment(s): {preview}{more}.*"
+        )
+    if reassigned_assignments:
+        preview = ", ".join(reassigned_assignments[:3])
+        more = " ..." if len(reassigned_assignments) > 3 else ""
+        action_notes.append(
+            f"— *Reassigned {len(reassigned_assignments)} assignment(s): {preview}{more}.*"
+        )
     if assignment_failures:
         action_notes.append(
-            f"— *Could not create {len(assignment_failures)} assignment(s): {assignment_failures[0]}.*"
+            f"— *Could not process {len(assignment_failures)} assignment action(s): {assignment_failures[0]}.*"
         )
     if action_notes:
         if out:
