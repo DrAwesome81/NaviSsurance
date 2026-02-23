@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QTextBrowser,
     QPushButton,
+    QMessageBox,
 )
 
 from core.db import DatabaseManager
@@ -48,6 +49,18 @@ class TeamDirectoryTab(QWidget):
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
 
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(8)
+        self.open_workspace_btn = QPushButton("Open Agent Workspace")
+        self.open_workspace_btn.clicked.connect(self._open_selected_agent_workspace)
+        action_row.addWidget(self.open_workspace_btn)
+        self.open_next_btn = QPushButton("Open Next Open Assignment")
+        self.open_next_btn.clicked.connect(self._open_selected_agent_next_assignment)
+        action_row.addWidget(self.open_next_btn)
+        action_row.addStretch()
+        layout.addLayout(action_row)
+
         body = QHBoxLayout()
         self.agent_list = QListWidget()
         self.agent_list.itemClicked.connect(self._on_agent_clicked)
@@ -56,6 +69,7 @@ class TeamDirectoryTab(QWidget):
         self.details.setPlaceholderText("Select a team member to view details.")
         body.addWidget(self.details, 2)
         layout.addLayout(body, 1)
+        self._selected_agent_code: str = ""
 
     def _refresh(self):
         self.agent_list.clear()
@@ -79,6 +93,7 @@ class TeamDirectoryTab(QWidget):
         code = str(item.data(Qt.ItemDataRole.UserRole) or "").strip().lower()
         if not code:
             return
+        self._selected_agent_code = code
         row = self.db.agent_get(code)
         if not row:
             self.details.setPlainText("Agent not found.")
@@ -95,11 +110,22 @@ class TeamDirectoryTab(QWidget):
         except Exception:
             capabilities = []
 
+        rows = self.db.agent_list_assignments(assignee_code=code, limit=200)
+        open_rows = []
+        closed_rows = []
+        for r in rows:
+            st = str(r.get("status") or "").strip().lower()
+            if st in {"done", "cancelled"}:
+                closed_rows.append(r)
+            else:
+                open_rows.append(r)
+
         lines = [
             f"Code: {row.get('code') or ''}",
             f"Display name: {row.get('display_name') or ''}",
             f"Role title: {row.get('role_title') or ''}",
             f"Home tab: {row.get('home_tab') or ''}",
+            f"Assignments: {len(open_rows)} open, {len(closed_rows)} closed",
             "",
             "Aliases:",
         ]
@@ -112,5 +138,91 @@ class TeamDirectoryTab(QWidget):
             lines.extend([f"- {str(c)}" for c in capabilities])
         else:
             lines.append("- (none)")
+        lines.extend(["", "Open assignments:"])
+        if open_rows:
+            for r in open_rows[:8]:
+                aid = int(r.get("id") or 0)
+                st = str(r.get("status") or "")
+                pr = int(r.get("priority") or 3)
+                title = str(r.get("title") or "Untitled")
+                lines.append(f"- A-{aid:04d} [{st}] P{pr} {title}")
+        else:
+            lines.append("- (none)")
         self.details.setPlainText("\n".join(lines).strip())
+
+    def _route_for_agent(self, agent_code: str):
+        code = (agent_code or "").strip().lower()
+        return {
+            "atlas": ("projects_tab", "atlas_chat_group", "atlas_console", "AI Projects"),
+            "quill": ("workspace_tab", "quill_chat_group", "quill_console", "Workspace"),
+            "sentinel": ("compliance_tab", "sentinel_chat_group", "sentinel_console", "Compliance"),
+            "lex": ("compliance_tab", "lex_chat_group", "lex_console", "Compliance"),
+            "scout": ("leads_tab", "scout_chat_group", "scout_console", "Leads"),
+            "mason": ("tasks_tab", "mason_chat_group", "mason_console", "Tasks"),
+            "ledger": ("billing_tab", None, "agent_console", "Billing"),
+            "archive": ("library_tab", None, "agent_console", "Library"),
+            "pulse": ("intel_tab", None, "agent_console", "Intel"),
+            "shield": ("security_tab", None, "agent_console", "Security"),
+            "navi": ("chief_of_staff_tab", None, None, "Chief of Staff"),
+        }.get(code)
+
+    def _open_selected_agent_workspace(self):
+        code = (self._selected_agent_code or "").strip().lower()
+        if not code:
+            QMessageBox.information(self, "Team", "Select an agent first.")
+            return
+        host = self.parent()
+        tw = getattr(host, "tab_widget", None) if host is not None else None
+        if tw is None:
+            QMessageBox.information(self, "Team", "Could not open agent workspace in this context.")
+            return
+        route = self._route_for_agent(code)
+        if not route:
+            QMessageBox.information(self, "Team", f"No workspace route available for '{code}'.")
+            return
+        tab_attr, group_attr, _console_attr, tab_label = route
+        target_tab = getattr(host, tab_attr, None)
+        if target_tab is None:
+            QMessageBox.warning(self, "Team", f"Could not open tab: {tab_label}.")
+            return
+        idx = tw.indexOf(target_tab)
+        if idx >= 0:
+            tw.setCurrentIndex(idx)
+        if group_attr:
+            group = getattr(target_tab, group_attr, None)
+            if group is not None and hasattr(group, "setChecked"):
+                group.setChecked(True)
+
+    def _open_selected_agent_next_assignment(self):
+        code = (self._selected_agent_code or "").strip().lower()
+        if not code:
+            QMessageBox.information(self, "Team", "Select an agent first.")
+            return
+        rows = self.db.agent_list_assignments(assignee_code=code, limit=200)
+        next_row = None
+        for r in rows:
+            st = str(r.get("status") or "").strip().lower()
+            if st in {"done", "cancelled"}:
+                continue
+            next_row = r
+            break
+        if not next_row:
+            QMessageBox.information(self, "Team", "No open assignments for this agent.")
+            return
+
+        self._open_selected_agent_workspace()
+        aid = int(next_row.get("id") or 0)
+        host = self.parent()
+        route = self._route_for_agent(code)
+        if aid <= 0 or route is None:
+            return
+        tab_attr, _group_attr, console_attr, _tab_label = route
+        target_tab = getattr(host, tab_attr, None) if host is not None else None
+        console = getattr(target_tab, console_attr, None) if target_tab is not None and console_attr else None
+        if console is None or not hasattr(console, "focus_assignment"):
+            return
+        try:
+            console.focus_assignment(aid)
+        except Exception:
+            return
 
