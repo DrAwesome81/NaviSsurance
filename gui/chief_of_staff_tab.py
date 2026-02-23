@@ -357,6 +357,7 @@ class ChiefOfStaffTab(QWidget):
             self.assignment_details.setPlainText("Assignment not found.")
             return
         events = self.db.agent_get_assignment_events(assignment_id=self._current_assignment_id, limit=40)
+        artifacts = self.db.agent_list_artifacts(assignment_id=self._current_assignment_id, limit=10)
         lines = [
             f"ID: A-{int(row.get('id') or 0):04d}",
             f"Title: {row.get('title') or ''}",
@@ -365,12 +366,22 @@ class ChiefOfStaffTab(QWidget):
             f"Assignee: {row.get('assignee_code') or ''}",
             f"Priority: P{int(row.get('priority') or 3)}",
             f"Due: {row.get('due_date') or '(none)'}",
+            f"Linked thread: {row.get('source_thread_id') or '(none)'}",
             "",
             "Brief:",
             str(row.get("brief_md") or "").strip(),
-            "",
-            "Events:",
         ]
+        result_summary = str(row.get("result_summary_md") or "").strip()
+        if result_summary:
+            lines.extend(["", "Result summary:", result_summary])
+        lines.extend(["", f"Artifacts ({len(artifacts)}):"])
+        for a in artifacts[:5]:
+            art_id = int(a.get("id") or 0)
+            art_type = str(a.get("artifact_type") or "artifact")
+            art_title = str(a.get("title") or "").strip() or "(untitled)"
+            art_ts = str(a.get("created_at") or "")
+            lines.append(f"- #{art_id} [{art_type}] {art_title} ({art_ts})")
+        lines.extend(["", "Events:"])
         for ev in events:
             et = str(ev.get("event_type") or "")
             fr = str(ev.get("from_status") or "")

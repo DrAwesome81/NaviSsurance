@@ -3612,6 +3612,42 @@ class DatabaseManager:
             conn.commit()
         return True
 
+    def agent_set_assignment_result_summary(
+        self,
+        *,
+        assignment_id: int,
+        summary_md: str,
+        actor_code: str | None = None,
+        note: str | None = None,
+    ) -> bool:
+        """Store/update assignment result summary and append a timeline event."""
+        current = self.agent_get_assignment(int(assignment_id))
+        if not current:
+            return False
+        now = self._now_iso()
+        summary = (summary_md or "").strip()
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                "UPDATE agent_assignments SET result_summary_md = ?, updated_at = ? WHERE id = ?",
+                (summary, now, int(assignment_id)),
+            )
+            conn.execute(
+                """
+                INSERT INTO agent_assignment_events
+                    (assignment_id, event_type, from_status, to_status, actor_code, note, created_at)
+                VALUES
+                    (?, 'result_summary_updated', NULL, NULL, ?, ?, ?)
+                """,
+                (
+                    int(assignment_id),
+                    (str(actor_code).strip().lower() if actor_code else None),
+                    note or ("Result summary set" if summary else "Result summary cleared"),
+                    now,
+                ),
+            )
+            conn.commit()
+        return True
+
     def agent_reassign_assignment(
         self,
         *,

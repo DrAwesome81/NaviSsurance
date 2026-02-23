@@ -173,6 +173,43 @@ class TestCosDatabasePlans:
         assert "Write tests" in row[2]
 
 
+class TestAgentAssignments:
+    """Test assignment summary + artifact linkage helpers."""
+
+    def test_result_summary_and_artifacts(self, cos_db):
+        aid = cos_db.agent_create_assignment(
+            title="Summarize findings",
+            brief_md="Prepare concise summary",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=2,
+        )
+        assert aid is not None and aid > 0
+
+        ok = cos_db.agent_set_assignment_result_summary(
+            assignment_id=int(aid),
+            summary_md="Key findings captured with recommended next steps.",
+            actor_code="atlas",
+        )
+        assert ok is True
+        row = cos_db.agent_get_assignment(int(aid))
+        assert row is not None
+        assert "Key findings" in (row.get("result_summary_md") or "")
+
+        art_id = cos_db.agent_add_artifact(
+            artifact_type="agent_reply",
+            assignment_id=int(aid),
+            title="Atlas update",
+            content_md="Draft summary artifact body.",
+        )
+        assert art_id is not None and art_id > 0
+        arts = cos_db.agent_list_artifacts(assignment_id=int(aid), limit=10)
+        assert any(int(a.get("id") or 0) == int(art_id) for a in arts)
+
+        events = cos_db.agent_get_assignment_events(assignment_id=int(aid), limit=50)
+        assert any(str(e.get("event_type") or "") == "result_summary_updated" for e in events)
+
+
 # -----------------------------------------------------------------------------
 # Service layer tests (mocked Grok, no network)
 # -----------------------------------------------------------------------------

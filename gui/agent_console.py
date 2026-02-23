@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QSplitter,
+    QMessageBox,
 )
 
 from core.agent_chat_service import agent_chat_response
@@ -90,6 +91,7 @@ class AgentConsole(QWidget):
             self.agent_code = str(self.agent.get("code") or self.agent_code).strip().lower()
         self._current_thread_id: int | None = None
         self._current_assignment_id: int | None = None
+        self._last_assistant_message: str = ""
         self._worker: AgentAskWorker | None = None
         self._setup_ui()
         self._refresh_threads()
@@ -105,6 +107,32 @@ class AgentConsole(QWidget):
         title = QLabel(f"{display_name} — {role_title}")
         title.setStyleSheet("color: #e8eaed; font-weight: 600; font-size: 13px;")
         root.addWidget(title)
+
+        self.assignment_label = QLabel("Assignment: (none selected)")
+        self.assignment_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        self.assignment_label.setWordWrap(True)
+        root.addWidget(self.assignment_label)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(6)
+        self.start_btn = QPushButton("Start")
+        self.start_btn.clicked.connect(lambda: self._set_assignment_status("in_progress"))
+        action_row.addWidget(self.start_btn)
+        self.review_btn = QPushButton("Review")
+        self.review_btn.clicked.connect(lambda: self._set_assignment_status("awaiting_review"))
+        action_row.addWidget(self.review_btn)
+        self.block_btn = QPushButton("Block")
+        self.block_btn.clicked.connect(lambda: self._set_assignment_status("blocked"))
+        action_row.addWidget(self.block_btn)
+        self.done_btn = QPushButton("Done")
+        self.done_btn.clicked.connect(lambda: self._set_assignment_status("done"))
+        action_row.addWidget(self.done_btn)
+        self.save_artifact_btn = QPushButton("Save Reply Artifact")
+        self.save_artifact_btn.clicked.connect(self._save_latest_reply_artifact)
+        action_row.addWidget(self.save_artifact_btn)
+        action_row.addStretch()
+        root.addLayout(action_row)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(6)
@@ -284,10 +312,74 @@ class AgentConsole(QWidget):
         self._refresh_threads()
         self._refresh_inbox()
         self._load_current_history()
+        self._refresh_assignment_label()
         self.chat_display.append(
             f"<p style='color:#9aa0a6;'><i>Using assignment A-{aid:04d} [{st}] — {title}</i></p>"
         )
         return True
+
+    def _refresh_assignment_label(self):
+        if self._current_assignment_id is None:
+            self.assignment_label.setText("Assignment: (none selected)")
+            return
+        row = self.db.agent_get_assignment(int(self._current_assignment_id))
+        if not row:
+            self.assignment_label.setText("Assignment: (not found)")
+            return
+        aid = int(row.get("id") or 0)
+        status = str(row.get("status") or "")
+        title = str(row.get("title") or "Untitled")
+        due = str(row.get("due_date") or "")
+        due_part = f" | due {due}" if due else ""
+        self.assignment_label.setText(f"Assignment A-{aid:04d} [{status}] — {title}{due_part}")
+
+    def _set_assignment_status(self, to_status: str):
+        if self._current_assignment_id is None:
+            QMessageBox.information(self, "Assignment", "Select an assignment from Inbox first.")
+            return
+        ok = self.db.agent_update_assignment_status(
+            assignment_id=int(self._current_assignment_id),
+            to_status=str(to_status),
+            actor_code=self.agent_code,
+        )
+        if not ok:
+            QMessageBox.warning(self, "Assignment", f"Could not set status to '{to_status}'.")
+            return
+        if str(to_status).strip().lower() == "done" and self._last_assistant_message:
+            try:
+                self.db.agent_set_assignment_result_summary(
+                    assignment_id=int(self._current_assignment_id),
+                    summary_md=self._last_assistant_message,
+                    actor_code=self.agent_code,
+                    note="Auto summary from latest assistant reply",
+                )
+            except Exception:
+                pass
+        self._refresh_inbox()
+        self._refresh_assignment_label()
+
+    def _save_latest_reply_artifact(self):
+        if self._current_assignment_id is None:
+            QMessageBox.information(self, "Artifacts", "Select an assignment first.")
+            return
+        if not self._last_assistant_message.strip():
+            QMessageBox.information(self, "Artifacts", "No assistant reply available to save yet.")
+            return
+        aid = int(self._current_assignment_id)
+        tid = int(self._current_thread_id) if self._current_thread_id is not None else None
+        try:
+            art_id = self.db.agent_add_artifact(
+                artifact_type="agent_reply",
+                assignment_id=aid,
+                thread_id=tid,
+                title=f"{self.agent.get('display_name') or self.agent_code} update A-{aid:04d}",
+                content_md=self._last_assistant_message,
+            )
+            self.chat_display.append(
+                f"<p style='color:#9aa0a6;'><i>Saved reply artifact #{int(art_id)} for A-{aid:04d}.</i></p>"
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Artifacts", f"Could not save artifact: {e}")
 
     def _load_current_history(self):
         if self._current_thread_id is None:
@@ -323,6 +415,25 @@ class AgentConsole(QWidget):
         if not session_id:
             return
 
+        # If this thread is linked to an assignment, first transition to in_progress.
+        if self._current_assignment_id is not None:
+            try:
+                row = self.db.agent_get_assignment(int(self._current_assignment_id))
+            except Exception:
+                row = None
+            if row:
+                st = str(row.get("status") or "").strip().lower()
+                if st in {"queued", "blocked"}:
+                    try:
+                        self.db.agent_update_assignment_status(
+                            assignment_id=int(self._current_assignment_id),
+                            to_status="in_progress",
+                            actor_code=self.agent_code,
+                            note="Started from agent console chat",
+                        )
+                    except Exception:
+                        pass
+
         self.db.save_message(session_id, "user", msg)
         history = self.db.get_chat_history(session_id, limit=80)
         self._worker = AgentAskWorker(
@@ -347,12 +458,27 @@ class AgentConsole(QWidget):
                 if session_id:
                     self.db.save_message(session_id, "assistant", result or "")
                     self.db.agent_touch_thread(int(self._current_thread_id), bump_last_message=True)
+            self._last_assistant_message = (result or "").strip()
+            if self._current_assignment_id is not None and self._last_assistant_message:
+                try:
+                    aid = int(self._current_assignment_id)
+                    tid = int(self._current_thread_id) if self._current_thread_id is not None else None
+                    self.db.agent_add_artifact(
+                        artifact_type="agent_reply",
+                        assignment_id=aid,
+                        thread_id=tid,
+                        title=f"{self.agent.get('display_name') or self.agent_code} reply A-{aid:04d}",
+                        content_md=self._last_assistant_message,
+                    )
+                except Exception:
+                    pass
         finally:
             self._worker = None
             self.send_btn.setEnabled(True)
             self.progress.setVisible(False)
             self._refresh_threads()
             self._refresh_inbox()
+            self._refresh_assignment_label()
             self._load_current_history()
 
     def _on_ask_error(self, err: str):
