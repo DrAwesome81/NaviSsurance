@@ -137,6 +137,7 @@ from gui.leads_tab import LeadsTab
 from gui.workspace_tab import WorkspaceTab
 from gui.projects_tab import ProjectsTab
 from gui.chief_of_staff_tab import ChiefOfStaffTab
+from gui.agent_tab import AgentTab
 from gui.utils import *
 
 logger = logging.getLogger(__name__)
@@ -479,6 +480,42 @@ class ChatWindow(QMainWindow):
         
         self.leads_tab = LeadsTab(self.chat_handler, 'data', self)
         self.tab_widget.addTab(self.leads_tab, "Leads")
+
+        self.billing_tab = AgentTab(
+            self.db,
+            agent_code="ledger",
+            heading="Billing — Ledger",
+            subtitle="Draft invoices and billing follow-ups with Ledger.",
+            parent=self,
+        )
+        self.tab_widget.addTab(self.billing_tab, "Billing")
+
+        self.library_tab = AgentTab(
+            self.db,
+            agent_code="archive",
+            heading="Library — Archive",
+            subtitle="Search and retrieval workspace for institutional knowledge.",
+            parent=self,
+        )
+        self.tab_widget.addTab(self.library_tab, "Library")
+
+        self.intel_tab = AgentTab(
+            self.db,
+            agent_code="pulse",
+            heading="Intel — Pulse",
+            subtitle="Market intelligence and competitor signal tracking.",
+            parent=self,
+        )
+        self.tab_widget.addTab(self.intel_tab, "Intel")
+
+        self.security_tab = AgentTab(
+            self.db,
+            agent_code="shield",
+            heading="Security — Shield",
+            subtitle="Security and privacy risk triage.",
+            parent=self,
+        )
+        self.tab_widget.addTab(self.security_tab, "Security")
         
         self.notes_tab = NoteTakingSystem(self.chat_handler)
         self.tab_widget.addTab(self.notes_tab, "Notes")

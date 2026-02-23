@@ -135,6 +135,18 @@ class ComplianceTab(QWidget):
             lambda checked: self.sentinel_console.setVisible(bool(checked))
         )
         layout.addWidget(self.sentinel_chat_group)
+
+        self.lex_chat_group = QGroupBox("Direct chat with Lex (Contracts Specialist)")
+        self.lex_chat_group.setCheckable(True)
+        self.lex_chat_group.setChecked(False)
+        lex_chat_layout = QVBoxLayout(self.lex_chat_group)
+        self.lex_console = AgentConsole(self.db, agent_code="lex", parent=self)
+        self.lex_console.setVisible(False)
+        lex_chat_layout.addWidget(self.lex_console)
+        self.lex_chat_group.toggled.connect(
+            lambda checked: self.lex_console.setVisible(bool(checked))
+        )
+        layout.addWidget(self.lex_chat_group)
         
         # Load existing documents
         self.load_document_lists()

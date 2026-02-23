@@ -446,13 +446,18 @@ class ChiefOfStaffTab(QWidget):
             QMessageBox.information(self, "Assignments", "Could not open assignee tab in this context.")
             return
 
-        # agent_code -> (tab_attr, group_attr, console_attr, tab_label)
+        # agent_code -> (tab_attr, group_attr_or_none, console_attr, tab_label)
         route = {
             "atlas": ("projects_tab", "atlas_chat_group", "atlas_console", "AI Projects"),
             "quill": ("workspace_tab", "quill_chat_group", "quill_console", "Workspace"),
             "sentinel": ("compliance_tab", "sentinel_chat_group", "sentinel_console", "Compliance"),
+            "lex": ("compliance_tab", "lex_chat_group", "lex_console", "Compliance"),
             "scout": ("leads_tab", "scout_chat_group", "scout_console", "Leads"),
             "mason": ("tasks_tab", "mason_chat_group", "mason_console", "Tasks"),
+            "ledger": ("billing_tab", None, "agent_console", "Billing"),
+            "archive": ("library_tab", None, "agent_console", "Library"),
+            "pulse": ("intel_tab", None, "agent_console", "Intel"),
+            "shield": ("security_tab", None, "agent_console", "Security"),
         }.get(assignee)
         if not route:
             QMessageBox.information(
@@ -470,9 +475,10 @@ class ChiefOfStaffTab(QWidget):
         idx = tw.indexOf(target_tab)
         if idx >= 0:
             tw.setCurrentIndex(idx)
-        group = getattr(target_tab, group_attr, None)
-        if group is not None and hasattr(group, "setChecked"):
-            group.setChecked(True)
+        if group_attr:
+            group = getattr(target_tab, group_attr, None)
+            if group is not None and hasattr(group, "setChecked"):
+                group.setChecked(True)
         console = getattr(target_tab, console_attr, None)
         if console is None or not hasattr(console, "focus_assignment"):
             QMessageBox.warning(self, "Assignments", f"{tab_label} chat panel is unavailable.")
