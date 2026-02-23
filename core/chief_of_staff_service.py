@@ -48,6 +48,11 @@ UPDATE_ASSIGNMENT_STATUS_PATTERN = re.compile(
 # Pattern for CoS assignment reassignment:
 # REASSIGN: assignment_ref | assignee_name | optional_note
 REASSIGN_PATTERN = re.compile(r"^\s*REASSIGN:\s*(.+?)\s*$", re.IGNORECASE)
+# Pattern for CoS assignment summary updates:
+# UPDATE_ASSIGNMENT_SUMMARY: assignment_ref | summary markdown
+UPDATE_ASSIGNMENT_SUMMARY_PATTERN = re.compile(
+    r"^\s*UPDATE_ASSIGNMENT_SUMMARY:\s*(.+?)\s*$", re.IGNORECASE
+)
 
 # CoS tool triggers (tool loop)
 WEB_SEARCH_TRIGGER = re.compile(r"^\s*WEB_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
@@ -359,6 +364,11 @@ REASSIGN: <A-0007 or 7> | <AgentName> | <optional note>
 Example: REASSIGN: A-0007 | Quill | Move drafting to writer.
 Omit REASSIGN lines if you are not reassigning work.
 
+You may update assignment result summary:
+UPDATE_ASSIGNMENT_SUMMARY: <A-0007 or 7> | <summary markdown>
+Example: UPDATE_ASSIGNMENT_SUMMARY: A-0007 | Atlas completed research and delivered sources.
+Omit UPDATE_ASSIGNMENT_SUMMARY lines if you are not updating summaries.
+
 If you need more information to answer well, you may request one of these tools by returning EXACTLY ONE line with one of:
 - WEB_SEARCH:<query>
 - DOC_SEARCH:<query>   (searches local docs/notes and optional RAG index)
@@ -514,6 +524,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     created_assignments: list[str] = []
     updated_assignments: list[str] = []
     reassigned_assignments: list[str] = []
+    summarized_assignments: list[str] = []
     assignment_failures: list[str] = []
     block_failures = 0
     block_failure_reasons: list[str] = []
@@ -752,6 +763,38 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
             reassigned_assignments.append(f"A-{int(aid):04d} -> {disp}")
             continue
 
+        m_summary = UPDATE_ASSIGNMENT_SUMMARY_PATTERN.match(stripped)
+        if m_summary:
+            payload = (m_summary.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 1)]
+            if len(parts) < 2:
+                assignment_failures.append("invalid UPDATE_ASSIGNMENT_SUMMARY format")
+                logger.warning("CoS UPDATE_ASSIGNMENT_SUMMARY invalid format: %r", stripped)
+                continue
+            assignment_ref = parts[0]
+            summary_md = (parts[1] or "").strip()
+            aid = _parse_assignment_ref(assignment_ref)
+            if aid is None:
+                assignment_failures.append(f"invalid assignment id '{assignment_ref}'")
+                logger.warning("CoS UPDATE_ASSIGNMENT_SUMMARY invalid id: %r", assignment_ref)
+                continue
+            ok = False
+            try:
+                ok = db.agent_set_assignment_result_summary(
+                    assignment_id=int(aid),
+                    summary_md=summary_md,
+                    actor_code="navi",
+                    note="Updated via CoS action",
+                )
+            except Exception as e:
+                ok = False
+                logger.warning("CoS UPDATE_ASSIGNMENT_SUMMARY failed: %s", e)
+            if ok:
+                summarized_assignments.append(f"A-{int(aid):04d}")
+            else:
+                assignment_failures.append(f"failed updating summary for A-{int(aid):04d}")
+            continue
+
         cleaned_lines.append(line)
     out = "\n".join(cleaned_lines).strip()
     action_notes = []
@@ -781,6 +824,12 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
         more = " ..." if len(reassigned_assignments) > 3 else ""
         action_notes.append(
             f"— *Reassigned {len(reassigned_assignments)} assignment(s): {preview}{more}.*"
+        )
+    if summarized_assignments:
+        preview = ", ".join(summarized_assignments[:3])
+        more = " ..." if len(summarized_assignments) > 3 else ""
+        action_notes.append(
+            f"— *Updated summary for {len(summarized_assignments)} assignment(s): {preview}{more}.*"
         )
     if assignment_failures:
         action_notes.append(

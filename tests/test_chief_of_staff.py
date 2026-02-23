@@ -404,6 +404,28 @@ class TestChiefOfStaffService:
         assert "Reassigned 1 assignment(s)" in result
         assert "REASSIGN:" not in result
 
+    def test_cos_response_updates_assignment_summary(self, mock_grok, cos_db):
+        """UPDATE_ASSIGNMENT_SUMMARY stores result summary on assignment."""
+        aid = cos_db.agent_create_assignment(
+            title="Summarize run",
+            brief_md="Prepare summary",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=2,
+        )
+        mock_grok.return_value = (
+            f"UPDATE_ASSIGNMENT_SUMMARY: A-{int(aid):04d} | "
+            "Atlas completed analysis and attached references."
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Record the assignment summary.")
+        row = cos_db.agent_get_assignment(int(aid))
+        assert row is not None
+        assert "Atlas completed analysis" in str(row.get("result_summary_md") or "")
+        assert "Updated summary for 1 assignment(s)" in result
+        assert "UPDATE_ASSIGNMENT_SUMMARY:" not in result
+
 
 @patch("core.chief_of_staff_service.grok_completion_messages")
 def test_cos_response_with_history_uses_multi_turn(mock_grok_messages, cos_db):
