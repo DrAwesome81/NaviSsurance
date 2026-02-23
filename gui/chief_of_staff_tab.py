@@ -5,6 +5,7 @@ All chats save automatically. Layout like Grok/ChatGPT but sidebar on the right.
 
 import json
 import logging
+import re
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QPushButton, QLabel, QTextEdit,
@@ -12,7 +13,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QProgressBar, QDialog, QDialogButtonBox, QMenu, QToolButton,
     QSizePolicy
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
 from PyQt6.QtGui import QAction, QKeyEvent
 
 
@@ -34,6 +35,7 @@ from core.db import DatabaseManager
 from core.chief_of_staff_service import cos_response
 
 logger = logging.getLogger(__name__)
+ASSIGNMENT_REF_PATTERN = re.compile(r"\bA-(\d{1,8})\b")
 
 try:
     import markdown
@@ -189,6 +191,8 @@ class ChiefOfStaffTab(QWidget):
         # Chat messages
         self.chat_display = QTextBrowser()
         self.chat_display.setOpenExternalLinks(False)
+        self.chat_display.setOpenLinks(False)
+        self.chat_display.anchorClicked.connect(self._on_chat_link_clicked)
         self.chat_display.setPlaceholderText("New chat — type below and press Send, or pick a chat on the right.")
         layout.addWidget(self.chat_display)
         # Entry row: input + Send (Enter = send, Shift+Enter = new line)
@@ -219,6 +223,7 @@ class ChiefOfStaffTab(QWidget):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
         tabs = QTabWidget()
+        self.sidebar_tabs = tabs
 
         # Chats tab
         chats_panel = QWidget()
@@ -267,6 +272,9 @@ class ChiefOfStaffTab(QWidget):
         self.asg_cancel_btn.clicked.connect(lambda: self._set_assignment_status("cancelled"))
         btn_row.addWidget(self.asg_cancel_btn)
         asg_layout.addLayout(btn_row)
+        self.asg_open_chat_btn = QPushButton("Open Assignee Chat")
+        self.asg_open_chat_btn.clicked.connect(self._open_assignment_in_assignee_console)
+        asg_layout.addWidget(self.asg_open_chat_btn)
         tabs.addTab(asg_panel, "Assignments")
 
         layout.addWidget(tabs)
@@ -288,6 +296,37 @@ class ChiefOfStaffTab(QWidget):
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, id_)
             self.chat_list.addItem(item)
+
+    def _assistant_html_with_assignment_links(self, content: str) -> str:
+        raw_html = _md_to_html(content or "")
+
+        def _repl(match: re.Match) -> str:
+            digits = match.group(1)
+            # Keep visible text unchanged (e.g., A-0007) but normalize link target to int id.
+            try:
+                assignment_id = int(digits)
+            except Exception:
+                assignment_id = 0
+            if assignment_id <= 0:
+                return match.group(0)
+            return f"<a href='assignment://{assignment_id}'>{match.group(0)}</a>"
+
+        return ASSIGNMENT_REF_PATTERN.sub(_repl, raw_html)
+
+    def _render_chat_history(self):
+        if self._current_chat_id is None:
+            self.chat_display.setHtml("<p style='color:#9aa0a6;'>(No chat selected.)</p>")
+            return
+        history = self.db.get_chat_history(f"cos_{self._current_chat_id}", limit=100)
+        html_parts = []
+        for role, content in history:
+            safe = (content or "").replace("<", "&lt;").replace(">", "&gt;")
+            if role == "user":
+                html_parts.append(f"<p><b>You:</b></p><p>{safe}</p>")
+            else:
+                html_parts.append(f"<p><b>Navi:</b></p>{self._assistant_html_with_assignment_links(content)}")
+        self.chat_display.setHtml("<br>".join(html_parts) if html_parts else "<p style='color:#9aa0a6;'>(No messages yet.)</p>")
+        self.ask_output = self.chat_display  # for tests that expect ask_output
 
     def _refresh_assignment_list(self):
         if not hasattr(self, "assignment_list"):
@@ -364,6 +403,84 @@ class ChiefOfStaffTab(QWidget):
                 self._on_assignment_clicked(it)
                 break
 
+    def _focus_assignment_by_id(self, assignment_id: int) -> bool:
+        aid = int(assignment_id)
+        self._refresh_assignment_list()
+        if hasattr(self, "sidebar_tabs"):
+            self.sidebar_tabs.setCurrentIndex(1)  # Assignments tab
+        for i in range(self.assignment_list.count()):
+            item = self.assignment_list.item(i)
+            if item and int(item.data(Qt.ItemDataRole.UserRole) or 0) == aid:
+                self.assignment_list.setCurrentItem(item)
+                self._on_assignment_clicked(item)
+                return True
+        return False
+
+    def _on_chat_link_clicked(self, url: QUrl):
+        href = (url.toString() or "").strip()
+        if not href.startswith("assignment://"):
+            return
+        try:
+            aid = int(href.split("assignment://", 1)[1].strip())
+        except Exception:
+            return
+        if aid <= 0:
+            return
+        ok = self._focus_assignment_by_id(aid)
+        if not ok:
+            QMessageBox.information(self, "Assignments", f"Could not find assignment A-{aid:04d}.")
+
+    def _open_assignment_in_assignee_console(self):
+        if not self._current_assignment_id:
+            QMessageBox.information(self, "Assignments", "Select an assignment first.")
+            return
+        row = self.db.agent_get_assignment(int(self._current_assignment_id))
+        if not row:
+            QMessageBox.warning(self, "Assignments", "Assignment not found.")
+            return
+        assignee = str(row.get("assignee_code") or "").strip().lower()
+
+        host = self.parent()
+        tw = getattr(host, "tab_widget", None) if host is not None else None
+        if tw is None:
+            QMessageBox.information(self, "Assignments", "Could not open assignee tab in this context.")
+            return
+
+        # agent_code -> (tab_attr, group_attr, console_attr, tab_label)
+        route = {
+            "atlas": ("projects_tab", "atlas_chat_group", "atlas_console", "AI Projects"),
+            "quill": ("workspace_tab", "quill_chat_group", "quill_console", "Workspace"),
+            "sentinel": ("compliance_tab", "sentinel_chat_group", "sentinel_console", "Compliance"),
+            "scout": ("leads_tab", "scout_chat_group", "scout_console", "Leads"),
+            "mason": ("tasks_tab", "mason_chat_group", "mason_console", "Tasks"),
+        }.get(assignee)
+        if not route:
+            QMessageBox.information(
+                self,
+                "Assignments",
+                f"No direct-chat panel is wired yet for assignee '{assignee}'.",
+            )
+            return
+
+        tab_attr, group_attr, console_attr, tab_label = route
+        target_tab = getattr(host, tab_attr, None)
+        if target_tab is None:
+            QMessageBox.warning(self, "Assignments", f"Could not open tab: {tab_label}.")
+            return
+        idx = tw.indexOf(target_tab)
+        if idx >= 0:
+            tw.setCurrentIndex(idx)
+        group = getattr(target_tab, group_attr, None)
+        if group is not None and hasattr(group, "setChecked"):
+            group.setChecked(True)
+        console = getattr(target_tab, console_attr, None)
+        if console is None or not hasattr(console, "focus_assignment"):
+            QMessageBox.warning(self, "Assignments", f"{tab_label} chat panel is unavailable.")
+            return
+        focused = bool(console.focus_assignment(int(self._current_assignment_id)))
+        if not focused:
+            QMessageBox.warning(self, "Assignments", "Could not focus assignee console on this assignment.")
+
     def _on_new_chat(self):
         self._current_chat_id = None
         self.chat_display.clear()
@@ -375,15 +492,7 @@ class ChiefOfStaffTab(QWidget):
         if chat_id is None:
             return
         self._current_chat_id = chat_id
-        session_id = f"cos_{chat_id}"
-        history = self.db.get_chat_history(session_id, limit=100)
-        html_parts = []
-        for role, content in history:
-            if role == "user":
-                html_parts.append(f"<p><b>You:</b></p><p>{content.replace('<', '&lt;').replace('>', '&gt;')}</p>")
-            else:
-                html_parts.append(f"<p><b>Navi:</b></p>{_md_to_html(content)}")
-        self.chat_display.setHtml("<br>".join(html_parts) if html_parts else "<p style='color:#9aa0a6;'>(No messages yet.)</p>")
+        self._render_chat_history()
         self.ask_input.clear()
 
     def _on_send(self):
@@ -416,15 +525,8 @@ class ChiefOfStaffTab(QWidget):
             self.db.save_message(session_id, "assistant", result)
             self.db.cos_update_chat(self._current_chat_id)
         self._refresh_chat_list()
-        history = self.db.get_chat_history(f"cos_{self._current_chat_id}", limit=100) if self._current_chat_id else []
-        html_parts = []
-        for role, content in history:
-            if role == "user":
-                html_parts.append(f"<p><b>You:</b></p><p>{content.replace('<', '&lt;').replace('>', '&gt;')}</p>")
-            else:
-                html_parts.append(f"<p><b>Navi:</b></p>{_md_to_html(content)}")
-        self.chat_display.setHtml("<br>".join(html_parts))
-        self.ask_output = self.chat_display  # for tests that expect ask_output
+        self._refresh_assignment_list()
+        self._render_chat_history()
 
     def _on_ask_error(self, err: str):
         self._ask_worker = None

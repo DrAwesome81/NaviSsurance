@@ -229,22 +229,65 @@ class AgentConsole(QWidget):
         aid = item.data(Qt.ItemDataRole.UserRole)
         if aid is None:
             return
-        self._current_assignment_id = int(aid)
-        row = self.db.agent_get_assignment(self._current_assignment_id)
+        self.focus_assignment(int(aid))
+
+    def focus_assignment(self, assignment_id: int) -> bool:
+        """
+        Focus this console on a given assignment.
+        Selects/creates a linked thread and refreshes transcript + inbox.
+        """
+        aid = int(assignment_id)
+        row = self.db.agent_get_assignment(aid)
         if not row:
-            return
+            return False
+        assignee = str(row.get("assignee_code") or "").strip().lower()
+        if assignee != self.agent_code:
+            return False
+
+        self._current_assignment_id = aid
         st = str(row.get("status") or "")
         title = str(row.get("title") or "")
-        self.chat_display.append(f"<p style='color:#9aa0a6;'><i>Using assignment A-{int(aid):04d} [{st}] — {title}</i></p>")
+
+        selected_thread: int | None = None
         source_thread_id = row.get("source_thread_id")
         if source_thread_id:
             try:
                 src = self.db.agent_get_thread(int(source_thread_id))
                 if src and str(src[1] or "").strip().lower() == self.agent_code:
-                    self._current_thread_id = int(source_thread_id)
-                    self._load_current_history()
+                    selected_thread = int(source_thread_id)
             except Exception:
-                pass
+                selected_thread = None
+
+        if selected_thread is None:
+            try:
+                selected_thread = self.db.agent_create_thread(
+                    agent_code=self.agent_code,
+                    title=f"A-{aid:04d}: {title}"[:100],
+                    context_json={"assignment_id": aid},
+                )
+            except Exception:
+                selected_thread = None
+            if selected_thread:
+                try:
+                    self.db.agent_link_assignment_thread(
+                        assignment_id=aid,
+                        thread_id=int(selected_thread),
+                        actor_code=self.agent_code,
+                        note="Linked from agent console",
+                    )
+                except Exception:
+                    pass
+
+        if selected_thread is not None:
+            self._current_thread_id = int(selected_thread)
+
+        self._refresh_threads()
+        self._refresh_inbox()
+        self._load_current_history()
+        self.chat_display.append(
+            f"<p style='color:#9aa0a6;'><i>Using assignment A-{aid:04d} [{st}] — {title}</i></p>"
+        )
+        return True
 
     def _load_current_history(self):
         if self._current_thread_id is None:

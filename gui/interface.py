@@ -483,7 +483,7 @@ class ChatWindow(QMainWindow):
         self.notes_tab = NoteTakingSystem(self.chat_handler)
         self.tab_widget.addTab(self.notes_tab, "Notes")
         
-        self.chief_of_staff_tab = ChiefOfStaffTab(self.db)
+        self.chief_of_staff_tab = ChiefOfStaffTab(self.db, self)
         self.tab_widget.addTab(self.chief_of_staff_tab, "Chief of Staff")
         self._on_tab_changed(self.tab_widget.currentIndex())  # Apply visibility for initial tab
 

@@ -308,6 +308,10 @@ class TestChiefOfStaffService:
         assert rows[0]["title"] == "FDA PCCP research brief"
         assert rows[0]["priority"] == 1
         assert rows[0]["due_date"] == "2026-03-01"
+        assert rows[0]["source_thread_id"] is not None
+        thread = cos_db.agent_get_thread(int(rows[0]["source_thread_id"]))
+        assert thread is not None
+        assert str(thread[1]).lower() == "atlas"
         assert "Created 1 assignment(s)" in result
         assert "ASSIGN:" not in result
 

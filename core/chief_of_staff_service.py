@@ -542,15 +542,26 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
             context_obj = {"source": "chief_of_staff"}
             if chat_id is not None:
                 context_obj["cos_chat_id"] = int(chat_id)
+            assignee_code = str(agent.get("code") or "").strip().lower()
+            source_thread_id = None
+            try:
+                source_thread_id = db.agent_create_thread(
+                    agent_code=assignee_code,
+                    title=title,
+                    context_json=context_obj,
+                )
+            except Exception:
+                source_thread_id = None
             try:
                 assignment_id = db.agent_create_assignment(
                     title=title,
                     brief_md=brief,
                     requester_code="navi",
-                    assignee_code=str(agent.get("code") or "").strip().lower(),
+                    assignee_code=assignee_code,
                     priority=priority,
                     due_date=due_date,
                     status="queued",
+                    source_thread_id=(int(source_thread_id) if source_thread_id else None),
                     context_json=context_obj,
                 )
             except Exception as e:

@@ -3653,6 +3653,44 @@ class DatabaseManager:
             conn.commit()
         return True
 
+    def agent_link_assignment_thread(
+        self,
+        *,
+        assignment_id: int,
+        thread_id: int,
+        actor_code: str | None = None,
+        note: str | None = None,
+    ) -> bool:
+        """Link an assignment to a source thread and append a timeline event."""
+        current = self.agent_get_assignment(int(assignment_id))
+        if not current:
+            return False
+        thread = self.agent_get_thread(int(thread_id))
+        if not thread:
+            return False
+        now = self._now_iso()
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                "UPDATE agent_assignments SET source_thread_id = ?, updated_at = ? WHERE id = ?",
+                (int(thread_id), now, int(assignment_id)),
+            )
+            conn.execute(
+                """
+                INSERT INTO agent_assignment_events
+                    (assignment_id, event_type, from_status, to_status, actor_code, note, created_at)
+                VALUES
+                    (?, 'thread_linked', NULL, NULL, ?, ?, ?)
+                """,
+                (
+                    int(assignment_id),
+                    (str(actor_code).strip().lower() if actor_code else None),
+                    note or f"Linked to thread {int(thread_id)}",
+                    now,
+                ),
+            )
+            conn.commit()
+        return True
+
     def agent_add_artifact(
         self,
         *,
