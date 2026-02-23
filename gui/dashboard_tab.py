@@ -657,7 +657,7 @@ class DashboardTab(QWidget):
             layout.setContentsMargins(8, 8, 8, 8)
             layout.setSpacing(8)
 
-            task_header = QLabel("Tasks (shared with Tasks tab)")
+            task_header = QLabel("Task List")
             task_header.setStyleSheet(
                 "color: #e8eaed; font-weight: 600; padding: 3px; "
                 "background-color: transparent; border: none; font-size: 13px;"
@@ -666,7 +666,7 @@ class DashboardTab(QWidget):
             task_header.setMaximumHeight(25)
             layout.addWidget(task_header)
 
-            self.tasks_panel = TasksTab(self)
+            self.tasks_panel = TasksTab(self, show_header=False, compact=True)
             layout.addWidget(self.tasks_panel, 1)
             return widget
         except Exception as e:
