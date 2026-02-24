@@ -309,7 +309,7 @@ Hard rules:
 
 
 def _parse_assignment_ref(value: str) -> Optional[int]:
-    """Parse assignment reference forms like 'A-0007' or '7'."""
+    """Parse assignment reference forms like 'A-0007', '7', or 'assignment A-0007'."""
     s = (value or "").strip().upper()
     if not s:
         return None
@@ -323,6 +323,21 @@ def _parse_assignment_ref(value: str) -> Optional[int]:
     if s.isdigit():
         try:
             aid = int(s)
+            return aid if aid > 0 else None
+        except Exception:
+            return None
+    # More forgiving parsing for natural command strings.
+    m_any = re.search(r"\bA-(\d+)\b", s)
+    if m_any:
+        try:
+            aid = int(m_any.group(1))
+            return aid if aid > 0 else None
+        except Exception:
+            return None
+    m_num = re.search(r"\b(\d{1,9})\b", s)
+    if m_num:
+        try:
+            aid = int(m_num.group(1))
             return aid if aid > 0 else None
         except Exception:
             return None
