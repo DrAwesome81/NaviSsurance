@@ -528,6 +528,37 @@ class TestChiefOfStaffService:
         assert "Bulk-updated priority for 1 scope(s)" in result
         assert "BULK_UPDATE_ASSIGNMENT_PRIORITY:" not in result
 
+    def test_cos_response_bulk_updates_assignment_priority_open_mode(self, mock_grok, cos_db):
+        """BULK_UPDATE_ASSIGNMENT_PRIORITY with open mode should skip done/cancelled."""
+        open_aid = cos_db.agent_create_assignment(
+            title="Atlas open priority target",
+            brief_md="Open work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=4,
+            status="queued",
+        )
+        done_aid = cos_db.agent_create_assignment(
+            title="Atlas closed priority target",
+            brief_md="Closed work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=4,
+            status="done",
+        )
+        mock_grok.return_value = (
+            "BULK_UPDATE_ASSIGNMENT_PRIORITY: P1 | Atlas | open | Escalate active queue"
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Raise active Atlas priority.")
+        open_row = cos_db.agent_get_assignment(int(open_aid))
+        done_row = cos_db.agent_get_assignment(int(done_aid))
+        assert open_row is not None and int(open_row.get("priority") or 0) == 1
+        assert done_row is not None and int(done_row.get("priority") or 0) == 4
+        assert "skipped closed" in result
+        assert "BULK_UPDATE_ASSIGNMENT_PRIORITY:" not in result
+
     def test_cos_response_bulk_updates_assignment_due_all(self, mock_grok, cos_db):
         """BULK_UPDATE_ASSIGNMENT_DUE applies a date across all assignments."""
         aid_one = cos_db.agent_create_assignment(
@@ -554,6 +585,39 @@ class TestChiefOfStaffService:
         assert one is not None and str(one.get("due_date") or "") == "2026-04-01"
         assert two is not None and str(two.get("due_date") or "") == "2026-04-01"
         assert "Bulk-updated due date for 1 scope(s)" in result
+        assert "BULK_UPDATE_ASSIGNMENT_DUE:" not in result
+
+    def test_cos_response_bulk_updates_assignment_due_open_mode(self, mock_grok, cos_db):
+        """BULK_UPDATE_ASSIGNMENT_DUE with open mode should skip done/cancelled."""
+        open_aid = cos_db.agent_create_assignment(
+            title="Atlas open due target",
+            brief_md="Open work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+            due_date="2026-03-10",
+            status="queued",
+        )
+        done_aid = cos_db.agent_create_assignment(
+            title="Atlas closed due target",
+            brief_md="Closed work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+            due_date="2026-03-10",
+            status="done",
+        )
+        mock_grok.return_value = (
+            "BULK_UPDATE_ASSIGNMENT_DUE: 2026-05-15 | Atlas | open | Shift active deadlines"
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Shift active Atlas due dates.")
+        open_row = cos_db.agent_get_assignment(int(open_aid))
+        done_row = cos_db.agent_get_assignment(int(done_aid))
+        assert open_row is not None and str(open_row.get("due_date") or "") == "2026-05-15"
+        assert done_row is not None and str(done_row.get("due_date") or "") == "2026-03-10"
+        assert "skipped closed" in result
         assert "BULK_UPDATE_ASSIGNMENT_DUE:" not in result
 
     def test_cos_response_bulk_reassigns_assignments_scoped(self, mock_grok, cos_db):
@@ -732,6 +796,26 @@ class TestChiefOfStaffService:
         assert row is not None
         assert (row.get("due_date") or "") in ("", None)
         assert "Updated due date for 1 assignment(s)" in result
+        assert "UPDATE_ASSIGNMENT_DUE:" not in result
+
+    def test_cos_response_rejects_invalid_assignment_due_calendar_date(self, mock_grok, cos_db):
+        """UPDATE_ASSIGNMENT_DUE should reject impossible calendar dates."""
+        aid = cos_db.agent_create_assignment(
+            title="Invalid due-date target",
+            brief_md="Do something",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+            due_date="2026-03-20",
+        )
+        mock_grok.return_value = f"UPDATE_ASSIGNMENT_DUE: A-{int(aid):04d} | 2026-02-30 | invalid date"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Set due date.")
+        row = cos_db.agent_get_assignment(int(aid))
+        assert row is not None
+        assert str(row.get("due_date") or "") == "2026-03-20"
+        assert "invalid due date '2026-02-30'" in result
         assert "UPDATE_ASSIGNMENT_DUE:" not in result
 
     def test_cos_response_retitles_assignment(self, mock_grok, cos_db):

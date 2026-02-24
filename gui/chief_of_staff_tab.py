@@ -55,6 +55,34 @@ def _md_to_html(md_text: str) -> str:
     return "<pre style='color: #9aa0a6;'>" + md_text.replace("<", "&lt;").replace(">", "&gt;") + "</pre>"
 
 
+def _normalize_iso_due_date_input(value: str) -> tuple[bool, Optional[str]]:
+    """Validate YYYY-MM-DD due-date input and return normalized YYYY-MM-DD."""
+    raw = (value or "").strip()
+    if not raw or raw.lower() in {"none", "null", "n/a"}:
+        return True, None
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
+        return False, None
+    try:
+        dt = datetime.strptime(raw, "%Y-%m-%d")
+    except Exception:
+        return False, None
+    return True, dt.strftime("%Y-%m-%d")
+
+
+def _normalize_mmddyyyy_due_date_input(value: str) -> tuple[bool, Optional[str]]:
+    """Validate MM-DD-YYYY due-date input and return normalized MM-DD-YYYY."""
+    raw = (value or "").strip()
+    if not raw or raw.lower() in {"none", "null", "n/a"}:
+        return True, None
+    if not re.match(r"^\d{2}-\d{2}-\d{4}$", raw):
+        return False, None
+    try:
+        dt = datetime.strptime(raw, "%m-%d-%Y")
+    except Exception:
+        return False, None
+    return True, dt.strftime("%m-%d-%Y")
+
+
 class CosAskWorker(QThread):
     finished_signal = pyqtSignal(str)
     error_signal = pyqtSignal(str)
@@ -202,19 +230,26 @@ class CosAssignmentDialog(QDialog):
             QMessageBox.warning(self, "Assignment", "Brief is required.")
             return
         due = (self.due_edit.text() or "").strip()
-        if due and not re.match(r"^\d{4}-\d{2}-\d{2}$", due):
-            QMessageBox.warning(self, "Assignment", "Due date must be YYYY-MM-DD or blank.")
+        due_ok, _due_norm = _normalize_iso_due_date_input(due)
+        if not due_ok:
+            QMessageBox.warning(
+                self,
+                "Assignment",
+                "Due date must be a real calendar date in YYYY-MM-DD or blank.",
+            )
             return
         self.accept()
 
     def values(self) -> dict:
-        due = (self.due_edit.text() or "").strip()
+        due_raw = (self.due_edit.text() or "").strip()
+        due_ok, due_norm = _normalize_iso_due_date_input(due_raw)
+        due = due_norm if due_ok else None
         return {
             "title": (self.title_edit.text() or "").strip(),
             "brief_md": (self.brief_edit.toPlainText() or "").strip(),
             "assignee_code": (self.assignee_combo.currentData() or "").strip().lower(),
             "priority": int(self.priority_spin.value()),
-            "due_date": due if due else None,
+            "due_date": due,
         }
 
 
@@ -728,14 +763,14 @@ Calendar and task actions:
         )
         if not ok:
             return
-        due_raw = (text or "").strip()
-        if not due_raw or due_raw.lower() in {"none", "null", "n/a"}:
-            due = None
-        else:
-            if not re.match(r"^\d{4}-\d{2}-\d{2}$", due_raw):
-                QMessageBox.warning(self, "Assignments", "Due date must be YYYY-MM-DD or none.")
-                return
-            due = due_raw
+        due_ok, due = _normalize_iso_due_date_input((text or "").strip())
+        if not due_ok:
+            QMessageBox.warning(
+                self,
+                "Assignments",
+                "Due date must be a real calendar date in YYYY-MM-DD or none.",
+            )
+            return
         confirm = QMessageBox.question(
             self,
             "Confirm Bulk Update",
@@ -1103,14 +1138,14 @@ Calendar and task actions:
         )
         if not ok:
             return
-        due_raw = (text or "").strip()
-        if not due_raw or due_raw.lower() in {"none", "null", "n/a"}:
-            due = None
-        else:
-            if not re.match(r"^\d{4}-\d{2}-\d{2}$", due_raw):
-                QMessageBox.warning(self, "Assignments", "Due date must be YYYY-MM-DD or none.")
-                return
-            due = due_raw
+        due_ok, due = _normalize_iso_due_date_input((text or "").strip())
+        if not due_ok:
+            QMessageBox.warning(
+                self,
+                "Assignments",
+                "Due date must be a real calendar date in YYYY-MM-DD or none.",
+            )
+            return
         updated = self.db.agent_update_assignment_fields(
             assignment_id=int(self._current_assignment_id),
             actor_code="navi",
@@ -1268,14 +1303,15 @@ Calendar and task actions:
         )
         if not ok:
             return
-        due_raw = (due_text or "").strip()
-        if not due_raw or due_raw.lower() in {"none", "null", "n/a"}:
-            due = ""
-        else:
-            if not re.match(r"^\d{2}-\d{2}-\d{4}$", due_raw):
-                QMessageBox.warning(self, "Assignments", "Due date must be MM-DD-YYYY or none.")
-                return
-            due = due_raw
+        due_ok, due_mmddyyyy = _normalize_mmddyyyy_due_date_input((due_text or "").strip())
+        if not due_ok:
+            QMessageBox.warning(
+                self,
+                "Assignments",
+                "Due date must be a real calendar date in MM-DD-YYYY or none.",
+            )
+            return
+        due = due_mmddyyyy or ""
 
         category, ok = QInputDialog.getItem(
             self,

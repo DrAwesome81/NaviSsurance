@@ -447,10 +447,17 @@ def _normalize_due_date_input(value: str) -> tuple[bool, Optional[str]]:
     if not raw or raw.lower() in {"none", "null", "n/a"}:
         return True, None
     if re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
-        return True, raw
+        try:
+            dt = datetime.strptime(raw, "%Y-%m-%d")
+        except Exception:
+            return False, None
+        return True, dt.strftime("%Y-%m-%d")
     if re.match(r"^\d{2}-\d{2}-\d{4}$", raw):
-        mm, dd, yyyy = raw.split("-")
-        return True, f"{yyyy}-{mm}-{dd}"
+        try:
+            dt = datetime.strptime(raw, "%m-%d-%Y")
+        except Exception:
+            return False, None
+        return True, dt.strftime("%Y-%m-%d")
     return False, None
 
 
