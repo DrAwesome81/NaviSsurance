@@ -73,6 +73,11 @@ RETITLE_ASSIGNMENT_PATTERN = re.compile(
 UPDATE_ASSIGNMENT_BRIEF_PATTERN = re.compile(
     r"^\s*UPDATE_ASSIGNMENT_BRIEF:\s*(.+?)\s*$", re.IGNORECASE
 )
+# Pattern for CoS bulk assignment status updates:
+# BULK_UPDATE_ASSIGNMENT_STATUS: status | assignee_name_or_all | optional_note
+BULK_UPDATE_ASSIGNMENT_STATUS_PATTERN = re.compile(
+    r"^\s*BULK_UPDATE_ASSIGNMENT_STATUS:\s*(.+?)\s*$", re.IGNORECASE
+)
 # Pattern for CoS assignment artifact creation:
 # ADD_ASSIGNMENT_ARTIFACT: assignment_ref | artifact_type | title | content_markdown
 ADD_ASSIGNMENT_ARTIFACT_PATTERN = re.compile(
@@ -470,6 +475,12 @@ UPDATE_ASSIGNMENT_STATUS: <A-0007 or 7> | <queued|in_progress|awaiting_review|bl
 Example: UPDATE_ASSIGNMENT_STATUS: A-0007 | in_progress | Atlas has started.
 Omit UPDATE_ASSIGNMENT_STATUS lines if you are not changing assignment status.
 
+You may bulk-update assignment status:
+BULK_UPDATE_ASSIGNMENT_STATUS: <status> | <AgentName or all> | <optional note>
+Example: BULK_UPDATE_ASSIGNMENT_STATUS: blocked | Atlas | Waiting on input.
+This updates matching assignments currently in the system.
+Omit BULK_UPDATE_ASSIGNMENT_STATUS lines if you are not doing bulk updates.
+
 You may reassign work:
 REASSIGN: <A-0007 or 7> | <AgentName> | <optional note>
 Example: REASSIGN: A-0007 | Quill | Move drafting to writer.
@@ -670,6 +681,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     updated_assignment_due_dates: list[str] = []
     retitled_assignments: list[str] = []
     updated_assignment_briefs: list[str] = []
+    bulk_updated_assignments: list[str] = []
     reassigned_assignments: list[str] = []
     summarized_assignments: list[str] = []
     added_assignment_artifacts: list[str] = []
@@ -899,6 +911,65 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 updated_assignments.append(f"A-{int(aid):04d} -> {to_status}")
             else:
                 assignment_failures.append(f"failed updating A-{int(aid):04d} to {to_status}")
+            continue
+
+        m_bulk = BULK_UPDATE_ASSIGNMENT_STATUS_PATTERN.match(stripped)
+        if m_bulk:
+            payload = (m_bulk.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 2)]
+            if len(parts) < 1:
+                assignment_failures.append("invalid BULK_UPDATE_ASSIGNMENT_STATUS format")
+                logger.warning("CoS BULK_UPDATE_ASSIGNMENT_STATUS invalid format: %r", stripped)
+                continue
+            to_status = _normalize_assignment_status(parts[0] or "")
+            scope = (parts[1] if len(parts) > 1 else "all").strip()
+            note = (parts[2] if len(parts) > 2 else "").strip() or None
+            if not to_status:
+                assignment_failures.append("missing status in BULK_UPDATE_ASSIGNMENT_STATUS")
+                continue
+
+            assignee_code = None
+            scope_label = "all"
+            if scope and scope.lower() not in {"all", "*"}:
+                agent = db.agent_resolve_by_name(scope)
+                if not agent:
+                    assignment_failures.append(f"unknown agent '{scope}'")
+                    logger.warning("CoS BULK_UPDATE_ASSIGNMENT_STATUS unknown agent: %r", scope)
+                    continue
+                assignee_code = str(agent.get("code") or "").strip().lower()
+                scope_label = str(agent.get("display_name") or assignee_code).strip()
+
+            rows = db.agent_list_assignments(assignee_code=assignee_code, limit=500)
+            if not rows:
+                assignment_failures.append(f"no assignments found for scope '{scope_label}'")
+                continue
+
+            updated_count = 0
+            for r in rows:
+                aid = int(r.get("id") or 0)
+                if aid <= 0:
+                    continue
+                current_status = str(r.get("status") or "").strip().lower()
+                if current_status == to_status:
+                    continue
+                ok = False
+                try:
+                    ok = db.agent_update_assignment_status(
+                        assignment_id=aid,
+                        to_status=to_status,
+                        actor_code="navi",
+                        note=note or "Bulk update via CoS action",
+                    )
+                except Exception:
+                    ok = False
+                if ok:
+                    updated_count += 1
+            if updated_count <= 0:
+                assignment_failures.append(
+                    f"no assignments updated for scope '{scope_label}' to {to_status}"
+                )
+            else:
+                bulk_updated_assignments.append(f"{scope_label}: {updated_count} -> {to_status}")
             continue
 
         m_reassign = REASSIGN_PATTERN.match(stripped)
@@ -1216,6 +1287,12 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
         more = " ..." if len(updated_assignments) > 3 else ""
         action_notes.append(
             f"— *Updated {len(updated_assignments)} assignment(s): {preview}{more}.*"
+        )
+    if bulk_updated_assignments:
+        preview = ", ".join(bulk_updated_assignments[:3])
+        more = " ..." if len(bulk_updated_assignments) > 3 else ""
+        action_notes.append(
+            f"— *Bulk-updated {len(bulk_updated_assignments)} assignment scope(s): {preview}{more}.*"
         )
     if updated_assignment_priorities:
         preview = ", ".join(updated_assignment_priorities[:3])

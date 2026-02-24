@@ -443,6 +443,33 @@ class TestChiefOfStaffService:
         assert str(row.get("status") or "") == "in_progress"
         assert "Updated 1 assignment(s)" in result
 
+    def test_cos_response_bulk_updates_assignment_status_scoped(self, mock_grok, cos_db):
+        """BULK_UPDATE_ASSIGNMENT_STATUS updates matching assignee scope."""
+        atlas_aid = cos_db.agent_create_assignment(
+            title="Atlas assignment",
+            brief_md="Atlas work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+        )
+        quill_aid = cos_db.agent_create_assignment(
+            title="Quill assignment",
+            brief_md="Quill work",
+            requester_code="navi",
+            assignee_code="quill",
+            priority=3,
+        )
+        mock_grok.return_value = "BULK_UPDATE_ASSIGNMENT_STATUS: blocked | Atlas | Waiting on dependencies"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Block Atlas queue.")
+        atlas_row = cos_db.agent_get_assignment(int(atlas_aid))
+        quill_row = cos_db.agent_get_assignment(int(quill_aid))
+        assert atlas_row is not None and str(atlas_row.get("status") or "") == "blocked"
+        assert quill_row is not None and str(quill_row.get("status") or "") == "queued"
+        assert "Bulk-updated 1 assignment scope(s)" in result
+        assert "BULK_UPDATE_ASSIGNMENT_STATUS:" not in result
+
     def test_cos_response_reassigns_assignment(self, mock_grok, cos_db):
         """REASSIGN moves assignment to a new assignee and relinks source thread."""
         aid = cos_db.agent_create_assignment(
