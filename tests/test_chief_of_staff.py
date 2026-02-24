@@ -13,7 +13,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -234,6 +234,103 @@ class TestAgentAssignments:
         assert any(str(e.get("event_type") or "") == "assignment_updated" for e in events)
 
 
+class TestChiefOfStaffUtilityHelpers:
+    """Unit tests for parser helper functions."""
+
+    def test_normalize_due_date_input_strict_calendar(self):
+        from core.chief_of_staff_service import _normalize_due_date_input
+
+        assert _normalize_due_date_input("none") == (True, None)
+        assert _normalize_due_date_input("2026-02-28") == (True, "2026-02-28")
+        assert _normalize_due_date_input("02-28-2026") == (True, "2026-02-28")
+        assert _normalize_due_date_input("2026-02-30") == (False, None)
+        assert _normalize_due_date_input("02-30-2026") == (False, None)
+
+    def test_parse_bulk_mode_and_note_backward_compatible(self):
+        from core.chief_of_staff_service import _parse_bulk_mode_and_note
+
+        # Legacy 3-part format: third segment remains note.
+        ok, mode, note = _parse_bulk_mode_and_note(["blocked", "Atlas", "Waiting on input"])
+        assert ok is True and mode == "all" and note == "Waiting on input"
+
+        # Explicit mode only.
+        ok, mode, note = _parse_bulk_mode_and_note(["blocked", "Atlas", "open"])
+        assert ok is True and mode == "open" and note is None
+
+        # Explicit mode + note.
+        ok, mode, note = _parse_bulk_mode_and_note(["blocked", "Atlas", "open", "Waiting on input"])
+        assert ok is True and mode == "open" and note == "Waiting on input"
+
+        # No optional args.
+        ok, mode, note = _parse_bulk_mode_and_note(["blocked", "Atlas"])
+        assert ok is True and mode == "all" and note is None
+
+    def test_parse_bulk_mode_and_note_rejects_invalid_mode_with_note(self):
+        from core.chief_of_staff_service import _parse_bulk_mode_and_note
+
+        ok, mode, note = _parse_bulk_mode_and_note(["blocked", "Atlas", "sometimes", "note"])
+        assert ok is False
+        assert mode == "all"
+        assert note is None
+
+
+class TestChiefOfStaffUiHelperFunctions:
+    """Unit tests for CoS board helper utilities."""
+
+    def test_ui_due_date_normalizers_strict_calendar(self):
+        pytest.importorskip("PyQt6")
+        from gui.chief_of_staff_tab import _normalize_iso_due_date_input, _normalize_mmddyyyy_due_date_input
+
+        assert _normalize_iso_due_date_input("2026-02-28") == (True, "2026-02-28")
+        assert _normalize_iso_due_date_input("2026-02-30") == (False, None)
+        assert _normalize_iso_due_date_input("none") == (True, None)
+
+        assert _normalize_mmddyyyy_due_date_input("02-28-2026") == (True, "02-28-2026")
+        assert _normalize_mmddyyyy_due_date_input("02-30-2026") == (False, None)
+        assert _normalize_mmddyyyy_due_date_input("none") == (True, None)
+
+    def test_assignment_health_flags_overdue_and_stale(self):
+        pytest.importorskip("PyQt6")
+        from gui.chief_of_staff_tab import _assignment_health_flags
+
+        now = datetime(2026, 2, 23, 12, 0, 0)
+        overdue_row = {
+            "status": "queued",
+            "due_date": "2026-02-20",
+            "updated_at": "2026-02-22T10:00:00",
+            "created_at": "2026-02-20T10:00:00",
+        }
+        blocked_row = {
+            "status": "blocked",
+            "due_date": None,
+            "updated_at": (now - timedelta(days=4)).isoformat(),
+            "created_at": (now - timedelta(days=5)).isoformat(),
+        }
+        review_row = {
+            "status": "awaiting_review",
+            "due_date": None,
+            "updated_at": (now - timedelta(days=4)).isoformat(),
+            "created_at": (now - timedelta(days=5)).isoformat(),
+        }
+
+        assert "overdue" in _assignment_health_flags(overdue_row, now=now)
+        assert "stale_blocked" in _assignment_health_flags(blocked_row, now=now)
+        assert "stale_review" in _assignment_health_flags(review_row, now=now)
+
+    def test_assignment_health_flags_closed_assignments_not_flagged(self):
+        pytest.importorskip("PyQt6")
+        from gui.chief_of_staff_tab import _assignment_health_flags
+
+        now = datetime(2026, 2, 23, 12, 0, 0)
+        closed_row = {
+            "status": "done",
+            "due_date": "2026-02-10",
+            "updated_at": (now - timedelta(days=10)).isoformat(),
+            "created_at": (now - timedelta(days=20)).isoformat(),
+        }
+        assert _assignment_health_flags(closed_row, now=now) == []
+
+
 # -----------------------------------------------------------------------------
 # Service layer tests (mocked Grok, no network)
 # -----------------------------------------------------------------------------
@@ -385,6 +482,31 @@ class TestChiefOfStaffService:
         rows = cos_db.agent_list_assignments(limit=10)
         assert len(rows) == 0
         assert "Could not process 1 assignment action(s)" in result
+
+    def test_cos_response_assign_rejects_invalid_due_calendar_date(self, mock_grok, cos_db):
+        """ASSIGN should reject impossible calendar due dates."""
+        mock_grok.return_value = (
+            "ASSIGN: Atlas | Invalid due assignment | Brief body | P2 | 2026-02-30"
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Delegate this.")
+        rows = cos_db.agent_list_assignments(limit=10)
+        assert len(rows) == 0
+        assert "invalid due date '2026-02-30'" in result
+
+    def test_cos_response_assign_normalizes_mmddyyyy_due_date(self, mock_grok, cos_db):
+        """ASSIGN accepts MM-DD-YYYY and stores canonical YYYY-MM-DD due date."""
+        mock_grok.return_value = (
+            "ASSIGN: Atlas | Normalized due assignment | Brief body | P2 | 03-01-2026"
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Delegate this.")
+        rows = cos_db.agent_list_assignments(assignee_code="atlas", limit=10)
+        assert len(rows) == 1
+        assert str(rows[0].get("due_date") or "") == "2026-03-01"
+        assert "Created 1 assignment(s)" in result
 
     def test_cos_response_updates_assignment_status(self, mock_grok, cos_db):
         """UPDATE_ASSIGNMENT_STATUS updates assignment state by reference id."""
@@ -1023,3 +1145,55 @@ def test_chief_of_staff_tab_creates(qapp, cos_db):
     assert hasattr(tab, "chat_list")
     assert hasattr(tab, "ask_input")
     assert hasattr(tab, "ask_btn")
+
+
+@pytest.mark.qt
+def test_chief_of_staff_health_filter_overdue(qapp, cos_db):
+    """Health filter 'Overdue' should include only open overdue assignments."""
+    from gui.chief_of_staff_tab import ChiefOfStaffTab
+
+    today = datetime.now().date()
+    overdue = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    future = (today + timedelta(days=5)).strftime("%Y-%m-%d")
+
+    overdue_open = cos_db.agent_create_assignment(
+        title="Overdue open assignment",
+        brief_md="Needs action",
+        requester_code="navi",
+        assignee_code="atlas",
+        priority=2,
+        due_date=overdue,
+        status="queued",
+    )
+    fresh_open = cos_db.agent_create_assignment(
+        title="Future open assignment",
+        brief_md="Not overdue",
+        requester_code="navi",
+        assignee_code="atlas",
+        priority=2,
+        due_date=future,
+        status="queued",
+    )
+    overdue_closed = cos_db.agent_create_assignment(
+        title="Overdue closed assignment",
+        brief_md="Done already",
+        requester_code="navi",
+        assignee_code="atlas",
+        priority=2,
+        due_date=overdue,
+        status="done",
+    )
+    assert overdue_open and fresh_open and overdue_closed
+
+    tab = ChiefOfStaffTab(cos_db)
+    overdue_index = 0
+    for i in range(tab.assignment_health_filter.count()):
+        if (tab.assignment_health_filter.itemData(i) or "") == "overdue":
+            overdue_index = i
+            break
+    tab.assignment_health_filter.setCurrentIndex(overdue_index)
+    rows = tab._filtered_assignment_rows()
+    row_ids = {int(r.get("id") or 0) for r in rows}
+    assert int(overdue_open) in row_ids
+    assert int(fresh_open) not in row_ids
+    assert int(overdue_closed) not in row_ids

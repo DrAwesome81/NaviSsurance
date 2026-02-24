@@ -1104,9 +1104,11 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
             if priority > 5:
                 priority = 5
 
-            due_date = (due_raw or "").strip()
-            if due_date.lower() in ("none", "null", "n/a", ""):
-                due_date = None
+            due_ok, due_date = _normalize_due_date_input(due_raw or "")
+            if not due_ok:
+                assignment_failures.append(f"invalid due date '{due_raw}'")
+                logger.warning("CoS ASSIGN invalid due date: %r", due_raw)
+                continue
 
             agent = db.agent_resolve_by_name(assignee_name)
             if not agent:

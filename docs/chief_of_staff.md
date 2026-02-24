@@ -1,33 +1,66 @@
 # Chief of Staff (AI Assistant) Plan
 
 ## Executive Summary
-NaviSsurance already has the core ingredients of a personal assistant: chat, task persistence, conversation search, a daily briefing, web research, and local-file search (via Dropbox indexing). This document defines how to evolve those pieces into a **Chief of Staff**: a system that (1) prioritizes your schedule and next actions, (2) captures and manages commitments, (3) remembers key details over time, and (4) delegates work to specialized “sub-agents” while keeping you in control of side effects.
+NaviSsurance now includes a working **Chief of Staff + AI Executive Team** operating model:
 
-This plan is intentionally pragmatic: it fits the current Python + PyQt + SQLite architecture and upgrades it in incremental milestones.
+- named specialist agents (Atlas, Quill, Sentinel, Lex, Scout, Mason, Ledger, Archive, Pulse, Shield),
+- a delegation/assignment workflow with status history and artifacts,
+- direct per-agent chat consoles,
+- a CoS delegation board with bulk controls and health signals,
+- and command-driven side effects (tasks/calendar/assignment actions) from CoS chat.
 
-## Current State (What Exists Today)
+This document tracks implementation status and remaining roadmap work.
 
-### Capabilities
-- **Task capture from chat**: assistant can output `ADD_TASK:<desc>|<YYYY-MM-DD>` and tasks are persisted to SQLite + shown in the UI.
-- **Conversation retrieval**:
-  - `!search <terms>` searches stored conversation content (FTS).
-  - `!history <date-ish>` returns messages for a given day (today/yesterday/last weekday/parseable date).
-- **Daily briefing**: `daily_briefing()` composes a snapshot (calendar/tasks/emails) and asks Grok to format it.
-- **Web research**: `WEB_SEARCH:<query>` is supported in the Chief of Staff tool loop (read-only).
-- **Local search**: `DROPBOX_SEARCH:<query>` queries the Dropbox index in SQLite and returns top matches.
-- **Chief of Staff tab (dedicated)**:
-  - Persistent CoS chats (sidebar list) + Preferences (constraints, blocked times, deep work hours)
-  - Calendar-aware read-only context (today + next 7 days) when Google token exists
-  - Document search (`DOC_SEARCH:<query>`) over local docs/notes (optional RAG if enabled)
-  - Structured memory extraction (summary/facts/tags/open loops/decisions) stored in SQLite + retrievable via `MEMORY_SEARCH:<query>`
+## Current State (Implemented)
 
-### Constraints / Known Gaps
-- Prioritization is implicit (lists), not a first-class model (urgency/importance/effort/constraints).
-- Memory is improving (structured memory exists), but still heuristic and not yet embeddings-backed.
-- Delegation to other agents is not implemented (no job runner / agent registry / artifacts workflow in the CoS UI).
-- Calendar write-back and email sending are not implemented (read-only posture by design).
-- Search is not yet unified across Dropbox + local + Google Drive, and dedup across sources is not implemented (see `docs/unified_search.md`).
-- External news headlines can be included in the daily briefing with dedup and caching (see `docs/news_briefing.md`).
+### Core capabilities in production
+- **CoS conversational actions**
+  - `ADD_TASK`, `ADD_CAL_BLOCK`
+  - full assignment actions (`ASSIGN`, status/priority/due/title/brief/summary/artifact updates)
+  - bulk assignment actions (status/priority/due/reassign)
+  - assignment-to-dashboard task actions (single + bulk, duplicate-safe by assignment ID)
+- **Executive team directory + routing**
+  - canonical agent identity, aliases, capabilities, home-tab routing
+- **Assignment system**
+  - assignment table + event timeline + linked artifacts
+  - source-thread linkage and reassignment thread relinking
+- **Delegation board**
+  - filter/search, assignment detail timeline, artifact viewing, export to markdown
+  - bulk board actions with optional audit notes
+  - health view: overdue / blocked 3d+ / awaiting_review 3d+
+- **Date safety**
+  - strict calendar validation for due dates in parser and CoS board UI
+- **Testing**
+  - broad CoS parser/service unit coverage with mocked LLM calls
+  - additional utility/helper tests for due-date and bulk-mode parsing
+
+### Known gaps / next opportunities
+- Planning/prioritization scoring is still heuristic (no formal urgency/importance scoring engine yet).
+- Memory retrieval is lexical/structured, not embeddings-backed by default.
+- Delegation currently uses command parsing; no generalized background job runner yet.
+- Calendar write operations are available via explicit command, but broader scheduling optimization remains limited.
+
+## Current CoS Action Command Reference
+
+Use exact line formats in CoS-generated actions:
+
+- `ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>`
+- `UPDATE_ASSIGNMENT_STATUS: <A-0007 or 7> | <queued|in_progress|awaiting_review|blocked|done|cancelled> | <optional note>`
+- `BULK_UPDATE_ASSIGNMENT_STATUS: <status> | <AgentName or all> | <open or all (optional)> | <optional note>`
+- `UPDATE_ASSIGNMENT_PRIORITY: <A-0007 or 7> | <P1-P5> | <optional note>`
+- `BULK_UPDATE_ASSIGNMENT_PRIORITY: <P1-P5> | <AgentName or all> | <open or all (optional)> | <optional note>`
+- `UPDATE_ASSIGNMENT_DUE: <A-0007 or 7> | <YYYY-MM-DD or none> | <optional note>`
+- `BULK_UPDATE_ASSIGNMENT_DUE: <YYYY-MM-DD or none> | <AgentName or all> | <open or all (optional)> | <optional note>`
+- `RETITLE_ASSIGNMENT: <A-0007 or 7> | <new title> | <optional note>`
+- `UPDATE_ASSIGNMENT_BRIEF: <A-0007 or 7> | <new brief markdown> | <optional note>`
+- `UPDATE_ASSIGNMENT_SUMMARY: <A-0007 or 7> | <summary markdown>`
+- `REASSIGN: <A-0007 or 7> | <AgentName> | <optional note>`
+- `BULK_REASSIGN_ASSIGNMENTS: <AgentName or all> | <AgentName target> | <open or all (optional)> | <optional note>`
+- `ADD_ASSIGNMENT_ARTIFACT: <A-0007 or 7> | <artifact_type> | <title> | <content markdown>`
+- `ADD_TASK_FROM_ASSIGNMENT: <A-0007 or 7> | <MM-DD-YYYY or none> | <Business or Personal>`
+- `BULK_ADD_TASKS_FROM_ASSIGNMENTS: <AgentName or all> | <Business or Personal> | <open or all (optional)>`
+- `ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal>`
+- `ADD_CAL_BLOCK: <title> | <start datetime> | <end datetime> | <calendar id or primary>`
 
 ## Product Goals (Chief of Staff)
 
@@ -211,57 +244,31 @@ Key properties:
 
 ## Milestones & Roadmap
 
-### Milestone 0 (Now)
-- Task capture, history, search, web search, Dropbox search, daily briefing.
+Status as of 2026-02-23:
 
-### Milestone 1: Planning & Prioritization MVP
-- Add “Plan My Day” command to produce:
-  - prioritized top 5 actions
-  - suggested schedule blocks
-  - meeting prep checklist
-- Add basic priority scoring:
-  - urgency: due date proximity, email age
-  - importance: project priority, client vs non-client
-  - effort: quick win vs deep work (estimated)
+- [x] **Milestone 0 (Foundation)**
+  - Task capture, history, search, daily briefing, basic CoS chat.
+- [x] **Milestone 2 (Structured memory v1)**
+  - Structured memory extraction + retrieval context in CoS prompt.
+- [x] **Milestone 3 (Delegation framework v1)**
+  - Named agents, assignment lifecycle, artifacts, direct agent chats, CoS board controls.
+- [~] **Milestone 4 (Scheduling assistance)**
+  - Calendar awareness and explicit calendar block creation implemented.
+  - Advanced schedule optimization remains future work.
+- [~] **Milestone 1 (Prioritization MVP)**
+  - Usable guidance exists, but a formal scoring/planning engine is still incomplete.
+- [~] **Milestone 5 (Evaluation/regression safety)**
+  - Strong CoS parser and DB regression coverage exists.
+  - Broader scenario/e2e coverage can still be expanded.
 
-Acceptance Criteria:
-- One-click “Plan My Day” output in UI that is consistent and actionable.
+### Next practical milestones
 
-### Milestone 2: Structured Memory
-- Implement the memory layer on top of the raw chat DB:
-  - add chunking + summaries + tagging tables
-  - implement retrieval that pulls: (a) a few summaries, (b) a few verbatim turns, (c) relevant memory facts
-  - add “remember this” (write memory) and “what do you remember about X?” (read memory) interactions
-  - add “show sources” option that prints the chunk IDs / timestamps used for recall
-
-Acceptance Criteria:
-- Assistant can recall key facts without you using `!search`, and can cite where it came from (summary + source turns).
-
-### Milestone 3: Delegation Framework
-- Implement `job_queue` + basic sub-agent runners:
-  - research job → web search + summary + citations
-  - drafting job → email draft + subject + bullet rationale
-
-Acceptance Criteria:
-- CoS can create a job, show progress/status, and return an artifact for approval.
-
-### Milestone 4: Scheduling Assistance (Read-first, then Optional Write)
-- Read-only: propose time blocks that respect preferences and calendar constraints.
-- Optional write-back behind a setting:
-  - create tentative calendar holds with clear labels
-
-Acceptance Criteria:
-- Assistant proposes realistic time blocks and avoids conflicts; write-back is opt-in.
-
-### Milestone 5: Evaluation & Regression Safety
-- Add scripted tests for:
-  - multi-task capture
-  - history retrieval
-  - injection-safe handling of retrieved text
-  - deterministic action parsing
-
-Acceptance Criteria:
-- Key CoS behaviors don’t regress across refactors.
+1. **Prioritization engine hardening**
+   - Formal urgency/importance scoring and predictable plan-of-day output schema.
+2. **Delegation runner v2**
+   - Add explicit background job execution model beyond command parsing.
+3. **Evaluation harness**
+   - Add curated scenario fixtures for CoS recommendation quality + tool safety regressions.
 
 ## Operational Notes
 - Configurable paths are defined in `core/settings.py` (DB, data dir, config dir, env file).

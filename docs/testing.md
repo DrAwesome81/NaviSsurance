@@ -1,26 +1,140 @@
-NaviSsurance Testing
-Test Cases
+# NaviSsurance Testing
 
-Manual Test Prerequisites (common)
+## Chief of Staff + Executive Team Manual Regression (Current)
 
-- Grok access:
-  - Set `XAI_API_KEY` or `GROK_API_KEY` (and have `xai-sdk` installed) to test Chief of Staff, lead gen, and news/web search features.
-- Daily briefing:
-  - If daily briefing shows “disabled”, set `BRIEFING_AND_EMAIL_DISABLED=0` (or unset) in `config/.env`, then restart the app.
-- Google Calendar (read-only):
-  - Calendar reads require an existing token at `config/navi_token.pkl`. If it’s missing, calendar-aware features should gracefully show “unavailable” (no OAuth popups).
-- Optional RAG search:
-  - `DOC_SEARCH` can use a semantic index only if it exists (`chroma_index/`) and `COS_ENABLE_RAG_SEARCH=1` is set.
+Last revised: 2026-02-23
 
-Manual Smoke Test (10–15 minutes)
+### Prerequisites
 
-- TC-001 (Dashboard tasks display)
-- TC-003 (Dashboard schedule display)
-- TC-004 (Dashboard news feed + suppression)
-- TC-017 (Daily briefing includes News)
-- TC-025 (Leads: Run Search → evidence + message)
-- TC-054 (Chief of Staff: chat + persistence)
-- TC-058 (Chief of Staff: task capture via `ADD_TASK`)
+- Grok/xAI access:
+  - Set `XAI_API_KEY` or `GROK_API_KEY` and ensure `xai-sdk` is available.
+- Daily briefing toggle:
+  - Set `BRIEFING_AND_EMAIL_DISABLED=0` (or unset) in `config/.env`.
+- Google Calendar:
+  - Token file `config/navi_token.pkl` present for calendar-aware tests.
+  - Missing token should degrade gracefully (no crash, no auth popup).
+- Optional document RAG:
+  - `COS_ENABLE_RAG_SEARCH=1` and available index for semantic retrieval checks.
+
+### Fast smoke (10–15 min)
+
+- CoS chat persistence (`TC-054`)
+- CoS task capture (`TC-058`)
+- Delegation command + board visibility (`TC-COS-001`)
+- Open assignee chat routing (`TC-COS-004`)
+- Bulk board action (`TC-COS-007`)
+- Assignment health filter (`TC-COS-010`)
+
+### Current CoS / Delegation test cases
+
+#### TC-COS-001: Create assignment from CoS chat
+- Steps:
+  1. Open Chief of Staff tab.
+  2. Send: “Assign Atlas to summarize latest PCCP guidance due next week.”
+  3. Open Assignments board.
+- Expected:
+  - New assignment appears with assignee, priority, due date, and event history.
+
+#### TC-COS-002: Update assignment fields from CoS chat
+- Steps:
+  1. In chat, issue status/priority/due/title/brief updates for an existing assignment.
+  2. Open assignment details.
+- Expected:
+  - Field changes persist and matching audit events are present.
+
+#### TC-COS-003: Reassign assignment from CoS chat
+- Steps:
+  1. Reassign one assignment (e.g. Atlas -> Quill).
+  2. Verify assignee and linked thread.
+- Expected:
+  - Assignee changes and thread is linked to the new assignee context.
+
+#### TC-COS-004: Open assignee chat from board
+- Steps:
+  1. Select an assignment in board.
+  2. Click “Open Assignee Chat”.
+- Expected:
+  - App routes to the correct tab/console and focuses assignment context.
+
+#### TC-COS-005: Create assignment manually from board
+- Steps:
+  1. Click “New” in assignment board.
+  2. Fill title/brief/assignee/priority/due and save.
+- Expected:
+  - Assignment is created with proper fields and appears in list/details.
+
+#### TC-COS-006: Single assignment task bridge
+- Steps:
+  1. Select assignment.
+  2. Click “Create Task”.
+- Expected:
+  - Dashboard task `[A-####] <title>` created once; duplicate attempts are blocked.
+
+#### TC-COS-007: Bulk status update with optional note
+- Steps:
+  1. Filter to a subset.
+  2. Click “Bulk Status”, choose status, enter optional note.
+- Expected:
+  - Matching assignments update and event note reflects custom/default note.
+
+#### TC-COS-008: Bulk priority update with optional note
+- Steps:
+  1. Filter subset.
+  2. Click “Bulk Priority”, choose value, enter optional note.
+- Expected:
+  - Priority updates and note appears in assignment events.
+
+#### TC-COS-009: Bulk due update with optional note
+- Steps:
+  1. Filter subset.
+  2. Click “Bulk Due”, set date, enter optional note.
+- Expected:
+  - Due updates persisted; impossible dates are rejected.
+
+#### TC-COS-010: Assignment health filter + badges
+- Steps:
+  1. Create/locate overdue and stale blocked/review assignments.
+  2. Toggle Health filter values.
+- Expected:
+  - Rows filter correctly and labels show health badges (`OVERDUE`, `BLOCKED_3D`, `REVIEW_3D`).
+
+#### TC-COS-011: Bulk reassign with optional note
+- Steps:
+  1. Filter subset.
+  2. Click “Bulk Reassign”, pick target, enter optional note.
+- Expected:
+  - Assignees update, threads relink as needed, and events include note.
+
+#### TC-COS-012: Bulk create tasks from filtered assignments
+- Steps:
+  1. Filter assignments.
+  2. Click “Bulk Create Tasks”, choose category/mode and optional note.
+- Expected:
+  - Tasks created for eligible assignments, duplicates skipped, summary counts shown.
+
+#### TC-COS-013: CoS bulk command open-mode semantics
+- Steps:
+  1. Use chat commands with `| open |` mode for status/priority/due/reassign.
+  2. Ensure some assignments are done/cancelled.
+- Expected:
+  - Closed assignments are skipped and command notes mention skipped closed count.
+
+#### TC-COS-014: Due-date validation (chat and UI)
+- Steps:
+  1. Try invalid dates like `2026-02-30` in CoS due commands and board due dialogs.
+- Expected:
+  - Invalid dates are rejected; existing data remains unchanged.
+
+### Automated test commands (recommended)
+
+- Focused CoS suite:
+  - `python3 -m pytest tests/test_chief_of_staff.py -q`
+- Additional memory/DB smoke:
+  - `python3 -m pytest tests/test_cos_memory.py tests/test_db.py -q`
+
+---
+
+## Legacy manual catalog (historical)
 
 Dashboard Tab Tests (NEW - IMPLEMENTED)
 TC-001: Dashboard Task List Display
