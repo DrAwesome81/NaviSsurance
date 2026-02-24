@@ -258,6 +258,9 @@ class ChiefOfStaffTab(QWidget):
         prefs_action = QAction("Preferences…", self)
         prefs_action.triggered.connect(self._open_preferences)
         menu.addAction(prefs_action)
+        commands_action = QAction("Action Commands…", self)
+        commands_action.triggered.connect(self._open_command_cheatsheet)
+        menu.addAction(commands_action)
         options_btn.setMenu(menu)
         top_row.addWidget(options_btn)
         layout.addLayout(top_row)
@@ -288,6 +291,42 @@ class ChiefOfStaffTab(QWidget):
 
     def _open_preferences(self):
         d = CosPreferencesDialog(self.db, self)
+        d.exec()
+
+    def _open_command_cheatsheet(self):
+        md = """
+## Chief of Staff Action Commands
+
+Use these exact line formats in Navi responses:
+
+- `ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>`
+- `UPDATE_ASSIGNMENT_STATUS: <A-0007 or 7> | <queued|in_progress|awaiting_review|blocked|done|cancelled> | <optional note>`
+- `UPDATE_ASSIGNMENT_PRIORITY: <A-0007 or 7> | <P1-P5> | <optional note>`
+- `UPDATE_ASSIGNMENT_DUE: <A-0007 or 7> | <YYYY-MM-DD or none> | <optional note>`
+- `RETITLE_ASSIGNMENT: <A-0007 or 7> | <new title> | <optional note>`
+- `UPDATE_ASSIGNMENT_BRIEF: <A-0007 or 7> | <new brief markdown> | <optional note>`
+- `UPDATE_ASSIGNMENT_SUMMARY: <A-0007 or 7> | <summary markdown>`
+- `REASSIGN: <A-0007 or 7> | <AgentName> | <optional note>`
+- `ADD_ASSIGNMENT_ARTIFACT: <A-0007 or 7> | <artifact_type> | <title> | <content markdown>`
+
+Calendar and task actions:
+
+- `ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal>`
+- `ADD_CAL_BLOCK: <title> | <start datetime> | <end datetime> | <calendar id or primary>`
+""".strip()
+
+        d = QDialog(self)
+        d.setWindowTitle("Chief of Staff — Action Command Cheat Sheet")
+        layout = QVBoxLayout(d)
+        viewer = QTextBrowser()
+        viewer.setMarkdown(md)
+        layout.addWidget(viewer)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.accepted.connect(d.accept)
+        buttons.rejected.connect(d.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(d.accept)
+        layout.addWidget(buttons)
+        d.resize(760, 560)
         d.exec()
 
     def _build_sidebar(self):
