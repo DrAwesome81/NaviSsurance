@@ -444,6 +444,29 @@ class TestChiefOfStaffService:
         assert "Updated summary for 1 assignment(s)" in result
         assert "UPDATE_ASSIGNMENT_SUMMARY:" not in result
 
+    def test_cos_response_adds_assignment_artifact(self, mock_grok, cos_db):
+        """ADD_ASSIGNMENT_ARTIFACT should store an artifact linked to assignment."""
+        aid = cos_db.agent_create_assignment(
+            title="Deliverable task",
+            brief_md="Produce deliverable",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=2,
+        )
+        mock_grok.return_value = (
+            f"ADD_ASSIGNMENT_ARTIFACT: A-{int(aid):04d} | summary_note | "
+            "Final recommendation | Choose option B because timeline risk is lower."
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Attach this output to the assignment.")
+        arts = cos_db.agent_list_artifacts(assignment_id=int(aid), limit=20)
+        assert len(arts) >= 1
+        assert any(str(a.get("artifact_type") or "") == "summary_note" for a in arts)
+        assert any("Final recommendation" in str(a.get("title") or "") for a in arts)
+        assert "Added artifacts to 1 assignment(s)" in result
+        assert "ADD_ASSIGNMENT_ARTIFACT:" not in result
+
 
 @patch("core.chief_of_staff_service.grok_completion_messages")
 def test_cos_response_with_history_uses_multi_turn(mock_grok_messages, cos_db):

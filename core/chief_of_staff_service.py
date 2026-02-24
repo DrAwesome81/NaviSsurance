@@ -53,6 +53,11 @@ REASSIGN_PATTERN = re.compile(r"^\s*REASSIGN:\s*(.+?)\s*$", re.IGNORECASE)
 UPDATE_ASSIGNMENT_SUMMARY_PATTERN = re.compile(
     r"^\s*UPDATE_ASSIGNMENT_SUMMARY:\s*(.+?)\s*$", re.IGNORECASE
 )
+# Pattern for CoS assignment artifact creation:
+# ADD_ASSIGNMENT_ARTIFACT: assignment_ref | artifact_type | title | content_markdown
+ADD_ASSIGNMENT_ARTIFACT_PATTERN = re.compile(
+    r"^\s*ADD_ASSIGNMENT_ARTIFACT:\s*(.+?)\s*$", re.IGNORECASE
+)
 
 # CoS tool triggers (tool loop)
 WEB_SEARCH_TRIGGER = re.compile(r"^\s*WEB_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
@@ -399,6 +404,11 @@ UPDATE_ASSIGNMENT_SUMMARY: <A-0007 or 7> | <summary markdown>
 Example: UPDATE_ASSIGNMENT_SUMMARY: A-0007 | Atlas completed research and delivered sources.
 Omit UPDATE_ASSIGNMENT_SUMMARY lines if you are not updating summaries.
 
+You may attach an artifact to an assignment:
+ADD_ASSIGNMENT_ARTIFACT: <A-0007 or 7> | <artifact_type> | <title> | <content markdown>
+Example: ADD_ASSIGNMENT_ARTIFACT: A-0007 | summary_note | Final recommendation | Atlas recommends option B due to timeline.
+Omit ADD_ASSIGNMENT_ARTIFACT lines if you are not attaching artifacts.
+
 If you need more information to answer well, you may request one of these tools by returning EXACTLY ONE line with one of:
 - WEB_SEARCH:<query>
 - DOC_SEARCH:<query>   (searches local docs/notes and optional RAG index)
@@ -555,6 +565,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     updated_assignments: list[str] = []
     reassigned_assignments: list[str] = []
     summarized_assignments: list[str] = []
+    added_assignment_artifacts: list[str] = []
     assignment_failures: list[str] = []
     block_failures = 0
     block_failure_reasons: list[str] = []
@@ -825,6 +836,43 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 assignment_failures.append(f"failed updating summary for A-{int(aid):04d}")
             continue
 
+        m_art = ADD_ASSIGNMENT_ARTIFACT_PATTERN.match(stripped)
+        if m_art:
+            payload = (m_art.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 3)]
+            if len(parts) < 4:
+                assignment_failures.append("invalid ADD_ASSIGNMENT_ARTIFACT format")
+                logger.warning("CoS ADD_ASSIGNMENT_ARTIFACT invalid format: %r", stripped)
+                continue
+            assignment_ref = parts[0]
+            artifact_type = (parts[1] or "").strip() or "note"
+            title = (parts[2] or "").strip() or "Untitled artifact"
+            content_md = (parts[3] or "").strip()
+
+            aid = _parse_assignment_ref(assignment_ref)
+            if aid is None:
+                assignment_failures.append(f"invalid assignment id '{assignment_ref}'")
+                logger.warning("CoS ADD_ASSIGNMENT_ARTIFACT invalid id: %r", assignment_ref)
+                continue
+            row = db.agent_get_assignment(int(aid))
+            if not row:
+                assignment_failures.append(f"unknown assignment A-{int(aid):04d}")
+                continue
+            source_thread_id = row.get("source_thread_id")
+            try:
+                db.agent_add_artifact(
+                    artifact_type=artifact_type,
+                    assignment_id=int(aid),
+                    thread_id=(int(source_thread_id) if source_thread_id else None),
+                    title=title,
+                    content_md=content_md,
+                )
+                added_assignment_artifacts.append(f"A-{int(aid):04d}")
+            except Exception as e:
+                assignment_failures.append(f"failed adding artifact to A-{int(aid):04d}")
+                logger.warning("CoS ADD_ASSIGNMENT_ARTIFACT failed: %s", e)
+            continue
+
         cleaned_lines.append(line)
     out = "\n".join(cleaned_lines).strip()
     action_notes = []
@@ -860,6 +908,12 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
         more = " ..." if len(summarized_assignments) > 3 else ""
         action_notes.append(
             f"— *Updated summary for {len(summarized_assignments)} assignment(s): {preview}{more}.*"
+        )
+    if added_assignment_artifacts:
+        preview = ", ".join(added_assignment_artifacts[:3])
+        more = " ..." if len(added_assignment_artifacts) > 3 else ""
+        action_notes.append(
+            f"— *Added artifacts to {len(added_assignment_artifacts)} assignment(s): {preview}{more}.*"
         )
     if assignment_failures:
         action_notes.append(
