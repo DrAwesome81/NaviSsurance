@@ -354,8 +354,8 @@ class TestChiefOfStaffService:
         result = cos_response(cos_db, "")
         assert "recommend" in result or "Here" in result
         assert mock_grok.call_count >= 1
-        # grok_completion(system, user, ...) — user is second positional
-        user_passed = mock_grok.call_args[0][1]
+        # First call is main COS prompt; second (if any) is memory extraction. Assert on main prompt.
+        user_passed = mock_grok.call_args_list[0][0][1]
         assert "What should I focus on right now" in user_passed
 
     def test_cos_response_on_error_returns_message(self, mock_grok, cos_db):
@@ -377,7 +377,8 @@ class TestChiefOfStaffService:
         mock_grok.return_value = "Focus on the report first."
         from core.chief_of_staff_service import cos_response
         cos_response(cos_db, "What should I do today?")
-        user_passed = mock_grok.call_args[0][1]
+        # First call is main COS prompt; second (if any) is memory extraction. Assert on main prompt.
+        user_passed = mock_grok.call_args_list[0][0][1]
         assert "**Dashboard tasks:**" in user_passed
         assert "Ship the DHF report" in user_passed
 
