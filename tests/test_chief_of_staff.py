@@ -733,6 +733,46 @@ class TestChiefOfStaffService:
         assert "Created 1 dashboard task(s) from assignment(s)" in result
         assert "ADD_TASK_FROM_ASSIGNMENT:" not in result
 
+    def test_cos_response_bulk_adds_tasks_from_assignments_scoped_open(self, mock_grok, cos_db):
+        """BULK_ADD_TASKS_FROM_ASSIGNMENTS creates tasks for matching open assignments."""
+        atlas_open = cos_db.agent_create_assignment(
+            title="Atlas open assignment",
+            brief_md="Open work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=2,
+            due_date="2026-04-08",
+        )
+        atlas_done = cos_db.agent_create_assignment(
+            title="Atlas done assignment",
+            brief_md="Completed work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+            status="done",
+        )
+        quill_open = cos_db.agent_create_assignment(
+            title="Quill open assignment",
+            brief_md="Other assignee",
+            requester_code="navi",
+            assignee_code="quill",
+            priority=2,
+        )
+        # Reference variables to avoid linter warnings for intentionally created rows.
+        assert atlas_done and quill_open
+
+        mock_grok.return_value = "BULK_ADD_TASKS_FROM_ASSIGNMENTS: Atlas | Business | open"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Create tasks for Atlas assignments.")
+        tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+        texts = [str(t[1]) for t in tasks]
+        assert any(f"[A-{int(atlas_open):04d}] Atlas open assignment" in tx for tx in texts)
+        assert not any("Atlas done assignment" in tx for tx in texts)
+        assert not any("Quill open assignment" in tx for tx in texts)
+        assert "Bulk-created dashboard tasks for 1 scope(s)" in result
+        assert "BULK_ADD_TASKS_FROM_ASSIGNMENTS:" not in result
+
 
 @patch("core.chief_of_staff_service.grok_completion_messages")
 def test_cos_response_with_history_uses_multi_turn(mock_grok_messages, cos_db):

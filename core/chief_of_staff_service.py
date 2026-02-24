@@ -104,6 +104,12 @@ ADD_TASK_FROM_ASSIGNMENT_PATTERN = re.compile(
     r"^\s*ADD_TASK_FROM_ASSIGNMENT:\s*(.+?)\s*$",
     re.IGNORECASE,
 )
+# Pattern for CoS bulk conversion of assignments into dashboard tasks:
+# BULK_ADD_TASKS_FROM_ASSIGNMENTS: assignee_name_or_all | Business|Personal | optional_open_or_all
+BULK_ADD_TASKS_FROM_ASSIGNMENTS_PATTERN = re.compile(
+    r"^\s*BULK_ADD_TASKS_FROM_ASSIGNMENTS:\s*(.+?)\s*$",
+    re.IGNORECASE,
+)
 
 # CoS tool triggers (tool loop)
 WEB_SEARCH_TRIGGER = re.compile(r"^\s*WEB_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
@@ -569,6 +575,12 @@ Example: ADD_TASK_FROM_ASSIGNMENT: A-0007 | 03-18-2026 | Business
 This adds a task using the assignment title as the task text.
 Omit ADD_TASK_FROM_ASSIGNMENT lines if you are not creating tasks from assignments.
 
+You may bulk-create dashboard tasks from assignments:
+BULK_ADD_TASKS_FROM_ASSIGNMENTS: <AgentName or all> | <Business or Personal> | <open or all (optional, defaults to open)>
+Example: BULK_ADD_TASKS_FROM_ASSIGNMENTS: Atlas | Business | open
+This adds one dashboard task per matching assignment using assignment titles.
+Omit BULK_ADD_TASKS_FROM_ASSIGNMENTS lines if you are not bulk-creating tasks from assignments.
+
 If you need more information to answer well, you may request one of these tools by returning EXACTLY ONE line with one of:
 - WEB_SEARCH:<query>
 - DOC_SEARCH:<query>   (searches local docs/notes and optional RAG index)
@@ -735,6 +747,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     reassigned_assignments: list[str] = []
     summarized_assignments: list[str] = []
     added_assignment_artifacts: list[str] = []
+    bulk_created_tasks_from_assignments: list[str] = []
     assignment_failures: list[str] = []
     block_failures = 0
     block_failure_reasons: list[str] = []
@@ -852,6 +865,108 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
             except Exception as e:
                 assignment_failures.append(f"failed creating task from A-{int(aid):04d}")
                 logger.warning("CoS ADD_TASK_FROM_ASSIGNMENT failed: %s", e)
+            continue
+
+        m_bulk_task_from_asg = BULK_ADD_TASKS_FROM_ASSIGNMENTS_PATTERN.match(stripped)
+        if m_bulk_task_from_asg:
+            payload = (m_bulk_task_from_asg.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 2)]
+            if len(parts) < 2:
+                assignment_failures.append("invalid BULK_ADD_TASKS_FROM_ASSIGNMENTS format")
+                logger.warning("CoS BULK_ADD_TASKS_FROM_ASSIGNMENTS invalid format: %r", stripped)
+                continue
+            scope = parts[0]
+            category = parts[1]
+            mode_raw = (parts[2] if len(parts) > 2 else "open").strip().lower()
+            if category not in {"Business", "Personal"}:
+                assignment_failures.append(f"invalid category '{category}'")
+                logger.warning("CoS BULK_ADD_TASKS_FROM_ASSIGNMENTS invalid category: %r", category)
+                continue
+
+            include_closed = False
+            if mode_raw in {"", "open", "open_only", "active", "pending"}:
+                include_closed = False
+            elif mode_raw in {"all", "include_closed", "with_closed", "closed"}:
+                include_closed = True
+            else:
+                assignment_failures.append(f"invalid mode '{mode_raw}'")
+                logger.warning("CoS BULK_ADD_TASKS_FROM_ASSIGNMENTS invalid mode: %r", mode_raw)
+                continue
+
+            ok_scope, assignee_code, scope_label = _resolve_bulk_scope(db, scope)
+            if not ok_scope:
+                assignment_failures.append(f"unknown agent '{scope}'")
+                logger.warning("CoS BULK_ADD_TASKS_FROM_ASSIGNMENTS unknown agent: %r", scope)
+                continue
+
+            rows = db.agent_list_assignments(assignee_code=assignee_code, limit=500)
+            if not rows:
+                assignment_failures.append(f"no assignments found for scope '{scope_label}'")
+                continue
+
+            try:
+                existing_tasks = db.get_tasks(category=None, date_filter=None, specific_date=None)
+                existing_task_texts = {str(t[1] or "").strip() for t in existing_tasks}
+            except Exception:
+                existing_task_texts = set()
+
+            created_count = 0
+            skipped_existing = 0
+            skipped_closed = 0
+            for row in rows:
+                aid = int(row.get("id") or 0)
+                if aid <= 0:
+                    continue
+                st = str(row.get("status") or "").strip().lower()
+                if (not include_closed) and st in {"done", "cancelled"}:
+                    skipped_closed += 1
+                    continue
+                title = str(row.get("title") or "").strip() or f"Assignment A-{aid:04d}"
+                task_text = f"[A-{aid:04d}] {title}"
+                if task_text in existing_task_texts:
+                    skipped_existing += 1
+                    continue
+                due_iso = str(row.get("due_date") or "").strip()
+                due_date = ""
+                if len(due_iso) == 10 and due_iso[4] == "-":
+                    y, m, d = due_iso.split("-")
+                    due_date = f"{m}-{d}-{y}"
+                try:
+                    db.add_task(
+                        session_id=session_id,
+                        task_text=task_text,
+                        due_date=due_date,
+                        category=category,
+                        recurrence="None",
+                        completed=0,
+                    )
+                    existing_task_texts.add(task_text)
+                    added_tasks += 1
+                    added_tasks_from_assignments += 1
+                    created_count += 1
+                    try:
+                        db.agent_add_event(
+                            assignment_id=aid,
+                            event_type="task_created",
+                            actor_code="navi",
+                            note=f"Created dashboard task from assignment (bulk): {task_text}",
+                        )
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.warning("CoS BULK_ADD_TASKS_FROM_ASSIGNMENTS failed for A-%04d: %s", aid, e)
+            if created_count <= 0:
+                assignment_failures.append(
+                    f"no dashboard tasks created for scope '{scope_label}'"
+                )
+            else:
+                bulk_created_tasks_from_assignments.append(
+                    f"{scope_label}: {created_count} created"
+                    f"{f' ({skipped_existing} skipped existing' if skipped_existing else ''}"
+                    f"{', ' if skipped_existing and skipped_closed else ''}"
+                    f"{f'{skipped_closed} skipped closed' if skipped_closed else ''}"
+                    f"{')' if (skipped_existing or skipped_closed) else ''}"
+                )
             continue
 
         m_block = ADD_CAL_BLOCK_PATTERN.search(stripped)
@@ -1491,6 +1606,12 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     if added_tasks_from_assignments:
         action_notes.append(
             f"— *Created {added_tasks_from_assignments} dashboard task(s) from assignment(s).*"
+        )
+    if bulk_created_tasks_from_assignments:
+        preview = ", ".join(bulk_created_tasks_from_assignments[:3])
+        more = " ..." if len(bulk_created_tasks_from_assignments) > 3 else ""
+        action_notes.append(
+            f"— *Bulk-created dashboard tasks for {len(bulk_created_tasks_from_assignments)} scope(s): {preview}{more}.*"
         )
     if added_blocks:
         action_notes.append(f"— *Scheduled {added_blocks} calendar block(s).*")

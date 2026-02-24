@@ -315,6 +315,7 @@ Use these exact line formats in Navi responses:
 - `BULK_REASSIGN_ASSIGNMENTS: <AgentName or all> | <AgentName target> | <optional note>`
 - `ADD_ASSIGNMENT_ARTIFACT: <A-0007 or 7> | <artifact_type> | <title> | <content markdown>`
 - `ADD_TASK_FROM_ASSIGNMENT: <A-0007 or 7> | <MM-DD-YYYY or none> | <Business or Personal>`
+- `BULK_ADD_TASKS_FROM_ASSIGNMENTS: <AgentName or all> | <Business or Personal> | <open or all (optional)>`
 
 Calendar and task actions:
 
@@ -469,6 +470,9 @@ Calendar and task actions:
         self.asg_create_task_btn = QPushButton("Create Task")
         self.asg_create_task_btn.clicked.connect(self._create_task_from_assignment)
         artifact_row.addWidget(self.asg_create_task_btn)
+        self.asg_bulk_create_tasks_btn = QPushButton("Bulk Create Tasks")
+        self.asg_bulk_create_tasks_btn.clicked.connect(self._bulk_create_tasks_from_filtered_assignments)
+        artifact_row.addWidget(self.asg_bulk_create_tasks_btn)
         self.asg_view_artifact_btn = QPushButton("View Artifact")
         self.asg_view_artifact_btn.clicked.connect(self._view_selected_assignment_artifact)
         artifact_row.addWidget(self.asg_view_artifact_btn)
@@ -1280,6 +1284,111 @@ Calendar and task actions:
 
         QMessageBox.information(self, "Assignments", "Dashboard task created from assignment.")
         self._focus_assignment_by_id(int(self._current_assignment_id))
+
+    def _bulk_create_tasks_from_filtered_assignments(self):
+        rows = self._filtered_assignment_rows()
+        if not rows:
+            QMessageBox.information(self, "Assignments", "No assignments match the current filters.")
+            return
+
+        category, ok = QInputDialog.getItem(
+            self,
+            "Bulk Create Tasks",
+            "Category:",
+            ["Business", "Personal"],
+            0,
+            False,
+        )
+        if not ok or not category:
+            return
+
+        mode_label, ok = QInputDialog.getItem(
+            self,
+            "Bulk Create Tasks",
+            "Include closed assignments?",
+            ["Open only", "All (include done/cancelled)"],
+            0,
+            False,
+        )
+        if not ok or not mode_label:
+            return
+        include_closed = mode_label.startswith("All")
+
+        confirm = QMessageBox.question(
+            self,
+            "Confirm Bulk Create Tasks",
+            f"Create dashboard tasks from {len(rows)} filtered assignment(s)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            existing = self.db.get_tasks(category=None, date_filter=None, specific_date=None)
+            existing_task_texts = {str(t[1] or "").strip() for t in existing}
+        except Exception:
+            existing_task_texts = set()
+
+        created = 0
+        skipped_existing = 0
+        skipped_closed = 0
+        failed = 0
+        session_id = f"cos_bulk_assignment_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        for r in rows:
+            aid = int(r.get("id") or 0)
+            if aid <= 0:
+                failed += 1
+                continue
+            st = str(r.get("status") or "").strip().lower()
+            if (not include_closed) and st in {"done", "cancelled"}:
+                skipped_closed += 1
+                continue
+            title = str(r.get("title") or "").strip() or f"Assignment A-{aid:04d}"
+            task_text = f"[A-{aid:04d}] {title}"
+            if task_text in existing_task_texts:
+                skipped_existing += 1
+                continue
+            due_iso = str(r.get("due_date") or "").strip()
+            due_date = ""
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", due_iso):
+                yyyy, mm, dd = due_iso.split("-")
+                due_date = f"{mm}-{dd}-{yyyy}"
+            try:
+                self.db.add_task(
+                    session_id=session_id,
+                    task_text=task_text,
+                    due_date=due_date,
+                    category=str(category),
+                    recurrence="None",
+                    completed=0,
+                )
+                existing_task_texts.add(task_text)
+                created += 1
+                try:
+                    self.db.agent_add_event(
+                        assignment_id=aid,
+                        event_type="task_created",
+                        actor_code="navi",
+                        note=f"Created dashboard task from assignment (bulk): {task_text}",
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                failed += 1
+
+        QMessageBox.information(
+            self,
+            "Bulk Create Tasks",
+            (
+                f"Created: {created}\n"
+                f"Skipped existing: {skipped_existing}\n"
+                f"Skipped closed: {skipped_closed}\n"
+                f"Failed: {failed}"
+            ),
+        )
+        if self._current_assignment_id:
+            self._focus_assignment_by_id(int(self._current_assignment_id))
 
     def _view_selected_assignment_artifact(self):
         if not self._current_assignment_id:
