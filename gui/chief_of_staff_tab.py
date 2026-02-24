@@ -1674,6 +1674,40 @@ Calendar and task actions:
         if not ok:
             QMessageBox.information(self, "Assignments", f"Could not find assignment A-{aid:04d}.")
 
+    def _resolve_assignee_tab_host(self):
+        """
+        Resolve the real host window that owns tab_widget + tab attributes.
+        In Qt, self.parent() can be an internal container (e.g., QStackedWidget),
+        which does not expose application tabs.
+        """
+        seen_ids = set()
+        candidates = []
+
+        try:
+            win = self.window()
+        except Exception:
+            win = None
+        if win is not None:
+            candidates.append(win)
+
+        current = self
+        while current is not None and id(current) not in seen_ids:
+            seen_ids.add(id(current))
+            candidates.append(current)
+            parent_fn = getattr(current, "parent", None)
+            if not callable(parent_fn):
+                break
+            try:
+                current = parent_fn()
+            except Exception:
+                current = None
+
+        for host in candidates:
+            tab_widget = getattr(host, "tab_widget", None)
+            if tab_widget is not None:
+                return host, tab_widget
+        return None, None
+
     def _open_assignment_in_assignee_console(self):
         if not self._current_assignment_id:
             QMessageBox.information(self, "Assignments", "Select an assignment first.")
@@ -1684,8 +1718,7 @@ Calendar and task actions:
             return
         assignee = str(row.get("assignee_code") or "").strip().lower()
 
-        host = self.parent()
-        tw = getattr(host, "tab_widget", None) if host is not None else None
+        host, tw = self._resolve_assignee_tab_host()
         if tw is None:
             QMessageBox.information(self, "Assignments", "Could not open assignee tab in this context.")
             return
