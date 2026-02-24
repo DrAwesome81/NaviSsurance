@@ -78,6 +78,12 @@ UPDATE_ASSIGNMENT_BRIEF_PATTERN = re.compile(
 ADD_ASSIGNMENT_ARTIFACT_PATTERN = re.compile(
     r"^\s*ADD_ASSIGNMENT_ARTIFACT:\s*(.+?)\s*$", re.IGNORECASE
 )
+# Pattern for CoS conversion of assignment into dashboard task:
+# ADD_TASK_FROM_ASSIGNMENT: assignment_ref | due_date_mmddyyyy_or_none | Business|Personal
+ADD_TASK_FROM_ASSIGNMENT_PATTERN = re.compile(
+    r"^\s*ADD_TASK_FROM_ASSIGNMENT:\s*(.+?)\s*$",
+    re.IGNORECASE,
+)
 
 # CoS tool triggers (tool loop)
 WEB_SEARCH_TRIGGER = re.compile(r"^\s*WEB_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
@@ -499,6 +505,12 @@ ADD_ASSIGNMENT_ARTIFACT: <A-0007 or 7> | <artifact_type> | <title> | <content ma
 Example: ADD_ASSIGNMENT_ARTIFACT: A-0007 | summary_note | Final recommendation | Atlas recommends option B due to timeline.
 Omit ADD_ASSIGNMENT_ARTIFACT lines if you are not attaching artifacts.
 
+You may also create a dashboard task from an assignment:
+ADD_TASK_FROM_ASSIGNMENT: <A-0007 or 7> | <MM-DD-YYYY or none> | <Business or Personal>
+Example: ADD_TASK_FROM_ASSIGNMENT: A-0007 | 03-18-2026 | Business
+This adds a task using the assignment title as the task text.
+Omit ADD_TASK_FROM_ASSIGNMENT lines if you are not creating tasks from assignments.
+
 If you need more information to answer well, you may request one of these tools by returning EXACTLY ONE line with one of:
 - WEB_SEARCH:<query>
 - DOC_SEARCH:<query>   (searches local docs/notes and optional RAG index)
@@ -650,6 +662,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
         return response
     session_id = f"dashboard_cos_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     added_tasks = 0
+    added_tasks_from_assignments = 0
     added_blocks = 0
     created_assignments: list[str] = []
     updated_assignments: list[str] = []
@@ -690,6 +703,65 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 added_tasks += 1
             except Exception as e:
                 logger.warning("CoS add_task failed: %s", e)
+            continue
+
+        m_task_from_asg = ADD_TASK_FROM_ASSIGNMENT_PATTERN.match(stripped)
+        if m_task_from_asg:
+            payload = (m_task_from_asg.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 2)]
+            if len(parts) < 3:
+                assignment_failures.append("invalid ADD_TASK_FROM_ASSIGNMENT format")
+                logger.warning("CoS ADD_TASK_FROM_ASSIGNMENT invalid format: %r", stripped)
+                continue
+            assignment_ref = parts[0]
+            due_raw = parts[1]
+            category = parts[2]
+            if category not in {"Business", "Personal"}:
+                assignment_failures.append(f"invalid category '{category}'")
+                logger.warning("CoS ADD_TASK_FROM_ASSIGNMENT invalid category: %r", category)
+                continue
+            aid = _parse_assignment_ref(assignment_ref)
+            if aid is None:
+                assignment_failures.append(f"invalid assignment id '{assignment_ref}'")
+                logger.warning("CoS ADD_TASK_FROM_ASSIGNMENT invalid id: %r", assignment_ref)
+                continue
+            row = db.agent_get_assignment(int(aid))
+            if not row:
+                assignment_failures.append(f"unknown assignment A-{int(aid):04d}")
+                continue
+            title = str(row.get("title") or "").strip() or f"Assignment A-{int(aid):04d}"
+            task_text = f"[A-{int(aid):04d}] {title}"
+            due_date = (due_raw or "").strip()
+            if due_date.lower() in {"none", "null", "n/a", ""}:
+                due_date = None
+            elif len(due_date) == 10 and due_date[4] == "-":
+                # Normalize YYYY-MM-DD -> MM-DD-YYYY for tasks UI consistency.
+                parts_d = due_date.split("-")
+                if len(parts_d) == 3:
+                    due_date = f"{parts_d[1]}-{parts_d[2]}-{parts_d[0]}"
+            try:
+                db.add_task(
+                    session_id=session_id,
+                    task_text=task_text,
+                    due_date=due_date or "",
+                    category=category,
+                    recurrence="None",
+                    completed=0,
+                )
+                added_tasks += 1
+                added_tasks_from_assignments += 1
+                try:
+                    db.agent_add_event(
+                        assignment_id=int(aid),
+                        event_type="task_created",
+                        actor_code="navi",
+                        note=f"Created dashboard task from assignment: {task_text}",
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                assignment_failures.append(f"failed creating task from A-{int(aid):04d}")
+                logger.warning("CoS ADD_TASK_FROM_ASSIGNMENT failed: %s", e)
             continue
 
         m_block = ADD_CAL_BLOCK_PATTERN.search(stripped)
@@ -1122,6 +1194,10 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     action_notes = []
     if added_tasks:
         action_notes.append(f"— *Added {added_tasks} task(s) to your dashboard.*")
+    if added_tasks_from_assignments:
+        action_notes.append(
+            f"— *Created {added_tasks_from_assignments} dashboard task(s) from assignment(s).*"
+        )
     if added_blocks:
         action_notes.append(f"— *Scheduled {added_blocks} calendar block(s).*")
     if block_failures:

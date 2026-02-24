@@ -308,6 +308,7 @@ Use these exact line formats in Navi responses:
 - `UPDATE_ASSIGNMENT_SUMMARY: <A-0007 or 7> | <summary markdown>`
 - `REASSIGN: <A-0007 or 7> | <AgentName> | <optional note>`
 - `ADD_ASSIGNMENT_ARTIFACT: <A-0007 or 7> | <artifact_type> | <title> | <content markdown>`
+- `ADD_TASK_FROM_ASSIGNMENT: <A-0007 or 7> | <MM-DD-YYYY or none> | <Business or Personal>`
 
 Calendar and task actions:
 
@@ -444,6 +445,9 @@ Calendar and task actions:
         edit_row.addStretch()
         asg_layout.addLayout(edit_row)
         artifact_row = QHBoxLayout()
+        self.asg_create_task_btn = QPushButton("Create Task")
+        self.asg_create_task_btn.clicked.connect(self._create_task_from_assignment)
+        artifact_row.addWidget(self.asg_create_task_btn)
         self.asg_view_artifact_btn = QPushButton("View Artifact")
         self.asg_view_artifact_btn.clicked.connect(self._view_selected_assignment_artifact)
         artifact_row.addWidget(self.asg_view_artifact_btn)
@@ -882,6 +886,74 @@ Calendar and task actions:
         if not saved:
             QMessageBox.warning(self, "Assignments", "Could not update summary.")
             return
+        self._focus_assignment_by_id(int(self._current_assignment_id))
+
+    def _create_task_from_assignment(self):
+        if not self._current_assignment_id:
+            QMessageBox.information(self, "Assignments", "Select an assignment first.")
+            return
+        row = self.db.agent_get_assignment(int(self._current_assignment_id))
+        if not row:
+            QMessageBox.warning(self, "Assignments", "Assignment not found.")
+            return
+
+        aid = int(row.get("id") or 0)
+        title = str(row.get("title") or "").strip() or f"Assignment A-{aid:04d}"
+        task_text = f"[A-{aid:04d}] {title}"
+
+        current_due = str(row.get("due_date") or "").strip()
+        due_seed = ""
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", current_due):
+            yyyy, mm, dd = current_due.split("-")
+            due_seed = f"{mm}-{dd}-{yyyy}"
+        due_text, ok = QInputDialog.getText(
+            self,
+            "Create Task from Assignment",
+            "Due date (MM-DD-YYYY or none):",
+            text=due_seed,
+        )
+        if not ok:
+            return
+        due_raw = (due_text or "").strip()
+        if not due_raw or due_raw.lower() in {"none", "null", "n/a"}:
+            due = ""
+        else:
+            if not re.match(r"^\d{2}-\d{2}-\d{4}$", due_raw):
+                QMessageBox.warning(self, "Assignments", "Due date must be MM-DD-YYYY or none.")
+                return
+            due = due_raw
+
+        category, ok = QInputDialog.getItem(
+            self,
+            "Create Task from Assignment",
+            "Category:",
+            ["Business", "Personal"],
+            0,
+            False,
+        )
+        if not ok or not category:
+            return
+
+        try:
+            self.db.add_task(
+                session_id=f"cos_assignment_{aid}",
+                task_text=task_text,
+                due_date=due,
+                category=str(category),
+                recurrence="None",
+                completed=0,
+            )
+            self.db.agent_add_event(
+                assignment_id=aid,
+                event_type="task_created",
+                actor_code="navi",
+                note=f"Created dashboard task: {task_text}",
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Assignments", f"Could not create task: {e}")
+            return
+
+        QMessageBox.information(self, "Assignments", "Dashboard task created from assignment.")
         self._focus_assignment_by_id(int(self._current_assignment_id))
 
     def _view_selected_assignment_artifact(self):

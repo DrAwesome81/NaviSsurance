@@ -591,6 +591,26 @@ class TestChiefOfStaffService:
         assert "Updated brief for 1 assignment(s)" in result
         assert "UPDATE_ASSIGNMENT_BRIEF:" not in result
 
+    def test_cos_response_adds_task_from_assignment(self, mock_grok, cos_db):
+        """ADD_TASK_FROM_ASSIGNMENT creates a dashboard task from assignment title."""
+        aid = cos_db.agent_create_assignment(
+            title="Publish launch memo",
+            brief_md="Prepare and publish memo",
+            requester_code="navi",
+            assignee_code="quill",
+            priority=2,
+        )
+        mock_grok.return_value = f"ADD_TASK_FROM_ASSIGNMENT: A-{int(aid):04d} | none | Business"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Turn that into a task.")
+        tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+        assert len(tasks) >= 1
+        assert any(f"[A-{int(aid):04d}] Publish launch memo" in str(t[1]) for t in tasks)
+        assert any(str(t[3]) == "Business" for t in tasks)
+        assert "Created 1 dashboard task(s) from assignment(s)" in result
+        assert "ADD_TASK_FROM_ASSIGNMENT:" not in result
+
 
 @patch("core.chief_of_staff_service.grok_completion_messages")
 def test_cos_response_with_history_uses_multi_turn(mock_grok_messages, cos_db):
