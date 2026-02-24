@@ -28,6 +28,11 @@ This document tracks implementation status and remaining roadmap work.
   - filter/search, assignment detail timeline, artifact viewing, export to markdown
   - bulk board actions with optional audit notes
   - health view: overdue / blocked 3d+ / awaiting_review 3d+
+  - open-assignee routing from board to agent tabs (including robust host resolution in nested Qt contexts)
+- **Briefing and time context reliability**
+  - daily briefing cache persists across app restarts for the same day
+  - CoS prompt time context now includes local timezone and UTC offset
+  - calendar context/events are rendered in local timezone labels
 - **Date safety**
   - strict calendar validation for due dates in parser and CoS board UI
 - **Testing**
@@ -37,8 +42,9 @@ This document tracks implementation status and remaining roadmap work.
 ### Known gaps / next opportunities
 - Planning/prioritization scoring is still heuristic (no formal urgency/importance scoring engine yet).
 - Memory retrieval is lexical/structured, not embeddings-backed by default.
-- Delegation currently uses command parsing; no generalized background job runner yet.
+- Delegation currently uses command parsing and interactive agent consoles; no generalized background job runner/autonomous dispatch yet.
 - Calendar write operations are available via explicit command, but broader scheduling optimization remains limited.
+- Command execution is strict-format dependent (`ASSIGN:` etc.); model-format drift can still cause intent/execution mismatch without additional guardrails.
 
 ## Current CoS Action Command Reference
 
@@ -266,9 +272,13 @@ Status as of 2026-02-23:
 1. **Prioritization engine hardening**
    - Formal urgency/importance scoring and predictable plan-of-day output schema.
 2. **Delegation runner v2**
-   - Add explicit background job execution model beyond command parsing.
+   - Add explicit background job execution model beyond command parsing and manual agent chat kickoff.
+   - Add queue worker semantics for `queued -> in_progress -> awaiting_review` transitions.
 3. **Evaluation harness**
    - Add curated scenario fixtures for CoS recommendation quality + tool safety regressions.
+4. **Command execution robustness**
+   - Add post-response guardrails when delegation intent is detected but no assignment action executes.
+   - Improve tolerance for markdown-wrapped command lines and relative due-date phrasing.
 
 ## Operational Notes
 - Configurable paths are defined in `core/settings.py` (DB, data dir, config dir, env file).
