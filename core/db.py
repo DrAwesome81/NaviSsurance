@@ -3612,6 +3612,100 @@ class DatabaseManager:
             conn.commit()
         return True
 
+    def agent_update_assignment_fields(
+        self,
+        *,
+        assignment_id: int,
+        actor_code: str | None = None,
+        priority: int | None = None,
+        due_date: str | None | object = _UNSET,
+        title: str | None = None,
+        brief_md: str | None = None,
+        note: str | None = None,
+    ) -> bool:
+        """
+        Update assignment metadata fields (non-status) and append an audit event.
+        Supports changing any subset of: priority, due_date, title, brief_md.
+        """
+        current = self.agent_get_assignment(int(assignment_id))
+        if not current:
+            return False
+
+        updates: list[str] = []
+        values: list[object] = []
+        changes: list[str] = []
+
+        if priority is not None:
+            p = int(priority)
+            if p < 1:
+                p = 1
+            if p > 5:
+                p = 5
+            old_p = int(current.get("priority") or 3)
+            updates.append("priority = ?")
+            values.append(p)
+            if old_p != p:
+                changes.append(f"priority {old_p} -> {p}")
+
+        if due_date is not self._UNSET:
+            due = (str(due_date).strip() if due_date is not None else "")
+            new_due = due if due else None
+            old_due = str(current.get("due_date") or "").strip() or None
+            updates.append("due_date = ?")
+            values.append(new_due)
+            if old_due != new_due:
+                changes.append(f"due_date {old_due or '(none)'} -> {new_due or '(none)'}")
+
+        if title is not None:
+            t = str(title).strip()
+            old_t = str(current.get("title") or "").strip()
+            updates.append("title = ?")
+            values.append(t)
+            if old_t != t:
+                changes.append("title updated")
+
+        if brief_md is not None:
+            b = str(brief_md).strip()
+            old_b = str(current.get("brief_md") or "").strip()
+            updates.append("brief_md = ?")
+            values.append(b)
+            if old_b != b:
+                changes.append("brief updated")
+
+        if not updates:
+            return False
+
+        now = self._now_iso()
+        updates.append("updated_at = ?")
+        values.append(now)
+        values.append(int(assignment_id))
+
+        event_note = "; ".join(changes) if changes else "assignment fields updated"
+        if note:
+            event_note = f"{event_note} | {note}"
+
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                f"UPDATE agent_assignments SET {', '.join(updates)} WHERE id = ?",
+                values,
+            )
+            conn.execute(
+                """
+                INSERT INTO agent_assignment_events
+                    (assignment_id, event_type, from_status, to_status, actor_code, note, created_at)
+                VALUES
+                    (?, 'assignment_updated', NULL, NULL, ?, ?, ?)
+                """,
+                (
+                    int(assignment_id),
+                    (str(actor_code).strip().lower() if actor_code else None),
+                    event_note,
+                    now,
+                ),
+            )
+            conn.commit()
+        return True
+
     def agent_set_assignment_result_summary(
         self,
         *,

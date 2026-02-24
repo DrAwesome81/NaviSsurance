@@ -209,6 +209,30 @@ class TestAgentAssignments:
         events = cos_db.agent_get_assignment_events(assignment_id=int(aid), limit=50)
         assert any(str(e.get("event_type") or "") == "result_summary_updated" for e in events)
 
+    def test_update_assignment_fields_priority_due(self, cos_db):
+        aid = cos_db.agent_create_assignment(
+            title="Meta update assignment",
+            brief_md="Initial brief",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=4,
+            due_date="2026-03-20",
+        )
+        ok = cos_db.agent_update_assignment_fields(
+            assignment_id=int(aid),
+            actor_code="navi",
+            priority=1,
+            due_date=None,
+            note="Escalated and removed due date",
+        )
+        assert ok is True
+        row = cos_db.agent_get_assignment(int(aid))
+        assert row is not None
+        assert int(row.get("priority") or 0) == 1
+        assert (row.get("due_date") or "") in ("", None)
+        events = cos_db.agent_get_assignment_events(assignment_id=int(aid), limit=50)
+        assert any(str(e.get("event_type") or "") == "assignment_updated" for e in events)
+
 
 # -----------------------------------------------------------------------------
 # Service layer tests (mocked Grok, no network)
@@ -466,6 +490,45 @@ class TestChiefOfStaffService:
         assert any("Final recommendation" in str(a.get("title") or "") for a in arts)
         assert "Added artifacts to 1 assignment(s)" in result
         assert "ADD_ASSIGNMENT_ARTIFACT:" not in result
+
+    def test_cos_response_updates_assignment_priority(self, mock_grok, cos_db):
+        """UPDATE_ASSIGNMENT_PRIORITY updates assignment priority."""
+        aid = cos_db.agent_create_assignment(
+            title="Priority update target",
+            brief_md="Do something",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+        )
+        mock_grok.return_value = f"UPDATE_ASSIGNMENT_PRIORITY: A-{int(aid):04d} | P1 | urgent"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Raise the priority.")
+        row = cos_db.agent_get_assignment(int(aid))
+        assert row is not None
+        assert int(row.get("priority") or 0) == 1
+        assert "Updated priority for 1 assignment(s)" in result
+        assert "UPDATE_ASSIGNMENT_PRIORITY:" not in result
+
+    def test_cos_response_updates_assignment_due(self, mock_grok, cos_db):
+        """UPDATE_ASSIGNMENT_DUE updates assignment due date and supports 'none' clear."""
+        aid = cos_db.agent_create_assignment(
+            title="Due update target",
+            brief_md="Do something",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+            due_date="2026-03-20",
+        )
+        mock_grok.return_value = f"UPDATE_ASSIGNMENT_DUE: A-{int(aid):04d} | none | no hard due date"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Clear due date.")
+        row = cos_db.agent_get_assignment(int(aid))
+        assert row is not None
+        assert (row.get("due_date") or "") in ("", None)
+        assert "Updated due date for 1 assignment(s)" in result
+        assert "UPDATE_ASSIGNMENT_DUE:" not in result
 
 
 @patch("core.chief_of_staff_service.grok_completion_messages")

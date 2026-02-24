@@ -53,6 +53,16 @@ REASSIGN_PATTERN = re.compile(r"^\s*REASSIGN:\s*(.+?)\s*$", re.IGNORECASE)
 UPDATE_ASSIGNMENT_SUMMARY_PATTERN = re.compile(
     r"^\s*UPDATE_ASSIGNMENT_SUMMARY:\s*(.+?)\s*$", re.IGNORECASE
 )
+# Pattern for CoS assignment priority updates:
+# UPDATE_ASSIGNMENT_PRIORITY: assignment_ref | P1..P5 | optional_note
+UPDATE_ASSIGNMENT_PRIORITY_PATTERN = re.compile(
+    r"^\s*UPDATE_ASSIGNMENT_PRIORITY:\s*(.+?)\s*$", re.IGNORECASE
+)
+# Pattern for CoS assignment due-date updates:
+# UPDATE_ASSIGNMENT_DUE: assignment_ref | YYYY-MM-DD or none | optional_note
+UPDATE_ASSIGNMENT_DUE_PATTERN = re.compile(
+    r"^\s*UPDATE_ASSIGNMENT_DUE:\s*(.+?)\s*$", re.IGNORECASE
+)
 # Pattern for CoS assignment artifact creation:
 # ADD_ASSIGNMENT_ARTIFACT: assignment_ref | artifact_type | title | content_markdown
 ADD_ASSIGNMENT_ARTIFACT_PATTERN = re.compile(
@@ -349,6 +359,41 @@ def _normalize_assignment_status(value: str) -> str:
     return aliases.get(normalized, normalized)
 
 
+def _parse_priority_value(value: str) -> Optional[int]:
+    """Parse priority input like P1 or 1 into 1..5."""
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if not digits:
+        return None
+    try:
+        p = int(digits)
+    except Exception:
+        return None
+    if p < 1:
+        p = 1
+    if p > 5:
+        p = 5
+    return p
+
+
+def _normalize_due_date_input(value: str) -> tuple[bool, Optional[str]]:
+    """
+    Parse due-date input into canonical storage form.
+    Returns (ok, due_date_or_none). Accepts:
+    - YYYY-MM-DD
+    - MM-DD-YYYY
+    - none/null/n/a/blank -> None
+    """
+    raw = (value or "").strip()
+    if not raw or raw.lower() in {"none", "null", "n/a"}:
+        return True, None
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
+        return True, raw
+    if re.match(r"^\d{2}-\d{2}-\d{4}$", raw):
+        mm, dd, yyyy = raw.split("-")
+        return True, f"{yyyy}-{mm}-{dd}"
+    return False, None
+
+
 def cos_response(
     db: DatabaseManager,
     user_message: str,
@@ -403,6 +448,16 @@ You may update assignment result summary:
 UPDATE_ASSIGNMENT_SUMMARY: <A-0007 or 7> | <summary markdown>
 Example: UPDATE_ASSIGNMENT_SUMMARY: A-0007 | Atlas completed research and delivered sources.
 Omit UPDATE_ASSIGNMENT_SUMMARY lines if you are not updating summaries.
+
+You may update assignment priority:
+UPDATE_ASSIGNMENT_PRIORITY: <A-0007 or 7> | <P1-P5> | <optional note>
+Example: UPDATE_ASSIGNMENT_PRIORITY: A-0007 | P1 | Escalated after client request.
+Omit UPDATE_ASSIGNMENT_PRIORITY lines if you are not updating priorities.
+
+You may update assignment due date:
+UPDATE_ASSIGNMENT_DUE: <A-0007 or 7> | <YYYY-MM-DD or none> | <optional note>
+Example: UPDATE_ASSIGNMENT_DUE: A-0007 | 2026-03-15 | Aligned with revised timeline.
+Omit UPDATE_ASSIGNMENT_DUE lines if you are not updating due dates.
 
 You may attach an artifact to an assignment:
 ADD_ASSIGNMENT_ARTIFACT: <A-0007 or 7> | <artifact_type> | <title> | <content markdown>
@@ -563,6 +618,8 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     added_blocks = 0
     created_assignments: list[str] = []
     updated_assignments: list[str] = []
+    updated_assignment_priorities: list[str] = []
+    updated_assignment_due_dates: list[str] = []
     reassigned_assignments: list[str] = []
     summarized_assignments: list[str] = []
     added_assignment_artifacts: list[str] = []
@@ -836,6 +893,84 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 assignment_failures.append(f"failed updating summary for A-{int(aid):04d}")
             continue
 
+        m_pri = UPDATE_ASSIGNMENT_PRIORITY_PATTERN.match(stripped)
+        if m_pri:
+            payload = (m_pri.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 2)]
+            if len(parts) < 2:
+                assignment_failures.append("invalid UPDATE_ASSIGNMENT_PRIORITY format")
+                logger.warning("CoS UPDATE_ASSIGNMENT_PRIORITY invalid format: %r", stripped)
+                continue
+            assignment_ref = parts[0]
+            priority_raw = parts[1]
+            note = (parts[2] if len(parts) > 2 else "").strip() or None
+            aid = _parse_assignment_ref(assignment_ref)
+            if aid is None:
+                assignment_failures.append(f"invalid assignment id '{assignment_ref}'")
+                logger.warning("CoS UPDATE_ASSIGNMENT_PRIORITY invalid id: %r", assignment_ref)
+                continue
+            priority = _parse_priority_value(priority_raw)
+            if priority is None:
+                assignment_failures.append(f"invalid priority '{priority_raw}'")
+                logger.warning("CoS UPDATE_ASSIGNMENT_PRIORITY invalid priority: %r", priority_raw)
+                continue
+            ok = False
+            try:
+                ok = db.agent_update_assignment_fields(
+                    assignment_id=int(aid),
+                    actor_code="navi",
+                    priority=int(priority),
+                    note=note or "Updated via CoS action",
+                )
+            except Exception as e:
+                ok = False
+                logger.warning("CoS UPDATE_ASSIGNMENT_PRIORITY failed: %s", e)
+            if ok:
+                updated_assignment_priorities.append(f"A-{int(aid):04d} -> P{int(priority)}")
+            else:
+                assignment_failures.append(f"failed updating priority for A-{int(aid):04d}")
+            continue
+
+        m_due = UPDATE_ASSIGNMENT_DUE_PATTERN.match(stripped)
+        if m_due:
+            payload = (m_due.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 2)]
+            if len(parts) < 2:
+                assignment_failures.append("invalid UPDATE_ASSIGNMENT_DUE format")
+                logger.warning("CoS UPDATE_ASSIGNMENT_DUE invalid format: %r", stripped)
+                continue
+            assignment_ref = parts[0]
+            due_raw = parts[1]
+            note = (parts[2] if len(parts) > 2 else "").strip() or None
+            aid = _parse_assignment_ref(assignment_ref)
+            if aid is None:
+                assignment_failures.append(f"invalid assignment id '{assignment_ref}'")
+                logger.warning("CoS UPDATE_ASSIGNMENT_DUE invalid id: %r", assignment_ref)
+                continue
+            due_ok, due_date = _normalize_due_date_input(due_raw)
+            if not due_ok:
+                assignment_failures.append(f"invalid due date '{due_raw}'")
+                logger.warning("CoS UPDATE_ASSIGNMENT_DUE invalid date: %r", due_raw)
+                continue
+            ok = False
+            try:
+                ok = db.agent_update_assignment_fields(
+                    assignment_id=int(aid),
+                    actor_code="navi",
+                    due_date=due_date,
+                    note=note or "Updated via CoS action",
+                )
+            except Exception as e:
+                ok = False
+                logger.warning("CoS UPDATE_ASSIGNMENT_DUE failed: %s", e)
+            if ok:
+                updated_assignment_due_dates.append(
+                    f"A-{int(aid):04d} -> {due_date or '(none)'}"
+                )
+            else:
+                assignment_failures.append(f"failed updating due date for A-{int(aid):04d}")
+            continue
+
         m_art = ADD_ASSIGNMENT_ARTIFACT_PATTERN.match(stripped)
         if m_art:
             payload = (m_art.group(1) or "").strip()
@@ -896,6 +1031,18 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
         more = " ..." if len(updated_assignments) > 3 else ""
         action_notes.append(
             f"— *Updated {len(updated_assignments)} assignment(s): {preview}{more}.*"
+        )
+    if updated_assignment_priorities:
+        preview = ", ".join(updated_assignment_priorities[:3])
+        more = " ..." if len(updated_assignment_priorities) > 3 else ""
+        action_notes.append(
+            f"— *Updated priority for {len(updated_assignment_priorities)} assignment(s): {preview}{more}.*"
+        )
+    if updated_assignment_due_dates:
+        preview = ", ".join(updated_assignment_due_dates[:3])
+        more = " ..." if len(updated_assignment_due_dates) > 3 else ""
+        action_notes.append(
+            f"— *Updated due date for {len(updated_assignment_due_dates)} assignment(s): {preview}{more}.*"
         )
     if reassigned_assignments:
         preview = ", ".join(reassigned_assignments[:3])
