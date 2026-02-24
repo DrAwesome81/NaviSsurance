@@ -370,6 +370,12 @@ class ChiefOfStaffTab(QWidget):
         self.asg_start_btn = QPushButton("Start")
         self.asg_start_btn.clicked.connect(lambda: self._set_assignment_status("in_progress"))
         btn_row.addWidget(self.asg_start_btn)
+        self.asg_set_priority_btn = QPushButton("Set Priority")
+        self.asg_set_priority_btn.clicked.connect(self._set_assignment_priority)
+        btn_row.addWidget(self.asg_set_priority_btn)
+        self.asg_set_due_btn = QPushButton("Set Due")
+        self.asg_set_due_btn.clicked.connect(self._set_assignment_due)
+        btn_row.addWidget(self.asg_set_due_btn)
         self.asg_review_btn = QPushButton("Awaiting Review")
         self.asg_review_btn.clicked.connect(lambda: self._set_assignment_status("awaiting_review"))
         btn_row.addWidget(self.asg_review_btn)
@@ -660,6 +666,75 @@ class ChiefOfStaffTab(QWidget):
             if it and int(it.data(Qt.ItemDataRole.UserRole) or 0) == int(self._current_assignment_id):
                 self._on_assignment_clicked(it)
                 break
+
+    def _set_assignment_priority(self):
+        if not self._current_assignment_id:
+            QMessageBox.information(self, "Assignments", "Select an assignment first.")
+            return
+        row = self.db.agent_get_assignment(int(self._current_assignment_id))
+        if not row:
+            QMessageBox.warning(self, "Assignments", "Assignment not found.")
+            return
+        current = int(row.get("priority") or 3)
+        val, ok = QInputDialog.getInt(
+            self,
+            "Set Assignment Priority",
+            "Priority (1-5):",
+            current,
+            1,
+            5,
+            1,
+        )
+        if not ok:
+            return
+        updated = self.db.agent_update_assignment_fields(
+            assignment_id=int(self._current_assignment_id),
+            actor_code="navi",
+            priority=int(val),
+            note="Updated from CoS board",
+        )
+        if not updated:
+            QMessageBox.warning(self, "Assignments", "Could not update priority.")
+            return
+        self._refresh_assignment_list()
+        self._focus_assignment_by_id(int(self._current_assignment_id))
+
+    def _set_assignment_due(self):
+        if not self._current_assignment_id:
+            QMessageBox.information(self, "Assignments", "Select an assignment first.")
+            return
+        row = self.db.agent_get_assignment(int(self._current_assignment_id))
+        if not row:
+            QMessageBox.warning(self, "Assignments", "Assignment not found.")
+            return
+        current_due = str(row.get("due_date") or "").strip()
+        text, ok = QInputDialog.getText(
+            self,
+            "Set Assignment Due Date",
+            "Due date (YYYY-MM-DD or none):",
+            text=current_due,
+        )
+        if not ok:
+            return
+        due_raw = (text or "").strip()
+        if not due_raw or due_raw.lower() in {"none", "null", "n/a"}:
+            due = None
+        else:
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", due_raw):
+                QMessageBox.warning(self, "Assignments", "Due date must be YYYY-MM-DD or none.")
+                return
+            due = due_raw
+        updated = self.db.agent_update_assignment_fields(
+            assignment_id=int(self._current_assignment_id),
+            actor_code="navi",
+            due_date=due,
+            note="Updated from CoS board",
+        )
+        if not updated:
+            QMessageBox.warning(self, "Assignments", "Could not update due date.")
+            return
+        self._refresh_assignment_list()
+        self._focus_assignment_by_id(int(self._current_assignment_id))
 
     def _view_selected_assignment_artifact(self):
         if not self._current_assignment_id:
