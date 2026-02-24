@@ -6,7 +6,7 @@ All chats save automatically. Layout like Grok/ChatGPT but sidebar on the right.
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from PyQt6.QtWidgets import (
@@ -81,6 +81,54 @@ def _normalize_mmddyyyy_due_date_input(value: str) -> tuple[bool, Optional[str]]
     except Exception:
         return False, None
     return True, dt.strftime("%m-%d-%Y")
+
+
+def _parse_iso_datetime(value: str) -> Optional[datetime]:
+    """Parse common ISO datetime strings into naive local datetime."""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except Exception:
+        return None
+    if dt.tzinfo is not None:
+        try:
+            dt = dt.astimezone().replace(tzinfo=None)
+        except Exception:
+            dt = dt.replace(tzinfo=None)
+    return dt
+
+
+def _assignment_health_flags(row: dict, *, now: Optional[datetime] = None) -> list[str]:
+    """Return health flags like overdue/stale_blocked/stale_review for an assignment row."""
+    now_dt = now or datetime.now()
+    flags: list[str] = []
+    status = str(row.get("status") or "").strip().lower()
+    is_closed = status in {"done", "cancelled"}
+
+    due_raw = str(row.get("due_date") or "").strip()
+    due_dt = None
+    if due_raw:
+        try:
+            due_dt = datetime.strptime(due_raw, "%Y-%m-%d")
+        except Exception:
+            due_dt = None
+    if due_dt is not None and not is_closed and due_dt.date() < now_dt.date():
+        flags.append("overdue")
+
+    ref_ts = _parse_iso_datetime(str(row.get("updated_at") or "")) or _parse_iso_datetime(
+        str(row.get("created_at") or "")
+    )
+    if ref_ts is not None and not is_closed:
+        age = now_dt - ref_ts
+        if status == "blocked" and age >= timedelta(days=3):
+            flags.append("stale_blocked")
+        if status == "awaiting_review" and age >= timedelta(days=3):
+            flags.append("stale_review")
+    return flags
 
 
 class CosAskWorker(QThread):
@@ -436,6 +484,15 @@ Calendar and task actions:
         self.assignment_status_filter.currentTextChanged.connect(lambda _t: self._refresh_assignment_list())
         filters.addWidget(self.assignment_status_filter)
 
+        self.assignment_health_filter = QComboBox()
+        self.assignment_health_filter.addItem("Health: All", "")
+        self.assignment_health_filter.addItem("Overdue", "overdue")
+        self.assignment_health_filter.addItem("Blocked 3d+", "stale_blocked")
+        self.assignment_health_filter.addItem("Awaiting Review 3d+", "stale_review")
+        self.assignment_health_filter.addItem("Needs Attention", "needs_attention")
+        self.assignment_health_filter.currentTextChanged.connect(lambda _t: self._refresh_assignment_list())
+        filters.addWidget(self.assignment_health_filter)
+
         self.assignment_assignee_filter = QComboBox()
         self.assignment_assignee_filter.addItem("All assignees", "")
         for a in self.db.agents_list_active():
@@ -657,6 +714,18 @@ Calendar and task actions:
         except Exception:
             return
 
+    def _prompt_optional_bulk_note(self, title: str) -> tuple[bool, Optional[str]]:
+        """Prompt for optional audit note. Returns (ok_clicked, note_or_none)."""
+        text, ok = QInputDialog.getText(
+            self,
+            title,
+            "Optional note for assignment event log (leave blank for default):",
+            text="",
+        )
+        if not ok:
+            return False, None
+        return True, (text or "").strip() or None
+
     def _bulk_set_filtered_status(self):
         rows = self._filtered_assignment_rows()
         if not rows:
@@ -674,6 +743,9 @@ Calendar and task actions:
         if not ok or not picked:
             return
         to_status = (picked or "").strip().lower()
+        note_ok, custom_note = self._prompt_optional_bulk_note("Bulk Update Status")
+        if not note_ok:
+            return
         count = len(rows)
         confirm = QMessageBox.question(
             self,
@@ -696,7 +768,7 @@ Calendar and task actions:
                 assignment_id=aid,
                 to_status=to_status,
                 actor_code="navi",
-                note="Bulk status update from CoS board",
+                note=custom_note or "Bulk status update from CoS board",
             )
             if ok:
                 updated += 1
@@ -721,6 +793,9 @@ Calendar and task actions:
         )
         if not ok:
             return
+        note_ok, custom_note = self._prompt_optional_bulk_note("Bulk Update Priority")
+        if not note_ok:
+            return
         confirm = QMessageBox.question(
             self,
             "Confirm Bulk Update",
@@ -741,7 +816,7 @@ Calendar and task actions:
                 assignment_id=aid,
                 actor_code="navi",
                 priority=int(val),
-                note="Bulk priority update from CoS board",
+                note=custom_note or "Bulk priority update from CoS board",
             )
             if ok:
                 updated += 1
@@ -771,6 +846,9 @@ Calendar and task actions:
                 "Due date must be a real calendar date in YYYY-MM-DD or none.",
             )
             return
+        note_ok, custom_note = self._prompt_optional_bulk_note("Bulk Update Due Date")
+        if not note_ok:
+            return
         confirm = QMessageBox.question(
             self,
             "Confirm Bulk Update",
@@ -791,7 +869,7 @@ Calendar and task actions:
                 assignment_id=aid,
                 actor_code="navi",
                 due_date=due,
-                note="Bulk due-date update from CoS board",
+                note=custom_note or "Bulk due-date update from CoS board",
             )
             if ok:
                 updated += 1
@@ -832,6 +910,9 @@ Calendar and task actions:
                 break
         if not new_code:
             return
+        note_ok, custom_note = self._prompt_optional_bulk_note("Bulk Reassign")
+        if not note_ok:
+            return
         confirm = QMessageBox.question(
             self,
             "Confirm Bulk Reassign",
@@ -855,7 +936,7 @@ Calendar and task actions:
                 assignment_id=aid,
                 new_assignee_code=new_code,
                 actor_code="navi",
-                note="Bulk reassignment from CoS board",
+                note=custom_note or "Bulk reassignment from CoS board",
             )
             if ok:
                 self._ensure_assignment_thread_for_assignee(
@@ -915,21 +996,24 @@ Calendar and task actions:
         self.chat_display.setHtml("<br>".join(html_parts) if html_parts else "<p style='color:#9aa0a6;'>(No messages yet.)</p>")
         self.ask_output = self.chat_display  # for tests that expect ask_output
 
-    def _assignment_filters(self) -> tuple[Optional[str], Optional[str], str]:
+    def _assignment_filters(self) -> tuple[Optional[str], Optional[str], str, Optional[str]]:
         status = None
+        health = None
         assignee = None
         query = ""
         if hasattr(self, "assignment_status_filter"):
             st = (self.assignment_status_filter.currentText() or "").strip().lower()
             status = None if st in ("", "all") else st
+        if hasattr(self, "assignment_health_filter"):
+            health = (self.assignment_health_filter.currentData() or "").strip().lower() or None
         if hasattr(self, "assignment_assignee_filter"):
             assignee = (self.assignment_assignee_filter.currentData() or "").strip().lower() or None
         if hasattr(self, "assignment_search_input"):
             query = (self.assignment_search_input.text() or "").strip().lower()
-        return status, assignee, query
+        return status, assignee, query, health
 
     def _filtered_assignment_rows(self):
-        status, assignee, query = self._assignment_filters()
+        status, assignee, query, health = self._assignment_filters()
         rows = self.db.agent_list_assignments(status=status, assignee_code=assignee, limit=500)
         if query:
             qnorm = query.replace("a-", "").lstrip("0")
@@ -945,6 +1029,27 @@ Calendar and task actions:
                     filtered.append(r)
                     continue
             rows = filtered
+
+        if health:
+            filtered = []
+            now = datetime.now()
+            for r in rows:
+                flags = _assignment_health_flags(r, now=now)
+                if health == "overdue" and "overdue" in flags:
+                    filtered.append(r)
+                    continue
+                if health == "stale_blocked" and "stale_blocked" in flags:
+                    filtered.append(r)
+                    continue
+                if health == "stale_review" and "stale_review" in flags:
+                    filtered.append(r)
+                    continue
+                if health == "needs_attention" and any(
+                    f in flags for f in ("overdue", "stale_blocked", "stale_review")
+                ):
+                    filtered.append(r)
+                    continue
+            rows = filtered
         return rows
 
     def _refresh_assignment_list(self):
@@ -952,6 +1057,7 @@ Calendar and task actions:
             return
         self.assignment_list.clear()
         rows = self._filtered_assignment_rows()
+        now = datetime.now()
 
         for r in rows:
             aid = int(r.get("id") or 0)
@@ -963,6 +1069,16 @@ Calendar and task actions:
             label = f"A-{aid:04d} [{status}] P{pr} {title} → {assignee}"
             if due:
                 label += f" (due {due})"
+            health_flags = _assignment_health_flags(r, now=now)
+            if health_flags:
+                tag_map = {
+                    "overdue": "OVERDUE",
+                    "stale_blocked": "BLOCKED_3D",
+                    "stale_review": "REVIEW_3D",
+                }
+                tags = [tag_map[h] for h in ("overdue", "stale_blocked", "stale_review") if h in health_flags]
+                if tags:
+                    label += f" [{' | '.join(tags)}]"
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, aid)
             self.assignment_list.addItem(item)
@@ -982,8 +1098,9 @@ Calendar and task actions:
         if not file_path:
             return
 
-        st, asg, query = self._assignment_filters()
+        st, asg, query, health = self._assignment_filters()
         status_str = st or "all"
+        health_str = health or "all"
         assignee_str = asg or "all"
         query_str = query or "(none)"
 
@@ -996,22 +1113,26 @@ Calendar and task actions:
             "",
             f"- Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}",
             f"- Filter status: {status_str}",
+            f"- Filter health: {health_str}",
             f"- Filter assignee: {assignee_str}",
             f"- Search query: {query_str}",
             f"- Total rows: {len(rows)}",
             "",
-            "| Assignment | Status | Priority | Assignee | Due | Title |",
-            "|---|---|---:|---|---|---|",
+            "| Assignment | Status | Health | Priority | Assignee | Due | Title |",
+            "|---|---|---|---:|---|---|---|",
         ]
+        now_dt = datetime.now()
         for r in rows:
             aid = int(r.get("id") or 0)
             st_row = _esc(r.get("status") or "")
+            flags = _assignment_health_flags(r, now=now_dt)
+            health_row = _esc(", ".join(flags))
             pr = int(r.get("priority") or 3)
             assignee = _esc(r.get("assignee_code") or "")
             due = _esc(r.get("due_date") or "")
             title = _esc(r.get("title") or "Untitled")
             lines.append(
-                f"| A-{aid:04d} | {st_row} | {pr} | {assignee} | {due} | {title} |"
+                f"| A-{aid:04d} | {st_row} | {health_row} | {pr} | {assignee} | {due} | {title} |"
             )
 
         try:
@@ -1031,6 +1152,7 @@ Calendar and task actions:
         if not row:
             self.assignment_details.setPlainText("Assignment not found.")
             return
+        health_flags = _assignment_health_flags(row, now=datetime.now())
         events = self.db.agent_get_assignment_events(assignment_id=self._current_assignment_id, limit=40)
         artifacts = self.db.agent_list_artifacts(assignment_id=self._current_assignment_id, limit=10)
         lines = [
@@ -1041,6 +1163,7 @@ Calendar and task actions:
             f"Assignee: {row.get('assignee_code') or ''}",
             f"Priority: P{int(row.get('priority') or 3)}",
             f"Due: {row.get('due_date') or '(none)'}",
+            f"Health: {', '.join(health_flags) if health_flags else '(ok)'}",
             f"Linked thread: {row.get('source_thread_id') or '(none)'}",
             "",
             "Brief:",
@@ -1374,6 +1497,9 @@ Calendar and task actions:
         if not ok or not mode_label:
             return
         include_closed = mode_label.startswith("All")
+        note_ok, custom_note = self._prompt_optional_bulk_note("Bulk Create Tasks")
+        if not note_ok:
+            return
 
         confirm = QMessageBox.question(
             self,
@@ -1427,7 +1553,11 @@ Calendar and task actions:
                         assignment_id=aid,
                         event_type="task_created",
                         actor_code="navi",
-                        note=f"Created dashboard task from assignment (bulk): {task_text}",
+                        note=(
+                            f"Created dashboard task from assignment (bulk): {task_text}"
+                            if not custom_note
+                            else f"{custom_note} | task: {task_text}"
+                        ),
                     )
                 except Exception:
                     pass
