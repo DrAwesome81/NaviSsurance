@@ -17,6 +17,9 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QSplitter,
     QMessageBox,
+    QInputDialog,
+    QDialog,
+    QDialogButtonBox,
 )
 
 from core.agent_chat_service import agent_chat_response
@@ -131,6 +134,12 @@ class AgentConsole(QWidget):
         self.save_artifact_btn = QPushButton("Save Reply Artifact")
         self.save_artifact_btn.clicked.connect(self._save_latest_reply_artifact)
         action_row.addWidget(self.save_artifact_btn)
+        self.view_artifacts_btn = QPushButton("View Artifacts")
+        self.view_artifacts_btn.clicked.connect(self._view_assignment_artifacts)
+        action_row.addWidget(self.view_artifacts_btn)
+        self.edit_summary_btn = QPushButton("Edit Summary")
+        self.edit_summary_btn.clicked.connect(self._edit_assignment_summary)
+        action_row.addWidget(self.edit_summary_btn)
         action_row.addStretch()
         root.addLayout(action_row)
 
@@ -331,7 +340,15 @@ class AgentConsole(QWidget):
         title = str(row.get("title") or "Untitled")
         due = str(row.get("due_date") or "")
         due_part = f" | due {due}" if due else ""
-        self.assignment_label.setText(f"Assignment A-{aid:04d} [{status}] — {title}{due_part}")
+        summary_exists = bool(str(row.get("result_summary_md") or "").strip())
+        artifacts = self.db.agent_list_artifacts(assignment_id=aid, limit=200)
+        meta = []
+        if summary_exists:
+            meta.append("summary")
+        if artifacts:
+            meta.append(f"{len(artifacts)} artifact(s)")
+        meta_part = f" | {', '.join(meta)}" if meta else ""
+        self.assignment_label.setText(f"Assignment A-{aid:04d} [{status}] — {title}{due_part}{meta_part}")
 
     def _set_assignment_status(self, to_status: str):
         if self._current_assignment_id is None:
@@ -380,6 +397,93 @@ class AgentConsole(QWidget):
             )
         except Exception as e:
             QMessageBox.warning(self, "Artifacts", f"Could not save artifact: {e}")
+
+    def _view_assignment_artifacts(self):
+        if self._current_assignment_id is None:
+            QMessageBox.information(self, "Artifacts", "Select an assignment first.")
+            return
+        aid = int(self._current_assignment_id)
+        arts = self.db.agent_list_artifacts(assignment_id=aid, limit=200)
+        if not arts:
+            QMessageBox.information(self, "Artifacts", f"No artifacts linked to A-{aid:04d}.")
+            return
+
+        labels = []
+        for a in arts:
+            art_id = int(a.get("id") or 0)
+            art_type = str(a.get("artifact_type") or "artifact")
+            title = str(a.get("title") or "").strip() or "(untitled)"
+            ts = str(a.get("created_at") or "")
+            labels.append(f"#{art_id} [{art_type}] {title} ({ts})")
+        picked, ok = QInputDialog.getItem(
+            self,
+            "Select Artifact",
+            "Artifact:",
+            labels,
+            0,
+            False,
+        )
+        if not ok or not picked:
+            return
+        art = arts[labels.index(picked)]
+        art_id = int(art.get("id") or 0)
+        art_type = str(art.get("artifact_type") or "artifact")
+        art_title = str(art.get("title") or "").strip() or "(untitled)"
+
+        body = str(art.get("content_md") or "").strip()
+        if not body:
+            body = str(art.get("content_json") or "").strip()
+        if not body:
+            fp = str(art.get("file_path") or "").strip()
+            body = f"(No inline content)\nfile_path: {fp or '(none)'}"
+
+        d = QDialog(self)
+        d.setWindowTitle(f"Artifact #{art_id} — {art_type}")
+        layout = QVBoxLayout(d)
+        layout.addWidget(QLabel(art_title))
+        view = QTextBrowser()
+        view.setPlainText(body)
+        layout.addWidget(view)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.accepted.connect(d.accept)
+        buttons.rejected.connect(d.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(d.accept)
+        layout.addWidget(buttons)
+        d.resize(760, 520)
+        d.exec()
+
+    def _edit_assignment_summary(self):
+        if self._current_assignment_id is None:
+            QMessageBox.information(self, "Summary", "Select an assignment first.")
+            return
+        aid = int(self._current_assignment_id)
+        row = self.db.agent_get_assignment(aid)
+        if not row:
+            QMessageBox.warning(self, "Summary", "Assignment not found.")
+            return
+        current = str(row.get("result_summary_md") or "").strip()
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            f"Edit Summary — A-{aid:04d}",
+            "Result summary:",
+            current,
+        )
+        if not ok:
+            return
+        try:
+            saved = self.db.agent_set_assignment_result_summary(
+                assignment_id=aid,
+                summary_md=(text or "").strip(),
+                actor_code=self.agent_code,
+                note="Updated from agent console",
+            )
+        except Exception as e:
+            saved = False
+            QMessageBox.warning(self, "Summary", f"Could not save summary: {e}")
+        if not saved:
+            QMessageBox.warning(self, "Summary", "Could not save summary.")
+            return
+        self._refresh_assignment_label()
 
     def _load_current_history(self):
         if self._current_thread_id is None:
