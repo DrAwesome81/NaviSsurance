@@ -428,6 +428,21 @@ Calendar and task actions:
         self.asg_cancel_btn.clicked.connect(lambda: self._set_assignment_status("cancelled"))
         btn_row.addWidget(self.asg_cancel_btn)
         asg_layout.addLayout(btn_row)
+        edit_row = QHBoxLayout()
+        self.asg_reopen_btn = QPushButton("Reopen")
+        self.asg_reopen_btn.clicked.connect(lambda: self._set_assignment_status("queued"))
+        edit_row.addWidget(self.asg_reopen_btn)
+        self.asg_edit_title_btn = QPushButton("Edit Title")
+        self.asg_edit_title_btn.clicked.connect(self._edit_assignment_title)
+        edit_row.addWidget(self.asg_edit_title_btn)
+        self.asg_edit_brief_btn = QPushButton("Edit Brief")
+        self.asg_edit_brief_btn.clicked.connect(self._edit_assignment_brief)
+        edit_row.addWidget(self.asg_edit_brief_btn)
+        self.asg_edit_summary_btn = QPushButton("Edit Summary")
+        self.asg_edit_summary_btn.clicked.connect(self._edit_assignment_summary)
+        edit_row.addWidget(self.asg_edit_summary_btn)
+        edit_row.addStretch()
+        asg_layout.addLayout(edit_row)
         artifact_row = QHBoxLayout()
         self.asg_view_artifact_btn = QPushButton("View Artifact")
         self.asg_view_artifact_btn.clicked.connect(self._view_selected_assignment_artifact)
@@ -773,6 +788,100 @@ Calendar and task actions:
             QMessageBox.warning(self, "Assignments", "Could not update due date.")
             return
         self._refresh_assignment_list()
+        self._focus_assignment_by_id(int(self._current_assignment_id))
+
+    def _edit_assignment_title(self):
+        if not self._current_assignment_id:
+            QMessageBox.information(self, "Assignments", "Select an assignment first.")
+            return
+        row = self.db.agent_get_assignment(int(self._current_assignment_id))
+        if not row:
+            QMessageBox.warning(self, "Assignments", "Assignment not found.")
+            return
+        current = str(row.get("title") or "").strip()
+        text, ok = QInputDialog.getText(
+            self,
+            "Edit Assignment Title",
+            "Title:",
+            text=current,
+        )
+        if not ok:
+            return
+        new_title = (text or "").strip()
+        if not new_title:
+            QMessageBox.warning(self, "Assignments", "Title cannot be empty.")
+            return
+        updated = self.db.agent_update_assignment_fields(
+            assignment_id=int(self._current_assignment_id),
+            actor_code="navi",
+            title=new_title,
+            note="Updated title from CoS board",
+        )
+        if not updated:
+            QMessageBox.warning(self, "Assignments", "Could not update title.")
+            return
+        self._refresh_assignment_list()
+        self._focus_assignment_by_id(int(self._current_assignment_id))
+
+    def _edit_assignment_brief(self):
+        if not self._current_assignment_id:
+            QMessageBox.information(self, "Assignments", "Select an assignment first.")
+            return
+        row = self.db.agent_get_assignment(int(self._current_assignment_id))
+        if not row:
+            QMessageBox.warning(self, "Assignments", "Assignment not found.")
+            return
+        current = str(row.get("brief_md") or "").strip()
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            "Edit Assignment Brief",
+            "Brief:",
+            current,
+        )
+        if not ok:
+            return
+        new_brief = (text or "").strip()
+        if not new_brief:
+            QMessageBox.warning(self, "Assignments", "Brief cannot be empty.")
+            return
+        updated = self.db.agent_update_assignment_fields(
+            assignment_id=int(self._current_assignment_id),
+            actor_code="navi",
+            brief_md=new_brief,
+            note="Updated brief from CoS board",
+        )
+        if not updated:
+            QMessageBox.warning(self, "Assignments", "Could not update brief.")
+            return
+        self._refresh_assignment_list()
+        self._focus_assignment_by_id(int(self._current_assignment_id))
+
+    def _edit_assignment_summary(self):
+        if not self._current_assignment_id:
+            QMessageBox.information(self, "Assignments", "Select an assignment first.")
+            return
+        row = self.db.agent_get_assignment(int(self._current_assignment_id))
+        if not row:
+            QMessageBox.warning(self, "Assignments", "Assignment not found.")
+            return
+        current = str(row.get("result_summary_md") or "").strip()
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            "Edit Assignment Summary",
+            "Summary:",
+            current,
+        )
+        if not ok:
+            return
+        saved = self.db.agent_set_assignment_result_summary(
+            assignment_id=int(self._current_assignment_id),
+            summary_md=(text or "").strip(),
+            actor_code="navi",
+            note="Updated summary from CoS board",
+        )
+        if not saved:
+            QMessageBox.warning(self, "Assignments", "Could not update summary.")
+            return
         self._focus_assignment_by_id(int(self._current_assignment_id))
 
     def _view_selected_assignment_artifact(self):
