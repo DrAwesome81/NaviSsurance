@@ -74,22 +74,22 @@ UPDATE_ASSIGNMENT_BRIEF_PATTERN = re.compile(
     r"^\s*UPDATE_ASSIGNMENT_BRIEF:\s*(.+?)\s*$", re.IGNORECASE
 )
 # Pattern for CoS bulk assignment status updates:
-# BULK_UPDATE_ASSIGNMENT_STATUS: status | assignee_name_or_all | optional_note
+# BULK_UPDATE_ASSIGNMENT_STATUS: status | assignee_name_or_all | optional_open_or_all | optional_note
 BULK_UPDATE_ASSIGNMENT_STATUS_PATTERN = re.compile(
     r"^\s*BULK_UPDATE_ASSIGNMENT_STATUS:\s*(.+?)\s*$", re.IGNORECASE
 )
 # Pattern for CoS bulk assignment priority updates:
-# BULK_UPDATE_ASSIGNMENT_PRIORITY: P1..P5 | assignee_name_or_all | optional_note
+# BULK_UPDATE_ASSIGNMENT_PRIORITY: P1..P5 | assignee_name_or_all | optional_open_or_all | optional_note
 BULK_UPDATE_ASSIGNMENT_PRIORITY_PATTERN = re.compile(
     r"^\s*BULK_UPDATE_ASSIGNMENT_PRIORITY:\s*(.+?)\s*$", re.IGNORECASE
 )
 # Pattern for CoS bulk assignment due updates:
-# BULK_UPDATE_ASSIGNMENT_DUE: YYYY-MM-DD_or_none | assignee_name_or_all | optional_note
+# BULK_UPDATE_ASSIGNMENT_DUE: YYYY-MM-DD_or_none | assignee_name_or_all | optional_open_or_all | optional_note
 BULK_UPDATE_ASSIGNMENT_DUE_PATTERN = re.compile(
     r"^\s*BULK_UPDATE_ASSIGNMENT_DUE:\s*(.+?)\s*$", re.IGNORECASE
 )
 # Pattern for CoS bulk reassignment:
-# BULK_REASSIGN_ASSIGNMENTS: from_assignee_or_all | to_assignee | optional_note
+# BULK_REASSIGN_ASSIGNMENTS: from_assignee_or_all | to_assignee | optional_open_or_all | optional_note
 BULK_REASSIGN_ASSIGNMENTS_PATTERN = re.compile(
     r"^\s*BULK_REASSIGN_ASSIGNMENTS:\s*(.+?)\s*$", re.IGNORECASE
 )
@@ -471,6 +471,47 @@ def _resolve_bulk_scope(db: DatabaseManager, scope_raw: str) -> tuple[bool, Opti
     return bool(assignee_code), assignee_code or None, label or scope
 
 
+def _parse_bulk_mode_value(value: str) -> Optional[str]:
+    """Parse bulk command mode token into canonical 'open' or 'all'."""
+    raw = (value or "").strip().lower()
+    if raw in {"", "all", "*", "include_closed", "with_closed", "closed"}:
+        return "all"
+    if raw in {"open", "open_only", "active", "pending"}:
+        return "open"
+    return None
+
+
+def _parse_bulk_mode_and_note(parts: list[str], *, start_index: int = 2) -> tuple[bool, str, Optional[str]]:
+    """
+    Parse optional bulk mode + optional note with backward compatibility.
+    Examples:
+    - [..., "<note>"] -> mode='all', note=<note>
+    - [..., "open"] -> mode='open', note=None
+    - [..., "open", "<note>"] -> mode='open', note=<note>
+    Returns (ok, mode, note).
+    """
+    mode = "all"
+    note: Optional[str] = None
+    if len(parts) <= start_index:
+        return True, mode, note
+
+    token = (parts[start_index] or "").strip()
+    if len(parts) == (start_index + 1):
+        parsed = _parse_bulk_mode_value(token)
+        if parsed is None:
+            note = token or None
+        else:
+            mode = parsed
+        return True, mode, note
+
+    parsed = _parse_bulk_mode_value(token)
+    if parsed is None:
+        return False, mode, note
+    mode = parsed
+    note = (parts[start_index + 1] or "").strip() or None
+    return True, mode, note
+
+
 def cos_response(
     db: DatabaseManager,
     user_message: str,
@@ -517,19 +558,19 @@ Example: UPDATE_ASSIGNMENT_STATUS: A-0007 | in_progress | Atlas has started.
 Omit UPDATE_ASSIGNMENT_STATUS lines if you are not changing assignment status.
 
 You may bulk-update assignment status:
-BULK_UPDATE_ASSIGNMENT_STATUS: <status> | <AgentName or all> | <optional note>
-Example: BULK_UPDATE_ASSIGNMENT_STATUS: blocked | Atlas | Waiting on input.
+BULK_UPDATE_ASSIGNMENT_STATUS: <status> | <AgentName or all> | <open or all (optional)> | <optional note>
+Example: BULK_UPDATE_ASSIGNMENT_STATUS: blocked | Atlas | open | Waiting on input.
 This updates matching assignments currently in the system.
 Omit BULK_UPDATE_ASSIGNMENT_STATUS lines if you are not doing bulk updates.
 
 You may bulk-update assignment priority:
-BULK_UPDATE_ASSIGNMENT_PRIORITY: <P1-P5> | <AgentName or all> | <optional note>
-Example: BULK_UPDATE_ASSIGNMENT_PRIORITY: P1 | all | Quarterly planning sweep.
+BULK_UPDATE_ASSIGNMENT_PRIORITY: <P1-P5> | <AgentName or all> | <open or all (optional)> | <optional note>
+Example: BULK_UPDATE_ASSIGNMENT_PRIORITY: P1 | all | open | Quarterly planning sweep.
 Omit BULK_UPDATE_ASSIGNMENT_PRIORITY lines if you are not doing bulk updates.
 
 You may bulk-update assignment due date:
-BULK_UPDATE_ASSIGNMENT_DUE: <YYYY-MM-DD or none> | <AgentName or all> | <optional note>
-Example: BULK_UPDATE_ASSIGNMENT_DUE: 2026-04-15 | Atlas | Align with milestone.
+BULK_UPDATE_ASSIGNMENT_DUE: <YYYY-MM-DD or none> | <AgentName or all> | <open or all (optional)> | <optional note>
+Example: BULK_UPDATE_ASSIGNMENT_DUE: 2026-04-15 | Atlas | open | Align with milestone.
 Omit BULK_UPDATE_ASSIGNMENT_DUE lines if you are not doing bulk updates.
 
 You may reassign work:
@@ -538,8 +579,8 @@ Example: REASSIGN: A-0007 | Quill | Move drafting to writer.
 Omit REASSIGN lines if you are not reassigning work.
 
 You may bulk-reassign work:
-BULK_REASSIGN_ASSIGNMENTS: <AgentName or all> | <AgentName target> | <optional note>
-Example: BULK_REASSIGN_ASSIGNMENTS: Atlas | Quill | Move drafting queue to writer.
+BULK_REASSIGN_ASSIGNMENTS: <AgentName or all> | <AgentName target> | <open or all (optional)> | <optional note>
+Example: BULK_REASSIGN_ASSIGNMENTS: Atlas | Quill | open | Move drafting queue to writer.
 Omit BULK_REASSIGN_ASSIGNMENTS lines if you are not bulk reassigning work.
 
 You may update assignment result summary:
@@ -1138,14 +1179,18 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
         m_bulk = BULK_UPDATE_ASSIGNMENT_STATUS_PATTERN.match(stripped)
         if m_bulk:
             payload = (m_bulk.group(1) or "").strip()
-            parts = [p.strip() for p in payload.split("|", 2)]
+            parts = [p.strip() for p in payload.split("|", 3)]
             if len(parts) < 1:
                 assignment_failures.append("invalid BULK_UPDATE_ASSIGNMENT_STATUS format")
                 logger.warning("CoS BULK_UPDATE_ASSIGNMENT_STATUS invalid format: %r", stripped)
                 continue
             to_status = _normalize_assignment_status(parts[0] or "")
             scope = (parts[1] if len(parts) > 1 else "all").strip()
-            note = (parts[2] if len(parts) > 2 else "").strip() or None
+            ok_mode, bulk_mode, note = _parse_bulk_mode_and_note(parts)
+            if not ok_mode:
+                assignment_failures.append("invalid mode in BULK_UPDATE_ASSIGNMENT_STATUS")
+                logger.warning("CoS BULK_UPDATE_ASSIGNMENT_STATUS invalid mode: %r", stripped)
+                continue
             if not to_status:
                 assignment_failures.append("missing status in BULK_UPDATE_ASSIGNMENT_STATUS")
                 continue
@@ -1162,11 +1207,15 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 continue
 
             updated_count = 0
+            skipped_closed = 0
             for r in rows:
                 aid = int(r.get("id") or 0)
                 if aid <= 0:
                     continue
                 current_status = str(r.get("status") or "").strip().lower()
+                if bulk_mode == "open" and current_status in {"done", "cancelled"}:
+                    skipped_closed += 1
+                    continue
                 if current_status == to_status:
                     continue
                 ok = False
@@ -1181,25 +1230,33 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     ok = False
                 if ok:
                     updated_count += 1
-            if updated_count <= 0:
+            summary = (
+                f"{scope_label}: {updated_count} -> {to_status}"
+                f"{f' ({skipped_closed} skipped closed)' if skipped_closed else ''}"
+            )
+            if updated_count <= 0 and skipped_closed <= 0:
                 assignment_failures.append(
                     f"no assignments updated for scope '{scope_label}' to {to_status}"
                 )
             else:
-                bulk_updated_assignments.append(f"{scope_label}: {updated_count} -> {to_status}")
+                bulk_updated_assignments.append(summary)
             continue
 
         m_bulk_pri = BULK_UPDATE_ASSIGNMENT_PRIORITY_PATTERN.match(stripped)
         if m_bulk_pri:
             payload = (m_bulk_pri.group(1) or "").strip()
-            parts = [p.strip() for p in payload.split("|", 2)]
+            parts = [p.strip() for p in payload.split("|", 3)]
             if len(parts) < 1:
                 assignment_failures.append("invalid BULK_UPDATE_ASSIGNMENT_PRIORITY format")
                 logger.warning("CoS BULK_UPDATE_ASSIGNMENT_PRIORITY invalid format: %r", stripped)
                 continue
             priority = _parse_priority_value(parts[0] or "")
             scope = (parts[1] if len(parts) > 1 else "all").strip()
-            note = (parts[2] if len(parts) > 2 else "").strip() or None
+            ok_mode, bulk_mode, note = _parse_bulk_mode_and_note(parts)
+            if not ok_mode:
+                assignment_failures.append("invalid mode in BULK_UPDATE_ASSIGNMENT_PRIORITY")
+                logger.warning("CoS BULK_UPDATE_ASSIGNMENT_PRIORITY invalid mode: %r", stripped)
+                continue
             if priority is None:
                 assignment_failures.append(f"invalid priority '{parts[0]}'")
                 continue
@@ -1213,9 +1270,14 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 assignment_failures.append(f"no assignments found for scope '{scope_label}'")
                 continue
             updated_count = 0
+            skipped_closed = 0
             for r in rows:
                 aid = int(r.get("id") or 0)
                 if aid <= 0:
+                    continue
+                current_status = str(r.get("status") or "").strip().lower()
+                if bulk_mode == "open" and current_status in {"done", "cancelled"}:
+                    skipped_closed += 1
                     continue
                 current_priority = int(r.get("priority") or 3)
                 if current_priority == int(priority):
@@ -1232,27 +1294,33 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     ok = False
                 if ok:
                     updated_count += 1
-            if updated_count <= 0:
+            summary = (
+                f"{scope_label}: {updated_count} -> P{int(priority)}"
+                f"{f' ({skipped_closed} skipped closed)' if skipped_closed else ''}"
+            )
+            if updated_count <= 0 and skipped_closed <= 0:
                 assignment_failures.append(
                     f"no assignments updated for scope '{scope_label}' to P{int(priority)}"
                 )
             else:
-                bulk_updated_assignment_priorities.append(
-                    f"{scope_label}: {updated_count} -> P{int(priority)}"
-                )
+                bulk_updated_assignment_priorities.append(summary)
             continue
 
         m_bulk_due = BULK_UPDATE_ASSIGNMENT_DUE_PATTERN.match(stripped)
         if m_bulk_due:
             payload = (m_bulk_due.group(1) or "").strip()
-            parts = [p.strip() for p in payload.split("|", 2)]
+            parts = [p.strip() for p in payload.split("|", 3)]
             if len(parts) < 1:
                 assignment_failures.append("invalid BULK_UPDATE_ASSIGNMENT_DUE format")
                 logger.warning("CoS BULK_UPDATE_ASSIGNMENT_DUE invalid format: %r", stripped)
                 continue
             due_ok, due_date = _normalize_due_date_input(parts[0] or "")
             scope = (parts[1] if len(parts) > 1 else "all").strip()
-            note = (parts[2] if len(parts) > 2 else "").strip() or None
+            ok_mode, bulk_mode, note = _parse_bulk_mode_and_note(parts)
+            if not ok_mode:
+                assignment_failures.append("invalid mode in BULK_UPDATE_ASSIGNMENT_DUE")
+                logger.warning("CoS BULK_UPDATE_ASSIGNMENT_DUE invalid mode: %r", stripped)
+                continue
             if not due_ok:
                 assignment_failures.append(f"invalid due date '{parts[0]}'")
                 continue
@@ -1266,9 +1334,14 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 assignment_failures.append(f"no assignments found for scope '{scope_label}'")
                 continue
             updated_count = 0
+            skipped_closed = 0
             for r in rows:
                 aid = int(r.get("id") or 0)
                 if aid <= 0:
+                    continue
+                current_status = str(r.get("status") or "").strip().lower()
+                if bulk_mode == "open" and current_status in {"done", "cancelled"}:
+                    skipped_closed += 1
                     continue
                 current_due = str(r.get("due_date") or "").strip() or None
                 if current_due == (due_date or None):
@@ -1285,27 +1358,33 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     ok = False
                 if ok:
                     updated_count += 1
-            if updated_count <= 0:
+            summary = (
+                f"{scope_label}: {updated_count} -> {due_date or '(none)'}"
+                f"{f' ({skipped_closed} skipped closed)' if skipped_closed else ''}"
+            )
+            if updated_count <= 0 and skipped_closed <= 0:
                 assignment_failures.append(
                     f"no assignments updated for scope '{scope_label}' due date"
                 )
             else:
-                bulk_updated_assignment_due_dates.append(
-                    f"{scope_label}: {updated_count} -> {due_date or '(none)'}"
-                )
+                bulk_updated_assignment_due_dates.append(summary)
             continue
 
         m_bulk_reassign = BULK_REASSIGN_ASSIGNMENTS_PATTERN.match(stripped)
         if m_bulk_reassign:
             payload = (m_bulk_reassign.group(1) or "").strip()
-            parts = [p.strip() for p in payload.split("|", 2)]
+            parts = [p.strip() for p in payload.split("|", 3)]
             if len(parts) < 2:
                 assignment_failures.append("invalid BULK_REASSIGN_ASSIGNMENTS format")
                 logger.warning("CoS BULK_REASSIGN_ASSIGNMENTS invalid format: %r", stripped)
                 continue
             from_scope = parts[0]
             to_name = parts[1]
-            note = (parts[2] if len(parts) > 2 else "").strip() or None
+            ok_mode, bulk_mode, note = _parse_bulk_mode_and_note(parts)
+            if not ok_mode:
+                assignment_failures.append("invalid mode in BULK_REASSIGN_ASSIGNMENTS")
+                logger.warning("CoS BULK_REASSIGN_ASSIGNMENTS invalid mode: %r", stripped)
+                continue
 
             ok_scope, from_assignee_code, from_scope_label = _resolve_bulk_scope(db, from_scope)
             if not ok_scope:
@@ -1325,9 +1404,14 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 assignment_failures.append(f"no assignments found for scope '{from_scope_label}'")
                 continue
             updated_count = 0
+            skipped_closed = 0
             for r in rows:
                 aid = int(r.get("id") or 0)
                 if aid <= 0:
+                    continue
+                current_status = str(r.get("status") or "").strip().lower()
+                if bulk_mode == "open" and current_status in {"done", "cancelled"}:
+                    skipped_closed += 1
                     continue
                 current_assignee = str(r.get("assignee_code") or "").strip().lower()
                 if current_assignee == to_assignee_code:
@@ -1349,14 +1433,16 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                         reason="chief_of_staff_bulk_reassign",
                     )
                     updated_count += 1
-            if updated_count <= 0:
+            summary = (
+                f"{from_scope_label} -> {to_label}: {updated_count}"
+                f"{f' ({skipped_closed} skipped closed)' if skipped_closed else ''}"
+            )
+            if updated_count <= 0 and skipped_closed <= 0:
                 assignment_failures.append(
                     f"no assignments reassigned from '{from_scope_label}' to '{to_label}'"
                 )
             else:
-                bulk_reassigned_assignments.append(
-                    f"{from_scope_label} -> {to_label}: {updated_count}"
-                )
+                bulk_reassigned_assignments.append(summary)
             continue
 
         m_reassign = REASSIGN_PATTERN.match(stripped)

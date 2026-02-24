@@ -470,6 +470,37 @@ class TestChiefOfStaffService:
         assert "Bulk-updated 1 assignment scope(s)" in result
         assert "BULK_UPDATE_ASSIGNMENT_STATUS:" not in result
 
+    def test_cos_response_bulk_updates_assignment_status_open_mode(self, mock_grok, cos_db):
+        """BULK_UPDATE_ASSIGNMENT_STATUS with open mode should skip done/cancelled."""
+        open_aid = cos_db.agent_create_assignment(
+            title="Atlas open status target",
+            brief_md="Open work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+            status="queued",
+        )
+        done_aid = cos_db.agent_create_assignment(
+            title="Atlas closed status target",
+            brief_md="Closed work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+            status="done",
+        )
+        mock_grok.return_value = (
+            "BULK_UPDATE_ASSIGNMENT_STATUS: blocked | Atlas | open | Waiting on dependencies"
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Block only active Atlas work.")
+        open_row = cos_db.agent_get_assignment(int(open_aid))
+        done_row = cos_db.agent_get_assignment(int(done_aid))
+        assert open_row is not None and str(open_row.get("status") or "") == "blocked"
+        assert done_row is not None and str(done_row.get("status") or "") == "done"
+        assert "skipped closed" in result
+        assert "BULK_UPDATE_ASSIGNMENT_STATUS:" not in result
+
     def test_cos_response_bulk_updates_assignment_priority_scoped(self, mock_grok, cos_db):
         """BULK_UPDATE_ASSIGNMENT_PRIORITY updates matching assignee scope."""
         atlas_aid = cos_db.agent_create_assignment(
@@ -563,6 +594,37 @@ class TestChiefOfStaffService:
         assert thread is not None
         assert str(thread[1]).lower() == "quill"
         assert "Bulk-reassigned 1 scope(s)" in result
+        assert "BULK_REASSIGN_ASSIGNMENTS:" not in result
+
+    def test_cos_response_bulk_reassigns_assignments_open_mode(self, mock_grok, cos_db):
+        """BULK_REASSIGN_ASSIGNMENTS with open mode should skip done/cancelled."""
+        open_aid = cos_db.agent_create_assignment(
+            title="Atlas open reassignment target",
+            brief_md="Active work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+            status="queued",
+        )
+        done_aid = cos_db.agent_create_assignment(
+            title="Atlas closed reassignment target",
+            brief_md="Completed work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+            status="done",
+        )
+        mock_grok.return_value = (
+            "BULK_REASSIGN_ASSIGNMENTS: Atlas | Quill | open | Move active queue only"
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Move only active Atlas assignments.")
+        open_row = cos_db.agent_get_assignment(int(open_aid))
+        done_row = cos_db.agent_get_assignment(int(done_aid))
+        assert open_row is not None and str(open_row.get("assignee_code") or "") == "quill"
+        assert done_row is not None and str(done_row.get("assignee_code") or "") == "atlas"
+        assert "skipped closed" in result
         assert "BULK_REASSIGN_ASSIGNMENTS:" not in result
 
     def test_cos_response_reassigns_assignment(self, mock_grok, cos_db):
