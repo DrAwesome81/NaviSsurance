@@ -550,6 +550,47 @@ class TestChiefOfStaffService:
         assert "Updated due date for 1 assignment(s)" in result
         assert "UPDATE_ASSIGNMENT_DUE:" not in result
 
+    def test_cos_response_retitles_assignment(self, mock_grok, cos_db):
+        """RETITLE_ASSIGNMENT updates assignment title."""
+        aid = cos_db.agent_create_assignment(
+            title="Old assignment title",
+            brief_md="Brief text",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+        )
+        mock_grok.return_value = f"RETITLE_ASSIGNMENT: A-{int(aid):04d} | New assignment title | clarify scope"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Rename it.")
+        row = cos_db.agent_get_assignment(int(aid))
+        assert row is not None
+        assert str(row.get("title") or "") == "New assignment title"
+        assert "Retitled 1 assignment(s)" in result
+        assert "RETITLE_ASSIGNMENT:" not in result
+
+    def test_cos_response_updates_assignment_brief(self, mock_grok, cos_db):
+        """UPDATE_ASSIGNMENT_BRIEF updates assignment brief markdown."""
+        aid = cos_db.agent_create_assignment(
+            title="Brief update assignment",
+            brief_md="Old brief",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+        )
+        mock_grok.return_value = (
+            f"UPDATE_ASSIGNMENT_BRIEF: A-{int(aid):04d} | "
+            "New brief with narrower scope and output format."
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Update the brief.")
+        row = cos_db.agent_get_assignment(int(aid))
+        assert row is not None
+        assert "narrower scope" in str(row.get("brief_md") or "")
+        assert "Updated brief for 1 assignment(s)" in result
+        assert "UPDATE_ASSIGNMENT_BRIEF:" not in result
+
 
 @patch("core.chief_of_staff_service.grok_completion_messages")
 def test_cos_response_with_history_uses_multi_turn(mock_grok_messages, cos_db):

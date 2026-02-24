@@ -63,6 +63,16 @@ UPDATE_ASSIGNMENT_PRIORITY_PATTERN = re.compile(
 UPDATE_ASSIGNMENT_DUE_PATTERN = re.compile(
     r"^\s*UPDATE_ASSIGNMENT_DUE:\s*(.+?)\s*$", re.IGNORECASE
 )
+# Pattern for CoS assignment retitle:
+# RETITLE_ASSIGNMENT: assignment_ref | new_title | optional_note
+RETITLE_ASSIGNMENT_PATTERN = re.compile(
+    r"^\s*RETITLE_ASSIGNMENT:\s*(.+?)\s*$", re.IGNORECASE
+)
+# Pattern for CoS assignment brief updates:
+# UPDATE_ASSIGNMENT_BRIEF: assignment_ref | new_brief_markdown | optional_note
+UPDATE_ASSIGNMENT_BRIEF_PATTERN = re.compile(
+    r"^\s*UPDATE_ASSIGNMENT_BRIEF:\s*(.+?)\s*$", re.IGNORECASE
+)
 # Pattern for CoS assignment artifact creation:
 # ADD_ASSIGNMENT_ARTIFACT: assignment_ref | artifact_type | title | content_markdown
 ADD_ASSIGNMENT_ARTIFACT_PATTERN = re.compile(
@@ -474,6 +484,16 @@ UPDATE_ASSIGNMENT_DUE: <A-0007 or 7> | <YYYY-MM-DD or none> | <optional note>
 Example: UPDATE_ASSIGNMENT_DUE: A-0007 | 2026-03-15 | Aligned with revised timeline.
 Omit UPDATE_ASSIGNMENT_DUE lines if you are not updating due dates.
 
+You may retitle an assignment:
+RETITLE_ASSIGNMENT: <A-0007 or 7> | <new title> | <optional note>
+Example: RETITLE_ASSIGNMENT: A-0007 | Finalize FDA evidence packet | Clarified scope.
+Omit RETITLE_ASSIGNMENT lines if you are not retitling assignments.
+
+You may update assignment brief:
+UPDATE_ASSIGNMENT_BRIEF: <A-0007 or 7> | <new brief markdown> | <optional note>
+Example: UPDATE_ASSIGNMENT_BRIEF: A-0007 | Focus only on competitor benchmark section. | Reduced scope.
+Omit UPDATE_ASSIGNMENT_BRIEF lines if you are not updating briefs.
+
 You may attach an artifact to an assignment:
 ADD_ASSIGNMENT_ARTIFACT: <A-0007 or 7> | <artifact_type> | <title> | <content markdown>
 Example: ADD_ASSIGNMENT_ARTIFACT: A-0007 | summary_note | Final recommendation | Atlas recommends option B due to timeline.
@@ -635,6 +655,8 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     updated_assignments: list[str] = []
     updated_assignment_priorities: list[str] = []
     updated_assignment_due_dates: list[str] = []
+    retitled_assignments: list[str] = []
+    updated_assignment_briefs: list[str] = []
     reassigned_assignments: list[str] = []
     summarized_assignments: list[str] = []
     added_assignment_artifacts: list[str] = []
@@ -986,6 +1008,78 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 assignment_failures.append(f"failed updating due date for A-{int(aid):04d}")
             continue
 
+        m_title = RETITLE_ASSIGNMENT_PATTERN.match(stripped)
+        if m_title:
+            payload = (m_title.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 2)]
+            if len(parts) < 2:
+                assignment_failures.append("invalid RETITLE_ASSIGNMENT format")
+                logger.warning("CoS RETITLE_ASSIGNMENT invalid format: %r", stripped)
+                continue
+            assignment_ref = parts[0]
+            new_title = (parts[1] or "").strip()
+            note = (parts[2] if len(parts) > 2 else "").strip() or None
+            if not new_title:
+                assignment_failures.append("empty title in RETITLE_ASSIGNMENT")
+                continue
+            aid = _parse_assignment_ref(assignment_ref)
+            if aid is None:
+                assignment_failures.append(f"invalid assignment id '{assignment_ref}'")
+                logger.warning("CoS RETITLE_ASSIGNMENT invalid id: %r", assignment_ref)
+                continue
+            ok = False
+            try:
+                ok = db.agent_update_assignment_fields(
+                    assignment_id=int(aid),
+                    actor_code="navi",
+                    title=new_title,
+                    note=note or "Updated via CoS action",
+                )
+            except Exception as e:
+                ok = False
+                logger.warning("CoS RETITLE_ASSIGNMENT failed: %s", e)
+            if ok:
+                retitled_assignments.append(f"A-{int(aid):04d}")
+            else:
+                assignment_failures.append(f"failed retitling A-{int(aid):04d}")
+            continue
+
+        m_brief = UPDATE_ASSIGNMENT_BRIEF_PATTERN.match(stripped)
+        if m_brief:
+            payload = (m_brief.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 2)]
+            if len(parts) < 2:
+                assignment_failures.append("invalid UPDATE_ASSIGNMENT_BRIEF format")
+                logger.warning("CoS UPDATE_ASSIGNMENT_BRIEF invalid format: %r", stripped)
+                continue
+            assignment_ref = parts[0]
+            new_brief = (parts[1] or "").strip()
+            note = (parts[2] if len(parts) > 2 else "").strip() or None
+            if not new_brief:
+                assignment_failures.append("empty brief in UPDATE_ASSIGNMENT_BRIEF")
+                continue
+            aid = _parse_assignment_ref(assignment_ref)
+            if aid is None:
+                assignment_failures.append(f"invalid assignment id '{assignment_ref}'")
+                logger.warning("CoS UPDATE_ASSIGNMENT_BRIEF invalid id: %r", assignment_ref)
+                continue
+            ok = False
+            try:
+                ok = db.agent_update_assignment_fields(
+                    assignment_id=int(aid),
+                    actor_code="navi",
+                    brief_md=new_brief,
+                    note=note or "Updated via CoS action",
+                )
+            except Exception as e:
+                ok = False
+                logger.warning("CoS UPDATE_ASSIGNMENT_BRIEF failed: %s", e)
+            if ok:
+                updated_assignment_briefs.append(f"A-{int(aid):04d}")
+            else:
+                assignment_failures.append(f"failed updating brief for A-{int(aid):04d}")
+            continue
+
         m_art = ADD_ASSIGNMENT_ARTIFACT_PATTERN.match(stripped)
         if m_art:
             payload = (m_art.group(1) or "").strip()
@@ -1058,6 +1152,18 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
         more = " ..." if len(updated_assignment_due_dates) > 3 else ""
         action_notes.append(
             f"— *Updated due date for {len(updated_assignment_due_dates)} assignment(s): {preview}{more}.*"
+        )
+    if retitled_assignments:
+        preview = ", ".join(retitled_assignments[:3])
+        more = " ..." if len(retitled_assignments) > 3 else ""
+        action_notes.append(
+            f"— *Retitled {len(retitled_assignments)} assignment(s): {preview}{more}.*"
+        )
+    if updated_assignment_briefs:
+        preview = ", ".join(updated_assignment_briefs[:3])
+        more = " ..." if len(updated_assignment_briefs) > 3 else ""
+        action_notes.append(
+            f"— *Updated brief for {len(updated_assignment_briefs)} assignment(s): {preview}{more}.*"
         )
     if reassigned_assignments:
         preview = ", ".join(reassigned_assignments[:3])
