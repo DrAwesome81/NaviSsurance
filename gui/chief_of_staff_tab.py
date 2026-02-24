@@ -1217,6 +1217,23 @@ Calendar and task actions:
             return
         self._focus_assignment_by_id(int(self._current_assignment_id))
 
+    def _existing_assignment_task_ids(self) -> set[int]:
+        ids: set[int] = set()
+        try:
+            tasks = self.db.get_tasks(category=None, date_filter=None, specific_date=None)
+            for t in tasks:
+                text = str(t[1] or "").strip()
+                m = re.match(r"^\s*\[A-(\d{1,10})\]", text, flags=re.IGNORECASE)
+                if not m:
+                    continue
+                try:
+                    ids.add(int(m.group(1)))
+                except Exception:
+                    continue
+        except Exception:
+            return set()
+        return ids
+
     def _create_task_from_assignment(self):
         if not self._current_assignment_id:
             QMessageBox.information(self, "Assignments", "Select an assignment first.")
@@ -1227,6 +1244,14 @@ Calendar and task actions:
             return
 
         aid = int(row.get("id") or 0)
+        existing_assignment_task_ids = self._existing_assignment_task_ids()
+        if aid in existing_assignment_task_ids:
+            QMessageBox.information(
+                self,
+                "Assignments",
+                f"A dashboard task for A-{aid:04d} already exists.",
+            )
+            return
         title = str(row.get("title") or "").strip() or f"Assignment A-{aid:04d}"
         task_text = f"[A-{aid:04d}] {title}"
 
@@ -1324,11 +1349,7 @@ Calendar and task actions:
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
-        try:
-            existing = self.db.get_tasks(category=None, date_filter=None, specific_date=None)
-            existing_task_texts = {str(t[1] or "").strip() for t in existing}
-        except Exception:
-            existing_task_texts = set()
+        existing_assignment_task_ids = self._existing_assignment_task_ids()
 
         created = 0
         skipped_existing = 0
@@ -1346,7 +1367,7 @@ Calendar and task actions:
                 continue
             title = str(r.get("title") or "").strip() or f"Assignment A-{aid:04d}"
             task_text = f"[A-{aid:04d}] {title}"
-            if task_text in existing_task_texts:
+            if aid in existing_assignment_task_ids:
                 skipped_existing += 1
                 continue
             due_iso = str(r.get("due_date") or "").strip()
@@ -1363,7 +1384,7 @@ Calendar and task actions:
                     recurrence="None",
                     completed=0,
                 )
-                existing_task_texts.add(task_text)
+                existing_assignment_task_ids.add(aid)
                 created += 1
                 try:
                     self.db.agent_add_event(

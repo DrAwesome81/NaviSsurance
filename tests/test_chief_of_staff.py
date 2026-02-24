@@ -733,6 +733,34 @@ class TestChiefOfStaffService:
         assert "Created 1 dashboard task(s) from assignment(s)" in result
         assert "ADD_TASK_FROM_ASSIGNMENT:" not in result
 
+    def test_cos_response_add_task_from_assignment_skips_duplicate_assignment_task(self, mock_grok, cos_db):
+        """ADD_TASK_FROM_ASSIGNMENT should skip when task for assignment id already exists."""
+        aid = cos_db.agent_create_assignment(
+            title="Existing assignment task",
+            brief_md="Already tracked",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=2,
+        )
+        cos_db.add_task(
+            session_id="seed_duplicate",
+            task_text=f"[A-{int(aid):04d}] Existing title snapshot",
+            due_date="",
+            category="Business",
+            recurrence="None",
+            completed=0,
+        )
+        before = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+
+        mock_grok.return_value = f"ADD_TASK_FROM_ASSIGNMENT: A-{int(aid):04d} | none | Business"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Create a task from that assignment.")
+        after = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+        assert len(after) == len(before)
+        assert "Skipped 1 assignment task(s) already on dashboard" in result
+        assert "ADD_TASK_FROM_ASSIGNMENT:" not in result
+
     def test_cos_response_bulk_adds_tasks_from_assignments_scoped_open(self, mock_grok, cos_db):
         """BULK_ADD_TASKS_FROM_ASSIGNMENTS creates tasks for matching open assignments."""
         atlas_open = cos_db.agent_create_assignment(
@@ -771,6 +799,42 @@ class TestChiefOfStaffService:
         assert not any("Atlas done assignment" in tx for tx in texts)
         assert not any("Quill open assignment" in tx for tx in texts)
         assert "Bulk-created dashboard tasks for 1 scope(s)" in result
+        assert "BULK_ADD_TASKS_FROM_ASSIGNMENTS:" not in result
+
+    def test_cos_response_bulk_adds_tasks_skips_existing_assignment_ids(self, mock_grok, cos_db):
+        """Bulk task creation should dedupe by assignment id even if title text changed."""
+        atlas_existing = cos_db.agent_create_assignment(
+            title="Atlas original title",
+            brief_md="Already has task",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=2,
+        )
+        atlas_new = cos_db.agent_create_assignment(
+            title="Atlas new title",
+            brief_md="Needs task",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=2,
+        )
+        cos_db.add_task(
+            session_id="seed_bulk_duplicate",
+            task_text=f"[A-{int(atlas_existing):04d}] Atlas title before retitle",
+            due_date="",
+            category="Business",
+            recurrence="None",
+            completed=0,
+        )
+
+        mock_grok.return_value = "BULK_ADD_TASKS_FROM_ASSIGNMENTS: Atlas | Business | open"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Create dashboard tasks from Atlas assignments.")
+        tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+        texts = [str(t[1]) for t in tasks]
+        assert any(f"[A-{int(atlas_existing):04d}]" in tx for tx in texts)
+        assert any(f"[A-{int(atlas_new):04d}] Atlas new title" in tx for tx in texts)
+        assert "1 skipped existing" in result
         assert "BULK_ADD_TASKS_FROM_ASSIGNMENTS:" not in result
 
 

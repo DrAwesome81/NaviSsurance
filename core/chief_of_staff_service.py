@@ -104,6 +104,9 @@ ADD_TASK_FROM_ASSIGNMENT_PATTERN = re.compile(
     r"^\s*ADD_TASK_FROM_ASSIGNMENT:\s*(.+?)\s*$",
     re.IGNORECASE,
 )
+# Pattern for dashboard tasks that are derived from assignments:
+# [A-0007] Task title
+ASSIGNMENT_TASK_REF_PATTERN = re.compile(r"^\s*\[A-(\d{1,10})\]", re.IGNORECASE)
 # Pattern for CoS bulk conversion of assignments into dashboard tasks:
 # BULK_ADD_TASKS_FROM_ASSIGNMENTS: assignee_name_or_all | Business|Personal | optional_open_or_all
 BULK_ADD_TASKS_FROM_ASSIGNMENTS_PATTERN = re.compile(
@@ -573,12 +576,14 @@ You may also create a dashboard task from an assignment:
 ADD_TASK_FROM_ASSIGNMENT: <A-0007 or 7> | <MM-DD-YYYY or none> | <Business or Personal>
 Example: ADD_TASK_FROM_ASSIGNMENT: A-0007 | 03-18-2026 | Business
 This adds a task using the assignment title as the task text.
+If a dashboard task already exists for that assignment id, it will be skipped.
 Omit ADD_TASK_FROM_ASSIGNMENT lines if you are not creating tasks from assignments.
 
 You may bulk-create dashboard tasks from assignments:
 BULK_ADD_TASKS_FROM_ASSIGNMENTS: <AgentName or all> | <Business or Personal> | <open or all (optional, defaults to open)>
 Example: BULK_ADD_TASKS_FROM_ASSIGNMENTS: Atlas | Business | open
 This adds one dashboard task per matching assignment using assignment titles.
+Assignments that already have dashboard tasks are skipped automatically.
 Omit BULK_ADD_TASKS_FROM_ASSIGNMENTS lines if you are not bulk-creating tasks from assignments.
 
 If you need more information to answer well, you may request one of these tools by returning EXACTLY ONE line with one of:
@@ -748,10 +753,32 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     summarized_assignments: list[str] = []
     added_assignment_artifacts: list[str] = []
     bulk_created_tasks_from_assignments: list[str] = []
+    skipped_existing_assignment_tasks: list[str] = []
     assignment_failures: list[str] = []
     block_failures = 0
     block_failure_reasons: list[str] = []
     cleaned_lines = []
+    existing_assignment_task_ids_cache: set[int] | None = None
+
+    def _existing_assignment_task_ids() -> set[int]:
+        nonlocal existing_assignment_task_ids_cache
+        if existing_assignment_task_ids_cache is None:
+            ids: set[int] = set()
+            try:
+                tasks = db.get_tasks(category=None, date_filter=None, specific_date=None)
+                for t in tasks:
+                    text = str(t[1] or "").strip()
+                    m_ref = ASSIGNMENT_TASK_REF_PATTERN.match(text)
+                    if not m_ref:
+                        continue
+                    try:
+                        ids.add(int(m_ref.group(1)))
+                    except Exception:
+                        continue
+            except Exception:
+                ids = set()
+            existing_assignment_task_ids_cache = ids
+        return existing_assignment_task_ids_cache
 
     def _ensure_assignment_thread_matches_assignee(assignment_id: int, assignee_code: str, reason: str) -> None:
         """Best-effort: ensure source_thread_id belongs to current assignee."""
@@ -832,6 +859,10 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
             if not row:
                 assignment_failures.append(f"unknown assignment A-{int(aid):04d}")
                 continue
+            existing_ids = _existing_assignment_task_ids()
+            if int(aid) in existing_ids:
+                skipped_existing_assignment_tasks.append(f"A-{int(aid):04d}")
+                continue
             title = str(row.get("title") or "").strip() or f"Assignment A-{int(aid):04d}"
             task_text = f"[A-{int(aid):04d}] {title}"
             due_date = (due_raw or "").strip()
@@ -853,6 +884,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 )
                 added_tasks += 1
                 added_tasks_from_assignments += 1
+                existing_ids.add(int(aid))
                 try:
                     db.agent_add_event(
                         assignment_id=int(aid),
@@ -904,11 +936,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 assignment_failures.append(f"no assignments found for scope '{scope_label}'")
                 continue
 
-            try:
-                existing_tasks = db.get_tasks(category=None, date_filter=None, specific_date=None)
-                existing_task_texts = {str(t[1] or "").strip() for t in existing_tasks}
-            except Exception:
-                existing_task_texts = set()
+            existing_ids = _existing_assignment_task_ids()
 
             created_count = 0
             skipped_existing = 0
@@ -923,7 +951,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     continue
                 title = str(row.get("title") or "").strip() or f"Assignment A-{aid:04d}"
                 task_text = f"[A-{aid:04d}] {title}"
-                if task_text in existing_task_texts:
+                if aid in existing_ids:
                     skipped_existing += 1
                     continue
                 due_iso = str(row.get("due_date") or "").strip()
@@ -940,7 +968,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                         recurrence="None",
                         completed=0,
                     )
-                    existing_task_texts.add(task_text)
+                    existing_ids.add(aid)
                     added_tasks += 1
                     added_tasks_from_assignments += 1
                     created_count += 1
@@ -955,18 +983,19 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                         pass
                 except Exception as e:
                     logger.warning("CoS BULK_ADD_TASKS_FROM_ASSIGNMENTS failed for A-%04d: %s", aid, e)
-            if created_count <= 0:
+            summary = (
+                f"{scope_label}: {created_count} created"
+                f"{f' ({skipped_existing} skipped existing' if skipped_existing else ''}"
+                f"{', ' if skipped_existing and skipped_closed else ''}"
+                f"{f'{skipped_closed} skipped closed' if skipped_closed else ''}"
+                f"{')' if (skipped_existing or skipped_closed) else ''}"
+            )
+            if created_count <= 0 and skipped_existing <= 0 and skipped_closed <= 0:
                 assignment_failures.append(
                     f"no dashboard tasks created for scope '{scope_label}'"
                 )
             else:
-                bulk_created_tasks_from_assignments.append(
-                    f"{scope_label}: {created_count} created"
-                    f"{f' ({skipped_existing} skipped existing' if skipped_existing else ''}"
-                    f"{', ' if skipped_existing and skipped_closed else ''}"
-                    f"{f'{skipped_closed} skipped closed' if skipped_closed else ''}"
-                    f"{')' if (skipped_existing or skipped_closed) else ''}"
-                )
+                bulk_created_tasks_from_assignments.append(summary)
             continue
 
         m_block = ADD_CAL_BLOCK_PATTERN.search(stripped)
@@ -1606,6 +1635,12 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     if added_tasks_from_assignments:
         action_notes.append(
             f"— *Created {added_tasks_from_assignments} dashboard task(s) from assignment(s).*"
+        )
+    if skipped_existing_assignment_tasks:
+        preview = ", ".join(skipped_existing_assignment_tasks[:3])
+        more = " ..." if len(skipped_existing_assignment_tasks) > 3 else ""
+        action_notes.append(
+            f"— *Skipped {len(skipped_existing_assignment_tasks)} assignment task(s) already on dashboard: {preview}{more}.*"
         )
     if bulk_created_tasks_from_assignments:
         preview = ", ".join(bulk_created_tasks_from_assignments[:3])
