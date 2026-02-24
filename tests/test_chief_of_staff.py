@@ -470,6 +470,101 @@ class TestChiefOfStaffService:
         assert "Bulk-updated 1 assignment scope(s)" in result
         assert "BULK_UPDATE_ASSIGNMENT_STATUS:" not in result
 
+    def test_cos_response_bulk_updates_assignment_priority_scoped(self, mock_grok, cos_db):
+        """BULK_UPDATE_ASSIGNMENT_PRIORITY updates matching assignee scope."""
+        atlas_aid = cos_db.agent_create_assignment(
+            title="Atlas priority target",
+            brief_md="Atlas work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=4,
+        )
+        quill_aid = cos_db.agent_create_assignment(
+            title="Quill priority target",
+            brief_md="Quill work",
+            requester_code="navi",
+            assignee_code="quill",
+            priority=4,
+        )
+        mock_grok.return_value = "BULK_UPDATE_ASSIGNMENT_PRIORITY: P1 | Atlas | Focus immediately"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Raise Atlas priorities.")
+        atlas_row = cos_db.agent_get_assignment(int(atlas_aid))
+        quill_row = cos_db.agent_get_assignment(int(quill_aid))
+        assert atlas_row is not None and int(atlas_row.get("priority") or 0) == 1
+        assert quill_row is not None and int(quill_row.get("priority") or 0) == 4
+        assert "Bulk-updated priority for 1 scope(s)" in result
+        assert "BULK_UPDATE_ASSIGNMENT_PRIORITY:" not in result
+
+    def test_cos_response_bulk_updates_assignment_due_all(self, mock_grok, cos_db):
+        """BULK_UPDATE_ASSIGNMENT_DUE applies a date across all assignments."""
+        aid_one = cos_db.agent_create_assignment(
+            title="Atlas due target",
+            brief_md="Atlas work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+            due_date="2026-03-01",
+        )
+        aid_two = cos_db.agent_create_assignment(
+            title="Quill due target",
+            brief_md="Quill work",
+            requester_code="navi",
+            assignee_code="quill",
+            priority=3,
+        )
+        mock_grok.return_value = "BULK_UPDATE_ASSIGNMENT_DUE: 2026-04-01 | all | Sync deadlines"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Align all due dates.")
+        one = cos_db.agent_get_assignment(int(aid_one))
+        two = cos_db.agent_get_assignment(int(aid_two))
+        assert one is not None and str(one.get("due_date") or "") == "2026-04-01"
+        assert two is not None and str(two.get("due_date") or "") == "2026-04-01"
+        assert "Bulk-updated due date for 1 scope(s)" in result
+        assert "BULK_UPDATE_ASSIGNMENT_DUE:" not in result
+
+    def test_cos_response_bulk_reassigns_assignments_scoped(self, mock_grok, cos_db):
+        """BULK_REASSIGN_ASSIGNMENTS reassigns and relinks threads for matching scope."""
+        atlas_aid = cos_db.agent_create_assignment(
+            title="Atlas reassignment target 1",
+            brief_md="Atlas work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+        )
+        atlas_aid_2 = cos_db.agent_create_assignment(
+            title="Atlas reassignment target 2",
+            brief_md="Atlas work 2",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=2,
+        )
+        quill_aid = cos_db.agent_create_assignment(
+            title="Already quill",
+            brief_md="Quill work",
+            requester_code="navi",
+            assignee_code="quill",
+            priority=3,
+        )
+        mock_grok.return_value = "BULK_REASSIGN_ASSIGNMENTS: Atlas | Quill | Move writing load"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Rebalance Atlas queue to Quill.")
+        atlas_row = cos_db.agent_get_assignment(int(atlas_aid))
+        atlas_row_2 = cos_db.agent_get_assignment(int(atlas_aid_2))
+        quill_row = cos_db.agent_get_assignment(int(quill_aid))
+        assert atlas_row is not None and str(atlas_row.get("assignee_code") or "") == "quill"
+        assert atlas_row_2 is not None and str(atlas_row_2.get("assignee_code") or "") == "quill"
+        assert quill_row is not None and str(quill_row.get("assignee_code") or "") == "quill"
+        assert atlas_row.get("source_thread_id") is not None
+        thread = cos_db.agent_get_thread(int(atlas_row.get("source_thread_id")))
+        assert thread is not None
+        assert str(thread[1]).lower() == "quill"
+        assert "Bulk-reassigned 1 scope(s)" in result
+        assert "BULK_REASSIGN_ASSIGNMENTS:" not in result
+
     def test_cos_response_reassigns_assignment(self, mock_grok, cos_db):
         """REASSIGN moves assignment to a new assignee and relinks source thread."""
         aid = cos_db.agent_create_assignment(

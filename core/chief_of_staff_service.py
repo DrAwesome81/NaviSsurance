@@ -78,6 +78,21 @@ UPDATE_ASSIGNMENT_BRIEF_PATTERN = re.compile(
 BULK_UPDATE_ASSIGNMENT_STATUS_PATTERN = re.compile(
     r"^\s*BULK_UPDATE_ASSIGNMENT_STATUS:\s*(.+?)\s*$", re.IGNORECASE
 )
+# Pattern for CoS bulk assignment priority updates:
+# BULK_UPDATE_ASSIGNMENT_PRIORITY: P1..P5 | assignee_name_or_all | optional_note
+BULK_UPDATE_ASSIGNMENT_PRIORITY_PATTERN = re.compile(
+    r"^\s*BULK_UPDATE_ASSIGNMENT_PRIORITY:\s*(.+?)\s*$", re.IGNORECASE
+)
+# Pattern for CoS bulk assignment due updates:
+# BULK_UPDATE_ASSIGNMENT_DUE: YYYY-MM-DD_or_none | assignee_name_or_all | optional_note
+BULK_UPDATE_ASSIGNMENT_DUE_PATTERN = re.compile(
+    r"^\s*BULK_UPDATE_ASSIGNMENT_DUE:\s*(.+?)\s*$", re.IGNORECASE
+)
+# Pattern for CoS bulk reassignment:
+# BULK_REASSIGN_ASSIGNMENTS: from_assignee_or_all | to_assignee | optional_note
+BULK_REASSIGN_ASSIGNMENTS_PATTERN = re.compile(
+    r"^\s*BULK_REASSIGN_ASSIGNMENTS:\s*(.+?)\s*$", re.IGNORECASE
+)
 # Pattern for CoS assignment artifact creation:
 # ADD_ASSIGNMENT_ARTIFACT: assignment_ref | artifact_type | title | content_markdown
 ADD_ASSIGNMENT_ARTIFACT_PATTERN = re.compile(
@@ -430,6 +445,23 @@ def _normalize_due_date_input(value: str) -> tuple[bool, Optional[str]]:
     return False, None
 
 
+def _resolve_bulk_scope(db: DatabaseManager, scope_raw: str) -> tuple[bool, Optional[str], str]:
+    """
+    Resolve a bulk-update scope value into (ok, assignee_code_or_none, display_label).
+    - "all" or "*" => assignee_code None
+    - agent name/alias => concrete assignee_code
+    """
+    scope = (scope_raw or "").strip()
+    if not scope or scope.lower() in {"all", "*"}:
+        return True, None, "all"
+    agent = db.agent_resolve_by_name(scope)
+    if not agent:
+        return False, None, scope
+    assignee_code = str(agent.get("code") or "").strip().lower()
+    label = str(agent.get("display_name") or assignee_code).strip()
+    return bool(assignee_code), assignee_code or None, label or scope
+
+
 def cos_response(
     db: DatabaseManager,
     user_message: str,
@@ -481,10 +513,25 @@ Example: BULK_UPDATE_ASSIGNMENT_STATUS: blocked | Atlas | Waiting on input.
 This updates matching assignments currently in the system.
 Omit BULK_UPDATE_ASSIGNMENT_STATUS lines if you are not doing bulk updates.
 
+You may bulk-update assignment priority:
+BULK_UPDATE_ASSIGNMENT_PRIORITY: <P1-P5> | <AgentName or all> | <optional note>
+Example: BULK_UPDATE_ASSIGNMENT_PRIORITY: P1 | all | Quarterly planning sweep.
+Omit BULK_UPDATE_ASSIGNMENT_PRIORITY lines if you are not doing bulk updates.
+
+You may bulk-update assignment due date:
+BULK_UPDATE_ASSIGNMENT_DUE: <YYYY-MM-DD or none> | <AgentName or all> | <optional note>
+Example: BULK_UPDATE_ASSIGNMENT_DUE: 2026-04-15 | Atlas | Align with milestone.
+Omit BULK_UPDATE_ASSIGNMENT_DUE lines if you are not doing bulk updates.
+
 You may reassign work:
 REASSIGN: <A-0007 or 7> | <AgentName> | <optional note>
 Example: REASSIGN: A-0007 | Quill | Move drafting to writer.
 Omit REASSIGN lines if you are not reassigning work.
+
+You may bulk-reassign work:
+BULK_REASSIGN_ASSIGNMENTS: <AgentName or all> | <AgentName target> | <optional note>
+Example: BULK_REASSIGN_ASSIGNMENTS: Atlas | Quill | Move drafting queue to writer.
+Omit BULK_REASSIGN_ASSIGNMENTS lines if you are not bulk reassigning work.
 
 You may update assignment result summary:
 UPDATE_ASSIGNMENT_SUMMARY: <A-0007 or 7> | <summary markdown>
@@ -682,6 +729,9 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     retitled_assignments: list[str] = []
     updated_assignment_briefs: list[str] = []
     bulk_updated_assignments: list[str] = []
+    bulk_updated_assignment_priorities: list[str] = []
+    bulk_updated_assignment_due_dates: list[str] = []
+    bulk_reassigned_assignments: list[str] = []
     reassigned_assignments: list[str] = []
     summarized_assignments: list[str] = []
     added_assignment_artifacts: list[str] = []
@@ -689,6 +739,34 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     block_failures = 0
     block_failure_reasons: list[str] = []
     cleaned_lines = []
+
+    def _ensure_assignment_thread_matches_assignee(assignment_id: int, assignee_code: str, reason: str) -> None:
+        """Best-effort: ensure source_thread_id belongs to current assignee."""
+        try:
+            row = db.agent_get_assignment(int(assignment_id)) or {}
+            source_thread_id = row.get("source_thread_id")
+            relink = True
+            if source_thread_id:
+                src = db.agent_get_thread(int(source_thread_id))
+                if src and str(src[1] or "").strip().lower() == assignee_code:
+                    relink = False
+            if relink:
+                title = str(row.get("title") or f"A-{int(assignment_id):04d}")
+                tid = db.agent_create_thread(
+                    agent_code=assignee_code,
+                    title=title,
+                    context_json={"source": reason, "assignment_id": int(assignment_id)},
+                )
+                if tid:
+                    db.agent_link_assignment_thread(
+                        assignment_id=int(assignment_id),
+                        thread_id=int(tid),
+                        actor_code="navi",
+                        note=f"Thread relinked after {reason.replace('_', ' ')}",
+                    )
+        except Exception:
+            return
+
     for line in response.splitlines():
         stripped = line.strip()
 
@@ -928,16 +1006,11 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 assignment_failures.append("missing status in BULK_UPDATE_ASSIGNMENT_STATUS")
                 continue
 
-            assignee_code = None
-            scope_label = "all"
-            if scope and scope.lower() not in {"all", "*"}:
-                agent = db.agent_resolve_by_name(scope)
-                if not agent:
-                    assignment_failures.append(f"unknown agent '{scope}'")
-                    logger.warning("CoS BULK_UPDATE_ASSIGNMENT_STATUS unknown agent: %r", scope)
-                    continue
-                assignee_code = str(agent.get("code") or "").strip().lower()
-                scope_label = str(agent.get("display_name") or assignee_code).strip()
+            ok_scope, assignee_code, scope_label = _resolve_bulk_scope(db, scope)
+            if not ok_scope:
+                assignment_failures.append(f"unknown agent '{scope}'")
+                logger.warning("CoS BULK_UPDATE_ASSIGNMENT_STATUS unknown agent: %r", scope)
+                continue
 
             rows = db.agent_list_assignments(assignee_code=assignee_code, limit=500)
             if not rows:
@@ -970,6 +1043,176 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 )
             else:
                 bulk_updated_assignments.append(f"{scope_label}: {updated_count} -> {to_status}")
+            continue
+
+        m_bulk_pri = BULK_UPDATE_ASSIGNMENT_PRIORITY_PATTERN.match(stripped)
+        if m_bulk_pri:
+            payload = (m_bulk_pri.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 2)]
+            if len(parts) < 1:
+                assignment_failures.append("invalid BULK_UPDATE_ASSIGNMENT_PRIORITY format")
+                logger.warning("CoS BULK_UPDATE_ASSIGNMENT_PRIORITY invalid format: %r", stripped)
+                continue
+            priority = _parse_priority_value(parts[0] or "")
+            scope = (parts[1] if len(parts) > 1 else "all").strip()
+            note = (parts[2] if len(parts) > 2 else "").strip() or None
+            if priority is None:
+                assignment_failures.append(f"invalid priority '{parts[0]}'")
+                continue
+            ok_scope, assignee_code, scope_label = _resolve_bulk_scope(db, scope)
+            if not ok_scope:
+                assignment_failures.append(f"unknown agent '{scope}'")
+                logger.warning("CoS BULK_UPDATE_ASSIGNMENT_PRIORITY unknown agent: %r", scope)
+                continue
+            rows = db.agent_list_assignments(assignee_code=assignee_code, limit=500)
+            if not rows:
+                assignment_failures.append(f"no assignments found for scope '{scope_label}'")
+                continue
+            updated_count = 0
+            for r in rows:
+                aid = int(r.get("id") or 0)
+                if aid <= 0:
+                    continue
+                current_priority = int(r.get("priority") or 3)
+                if current_priority == int(priority):
+                    continue
+                ok = False
+                try:
+                    ok = db.agent_update_assignment_fields(
+                        assignment_id=aid,
+                        actor_code="navi",
+                        priority=int(priority),
+                        note=note or "Bulk priority update via CoS action",
+                    )
+                except Exception:
+                    ok = False
+                if ok:
+                    updated_count += 1
+            if updated_count <= 0:
+                assignment_failures.append(
+                    f"no assignments updated for scope '{scope_label}' to P{int(priority)}"
+                )
+            else:
+                bulk_updated_assignment_priorities.append(
+                    f"{scope_label}: {updated_count} -> P{int(priority)}"
+                )
+            continue
+
+        m_bulk_due = BULK_UPDATE_ASSIGNMENT_DUE_PATTERN.match(stripped)
+        if m_bulk_due:
+            payload = (m_bulk_due.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 2)]
+            if len(parts) < 1:
+                assignment_failures.append("invalid BULK_UPDATE_ASSIGNMENT_DUE format")
+                logger.warning("CoS BULK_UPDATE_ASSIGNMENT_DUE invalid format: %r", stripped)
+                continue
+            due_ok, due_date = _normalize_due_date_input(parts[0] or "")
+            scope = (parts[1] if len(parts) > 1 else "all").strip()
+            note = (parts[2] if len(parts) > 2 else "").strip() or None
+            if not due_ok:
+                assignment_failures.append(f"invalid due date '{parts[0]}'")
+                continue
+            ok_scope, assignee_code, scope_label = _resolve_bulk_scope(db, scope)
+            if not ok_scope:
+                assignment_failures.append(f"unknown agent '{scope}'")
+                logger.warning("CoS BULK_UPDATE_ASSIGNMENT_DUE unknown agent: %r", scope)
+                continue
+            rows = db.agent_list_assignments(assignee_code=assignee_code, limit=500)
+            if not rows:
+                assignment_failures.append(f"no assignments found for scope '{scope_label}'")
+                continue
+            updated_count = 0
+            for r in rows:
+                aid = int(r.get("id") or 0)
+                if aid <= 0:
+                    continue
+                current_due = str(r.get("due_date") or "").strip() or None
+                if current_due == (due_date or None):
+                    continue
+                ok = False
+                try:
+                    ok = db.agent_update_assignment_fields(
+                        assignment_id=aid,
+                        actor_code="navi",
+                        due_date=due_date,
+                        note=note or "Bulk due-date update via CoS action",
+                    )
+                except Exception:
+                    ok = False
+                if ok:
+                    updated_count += 1
+            if updated_count <= 0:
+                assignment_failures.append(
+                    f"no assignments updated for scope '{scope_label}' due date"
+                )
+            else:
+                bulk_updated_assignment_due_dates.append(
+                    f"{scope_label}: {updated_count} -> {due_date or '(none)'}"
+                )
+            continue
+
+        m_bulk_reassign = BULK_REASSIGN_ASSIGNMENTS_PATTERN.match(stripped)
+        if m_bulk_reassign:
+            payload = (m_bulk_reassign.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 2)]
+            if len(parts) < 2:
+                assignment_failures.append("invalid BULK_REASSIGN_ASSIGNMENTS format")
+                logger.warning("CoS BULK_REASSIGN_ASSIGNMENTS invalid format: %r", stripped)
+                continue
+            from_scope = parts[0]
+            to_name = parts[1]
+            note = (parts[2] if len(parts) > 2 else "").strip() or None
+
+            ok_scope, from_assignee_code, from_scope_label = _resolve_bulk_scope(db, from_scope)
+            if not ok_scope:
+                assignment_failures.append(f"unknown agent '{from_scope}'")
+                logger.warning("CoS BULK_REASSIGN_ASSIGNMENTS unknown from-scope: %r", from_scope)
+                continue
+            to_agent = db.agent_resolve_by_name(to_name)
+            if not to_agent:
+                assignment_failures.append(f"unknown agent '{to_name}'")
+                logger.warning("CoS BULK_REASSIGN_ASSIGNMENTS unknown target: %r", to_name)
+                continue
+            to_assignee_code = str(to_agent.get("code") or "").strip().lower()
+            to_label = str(to_agent.get("display_name") or to_assignee_code).strip()
+
+            rows = db.agent_list_assignments(assignee_code=from_assignee_code, limit=500)
+            if not rows:
+                assignment_failures.append(f"no assignments found for scope '{from_scope_label}'")
+                continue
+            updated_count = 0
+            for r in rows:
+                aid = int(r.get("id") or 0)
+                if aid <= 0:
+                    continue
+                current_assignee = str(r.get("assignee_code") or "").strip().lower()
+                if current_assignee == to_assignee_code:
+                    continue
+                ok = False
+                try:
+                    ok = db.agent_reassign_assignment(
+                        assignment_id=aid,
+                        new_assignee_code=to_assignee_code,
+                        actor_code="navi",
+                        note=note or "Bulk reassignment via CoS action",
+                    )
+                except Exception:
+                    ok = False
+                if ok:
+                    _ensure_assignment_thread_matches_assignee(
+                        assignment_id=aid,
+                        assignee_code=to_assignee_code,
+                        reason="chief_of_staff_bulk_reassign",
+                    )
+                    updated_count += 1
+            if updated_count <= 0:
+                assignment_failures.append(
+                    f"no assignments reassigned from '{from_scope_label}' to '{to_label}'"
+                )
+            else:
+                bulk_reassigned_assignments.append(
+                    f"{from_scope_label} -> {to_label}: {updated_count}"
+                )
             continue
 
         m_reassign = REASSIGN_PATTERN.match(stripped)
@@ -1011,31 +1254,11 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 assignment_failures.append(f"failed reassigning A-{int(aid):04d}")
                 continue
 
-            # Ensure linked thread points to the new assignee.
-            try:
-                row = db.agent_get_assignment(int(aid)) or {}
-                source_thread_id = row.get("source_thread_id")
-                relink = True
-                if source_thread_id:
-                    src = db.agent_get_thread(int(source_thread_id))
-                    if src and str(src[1] or "").strip().lower() == assignee_code:
-                        relink = False
-                if relink:
-                    title = str(row.get("title") or f"A-{int(aid):04d}")
-                    tid = db.agent_create_thread(
-                        agent_code=assignee_code,
-                        title=title,
-                        context_json={"source": "chief_of_staff_reassign", "assignment_id": int(aid)},
-                    )
-                    if tid:
-                        db.agent_link_assignment_thread(
-                            assignment_id=int(aid),
-                            thread_id=int(tid),
-                            actor_code="navi",
-                            note="Thread relinked after reassignment",
-                        )
-            except Exception:
-                pass
+            _ensure_assignment_thread_matches_assignee(
+                assignment_id=int(aid),
+                assignee_code=assignee_code,
+                reason="chief_of_staff_reassign",
+            )
 
             disp = str(agent.get("display_name") or assignee_code).strip()
             reassigned_assignments.append(f"A-{int(aid):04d} -> {disp}")
@@ -1293,6 +1516,24 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
         more = " ..." if len(bulk_updated_assignments) > 3 else ""
         action_notes.append(
             f"— *Bulk-updated {len(bulk_updated_assignments)} assignment scope(s): {preview}{more}.*"
+        )
+    if bulk_updated_assignment_priorities:
+        preview = ", ".join(bulk_updated_assignment_priorities[:3])
+        more = " ..." if len(bulk_updated_assignment_priorities) > 3 else ""
+        action_notes.append(
+            f"— *Bulk-updated priority for {len(bulk_updated_assignment_priorities)} scope(s): {preview}{more}.*"
+        )
+    if bulk_updated_assignment_due_dates:
+        preview = ", ".join(bulk_updated_assignment_due_dates[:3])
+        more = " ..." if len(bulk_updated_assignment_due_dates) > 3 else ""
+        action_notes.append(
+            f"— *Bulk-updated due date for {len(bulk_updated_assignment_due_dates)} scope(s): {preview}{more}.*"
+        )
+    if bulk_reassigned_assignments:
+        preview = ", ".join(bulk_reassigned_assignments[:3])
+        more = " ..." if len(bulk_reassigned_assignments) > 3 else ""
+        action_notes.append(
+            f"— *Bulk-reassigned {len(bulk_reassigned_assignments)} scope(s): {preview}{more}.*"
         )
     if updated_assignment_priorities:
         preview = ", ".join(updated_assignment_priorities[:3])

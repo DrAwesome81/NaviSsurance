@@ -304,12 +304,15 @@ Use these exact line formats in Navi responses:
 - `ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>`
 - `UPDATE_ASSIGNMENT_STATUS: <A-0007 or 7> | <queued|in_progress|awaiting_review|blocked|done|cancelled> | <optional note>`
 - `BULK_UPDATE_ASSIGNMENT_STATUS: <status> | <AgentName or all> | <optional note>`
+- `BULK_UPDATE_ASSIGNMENT_PRIORITY: <P1-P5> | <AgentName or all> | <optional note>`
+- `BULK_UPDATE_ASSIGNMENT_DUE: <YYYY-MM-DD or none> | <AgentName or all> | <optional note>`
 - `UPDATE_ASSIGNMENT_PRIORITY: <A-0007 or 7> | <P1-P5> | <optional note>`
 - `UPDATE_ASSIGNMENT_DUE: <A-0007 or 7> | <YYYY-MM-DD or none> | <optional note>`
 - `RETITLE_ASSIGNMENT: <A-0007 or 7> | <new title> | <optional note>`
 - `UPDATE_ASSIGNMENT_BRIEF: <A-0007 or 7> | <new brief markdown> | <optional note>`
 - `UPDATE_ASSIGNMENT_SUMMARY: <A-0007 or 7> | <summary markdown>`
 - `REASSIGN: <A-0007 or 7> | <AgentName> | <optional note>`
+- `BULK_REASSIGN_ASSIGNMENTS: <AgentName or all> | <AgentName target> | <optional note>`
 - `ADD_ASSIGNMENT_ARTIFACT: <A-0007 or 7> | <artifact_type> | <title> | <content markdown>`
 - `ADD_TASK_FROM_ASSIGNMENT: <A-0007 or 7> | <MM-DD-YYYY or none> | <Business or Personal>`
 
@@ -370,6 +373,15 @@ Calendar and task actions:
         bulk_status_btn = QPushButton("Bulk Status")
         bulk_status_btn.clicked.connect(self._bulk_set_filtered_status)
         asg_head.addWidget(bulk_status_btn)
+        bulk_priority_btn = QPushButton("Bulk Priority")
+        bulk_priority_btn.clicked.connect(self._bulk_set_filtered_priority)
+        asg_head.addWidget(bulk_priority_btn)
+        bulk_due_btn = QPushButton("Bulk Due")
+        bulk_due_btn.clicked.connect(self._bulk_set_filtered_due)
+        asg_head.addWidget(bulk_due_btn)
+        bulk_reassign_btn = QPushButton("Bulk Reassign")
+        bulk_reassign_btn.clicked.connect(self._bulk_reassign_filtered_assignments)
+        asg_head.addWidget(bulk_reassign_btn)
         export_btn = QPushButton("Export")
         export_btn.clicked.connect(self._export_assignment_board_markdown)
         asg_head.addWidget(export_btn)
@@ -571,8 +583,40 @@ Calendar and task actions:
         if not ok:
             QMessageBox.warning(self, "Assignments", "Could not reassign assignment.")
             return
+        self._ensure_assignment_thread_for_assignee(
+            assignment_id=int(self._current_assignment_id),
+            assignee_code=new_code,
+            reason="cos_board_reassign",
+        )
         self._refresh_assignment_list()
         self._focus_assignment_by_id(int(self._current_assignment_id))
+
+    def _ensure_assignment_thread_for_assignee(self, *, assignment_id: int, assignee_code: str, reason: str):
+        """Best-effort thread relink after reassignment."""
+        try:
+            row = self.db.agent_get_assignment(int(assignment_id)) or {}
+            source_thread_id = row.get("source_thread_id")
+            relink = True
+            if source_thread_id:
+                src = self.db.agent_get_thread(int(source_thread_id))
+                if src and str(src[1] or "").strip().lower() == str(assignee_code).strip().lower():
+                    relink = False
+            if relink:
+                title = str(row.get("title") or f"A-{int(assignment_id):04d}")
+                tid = self.db.agent_create_thread(
+                    agent_code=str(assignee_code).strip().lower(),
+                    title=title,
+                    context_json={"source": reason, "assignment_id": int(assignment_id)},
+                )
+                if tid:
+                    self.db.agent_link_assignment_thread(
+                        assignment_id=int(assignment_id),
+                        thread_id=int(tid),
+                        actor_code="navi",
+                        note=f"Thread relinked after {reason}",
+                    )
+        except Exception:
+            return
 
     def _bulk_set_filtered_status(self):
         rows = self._filtered_assignment_rows()
@@ -621,6 +665,170 @@ Calendar and task actions:
                 failed += 1
         self._refresh_assignment_list()
         QMessageBox.information(self, "Bulk Update", f"Updated: {updated}\nFailed: {failed}")
+
+    def _bulk_set_filtered_priority(self):
+        rows = self._filtered_assignment_rows()
+        if not rows:
+            QMessageBox.information(self, "Assignments", "No assignments match the current filters.")
+            return
+        val, ok = QInputDialog.getInt(
+            self,
+            "Bulk Update Priority",
+            "Priority (1-5):",
+            3,
+            1,
+            5,
+            1,
+        )
+        if not ok:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Confirm Bulk Update",
+            f"Set priority to P{int(val)} for {len(rows)} assignment(s)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        updated = 0
+        failed = 0
+        for r in rows:
+            aid = int(r.get("id") or 0)
+            if aid <= 0:
+                failed += 1
+                continue
+            ok = self.db.agent_update_assignment_fields(
+                assignment_id=aid,
+                actor_code="navi",
+                priority=int(val),
+                note="Bulk priority update from CoS board",
+            )
+            if ok:
+                updated += 1
+            else:
+                failed += 1
+        self._refresh_assignment_list()
+        QMessageBox.information(self, "Bulk Update", f"Updated: {updated}\nFailed: {failed}")
+
+    def _bulk_set_filtered_due(self):
+        rows = self._filtered_assignment_rows()
+        if not rows:
+            QMessageBox.information(self, "Assignments", "No assignments match the current filters.")
+            return
+        text, ok = QInputDialog.getText(
+            self,
+            "Bulk Update Due Date",
+            "Due date (YYYY-MM-DD or none):",
+            text="none",
+        )
+        if not ok:
+            return
+        due_raw = (text or "").strip()
+        if not due_raw or due_raw.lower() in {"none", "null", "n/a"}:
+            due = None
+        else:
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", due_raw):
+                QMessageBox.warning(self, "Assignments", "Due date must be YYYY-MM-DD or none.")
+                return
+            due = due_raw
+        confirm = QMessageBox.question(
+            self,
+            "Confirm Bulk Update",
+            f"Set due date to '{due or '(none)'}' for {len(rows)} assignment(s)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        updated = 0
+        failed = 0
+        for r in rows:
+            aid = int(r.get("id") or 0)
+            if aid <= 0:
+                failed += 1
+                continue
+            ok = self.db.agent_update_assignment_fields(
+                assignment_id=aid,
+                actor_code="navi",
+                due_date=due,
+                note="Bulk due-date update from CoS board",
+            )
+            if ok:
+                updated += 1
+            else:
+                failed += 1
+        self._refresh_assignment_list()
+        QMessageBox.information(self, "Bulk Update", f"Updated: {updated}\nFailed: {failed}")
+
+    def _bulk_reassign_filtered_assignments(self):
+        rows = self._filtered_assignment_rows()
+        if not rows:
+            QMessageBox.information(self, "Assignments", "No assignments match the current filters.")
+            return
+        options: list[tuple[str, str]] = []
+        for a in self.db.agents_list_active():
+            code = str(a.get("code") or "").strip().lower()
+            if not code or code == "navi":
+                continue
+            options.append((f"{a.get('display_name') or code} ({code})", code))
+        if not options:
+            QMessageBox.information(self, "Assignments", "No assignees available.")
+            return
+        labels = [x[0] for x in options]
+        picked, ok = QInputDialog.getItem(
+            self,
+            "Bulk Reassign",
+            "Reassign filtered assignments to:",
+            labels,
+            0,
+            False,
+        )
+        if not ok or not picked:
+            return
+        new_code = ""
+        for label, code in options:
+            if label == picked:
+                new_code = code
+                break
+        if not new_code:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Confirm Bulk Reassign",
+            f"Reassign {len(rows)} filtered assignment(s) to {picked}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        updated = 0
+        failed = 0
+        for r in rows:
+            aid = int(r.get("id") or 0)
+            if aid <= 0:
+                failed += 1
+                continue
+            current_assignee = str(r.get("assignee_code") or "").strip().lower()
+            if current_assignee == new_code:
+                continue
+            ok = self.db.agent_reassign_assignment(
+                assignment_id=aid,
+                new_assignee_code=new_code,
+                actor_code="navi",
+                note="Bulk reassignment from CoS board",
+            )
+            if ok:
+                self._ensure_assignment_thread_for_assignee(
+                    assignment_id=aid,
+                    assignee_code=new_code,
+                    reason="cos_board_bulk_reassign",
+                )
+                updated += 1
+            else:
+                failed += 1
+        self._refresh_assignment_list()
+        QMessageBox.information(self, "Bulk Reassign", f"Updated: {updated}\nFailed: {failed}")
 
     def _refresh_chat_list(self):
         """Reload sidebar: list all CoS chats, optionally grouped by project."""
