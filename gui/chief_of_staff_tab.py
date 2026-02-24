@@ -6,12 +6,14 @@ All chats save automatically. Layout like Grok/ChatGPT but sidebar on the right.
 import json
 import logging
 import re
+from datetime import datetime
+from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QPushButton, QLabel, QTextEdit,
     QTextBrowser, QListWidget, QListWidgetItem, QFormLayout, QSpinBox, QTabWidget,
     QMessageBox, QProgressBar, QDialog, QDialogButtonBox, QMenu, QToolButton,
-    QSizePolicy, QComboBox, QLineEdit, QInputDialog
+    QSizePolicy, QComboBox, QLineEdit, QInputDialog, QFileDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
 from PyQt6.QtGui import QAction, QKeyEvent
@@ -364,6 +366,9 @@ Calendar and task actions:
         reassign_btn = QPushButton("Reassign")
         reassign_btn.clicked.connect(self._reassign_selected_assignment)
         asg_head.addWidget(reassign_btn)
+        export_btn = QPushButton("Export")
+        export_btn.clicked.connect(self._export_assignment_board_markdown)
+        asg_head.addWidget(export_btn)
         refresh_asg_btn = QPushButton("Refresh")
         refresh_asg_btn.clicked.connect(self._refresh_assignment_list)
         asg_head.addWidget(refresh_asg_btn)
@@ -611,10 +616,7 @@ Calendar and task actions:
         self.chat_display.setHtml("<br>".join(html_parts) if html_parts else "<p style='color:#9aa0a6;'>(No messages yet.)</p>")
         self.ask_output = self.chat_display  # for tests that expect ask_output
 
-    def _refresh_assignment_list(self):
-        if not hasattr(self, "assignment_list"):
-            return
-        self.assignment_list.clear()
+    def _assignment_filters(self) -> tuple[Optional[str], Optional[str], str]:
         status = None
         assignee = None
         query = ""
@@ -625,7 +627,10 @@ Calendar and task actions:
             assignee = (self.assignment_assignee_filter.currentData() or "").strip().lower() or None
         if hasattr(self, "assignment_search_input"):
             query = (self.assignment_search_input.text() or "").strip().lower()
+        return status, assignee, query
 
+    def _filtered_assignment_rows(self):
+        status, assignee, query = self._assignment_filters()
         rows = self.db.agent_list_assignments(status=status, assignee_code=assignee, limit=500)
         if query:
             qnorm = query.replace("a-", "").lstrip("0")
@@ -641,6 +646,13 @@ Calendar and task actions:
                     filtered.append(r)
                     continue
             rows = filtered
+        return rows
+
+    def _refresh_assignment_list(self):
+        if not hasattr(self, "assignment_list"):
+            return
+        self.assignment_list.clear()
+        rows = self._filtered_assignment_rows()
 
         for r in rows:
             aid = int(r.get("id") or 0)
@@ -657,6 +669,59 @@ Calendar and task actions:
             self.assignment_list.addItem(item)
         if hasattr(self, "assignment_count_label"):
             self.assignment_count_label.setText(f"{len(rows)} assignment(s)")
+
+    def _export_assignment_board_markdown(self):
+        rows = self._filtered_assignment_rows()
+        now = datetime.now()
+        default_name = f"delegation_board_{now.strftime('%Y%m%d_%H%M%S')}.md"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Delegation Board (Markdown)",
+            default_name,
+            "Markdown Files (*.md);;All Files (*)",
+        )
+        if not file_path:
+            return
+
+        st, asg, query = self._assignment_filters()
+        status_str = st or "all"
+        assignee_str = asg or "all"
+        query_str = query or "(none)"
+
+        def _esc(v) -> str:
+            s = str(v or "").replace("\n", " ").replace("|", "\\|").strip()
+            return s
+
+        lines = [
+            "# Delegation Board Snapshot",
+            "",
+            f"- Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"- Filter status: {status_str}",
+            f"- Filter assignee: {assignee_str}",
+            f"- Search query: {query_str}",
+            f"- Total rows: {len(rows)}",
+            "",
+            "| Assignment | Status | Priority | Assignee | Due | Title |",
+            "|---|---|---:|---|---|---|",
+        ]
+        for r in rows:
+            aid = int(r.get("id") or 0)
+            st_row = _esc(r.get("status") or "")
+            pr = int(r.get("priority") or 3)
+            assignee = _esc(r.get("assignee_code") or "")
+            due = _esc(r.get("due_date") or "")
+            title = _esc(r.get("title") or "Untitled")
+            lines.append(
+                f"| A-{aid:04d} | {st_row} | {pr} | {assignee} | {due} | {title} |"
+            )
+
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines).strip() + "\n")
+        except Exception as e:
+            QMessageBox.warning(self, "Export", f"Could not export delegation board:\n{e}")
+            return
+        QMessageBox.information(self, "Export", f"Delegation board exported:\n{file_path}")
 
     def _on_assignment_clicked(self, item):
         aid = item.data(Qt.ItemDataRole.UserRole)
