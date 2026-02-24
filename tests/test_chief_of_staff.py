@@ -13,7 +13,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime, UTC, timedelta
+from datetime import datetime, UTC, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -273,6 +273,15 @@ class TestChiefOfStaffUtilityHelpers:
         assert mode == "all"
         assert note is None
 
+    def test_local_time_context_includes_timezone_offset(self):
+        from core.chief_of_staff_service import _local_time_context
+
+        dt = datetime(2026, 2, 23, 9, 15, tzinfo=timezone(timedelta(hours=5, minutes=30), name="IST"))
+        ctx = _local_time_context(dt)
+        assert "current local time" in ctx
+        assert "IST" in ctx
+        assert "UTC+05:30" in ctx
+
 
 class TestChiefOfStaffUiHelperFunctions:
     """Unit tests for CoS board helper utilities."""
@@ -357,6 +366,19 @@ class TestChiefOfStaffService:
         # grok_completion(system, user, ...) — user is second positional
         user_passed = mock_grok.call_args[0][1]
         assert "What should I focus on right now" in user_passed
+
+    def test_cos_response_includes_timezone_aware_time_context(self, mock_grok, cos_db):
+        mock_grok.return_value = "Use your afternoon for deep work."
+        from core.chief_of_staff_service import cos_response
+
+        fixed_now = datetime(2026, 2, 23, 14, 30, tzinfo=timezone(timedelta(hours=-5), name="EST"))
+        with patch("core.chief_of_staff_service._now_local", return_value=fixed_now):
+            cos_response(cos_db, "What should I do next?")
+
+        user_passed = mock_grok.call_args[0][1]
+        assert "current local time" in user_passed
+        assert "EST" in user_passed
+        assert "UTC-05:00" in user_passed
 
     def test_cos_response_on_error_returns_message(self, mock_grok, cos_db):
         mock_grok.side_effect = Exception("API error")

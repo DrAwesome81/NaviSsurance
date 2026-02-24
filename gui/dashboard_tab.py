@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextBrow
 from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal, QMetaObject, Q_ARG
 from datetime import datetime, timedelta
 from dateutil import parser
+from html import escape
 import sqlite3
 import sys
 import os
@@ -9,6 +10,10 @@ import time
 
 # Import centralized database path
 from config import DATABASE_PATH
+
+BRIEFING_CACHE_DATE_KEY = "daily_briefing_latest_date"
+BRIEFING_CACHE_TEXT_KEY = "daily_briefing_latest_text"
+BRIEFING_CACHE_HTML_KEY = "daily_briefing_latest_html"
 
 class NewsWorker(QThread):
     """Worker thread for loading news without blocking the UI."""
@@ -558,6 +563,55 @@ class DashboardTab(QWidget):
             print(f"Error adding task: {e}")
             QMessageBox.critical(self, "Error", f"Failed to add task: {str(e)}")
 
+    def _briefing_cache_today_utc(self):
+        """Return current UTC date key used for briefing cache."""
+        return datetime.utcnow().strftime("%Y-%m-%d")
+
+    def _render_briefing_html(self, body_html):
+        return f"<div style='color: #e8eaed; padding: 10px; line-height: 1.5;'>{body_html}</div>"
+
+    def _persist_daily_briefing_cache(self, raw_briefing, html_content):
+        """Persist today's briefing so Dashboard can restore it on restart."""
+        try:
+            raw_text = str(raw_briefing or "").strip()
+            html_text = str(html_content or "").strip()
+            if not raw_text and not html_text:
+                return
+            self.db.set_setting(BRIEFING_CACHE_DATE_KEY, self._briefing_cache_today_utc())
+            if raw_text:
+                self.db.set_setting(BRIEFING_CACHE_TEXT_KEY, raw_text)
+            if html_text:
+                self.db.set_setting(BRIEFING_CACHE_HTML_KEY, html_text)
+        except Exception as e:
+            print(f"Error persisting briefing cache: {e}")
+
+    def _load_cached_daily_briefing_if_available(self):
+        """Restore today's cached briefing (preferred: formatted HTML, fallback: raw text)."""
+        try:
+            if not hasattr(self, "briefing_display"):
+                return False
+            today = self._briefing_cache_today_utc()
+            cached_date = str(self.db.get_setting(BRIEFING_CACHE_DATE_KEY, "") or "").strip()
+            if cached_date != today:
+                return False
+
+            cached_html = str(self.db.get_setting(BRIEFING_CACHE_HTML_KEY, "") or "").strip()
+            if cached_html:
+                self.briefing_display.setHtml(cached_html)
+                return True
+
+            cached_raw = str(self.db.get_setting(BRIEFING_CACHE_TEXT_KEY, "") or "").strip()
+            if not cached_raw:
+                return False
+            body = escape(cached_raw).replace("\n", "<br>")
+            html_text = self._render_briefing_html(body)
+            self.briefing_display.setHtml(html_text)
+            self.db.set_setting(BRIEFING_CACHE_HTML_KEY, html_text)
+            return True
+        except Exception as e:
+            print(f"Error restoring cached briefing: {e}")
+            return False
+
     def setup_ui(self):
         # Set the overall dark theme for the dashboard (professional palette)
         self.setStyleSheet("""
@@ -643,7 +697,8 @@ class DashboardTab(QWidget):
         except ImportError:
             BRIEFING_AND_EMAIL_DISABLED = False
         if not BRIEFING_AND_EMAIL_DISABLED:
-            QTimer.singleShot(2000, self.load_daily_briefing)
+            if not self._load_cached_daily_briefing_if_available():
+                QTimer.singleShot(2000, self.load_daily_briefing)
         else:
             QTimer.singleShot(500, self._show_briefing_disabled)
 
@@ -1826,14 +1881,18 @@ class DashboardTab(QWidget):
                 formatted_briefing = re.sub(r'^<br><br>', '', formatted_briefing.strip())
                 
                 # Display formatted briefing
-                self.briefing_display.setHtml(f"<div style='color: #e8eaed; padding: 10px; line-height: 1.5;'>{formatted_briefing}</div>")
+                html_text = self._render_briefing_html(formatted_briefing)
+                self.briefing_display.setHtml(html_text)
+                self._persist_daily_briefing_cache(briefing, html_text)
             except Exception as e:
                 print(f"Error formatting briefing: {e}")
                 import traceback
                 traceback.print_exc()
                 # Fallback: display raw briefing
-                briefing_html = briefing.replace('\n', '<br>')
-                self.briefing_display.setHtml(f"<div style='color: #e8eaed; padding: 10px; line-height: 1.5;'>{briefing_html}</div>")
+                briefing_html = escape(str(briefing or "")).replace('\n', '<br>')
+                html_text = self._render_briefing_html(briefing_html)
+                self.briefing_display.setHtml(html_text)
+                self._persist_daily_briefing_cache(briefing, html_text)
         except Exception as e:
             print(f"Error in briefing display: {e}")
             import traceback
@@ -1850,8 +1909,14 @@ class DashboardTab(QWidget):
             if not hasattr(self, 'briefing_display'):
                 return
             
-            if "already shown today" in error_message:
-                self.briefing_display.setHtml("<div style='color: #e8eaed; text-align: center; padding: 20px;'>Daily briefing has already been shown today. Click 'Refresh' to generate a new one.</div>")
+            if "already shown today" in (error_message or "").lower():
+                if not self._load_cached_daily_briefing_if_available():
+                    self.briefing_display.setHtml(
+                        "<div style='color: #e8eaed; text-align: center; padding: 20px;'>"
+                        "Daily briefing has already been shown today, but no cached copy is available."
+                        "<br>Click 'Refresh' to generate a new one."
+                        "</div>"
+                    )
             else:
                 self.briefing_display.setHtml(f"<div style='color: #e8eaed;'>Error loading briefing: {error_message}</div>")
         except Exception as e:

@@ -37,8 +37,19 @@ class ChatManager(QObject):  # Inherit QObject for signals
                 last_run_date = datetime.fromtimestamp(last_run_timestamp, tz=timezone.utc).date()
                 today = datetime.now(timezone.utc).date()
                 
-                # If briefing was already generated today, return None
+                # If briefing was already generated today, return cached content.
                 if last_run_date == today:
+                    today_str = today.strftime("%Y-%m-%d")
+                    try:
+                        if hasattr(self.chat_handler, "get_cached_daily_briefing"):
+                            cached = self.chat_handler.get_cached_daily_briefing(for_utc_date=today_str)
+                        else:
+                            cached_date = str(self.db.get_setting("daily_briefing_latest_date", "") or "").strip()
+                            cached = str(self.db.get_setting("daily_briefing_latest_text", "") or "").strip() if cached_date == today_str else ""
+                        if cached:
+                            return cached
+                    except Exception:
+                        pass
                     return None
             
             # Generate new briefing

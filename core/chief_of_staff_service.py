@@ -9,6 +9,10 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import List, Tuple, Optional
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - fallback for minimal Python builds
+    ZoneInfo = None
 
 from core.db import DatabaseManager
 from core.grok_client import (
@@ -119,12 +123,59 @@ WEB_SEARCH_TRIGGER = re.compile(r"^\s*WEB_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
 DOC_SEARCH_TRIGGER = re.compile(r"^\s*DOC_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
 MEMORY_SEARCH_TRIGGER = re.compile(r"^\s*MEMORY_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
 
+USER_TIMEZONE_SETTING_KEY = "user_timezone"
+USER_TIMEZONE_ENV_KEY = "NAVI_USER_TIMEZONE"
 
-def _now_local():
-    return datetime.now()
+def _resolve_user_timezone(db: Optional[DatabaseManager] = None):
+    """
+    Resolve the user's timezone in priority order:
+    1) NAVI_USER_TIMEZONE environment variable
+    2) app_settings.user_timezone
+    3) host local timezone (fallback)
+    """
+    configured_tz = ""
+    try:
+        configured_tz = str(os.getenv(USER_TIMEZONE_ENV_KEY) or "").strip()
+    except Exception:
+        configured_tz = ""
+
+    if not configured_tz and db is not None:
+        try:
+            configured_tz = str(db.get_setting(USER_TIMEZONE_SETTING_KEY, "") or "").strip()
+        except Exception:
+            configured_tz = ""
+
+    if configured_tz and ZoneInfo is not None:
+        try:
+            return ZoneInfo(configured_tz)
+        except Exception:
+            logger.warning("Invalid timezone '%s'; falling back to local timezone", configured_tz)
+
+    return datetime.now().astimezone().tzinfo or timezone.utc
 
 
-def _parse_calendar_datetime(value: str) -> Optional[datetime]:
+def _now_local(db: Optional[DatabaseManager] = None):
+    return datetime.now(_resolve_user_timezone(db))
+
+
+def _utc_offset_label(dt: datetime) -> str:
+    offset = dt.utcoffset() or timedelta(0)
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"UTC{sign}{hours:02d}:{minutes:02d}"
+
+
+def _local_time_context(now_local: datetime) -> str:
+    tz_label = now_local.tzname() or "local time"
+    return (
+        f"Today is {now_local.strftime('%Y-%m-%d')}, current local time "
+        f"{now_local.strftime('%I:%M %p').lstrip('0')} ({tz_label}, {_utc_offset_label(now_local)})."
+    )
+
+
+def _parse_calendar_datetime(value: str, *, default_tz=None) -> Optional[datetime]:
     """
     Parse common datetime inputs and return timezone-aware datetime when possible.
     Accepted examples:
@@ -137,7 +188,7 @@ def _parse_calendar_datetime(value: str) -> Optional[datetime]:
     if not s:
         return None
 
-    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    local_tz = default_tz or datetime.now().astimezone().tzinfo or timezone.utc
 
     # Handle UTC "Z" suffix explicitly because fromisoformat expects "+00:00".
     if s.endswith("Z"):
@@ -241,7 +292,7 @@ def _preferences_context(prefs_row) -> str:
     return "\n\n".join(parts) if parts else ""
 
 
-def _calendar_context() -> str:
+def _calendar_context(now_local: Optional[datetime] = None) -> str:
     """
     Read-only calendar context. Avoids triggering OAuth flows by requiring an existing token file.
     """
@@ -249,22 +300,30 @@ def _calendar_context() -> str:
     if not ok:
         return "**Calendar:** (unavailable) " + msg
 
-    now = datetime.now(timezone.utc)
-    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    tomorrow = today + timedelta(days=1)
-    week_end = today + timedelta(days=7)
-    time_min_today = today.strftime("%Y-%m-%dT%H:%M:%SZ")
-    time_max_today = tomorrow.strftime("%Y-%m-%dT%H:%M:%SZ")
-    time_min_week = today.strftime("%Y-%m-%dT%H:%M:%SZ")
-    time_max_week = week_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    current_local = now_local or datetime.now().astimezone()
+    if current_local.tzinfo is None:
+        current_local = current_local.replace(tzinfo=datetime.now().astimezone().tzinfo or timezone.utc)
+
+    local_tz = current_local.tzinfo or timezone.utc
+    today_local = current_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_local = today_local + timedelta(days=1)
+    week_end_local = today_local + timedelta(days=7)
+
+    # Google Calendar API expects RFC3339 timestamps; use UTC bounds for reliable querying.
+    time_min_today = today_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    time_max_today = tomorrow_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    time_min_week = today_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    time_max_week = week_end_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    tz_label = current_local.tzname() or "local time"
     try:
         todays = get_calendar_events(time_min=time_min_today, time_max=time_max_today)
         upcoming = get_calendar_events(time_min=time_min_week, time_max=time_max_week)
         return (
-            "**Calendar (today):**\n"
-            + format_events_brief(todays, tz=timezone.utc)
-            + "\n\n**Calendar (next 7 days):**\n"
-            + format_events_brief(upcoming, tz=timezone.utc)
+            f"**Calendar (today, {tz_label}):**\n"
+            + format_events_brief(todays, tz=local_tz)
+            + f"\n\n**Calendar (next 7 days, {tz_label}):**\n"
+            + format_events_brief(upcoming, tz=local_tz)
         )
     except Exception as e:
         return "**Calendar:** (error loading) " + str(e)
@@ -529,18 +588,18 @@ def cos_response(
     Chief of Staff: you say what you're working on and what's come up; model responds.
     If conversation_history is provided (list of (role, content)), uses multi-turn context.
     """
-    now = _now_local()
-    today = now.strftime("%Y-%m-%d")
-    time_str = now.strftime("%H:%M")
+    now = _now_local(db)
+    time_context_line = _local_time_context(now)
     prefs = db.cos_get_preferences()
     prefs_ctx = _preferences_context(prefs)
 
     tasks_ctx = _tasks_context(db)
     assignments_ctx = _assignments_context(db)
-    cal_ctx = _calendar_context()
+    cal_ctx = _calendar_context(now_local=now)
     mem_ctx = _memory_context(db, user_message, chat_id)
 
     system = """You are an AI Chief of Staff for Adam. He tells you in plain text what he's working on and what has come up that needs to be dealt with. You help him plan, prioritize, and reduce cognitive load. You respect his constraints: time freedom, low context switching, family boundaries. You give direct, concise advice and challenge assumptions when useful. You do not take autonomous actions—only recommend and advise. Respond in whatever form is most helpful; no required format.
+When giving time-aware advice, treat the provided local time and timezone context as the source of truth.
 
 You can see his current dashboard task list and may add tasks to it. To add a task, write one or more lines in this exact format (one task per line):
 ADD_TASK: <task description> | <due date as MM-DD-YYYY or "none"> | <Business or Personal>
@@ -718,7 +777,7 @@ If you request a tool, you must return only that single tool line (no other text
 
     if not conversation_history or len(conversation_history) == 0:
         # Single turn
-        user = f"""Today is {today}, current time {time_str} (user's local time)."""
+        user = time_context_line
         if prefs_ctx:
             user += f"""
 
@@ -750,7 +809,7 @@ If you request a tool, you must return only that single tool line (no other text
             return f"Error: {e}"
 
     # Multi-turn: build messages list. Caller must have saved the current user message and included it in conversation_history.
-    time_ctx = f"Today is {today}, current time {time_str} (user's local time)."
+    time_ctx = time_context_line
     if prefs_ctx:
         time_ctx += f"\n\n**His stated preferences / constraints:**\n{prefs_ctx}"
     if cal_ctx:
@@ -807,6 +866,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     block_failure_reasons: list[str] = []
     cleaned_lines = []
     existing_assignment_task_ids_cache: set[int] | None = None
+    calendar_parse_tz = _resolve_user_timezone(db)
 
     def _existing_assignment_task_ids() -> set[int]:
         nonlocal existing_assignment_task_ids_cache
@@ -1053,8 +1113,8 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
             end_raw = (m_block.group(3) or "").strip()
             calendar_id = (m_block.group(4) or "primary").strip() or "primary"
 
-            start_dt = _parse_calendar_datetime(start_raw)
-            end_dt = _parse_calendar_datetime(end_raw)
+            start_dt = _parse_calendar_datetime(start_raw, default_tz=calendar_parse_tz)
+            end_dt = _parse_calendar_datetime(end_raw, default_tz=calendar_parse_tz)
             if not start_dt or not end_dt or end_dt <= start_dt:
                 block_failures += 1
                 block_failure_reasons.append("invalid start/end datetime")

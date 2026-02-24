@@ -33,6 +33,8 @@ URGENT_EMAILS:
 - [Urgent email details if any]
 
 Return only the relevant emails, nothing else."""
+    DAILY_BRIEFING_CACHE_TEXT_KEY = "daily_briefing_latest_text"
+    DAILY_BRIEFING_CACHE_DATE_KEY = "daily_briefing_latest_date"
 
     def __init__(self, chat_window=None, db=None):
         super().__init__()
@@ -43,6 +45,31 @@ Return only the relevant emails, nothing else."""
         self.data_fetcher = DataFetcher()
         self.last_search_results = []
 
+    def _today_utc_str(self):
+        return datetime.now(UTC).strftime("%Y-%m-%d")
+
+    def _store_daily_briefing_cache(self, briefing):
+        try:
+            text = str(briefing or "").strip()
+            if not text:
+                return
+            self.db.set_setting(self.DAILY_BRIEFING_CACHE_DATE_KEY, self._today_utc_str())
+            self.db.set_setting(self.DAILY_BRIEFING_CACHE_TEXT_KEY, text)
+        except Exception:
+            # Best-effort cache persistence only.
+            pass
+
+    def get_cached_daily_briefing(self, for_utc_date=None):
+        try:
+            target_date = str(for_utc_date or self._today_utc_str())
+            cached_date = str(self.db.get_setting(self.DAILY_BRIEFING_CACHE_DATE_KEY, "") or "").strip()
+            if cached_date != target_date:
+                return None
+            text = str(self.db.get_setting(self.DAILY_BRIEFING_CACHE_TEXT_KEY, "") or "").strip()
+            return text or None
+        except Exception:
+            return None
+
     def start_briefing(self):
         last_run = self.db.get_last_run()
         today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -50,16 +77,20 @@ Return only the relevant emails, nothing else."""
         if last_run_date < today:
             briefing = self.daily_briefing()
             # Replace \n with <br> for HTML
-            formatted_briefing = briefing.replace('\n', '<br>')
+            formatted_briefing = (briefing or "").replace('\n', '<br>')
             if self.chat_window is not None and hasattr(self.chat_window, 'chatDisplay'):
                 self.chat_window.chatDisplay.append(f'<div style="text-align: left;"><b>Navi:</b> {formatted_briefing}</div>')
+            return briefing
+        return self.get_cached_daily_briefing(for_utc_date=today.strftime("%Y-%m-%d"))
 
     def daily_briefing(self):
         """Generate comprehensive daily briefing with improved data collection and formatting."""
         from config import BRIEFING_AND_EMAIL_DISABLED
         if BRIEFING_AND_EMAIL_DISABLED:
+            disabled_msg = "Daily briefing and email checking are currently disabled."
             self.db.update_last_run()  # Update timestamp even when disabled to avoid repeated calls
-            return "Daily briefing and email checking are currently disabled."
+            self._store_daily_briefing_cache(disabled_msg)
+            return disabled_msg
         last_run = self.db.get_last_run()
         today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         tomorrow = today + timedelta(days=1)
@@ -597,6 +628,7 @@ Return only the relevant emails, nothing else."""
                   f"[SECTION:Scheduling Suggestions]\n{scheduling_str}"
         
         self.db.update_last_run()
+        self._store_daily_briefing_cache(briefing)
         return briefing
 
     def save_message(self, session_id, role, content):
