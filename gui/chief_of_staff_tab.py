@@ -366,6 +366,9 @@ Calendar and task actions:
         reassign_btn = QPushButton("Reassign")
         reassign_btn.clicked.connect(self._reassign_selected_assignment)
         asg_head.addWidget(reassign_btn)
+        bulk_status_btn = QPushButton("Bulk Status")
+        bulk_status_btn.clicked.connect(self._bulk_set_filtered_status)
+        asg_head.addWidget(bulk_status_btn)
         export_btn = QPushButton("Export")
         export_btn.clicked.connect(self._export_assignment_board_markdown)
         asg_head.addWidget(export_btn)
@@ -569,6 +572,54 @@ Calendar and task actions:
             return
         self._refresh_assignment_list()
         self._focus_assignment_by_id(int(self._current_assignment_id))
+
+    def _bulk_set_filtered_status(self):
+        rows = self._filtered_assignment_rows()
+        if not rows:
+            QMessageBox.information(self, "Assignments", "No assignments match the current filters.")
+            return
+        statuses = ["queued", "in_progress", "awaiting_review", "blocked", "done", "cancelled"]
+        picked, ok = QInputDialog.getItem(
+            self,
+            "Bulk Update Status",
+            "Set status for filtered assignments:",
+            statuses,
+            0,
+            False,
+        )
+        if not ok or not picked:
+            return
+        to_status = (picked or "").strip().lower()
+        count = len(rows)
+        confirm = QMessageBox.question(
+            self,
+            "Confirm Bulk Update",
+            f"Update status to '{to_status}' for {count} assignment(s)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        updated = 0
+        failed = 0
+        for r in rows:
+            aid = int(r.get("id") or 0)
+            if aid <= 0:
+                failed += 1
+                continue
+            ok = self.db.agent_update_assignment_status(
+                assignment_id=aid,
+                to_status=to_status,
+                actor_code="navi",
+                note="Bulk status update from CoS board",
+            )
+            if ok:
+                updated += 1
+            else:
+                failed += 1
+        self._refresh_assignment_list()
+        QMessageBox.information(self, "Bulk Update", f"Updated: {updated}\nFailed: {failed}")
 
     def _refresh_chat_list(self):
         """Reload sidebar: list all CoS chats, optionally grouped by project."""
