@@ -303,6 +303,7 @@ Use these exact line formats in Navi responses:
 
 - `ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>`
 - `UPDATE_ASSIGNMENT_STATUS: <A-0007 or 7> | <queued|in_progress|awaiting_review|blocked|done|cancelled> | <optional note>`
+- `BULK_UPDATE_ASSIGNMENT_STATUS: <status> | <AgentName or all> | <optional note>`
 - `UPDATE_ASSIGNMENT_PRIORITY: <A-0007 or 7> | <P1-P5> | <optional note>`
 - `UPDATE_ASSIGNMENT_DUE: <A-0007 or 7> | <YYYY-MM-DD or none> | <optional note>`
 - `RETITLE_ASSIGNMENT: <A-0007 or 7> | <new title> | <optional note>`
