@@ -381,6 +381,24 @@ class TestChiefOfStaffService:
         assert "Updated 1 assignment(s)" in result
         assert "UPDATE_ASSIGNMENT_STATUS:" not in result
 
+    def test_cos_response_updates_assignment_status_synonym(self, mock_grok, cos_db):
+        """Natural status synonym like 'completed' should normalize to canonical 'done'."""
+        aid = cos_db.agent_create_assignment(
+            title="Close assignment",
+            brief_md="Finish task",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+        )
+        mock_grok.return_value = f"UPDATE_ASSIGNMENT_STATUS: A-{int(aid):04d} | completed | Wrapped up"
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Mark it complete.")
+        row = cos_db.agent_get_assignment(int(aid))
+        assert row is not None
+        assert str(row.get("status") or "") == "done"
+        assert "Updated 1 assignment(s)" in result
+
     def test_cos_response_reassigns_assignment(self, mock_grok, cos_db):
         """REASSIGN moves assignment to a new assignee and relinks source thread."""
         aid = cos_db.agent_create_assignment(

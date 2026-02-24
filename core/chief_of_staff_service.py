@@ -314,6 +314,36 @@ def _parse_assignment_ref(value: str) -> Optional[int]:
     return None
 
 
+def _normalize_assignment_status(value: str) -> str:
+    """Normalize common status variants to canonical assignment states."""
+    s = (value or "").strip().lower()
+    if not s:
+        return ""
+    normalized = s.replace("-", "_").replace(" ", "_")
+    aliases = {
+        "queue": "queued",
+        "queued": "queued",
+        "backlog": "queued",
+        "in_progress": "in_progress",
+        "progress": "in_progress",
+        "started": "in_progress",
+        "doing": "in_progress",
+        "awaiting_review": "awaiting_review",
+        "awaitingreview": "awaiting_review",
+        "review": "awaiting_review",
+        "for_review": "awaiting_review",
+        "blocked": "blocked",
+        "block": "blocked",
+        "done": "done",
+        "complete": "done",
+        "completed": "done",
+        "cancel": "cancelled",
+        "canceled": "cancelled",
+        "cancelled": "cancelled",
+    }
+    return aliases.get(normalized, normalized)
+
+
 def cos_response(
     db: DatabaseManager,
     user_message: str,
@@ -670,7 +700,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 logger.warning("CoS UPDATE_ASSIGNMENT_STATUS invalid format: %r", stripped)
                 continue
             assignment_ref = parts[0]
-            to_status = (parts[1] or "").strip().lower()
+            to_status = _normalize_assignment_status(parts[1] or "")
             note = (parts[2] if len(parts) > 2 else "").strip() or None
             aid = _parse_assignment_ref(assignment_ref)
             if aid is None:
