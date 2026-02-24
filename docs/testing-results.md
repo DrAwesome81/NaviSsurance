@@ -28,10 +28,10 @@ Record the **result** and **date** for each test item. Aligned with [testing.md]
 
 | Test ID        | Result  | Date       | Description                               | Notes |
 |----------------|---------|------------|-------------------------------------------|-------|
-| TC-COS-001     | Fail    | 2/24/26    | Create assignment from CoS chat           | There is no Assignment board as described by the test description. No assignment or task of any kind was created. AI Projects shows no assignment     |
-| TC-COS-002     | Pending |            | Update assignment fields from CoS chat    |       |
-| TC-COS-003     | Pending |            | Reassign assignment from CoS chat         |       |
-| TC-COS-004     | Pending |            | Open assignee chat from board              |       |
+| TC-COS-001     | Pass    | 2/24/26    | Create assignment from CoS chat           |       |
+| TC-COS-002     | Pass    | 2/24/26    | Update assignment fields from CoS chat    |       |
+| TC-COS-003     | Pass    | 2/24/26    | Reassign assignment from CoS chat         |       |
+| TC-COS-004     | Fail    |            | Open assignee chat from board             | Could not open assignee tab in this context      |
 | TC-COS-005     | Pending |            | Create assignment manually from board     |       |
 | TC-COS-006     | Pending |            | Single assignment task bridge             |       |
 | TC-COS-007     | Pending |            | Bulk status update with optional note     |       |
