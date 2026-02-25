@@ -32,16 +32,16 @@ Record the **result** and **date** for each test item. Aligned with [testing.md]
 | TC-COS-002     | Pass    | 2/24/26    | Update assignment fields from CoS chat    |       |
 | TC-COS-003     | Pass    | 2/24/26    | Reassign assignment from CoS chat         |       |
 | TC-COS-004     | Fail    |            | Open assignee chat from board             | Could not open assignee tab in this context      |
-| TC-COS-005     | Pending |            | Create assignment manually from board     |       |
-| TC-COS-006     | Pending |            | Single assignment task bridge             |       |
-| TC-COS-007     | Pending |            | Bulk status update with optional note     |       |
-| TC-COS-008     | Pending |            | Bulk priority update with optional note   |       |
-| TC-COS-009     | Pending |            | Bulk due update with optional note        |       |
-| TC-COS-010     | Pending |            | Assignment health filter + badges         |       |
-| TC-COS-011     | Pending |            | Bulk reassign with optional note           |       |
-| TC-COS-012     | Pending |            | Bulk create tasks from filtered assignments |       |
-| TC-COS-013     | Pending |            | CoS bulk command open-mode semantics      |       |
-| TC-COS-014     | Pending |            | Due-date validation (chat and UI)          |       |
+| TC-COS-005     | Pass    | 2/24/26    | Create assignment manually from board     |       |
+| TC-COS-006     | Pass    | 2/24/26    | Single assignment task bridge             |       |
+| TC-COS-007     | Pass    | 2/24/26    | Bulk status update with optional note     |       |
+| TC-COS-008     | Pass    | 2/24/26    | Bulk priority update with optional note   |       |
+| TC-COS-009     | Pass    | 2/24/26    | Bulk due update with optional note        |       |
+| TC-COS-010     | Pass    | 2/24/26    | Assignment health filter + badges         |       |
+| TC-COS-011     | Pass    | 2/24/26    | Bulk reassign with optional note           |       |
+| TC-COS-012     | Pass    | 2/24/26    | Bulk create tasks from filtered assignments |       |
+| TC-COS-013     | Fail    | 2/24/26    | CoS bulk command open-mode semantics      | Chat says it updated it, but it didn't      |
+| TC-COS-014     | Pass    | 2/24/26    | Due-date validation (chat and UI)          |       |
 
 ### Automated test runs
 

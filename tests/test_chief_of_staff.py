@@ -590,7 +590,8 @@ class TestChiefOfStaffService:
         quill_row = cos_db.agent_get_assignment(int(quill_aid))
         assert atlas_row is not None and str(atlas_row.get("status") or "") == "blocked"
         assert quill_row is not None and str(quill_row.get("status") or "") == "queued"
-        assert "Bulk-updated 1 assignment scope(s)" in result
+        assert "Bulk status command results for 1 scope(s)" in result
+        assert "changed=1" in result
         assert "BULK_UPDATE_ASSIGNMENT_STATUS:" not in result
 
     def test_cos_response_bulk_updates_assignment_status_open_mode(self, mock_grok, cos_db):
@@ -622,7 +623,48 @@ class TestChiefOfStaffService:
         assert open_row is not None and str(open_row.get("status") or "") == "blocked"
         assert done_row is not None and str(done_row.get("status") or "") == "done"
         assert "skipped closed" in result
+        assert "changed=1" in result
         assert "BULK_UPDATE_ASSIGNMENT_STATUS:" not in result
+
+    def test_cos_response_direct_bulk_status_command_bypasses_model(self, mock_grok, cos_db):
+        """Explicit bulk command in user message executes directly without model translation."""
+        atlas_aid = cos_db.agent_create_assignment(
+            title="Atlas direct command target",
+            brief_md="Atlas work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(
+            cos_db,
+            "BULK_UPDATE_ASSIGNMENT_STATUS: blocked | Atlas | open | Waiting on dependencies",
+        )
+        row = cos_db.agent_get_assignment(int(atlas_aid))
+        assert row is not None and str(row.get("status") or "") == "blocked"
+        assert "changed=1" in result
+
+    def test_cos_response_direct_bulk_status_repeat_reports_zero_changed(self, mock_grok, cos_db):
+        """Repeating same target status should report changed=0 and unchanged>0."""
+        aid = cos_db.agent_create_assignment(
+            title="Already blocked assignment",
+            brief_md="Atlas work",
+            requester_code="navi",
+            assignee_code="atlas",
+            priority=3,
+            status="blocked",
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(
+            cos_db,
+            "BULK_UPDATE_ASSIGNMENT_STATUS: blocked | Atlas | open | No-op rerun",
+        )
+        row = cos_db.agent_get_assignment(int(aid))
+        assert row is not None and str(row.get("status") or "") == "blocked"
+        assert "changed=0" in result
+        assert "unchanged=1" in result
 
     def test_cos_response_bulk_updates_assignment_priority_scoped(self, mock_grok, cos_db):
         """BULK_UPDATE_ASSIGNMENT_PRIORITY updates matching assignee scope."""
@@ -1198,3 +1240,50 @@ def test_chief_of_staff_health_filter_overdue(qapp, cos_db):
     assert int(overdue_open) in row_ids
     assert int(fresh_open) not in row_ids
     assert int(overdue_closed) not in row_ids
+
+
+@pytest.mark.qt
+def test_chief_of_staff_open_assignment_uses_ancestor_tab_host(qapp, cos_db):
+    """Opening assignee chat should work when tab host is an ancestor, not direct parent."""
+    from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QGroupBox
+    from gui.chief_of_staff_tab import ChiefOfStaffTab
+
+    aid = cos_db.agent_create_assignment(
+        title="Atlas console open target",
+        brief_md="Navigate from CoS board to assignee chat",
+        requester_code="navi",
+        assignee_code="atlas",
+        priority=3,
+        status="queued",
+    )
+    assert aid
+
+    class _DummyConsole:
+        def __init__(self):
+            self.focused = None
+
+        def focus_assignment(self, assignment_id):
+            self.focused = int(assignment_id)
+            return True
+
+    host = QWidget()
+    host.tab_widget = QTabWidget(host)
+    host.projects_tab = QWidget()
+    host.projects_tab.atlas_chat_group = QGroupBox(host.projects_tab)
+    host.projects_tab.atlas_chat_group.setCheckable(True)
+    host.projects_tab.atlas_console = _DummyConsole()
+    host.tab_widget.addTab(host.projects_tab, "AI Projects")
+
+    mid = QWidget(host)
+    mid_layout = QVBoxLayout(mid)
+    tab = ChiefOfStaffTab(cos_db, parent=mid)
+    mid_layout.addWidget(tab)
+    tab._current_assignment_id = int(aid)
+
+    with patch("gui.chief_of_staff_tab.QMessageBox.information") as info_mock:
+        with patch("gui.chief_of_staff_tab.QMessageBox.warning") as warn_mock:
+            tab._open_assignment_in_assignee_console()
+
+    assert host.projects_tab.atlas_console.focused == int(aid)
+    assert not info_mock.called
+    assert not warn_mock.called

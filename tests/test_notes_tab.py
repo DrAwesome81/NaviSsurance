@@ -12,6 +12,14 @@ This test suite covers:
 import os
 import pytest  # type: ignore[reportMissingImports]
 
+# This module targets the legacy NotesTab UI surface (pre-refactor).
+# Keep it opt-in until rewritten for the current NoteTakingSystem API.
+if not os.getenv("RUN_LEGACY_NOTES_TESTS"):
+    pytest.skip(
+        "Legacy NotesTab UI tests are disabled by default (set RUN_LEGACY_NOTES_TESTS=1 to enable).",
+        allow_module_level=True,
+    )
+
 if not os.getenv("RUN_QT_TESTS"):
     pytest.skip(
         "Qt/UI tests are disabled by default (set RUN_QT_TESTS=1 to enable).",

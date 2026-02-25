@@ -118,6 +118,8 @@ Last revised: 2026-02-23
   2. Ensure some assignments are done/cancelled.
 - Expected:
   - Closed assignments are skipped and command notes mention skipped closed count.
+  - Bulk status command notes include deterministic counts (`matched`, `eligible`, `changed`, `unchanged`, `failed`).
+  - If no rows were changed, the note explicitly shows `changed=0` (no implied success language).
 
 #### TC-COS-014: Due-date validation (chat and UI)
 - Steps:

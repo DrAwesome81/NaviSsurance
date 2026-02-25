@@ -114,6 +114,28 @@ BULK_ADD_TASKS_FROM_ASSIGNMENTS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Explicit command prefixes that should bypass model translation when the
+# user message is already command-only.
+ACTION_COMMAND_PREFIXES: tuple[str, ...] = (
+    "ADD_TASK:",
+    "ADD_CAL_BLOCK:",
+    "ASSIGN:",
+    "UPDATE_ASSIGNMENT_STATUS:",
+    "BULK_UPDATE_ASSIGNMENT_STATUS:",
+    "UPDATE_ASSIGNMENT_PRIORITY:",
+    "BULK_UPDATE_ASSIGNMENT_PRIORITY:",
+    "UPDATE_ASSIGNMENT_DUE:",
+    "BULK_UPDATE_ASSIGNMENT_DUE:",
+    "REASSIGN:",
+    "BULK_REASSIGN_ASSIGNMENTS:",
+    "UPDATE_ASSIGNMENT_SUMMARY:",
+    "RETITLE_ASSIGNMENT:",
+    "UPDATE_ASSIGNMENT_BRIEF:",
+    "ADD_ASSIGNMENT_ARTIFACT:",
+    "ADD_TASK_FROM_ASSIGNMENT:",
+    "BULK_ADD_TASKS_FROM_ASSIGNMENTS:",
+)
+
 # CoS tool triggers (tool loop)
 WEB_SEARCH_TRIGGER = re.compile(r"^\s*WEB_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
 DOC_SEARCH_TRIGGER = re.compile(r"^\s*DOC_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
@@ -519,6 +541,31 @@ def _parse_bulk_mode_and_note(parts: list[str], *, start_index: int = 2) -> tupl
     return True, mode, note
 
 
+def _extract_explicit_action_lines(message: str) -> list[str]:
+    """
+    Return command lines when message is command-only.
+
+    This enables deterministic execution for explicit user commands instead of
+    relying on the model to re-emit tool syntax.
+    """
+    lines: list[str] = []
+    for raw_line in (message or "").splitlines():
+        line = (raw_line or "").strip()
+        if not line:
+            continue
+        # Allow users to wrap commands in markdown code fences.
+        if line.startswith("```"):
+            continue
+        lines.append(line)
+    if not lines:
+        return []
+    for line in lines:
+        up = line.upper()
+        if not any(up.startswith(prefix) for prefix in ACTION_COMMAND_PREFIXES):
+            return []
+    return lines
+
+
 def cos_response(
     db: DatabaseManager,
     user_message: str,
@@ -529,6 +576,21 @@ def cos_response(
     Chief of Staff: you say what you're working on and what's come up; model responds.
     If conversation_history is provided (list of (role, content)), uses multi-turn context.
     """
+    explicit_action_lines = _extract_explicit_action_lines(user_message or "")
+    if explicit_action_lines:
+        try:
+            response = _parse_and_add_tasks(db, "\n".join(explicit_action_lines), chat_id=chat_id)
+            _extract_and_store_memory(
+                db,
+                chat_id=chat_id,
+                user_message=user_message,
+                assistant_message=response,
+            )
+            return response
+        except Exception as e:
+            logger.exception("CoS explicit command handling failed: %s", e)
+            return f"Error: {e}"
+
     now = _now_local()
     today = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H:%M")
@@ -1215,17 +1277,24 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 assignment_failures.append(f"no assignments found for scope '{scope_label}'")
                 continue
 
-            updated_count = 0
+            matched_count = 0
+            eligible_count = 0
+            changed_count = 0
+            unchanged_count = 0
             skipped_closed = 0
+            failed_count = 0
             for r in rows:
                 aid = int(r.get("id") or 0)
                 if aid <= 0:
                     continue
+                matched_count += 1
                 current_status = str(r.get("status") or "").strip().lower()
                 if bulk_mode == "open" and current_status in {"done", "cancelled"}:
                     skipped_closed += 1
                     continue
+                eligible_count += 1
                 if current_status == to_status:
+                    unchanged_count += 1
                     continue
                 ok = False
                 try:
@@ -1237,18 +1306,29 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     )
                 except Exception:
                     ok = False
-                if ok:
-                    updated_count += 1
+                if not ok:
+                    failed_count += 1
+                    continue
+                # Verify persisted state before counting as changed.
+                verify_row = db.agent_get_assignment(int(aid)) or {}
+                verify_status = str(verify_row.get("status") or "").strip().lower()
+                if verify_status == to_status:
+                    changed_count += 1
+                else:
+                    failed_count += 1
             summary = (
-                f"{scope_label}: {updated_count} -> {to_status}"
-                f"{f' ({skipped_closed} skipped closed)' if skipped_closed else ''}"
+                f"{scope_label}: target={to_status}, matched={matched_count}, eligible={eligible_count}, "
+                f"changed={changed_count}, unchanged={unchanged_count}, skipped closed={skipped_closed}, failed={failed_count}"
             )
-            if updated_count <= 0 and skipped_closed <= 0:
+            if matched_count <= 0:
                 assignment_failures.append(
-                    f"no assignments updated for scope '{scope_label}' to {to_status}"
+                    f"no assignments matched scope '{scope_label}'"
                 )
-            else:
-                bulk_updated_assignments.append(summary)
+            elif failed_count > 0 and changed_count <= 0:
+                assignment_failures.append(
+                    f"bulk status write failed for scope '{scope_label}' (changed=0, failed={failed_count})"
+                )
+            bulk_updated_assignments.append(summary)
             continue
 
         m_bulk_pri = BULK_UPDATE_ASSIGNMENT_PRIORITY_PATTERN.match(stripped)
@@ -1766,7 +1846,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
         preview = ", ".join(bulk_updated_assignments[:3])
         more = " ..." if len(bulk_updated_assignments) > 3 else ""
         action_notes.append(
-            f"— *Bulk-updated {len(bulk_updated_assignments)} assignment scope(s): {preview}{more}.*"
+            f"— *Bulk status command results for {len(bulk_updated_assignments)} scope(s): {preview}{more}.*"
         )
     if bulk_updated_assignment_priorities:
         preview = ", ".join(bulk_updated_assignment_priorities[:3])

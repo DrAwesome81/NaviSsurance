@@ -1673,6 +1673,30 @@ Calendar and task actions:
         if not ok:
             QMessageBox.information(self, "Assignments", f"Could not find assignment A-{aid:04d}.")
 
+    def _resolve_host_with_tab_widget(self):
+        """Find the ancestor/window that owns the main tab widget."""
+        node = self
+        for _ in range(40):
+            if node is None:
+                break
+            tw = getattr(node, "tab_widget", None)
+            if isinstance(tw, QTabWidget):
+                return node, tw
+            next_node = None
+            if hasattr(node, "parentWidget"):
+                next_node = node.parentWidget()
+            if next_node is None and hasattr(node, "parent"):
+                next_node = node.parent()
+            if next_node is node:
+                break
+            node = next_node
+
+        win = self.window()
+        tw = getattr(win, "tab_widget", None) if win is not None else None
+        if isinstance(tw, QTabWidget):
+            return win, tw
+        return None, None
+
     def _open_assignment_in_assignee_console(self):
         if not self._current_assignment_id:
             QMessageBox.information(self, "Assignments", "Select an assignment first.")
@@ -1683,8 +1707,7 @@ Calendar and task actions:
             return
         assignee = str(row.get("assignee_code") or "").strip().lower()
 
-        host = self.parent()
-        tw = getattr(host, "tab_widget", None) if host is not None else None
+        host, tw = self._resolve_host_with_tab_widget()
         if tw is None:
             QMessageBox.information(self, "Assignments", "Could not open assignee tab in this context.")
             return

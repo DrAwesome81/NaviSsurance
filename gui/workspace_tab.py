@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
                             QListWidget, QListWidgetItem, QTextEdit, QSplitter, 
                             QFileDialog, QProgressBar, QMenu, QCheckBox, QInputDialog, QApplication, QSpinBox, QGroupBox)
-from PyQt6.QtCore import Qt, QMimeData, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QMimeData, QThread, pyqtSignal, QTimer, QSize
 from PyQt6.QtGui import QDropEvent, QDragEnterEvent, QPainter, QColor
 from core.api import DropboxClient
 from dropbox import files
@@ -133,8 +133,8 @@ class WorkspaceTab(QWidget):
         self.setup_preview_pane(main_splitter)
         
         # Use stretch factors for responsive proportions (20% files, 80% preview)
-        main_splitter.setStretchFactor(0, 1)  # Files panel gets 1/5 of space
-        main_splitter.setStretchFactor(1, 4)  # Preview panel gets 4/5 of space
+        main_splitter.setStretchFactor(0, 2)  # Files panel gets more usable default space
+        main_splitter.setStretchFactor(1, 5)  # Preview panel still remains primary
 
         self.quill_chat_group = QGroupBox("Direct chat with Quill (Technical Writer)")
         self.quill_chat_group.setCheckable(True)
@@ -153,6 +153,7 @@ class WorkspaceTab(QWidget):
     def setup_file_selection(self, parent_splitter):
         file_widget = QWidget()
         file_widget.setAcceptDrops(True)
+        file_widget.setMinimumWidth(420)
         file_layout = QVBoxLayout(file_widget)
         file_layout.setContentsMargins(0, 0, 0, 0)
         file_layout.setSpacing(8)
@@ -168,8 +169,10 @@ class WorkspaceTab(QWidget):
         status_layout.setSpacing(8)
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("color: #9aa0a6; padding: 5px; font-size: 13px;")
+        self.status_label.setMinimumHeight(28)
         status_layout.addWidget(self.status_label)
         self.progress_bar = QProgressBar()
+        self.progress_bar.setMinimumHeight(22)
         self.progress_bar.setVisible(False)
         status_layout.addWidget(self.progress_bar)
         status_layout.addStretch()
@@ -188,6 +191,8 @@ class WorkspaceTab(QWidget):
             "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
             "border-radius: 6px; padding: 8px;"
         )
+        self.max_rounds_spinbox.setMinimumHeight(36)
+        self.max_rounds_spinbox.setMinimumWidth(96)
         rounds_layout.addWidget(self.max_rounds_spinbox)
         rounds_layout.addStretch()
         file_layout.addLayout(rounds_layout)
@@ -196,11 +201,15 @@ class WorkspaceTab(QWidget):
         btn_layout = QHBoxLayout()
         select_btn = QPushButton("Select File/Folder")
         select_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 500;")
+        select_btn.setMinimumHeight(38)
+        select_btn.setMinimumWidth(170)
         select_btn.clicked.connect(self.select_files)
         btn_layout.addWidget(select_btn)
         
         actions_btn = QPushButton("Actions")
         actions_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 500;")
+        actions_btn.setMinimumHeight(38)
+        actions_btn.setMinimumWidth(120)
         self.actions_menu = QMenu()
         
         # existing actions:
@@ -218,6 +227,8 @@ class WorkspaceTab(QWidget):
         
         self.file_list = QListWidget()
         self.file_list.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 6px;")
+        self.file_list.setMinimumHeight(300)
+        self.file_list.setSpacing(6)
         self.file_list.setToolTip("Drag and drop files here or mark RAG results")
         self.file_list.itemClicked.connect(self.on_file_selected)
         file_layout.addWidget(self.file_list)
@@ -234,6 +245,7 @@ class WorkspaceTab(QWidget):
         - Right: Markdown document pane (reuses self.preview_text)
         """
         preview_widget = QWidget()
+        preview_widget.setMinimumWidth(900)
         preview_layout = QVBoxLayout(preview_widget)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         preview_layout.setSpacing(5)
@@ -265,6 +277,7 @@ class WorkspaceTab(QWidget):
             "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
             "border-radius: 6px;"
         )
+        self.grok_text.setMinimumHeight(190)
         self.grok_text.setPlaceholderText("Grok responses will appear here.")
         ai_layout.addWidget(self.grok_text)
 
@@ -283,6 +296,7 @@ class WorkspaceTab(QWidget):
             "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
             "border-radius: 6px;"
         )
+        self.chatgpt_text.setMinimumHeight(190)
         self.chatgpt_text.setPlaceholderText("ChatGPT responses will appear here.")
         ai_layout.addWidget(self.chatgpt_text)
 
@@ -311,6 +325,8 @@ class WorkspaceTab(QWidget):
             "background-color: #FD6262; color: white; border: none; padding: 8px 16px; "
             "border-radius: 6px; font-weight: 500;"
         )
+        self.save_button.setMinimumHeight(38)
+        self.save_button.setMinimumWidth(160)
         self.save_button.clicked.connect(self.save_markdown)
         self.save_button.setEnabled(False)  # Disabled until document is generated
         button_bar.addWidget(self.save_button)
@@ -320,6 +336,8 @@ class WorkspaceTab(QWidget):
             "background-color: #3a3b3e; color: #e8eaed; border: 1px solid #2e2f32; "
             "padding: 8px 16px; border-radius: 6px; font-weight: 500;"
         )
+        self.export_button.setMinimumHeight(38)
+        self.export_button.setMinimumWidth(120)
         self.export_button.clicked.connect(self.export_markdown)
         self.export_button.setEnabled(False)  # Disabled until document is generated
         button_bar.addWidget(self.export_button)
@@ -334,6 +352,7 @@ class WorkspaceTab(QWidget):
             "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
             "border-radius: 6px;"
         )
+        self.preview_text.setMinimumHeight(430)
         self.preview_text.setPlaceholderText("Markdown document will appear here.")
         markdown_layout.addWidget(self.preview_text)
 
@@ -411,15 +430,20 @@ class WorkspaceTab(QWidget):
             item = QListWidgetItem()
             widget = QWidget()
             layout = QHBoxLayout(widget)
+            layout.setContentsMargins(8, 6, 8, 6)
+            layout.setSpacing(10)
             checkbox = QCheckBox()
+            checkbox.setMinimumSize(22, 22)
             checkbox.setChecked(file_info['marked'])
             checkbox.stateChanged.connect(lambda state: self.toggle_mark(file_info, state))
             layout.addWidget(checkbox)
             label = QLabel(f"{icon} {item_text}")
             label.setToolTip(file_info['name'])
+            label.setMinimumHeight(24)
             layout.addWidget(label)
             layout.addStretch()
-            item.setSizeHint(widget.sizeHint())
+            widget.setMinimumHeight(40)
+            item.setSizeHint(QSize(0, 44))
             item.setData(Qt.ItemDataRole.UserRole, file_info)
             self.file_list.addItem(item)
             self.file_list.setItemWidget(item, widget)

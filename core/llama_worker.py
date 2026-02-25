@@ -6,22 +6,33 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from llama_cpp import Llama
+from llama_cpp import llama_cpp as llama_cpp_lib
 from config import get_system_prompt
 
 def main():
     model_path = "C:/Users/adamo/.cache/huggingface/hub/models--bartowski--Meta-Llama-3-8B-Instruct-GGUF/snapshots/2c3f8d7f3db06e3f9e8c4c6b6e6c7f3f8d9e4c6/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+    configured_gpu_layers = 33
     print("Worker: Before Llama init", file=sys.stderr)
     sys.stderr.flush()
     try:
         llm = Llama(
             model_path=model_path,
-            n_gpu_layers=33,
+            n_gpu_layers=configured_gpu_layers,
             n_ctx=8192,
             n_threads=4,
             verbose=False,
             chat_format="llama-3"
         )
         print("Worker: After Llama init", file=sys.stderr)
+        # Explicit startup signal so terminal output clearly shows GPU offload status.
+        try:
+            supports_offload = bool(llama_cpp_lib.llama_supports_gpu_offload())
+        except Exception:
+            supports_offload = False
+        print(
+            f"GPU_DEBUG: supports_gpu_offload={supports_offload}, configured_n_gpu_layers={configured_gpu_layers}",
+            file=sys.stderr
+        )
         sys.stderr.flush()
         print("MODEL_LOADED", file=sys.stderr)
         sys.stderr.flush()
