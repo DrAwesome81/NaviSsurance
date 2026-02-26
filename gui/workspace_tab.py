@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
                             QListWidget, QListWidgetItem, QTextEdit, QSplitter, 
-                            QFileDialog, QProgressBar, QMenu, QCheckBox, QInputDialog, QApplication, QSpinBox, QGroupBox)
+                            QFileDialog, QProgressBar, QCheckBox, QInputDialog, QApplication, QSpinBox, QGroupBox)
 from PyQt6.QtCore import Qt, QMimeData, QThread, pyqtSignal, QTimer, QSize
 from PyQt6.QtGui import QDropEvent, QDragEnterEvent, QPainter, QColor
 from core.api import DropboxClient
@@ -12,7 +12,14 @@ from datetime import datetime
 import logging
 
 # ADD THIS IMPORT (just below the Dropbox imports)
-from core.workspace_orchestrator import WorkspaceFile, WorkspaceTaskSpec, DualLLMOrchestrator, call_grok_api, call_chatgpt_api
+from core.workspace_orchestrator import (
+    WorkspaceFile,
+    WorkspaceTaskSpec,
+    DualLLMOrchestrator,
+    call_grok_api,
+    call_chatgpt_api,
+    format_reference_pack_summary,
+)
 from core.file_handler import extract_text_from_file
 from gui.agent_console import AgentConsole
 
@@ -140,7 +147,12 @@ class WorkspaceTab(QWidget):
         self.quill_chat_group.setCheckable(True)
         self.quill_chat_group.setChecked(False)
         quill_chat_layout = QVBoxLayout(self.quill_chat_group)
-        self.quill_console = AgentConsole(self.db, agent_code="quill", parent=self)
+        self.quill_console = AgentConsole(
+            self.db,
+            agent_code="quill",
+            parent=self,
+            context_provider=self._build_quill_runtime_context,
+        )
         self.quill_console.setVisible(False)
         quill_chat_layout.addWidget(self.quill_console)
         self.quill_chat_group.toggled.connect(
@@ -197,7 +209,7 @@ class WorkspaceTab(QWidget):
         rounds_layout.addStretch()
         file_layout.addLayout(rounds_layout)
         
-        # Select and Actions buttons
+        # Select and Generate Draft buttons
         btn_layout = QHBoxLayout()
         select_btn = QPushButton("Select File/Folder")
         select_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 500;")
@@ -206,23 +218,12 @@ class WorkspaceTab(QWidget):
         select_btn.clicked.connect(self.select_files)
         btn_layout.addWidget(select_btn)
         
-        actions_btn = QPushButton("Actions")
-        actions_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 500;")
-        actions_btn.setMinimumHeight(38)
-        actions_btn.setMinimumWidth(120)
-        self.actions_menu = QMenu()
-        
-        # existing actions:
-        self.actions_menu.addAction("Generate Document", self.generate_document)
-        self.actions_menu.addAction("Compliance Analysis", self.run_compliance_analysis)
-        self.actions_menu.addAction("Summarize", self.summarize_files)
-        self.actions_menu.addAction("Save Results", self.save_results)
-        
-        # NEW: AI collab action that calls the dual-LLM orchestrator
-        self.actions_menu.addAction("AI Collaboration Draft", self.run_ai_collaboration_workflow)
-        
-        actions_btn.setMenu(self.actions_menu)
-        btn_layout.addWidget(actions_btn)
+        self.generate_draft_btn = QPushButton("Generate Draft")
+        self.generate_draft_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 500;")
+        self.generate_draft_btn.setMinimumHeight(38)
+        self.generate_draft_btn.setMinimumWidth(170)
+        self.generate_draft_btn.clicked.connect(self.run_ai_collaboration_workflow)
+        btn_layout.addWidget(self.generate_draft_btn)
         file_layout.addLayout(btn_layout)
         
         self.file_list = QListWidget()
@@ -544,6 +545,65 @@ class WorkspaceTab(QWidget):
         # Fallback
         return "unknown"
 
+    def _build_quill_runtime_context(self) -> str:
+        """
+        Build optional runtime context for Quill using the existing Workspace state.
+
+        This keeps Quill flexible:
+        - If the user asks for template-based revision, Quill can use a file from the marked list.
+        - If no template is requested, Quill can still do a normal edit pass with current draft context.
+        """
+        sections = []
+
+        current_markdown = (self._current_markdown or "").strip()
+        if current_markdown:
+            sections.append(
+                "Current Workspace markdown draft:\n"
+                "```markdown\n"
+                f"{current_markdown}\n"
+                "```"
+            )
+
+        marked_files = [f for f in self.selected_files if f.get("marked")]
+        if marked_files:
+            file_lines = ["Marked Workspace files (you may name one as a template in your instruction):"]
+            for f in marked_files:
+                file_lines.append(f"- {f.get('name', '(unknown)')} | path: {f.get('path', '')}")
+            sections.append("\n".join(file_lines))
+
+            # Include bounded snippets so Quill can actually align to named examples/templates.
+            max_total_chars = 40000
+            max_per_file_chars = 8000
+            used_chars = 0
+            snippets = []
+            for f in marked_files:
+                if used_chars >= max_total_chars:
+                    break
+                try:
+                    content = self.get_file_content(f) or ""
+                except Exception:
+                    content = ""
+                if not content:
+                    continue
+                remaining = max_total_chars - used_chars
+                snippet_limit = min(max_per_file_chars, remaining)
+                snippet = content[:snippet_limit]
+                used_chars += len(snippet)
+                snippets.append(
+                    "File snippet:\n"
+                    f"- name: {f.get('name', '(unknown)')}\n"
+                    f"- path: {f.get('path', '')}\n"
+                    "```text\n"
+                    f"{snippet}\n"
+                    "```"
+                )
+            if snippets:
+                sections.append("\n\n".join(snippets))
+
+        if not sections:
+            return ""
+        return "\n\n".join(sections)
+
     def run_ai_collaboration_workflow(self):
         """
         Run the dual-LLM collaboration workflow on the marked files.
@@ -704,6 +764,8 @@ class WorkspaceTab(QWidget):
         chatgpt_output = round_data.get("chatgpt_output", "")
         markdown = round_data.get("markdown", "")
         feedback = round_data.get("feedback", "")
+        ref_pack_stats = round_data.get("reference_pack_stats")
+        coverage_summary = format_reference_pack_summary(ref_pack_stats)
         
         # Update Grok pane with current round
         if hasattr(self, 'grok_text'):
@@ -725,15 +787,19 @@ class WorkspaceTab(QWidget):
                 # Append to existing or replace "Waiting..."
                 if "Waiting" in current_text:
                     feedback_text = f"\n[Feedback to Grok]: {feedback}" if feedback else ""
-                    self.chatgpt_text.setPlainText(f"--- Round {round_num} ---\n{chatgpt_output}{feedback_text}")
+                    context_text = f"\n[Context]: {coverage_summary}" if coverage_summary else ""
+                    self.chatgpt_text.setPlainText(f"--- Round {round_num} ---\n{chatgpt_output}{feedback_text}{context_text}")
                 else:
                     self.chatgpt_text.append(f"\n\n--- Round {round_num} ---\n{chatgpt_output}")
                     if feedback:
                         self.chatgpt_text.append(f"\n[Feedback to Grok]: {feedback}")
+                    if coverage_summary:
+                        self.chatgpt_text.append(f"\n[Context]: {coverage_summary}")
             else:
                 # First round
                 feedback_text = f"\n[Feedback to Grok]: {feedback}" if feedback else ""
-                self.chatgpt_text.setPlainText(f"--- Round {round_num} ---\n{chatgpt_output}{feedback_text}")
+                context_text = f"\n[Context]: {coverage_summary}" if coverage_summary else ""
+                self.chatgpt_text.setPlainText(f"--- Round {round_num} ---\n{chatgpt_output}{feedback_text}{context_text}")
         
         # Update markdown preview with current version
         if markdown and hasattr(self, 'preview_text'):
@@ -755,6 +821,10 @@ class WorkspaceTab(QWidget):
         collaboration_history = result.get("collaboration_history", [])
         rounds = result.get("rounds", 0)
         status = result.get("status", "unknown")
+        latest_coverage = ""
+        if isinstance(collaboration_history, list) and collaboration_history:
+            last_entry = collaboration_history[-1] or {}
+            latest_coverage = format_reference_pack_summary(last_entry.get("reference_pack_stats"))
 
         # Persist the run (best-effort)
         try:
@@ -796,7 +866,10 @@ class WorkspaceTab(QWidget):
         if hasattr(self, 'export_button'):
             self.export_button.setEnabled(True)
 
-        self.status_label.setText(f"AI collaboration complete ({status}, {rounds} round{'s' if rounds != 1 else ''})")
+        status_text = f"AI collaboration complete ({status}, {rounds} round{'s' if rounds != 1 else ''})"
+        if latest_coverage:
+            status_text = f"{status_text} | {latest_coverage}"
+        self.status_label.setText(status_text)
         self.progress_bar.setValue(100)
         QApplication.processEvents()
         self.progress_bar.setVisible(False)
@@ -861,114 +934,3 @@ class WorkspaceTab(QWidget):
                 logger.error(f"Error exporting markdown: {e}")
                 self.status_label.setText(f"Error exporting file: {str(e)}")
 
-    def generate_document(self):
-        marked_files = [f for f in self.selected_files if f['marked']]
-        if not marked_files:
-            self.status_label.setText("No files marked")
-            # Show empty state in preview
-            self.preview_text.setHtml('<div style="text-align: center; color: #9aa0a6; font-style: italic; padding: 40px;"><h3 style="color: #e8eaed;">No files selected</h3><p>Mark some files in the list to generate a document.</p></div>')
-            return
-        try:
-            self.status_label.setText("Generating document...")
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
-            
-            content = ""
-            for file_info in marked_files:
-                # Use cached content to avoid repeated disk I/O
-                content += self.get_file_content(file_info) + "\n\n"
-            
-            # Placeholder RunPod API call
-            response = {"document": "Placeholder: RunPod API call for document generation not implemented yet"}
-            self.preview_text.setHtml(response['document'].replace('\n', '<br>'))
-            self.status_label.setText("Document generated")
-            self.progress_bar.setVisible(False)
-        except Exception as e:
-            self.preview_text.setPlainText(f"Error generating document: {str(e)}")
-            self.status_label.setText(f"Error: {str(e)}")
-            self.progress_bar.setVisible(False)
-
-    def run_compliance_analysis(self):
-        marked_files = [f for f in self.selected_files if f['marked']]
-        if not marked_files:
-            self.status_label.setText("No files marked")
-            # Show empty state in preview
-            self.preview_text.setHtml('<div style="text-align: center; color: #9aa0a6; font-style: italic; padding: 40px;"><h3 style="color: #e8eaed;">No files selected</h3><p>Mark some files in the list to run compliance analysis.</p></div>')
-            return
-        try:
-            self.status_label.setText("Running compliance analysis...")
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
-            
-            content = ""
-            for file_info in marked_files:
-                # Use cached content to avoid repeated disk I/O
-                content += self.get_file_content(file_info) + "\n\n"
-            
-            # Placeholder RunPod API call
-            response = {"compliance_report": "Placeholder: RunPod API call for compliance analysis not implemented yet"}
-            self.preview_text.setHtml(response['compliance_report'].replace('\n', '<br>'))
-            self.status_label.setText("Compliance analysis complete")
-            self.progress_bar.setVisible(False)
-        except Exception as e:
-            self.preview_text.setPlainText(f"Error running compliance analysis: {str(e)}")
-            self.status_label.setText(f"Error: {str(e)}")
-            self.progress_bar.setVisible(False)
-
-    def summarize_files(self):
-        marked_files = [f for f in self.selected_files if f['marked']]
-        if not marked_files:
-            self.status_label.setText("No files marked")
-            # Show empty state in preview
-            self.preview_text.setHtml('<div style="text-align: center; color: #9aa0a6; font-style: italic; padding: 40px;"><h3 style="color: #e8eaed;">No files selected</h3><p>Mark some files in the list to generate a summary.</p></div>')
-            return
-        try:
-            self.status_label.setText("Summarizing files...")
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
-            
-            content = ""
-            for file_info in marked_files:
-                # Use cached content to avoid repeated disk I/O
-                content += self.get_file_content(file_info) + "\n\n"
-            
-            # Placeholder RunPod API call
-            response = {"summary": "Placeholder: RunPod API call for file summarization not implemented yet"}
-            self.preview_text.setHtml(response['summary'].replace('\n', '<br>'))
-            self.status_label.setText("Files summarized")
-            self.progress_bar.setVisible(False)
-        except Exception as e:
-            self.preview_text.setPlainText(f"Error summarizing files: {str(e)}")
-            self.status_label.setText(f"Error: {str(e)}")
-            self.progress_bar.setVisible(False)
-
-    def save_results(self):
-        try:
-            results = self.preview_text.toPlainText()
-            if not results or results.startswith("Error"):
-                self.status_label.setText("No results to save")
-                return
-            
-            save_path, _ = QFileDialog.getSaveFileName(
-                self, "Save Results", "results.txt", "Text Files (*.txt);;Word Documents (*.docx);;PDF Files (*.pdf)"
-            )
-            if save_path:
-                dbx = self.dropbox_client.get_client()
-                if save_path.endswith('.txt'):
-                    with open(save_path, 'w', encoding='utf-8') as f:
-                        f.write(results)
-                elif save_path.endswith('.docx'):
-                    from docx import Document
-                    doc = Document()
-                    doc.add_paragraph(results)
-                    doc.save(save_path)
-                elif save_path.endswith('.pdf'):
-                    from fpdf import FPDF
-                    pdf = FPDF()
-                    pdf.add_page()
-                    pdf.set_font("Arial", size=12)
-                    pdf.multi_cell(0, 10, results)
-                    pdf.output(save_path)
-                self.status_label.setText(f"Results saved to {save_path}")
-        except Exception as e:
-            self.status_label.setText(f"Error saving results: {str(e)}")

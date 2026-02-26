@@ -4,7 +4,7 @@ Qt/UI tests for the Workspace tab.
 Covers automated equivalents of key manual cases:
 - TC-006: file list behavior and selectable rows
 - TC-007: document preview loading
-- TC-008: analysis actions status/output behavior
+- TC-008: Generate Draft collaboration workflow behavior
 
 Disabled by default. Enable with RUN_QT_TESTS=1.
 """
@@ -44,7 +44,7 @@ def qapp():
 def workspace_tab(monkeypatch, qapp):
     # Keep WorkspaceTab lightweight for tests by stubbing AgentConsole.
     class _StubAgentConsole(QWidget):
-        def __init__(self, db, agent_code="quill", parent=None):
+        def __init__(self, db, agent_code="quill", parent=None, context_provider=None):
             super().__init__(parent)
 
     monkeypatch.setattr("gui.workspace_tab.AgentConsole", _StubAgentConsole)
@@ -101,43 +101,20 @@ def test_workspace_preview_loads_selected_file(monkeypatch, workspace_tab, tmp_p
     assert "File preview loaded" in workspace_tab.status_label.text()
 
 
-def test_workspace_summarize_action_sets_status_and_output(monkeypatch, workspace_tab, tmp_path):
-    sample = tmp_path / "summary_test.txt"
-    sample.write_text("Summarize me", encoding="utf-8")
+def test_workspace_has_single_generate_draft_button(workspace_tab):
+    assert workspace_tab.generate_draft_btn.text() == "Generate Draft"
+    assert not hasattr(workspace_tab, "actions_menu")
 
+
+def test_workspace_generate_draft_button_click_triggers_workflow(monkeypatch, workspace_tab):
     monkeypatch.setattr(
-        "gui.workspace_tab.extract_text_from_file",
-        lambda _path: "Summarize me",
+        QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("", False),
     )
 
-    file_info = {
-        "name": "summary_test.txt",
-        "path": str(sample),
-        "is_folder": False,
-        "size": sample.stat().st_size,
-        "modified": "2026-02-19 10:00:00",
-        "marked": True,
-    }
-    workspace_tab.add_file_to_list(file_info)
-
-    workspace_tab.summarize_files()
-
-    assert "Files summarized" in workspace_tab.status_label.text()
-    assert "Placeholder: RunPod API call for file summarization not implemented yet" in workspace_tab.preview_text.toPlainText()
-
-
-def test_workspace_generate_document_requires_marked_files(workspace_tab):
-    workspace_tab.selected_files = []
-    workspace_tab.generate_document()
-    assert "No files marked" in workspace_tab.status_label.text()
-    assert "No files selected" in workspace_tab.preview_text.toPlainText()
-
-
-def test_workspace_compliance_analysis_requires_marked_files(workspace_tab):
-    workspace_tab.selected_files = []
-    workspace_tab.run_compliance_analysis()
-    assert "No files marked" in workspace_tab.status_label.text()
-    assert "No files selected" in workspace_tab.preview_text.toPlainText()
+    workspace_tab.generate_draft_btn.click()
+    assert "AI collaboration cancelled" in workspace_tab.status_label.text()
 
 
 def test_workspace_save_markdown_writes_file(monkeypatch, workspace_tab, tmp_path):

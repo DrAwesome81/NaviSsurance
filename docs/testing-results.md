@@ -40,7 +40,7 @@ Record the **result** and **date** for each test item. Aligned with [testing.md]
 | TC-COS-010     | Pass    | 2/24/26    | Assignment health filter + badges         |       |
 | TC-COS-011     | Pass    | 2/24/26    | Bulk reassign with optional note           |       |
 | TC-COS-012     | Pass    | 2/24/26    | Bulk create tasks from filtered assignments |       |
-| TC-COS-013     | Fail    | 2/24/26    | CoS bulk command open-mode semantics      | Chat says it updated it, but it didn't      |
+| TC-COS-013     | Pass    | 2/24/26    | CoS bulk command open-mode semantics      |       |
 | TC-COS-014     | Pass    | 2/24/26    | Due-date validation (chat and UI)          |       |
 
 ### Automated test runs

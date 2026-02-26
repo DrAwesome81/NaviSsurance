@@ -234,17 +234,19 @@ Expected Result: Document preview displays correctly for various formats (PDF, D
 Actual Result: [Pending: Test not run], 2025-08-11.
 Status: Pending
 
-TC-008: Workspace Analysis Tools
+TC-008: Workspace Generate Draft Workflow
 
-Description: Verify right sidebar analysis tools function properly.
+Description: Verify the single `Generate Draft` workflow starts correctly and reports progress/status.
 Steps:
 Open NaviSsurance (interface.py).
 Navigate to Workspace Tab.
-Test compliance analysis, document chunking, and generation tools.
-Verify tool outputs and status feedback.
+Add one or more files and mark them in scope.
+Click `Generate Draft`.
+When prompted, cancel once and confirm the workflow exits cleanly.
+Run again with a valid prompt and verify round/status updates.
 
-Expected Result: Analysis tools function correctly with proper status feedback.
-Actual Result: [Pending: Test not run], 2025-08-11.
+Expected Result: `Generate Draft` starts collaboration, updates panes/status, and shows completion with context coverage note.
+Actual Result: [Pending: Re-test on current Workspace], 2026-02-25.
 Status: Pending
 
 Note-Taking System Tests

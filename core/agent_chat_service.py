@@ -24,7 +24,9 @@ _AGENT_SYSTEM_PROMPTS: dict[str, str] = {
     "quill": (
         "You are Quill, the Technical Writer. "
         "Turn source materials into clear, structured deliverables. "
-        "Use concise language, preserve technical accuracy, and note missing inputs."
+        "Use concise language, preserve technical accuracy, and note missing inputs. "
+        "Only apply a template when the user explicitly asks; otherwise do a normal revision pass. "
+        "If the user names a template that is not present in provided context, say so clearly and ask how to proceed."
     ),
     "sentinel": (
         "You are Sentinel, QA & Compliance. "
@@ -163,6 +165,7 @@ def agent_chat_response(
     conversation_history: list[tuple[str, str]] | list[dict] | None = None,
     thread_id: int | None = None,
     assignment_id: int | None = None,
+    runtime_context: str | None = None,
 ) -> str:
     """
     General direct-chat entrypoint for named agents.
@@ -190,6 +193,10 @@ def agent_chat_response(
         thr_ctx = _format_thread_context(db, int(thread_id))
         if thr_ctx:
             context_parts.append(thr_ctx)
+    if runtime_context:
+        runtime_text = str(runtime_context).strip()
+        if runtime_text:
+            context_parts.append("Runtime context:\n" + runtime_text)
 
     messages: list[dict] = [{"role": "system", "content": system}]
     if context_parts:

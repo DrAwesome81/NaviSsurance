@@ -1,6 +1,6 @@
 # NaviSsurance User Manual
 
-Last updated: 2026-02-24
+Last updated: 2026-02-25
 
 ## 1) What This App Is
 
@@ -38,18 +38,57 @@ This manual is written as a practical reference so you can quickly find how to d
 
 ## 3) Dashboard
 
-Use this as your daily command center.
+Use this as your daily command center. It gives you one place to triage work, review what is time-sensitive, and decide where to execute next.
 
-### What you can do
-- View and complete tasks.
-- Check schedule snapshot.
-- Review briefing/news feed.
+### What the Dashboard does
+- Shows a `Daily Briefing` (top panel) with a concise summary and suggested next actions.
+- Shows `Today's Schedule` from calendar events.
+- Embeds your task manager (`Task List`) so task actions stay consistent with the `Tasks` tab.
+- Shows `Unreplied Emails` to surface messages needing follow-up.
+- Shows a `News Feed` focused on MedTech/AI/regulatory relevance with cached storage and repeat suppression.
 
-### Typical workflow
-1. Review priority tasks.
-2. Mark completed items.
-3. Add any missing tasks.
-4. Hand off larger work to `Chief of Staff`.
+### Dashboard layout (at a glance)
+- **Top:** `Daily Briefing` with a `Refresh` button.
+- **Left column:** `Today's Schedule` and `Task List`.
+- **Right column:** `Unreplied Emails` and `News Feed`.
+- **Bottom-right action:** `Refresh News`.
+
+### How to use the Task List (fast path)
+1. Scan highlighted due items first (overdue/due-today stand out visually).
+2. Use filters to narrow by category/date and include completed or snoozed items when needed.
+3. Add quick tasks directly from the row at the bottom (`task`, `due date`, `category`, `recurrence`, then `Add`).
+4. Use row actions (for example edit/snooze/delete where shown) to clean and reprioritize quickly.
+5. Archive completed tasks when you want to reduce noise.
+
+### How to use Daily Briefing
+- On load, briefing auto-runs (unless briefing/email is disabled in config).
+- Use `Refresh` to force a newly generated briefing.
+- Treat this section as your “what needs attention now” summary before diving into deep work.
+
+### How to use Today's Schedule
+- Review today’s event list and timing blocks at startup and after major plan changes.
+- The schedule auto-refreshes periodically, so you can leave Dashboard open during the day.
+- If no events appear, the panel explicitly says no events are scheduled.
+
+### How to use Unreplied Emails
+- Use this queue to catch pending conversations quickly.
+- Keep `Only clients/leads` enabled for business-priority focus, or disable it for a broader view.
+- Use `Mark replied` after you respond so the queue stays accurate.
+- Use `Email rules…` to adjust classification behavior.
+
+### How to use News Feed
+- Use `Refresh News` for an immediate update, or let it refresh automatically.
+- Tune duplicates with `Hide repeats` (1/2/3/7 days).
+- Tune density with `Max items` (5/8/10).
+- Open article links directly from the feed for full context.
+- If live fetch is unavailable, cached news is still used when possible.
+
+### Recommended dashboard routine (3–5 minutes)
+1. Read `Daily Briefing`.
+2. Check `Today's Schedule` for hard time constraints.
+3. Triage `Task List` (overdue, then due today, then upcoming).
+4. Clear or flag `Unreplied Emails`.
+5. Scan `News Feed` for changes that affect client or regulatory decisions.
 
 ## 4) Tasks Tab
 
@@ -140,12 +179,33 @@ Use this to inspect agent metadata and navigate to an agent workspace.
 
 ## 8) Workspace
 
-Use for document-centric operations.
+Use this for document-centered drafting with one primary action: `Generate Draft`.
 
-### Common actions
-- Browse and preview files.
-- Run analysis/generation workflows.
-- Manage document context for downstream work.
+### What Workspace does
+- Lets you add and preview source files.
+- Lets you mark exactly which files are in scope for the draft.
+- Runs an AI collaboration workflow to produce a Markdown draft from your prompt.
+
+### Typical workflow
+1. Open the `Workspace` tab.
+2. Click `Select File/Folder` (or drag/drop files into the file list).
+3. Mark files to include using the checkbox next to each file.
+4. Optionally click a file to preview extracted content.
+5. Set `Max Rounds` (how many review/refinement cycles to allow).
+6. Click `Generate Draft`.
+7. Enter your instruction prompt when asked (what to draft, format, tone, constraints).
+8. Review:
+   - `Grok (API)` pane for research/drafting output,
+   - `ChatGPT (API)` pane for review/edit feedback,
+   - `Markdown Document` pane for the current draft.
+   - Status line for a context coverage note (how many selected files were fully/partially included).
+9. Edit the markdown manually if needed.
+10. Save using `Save Markdown` or `Export as...`.
+
+### Prompting tips
+- Be specific about audience, structure, and desired output length.
+- Ask for explicit sections (for example: summary, risks, recommendations, next steps).
+- If no files are marked, Workspace can still generate a research-only draft from your prompt.
 
 ## 9) Compliance
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Callable
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QKeyEvent
@@ -57,6 +58,7 @@ class AgentAskWorker(QThread):
         conversation_history: list,
         thread_id: int,
         assignment_id: int | None,
+        runtime_context: str = "",
     ):
         super().__init__()
         self.db = db
@@ -65,6 +67,7 @@ class AgentAskWorker(QThread):
         self.conversation_history = conversation_history or []
         self.thread_id = int(thread_id)
         self.assignment_id = int(assignment_id) if assignment_id is not None else None
+        self.runtime_context = str(runtime_context or "")
 
     def run(self):
         try:
@@ -75,6 +78,7 @@ class AgentAskWorker(QThread):
                 conversation_history=self.conversation_history,
                 thread_id=self.thread_id,
                 assignment_id=self.assignment_id,
+                runtime_context=self.runtime_context,
             )
             self.finished_signal.emit(result or "")
         except Exception as e:
@@ -85,10 +89,18 @@ class AgentAskWorker(QThread):
 class AgentConsole(QWidget):
     """Reusable direct-chat console for named agents."""
 
-    def __init__(self, db: DatabaseManager, *, agent_code: str, parent=None):
+    def __init__(
+        self,
+        db: DatabaseManager,
+        *,
+        agent_code: str,
+        parent=None,
+        context_provider: Callable[[], str] | None = None,
+    ):
         super().__init__(parent)
         self.db = db
         self.agent_code = (agent_code or "").strip().lower()
+        self._context_provider = context_provider
         self.agent = self.db.agent_get(self.agent_code) or self.db.agent_resolve_by_name(self.agent_code) or {}
         if self.agent:
             self.agent_code = str(self.agent.get("code") or self.agent_code).strip().lower()
@@ -540,6 +552,12 @@ class AgentConsole(QWidget):
 
         self.db.save_message(session_id, "user", msg)
         history = self.db.get_chat_history(session_id, limit=80)
+        runtime_context = ""
+        if callable(self._context_provider):
+            try:
+                runtime_context = str(self._context_provider() or "")
+            except Exception as e:
+                logger.warning("Agent context provider failed: %s", e)
         self._worker = AgentAskWorker(
             db=self.db,
             agent_code=self.agent_code,
@@ -547,6 +565,7 @@ class AgentConsole(QWidget):
             conversation_history=history,
             thread_id=int(self._current_thread_id),
             assignment_id=self._current_assignment_id,
+            runtime_context=runtime_context,
         )
         self._worker.finished_signal.connect(self._on_ask_finished)
         self._worker.error_signal.connect(self._on_ask_error)

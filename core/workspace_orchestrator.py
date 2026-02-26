@@ -130,7 +130,8 @@ def build_reference_pack(
     max_chunks_per_file: int = 6,
     include_small_files_full: bool = True,
     small_file_max_chars: int = 12000,
-) -> str:
+    return_stats: bool = False,
+) -> str | tuple[str, dict]:
     """
     Build a compact, relevant, *verbatim* reference pack so both models can ground edits
     without re-sending entire documents every round.
@@ -141,24 +142,52 @@ def build_reference_pack(
     parts.append("Rules: Excerpts are verbatim. If something is not in the excerpts, treat it as unknown unless it appears in the draft.")
     parts.append("")
     total = 0
+    file_stats: list[dict[str, Any]] = []
+    excerpt_count = 0
     for wf in task_spec.files:
         p = os.path.abspath(wf.path)
         content = file_contents.get(p) or file_contents.get(wf.path) or ""
+        fstat: dict[str, Any] = {
+            "display_name": wf.display_name,
+            "path": p,
+            "file_type": wf.file_type,
+            "content_chars": len(content or ""),
+            "chunks_total": 0,
+            "chunks_selected": 0,
+            "included_chars": 0,
+            "inclusion": "omitted",
+        }
         if not content:
+            fstat["inclusion"] = "empty"
+            file_stats.append(fstat)
             continue
         header = f"### File: {wf.display_name} ({wf.file_type})"
         if total + len(header) > max_total_chars:
-            break
+            fstat["inclusion"] = "omitted"
+            file_stats.append(fstat)
+            continue
         parts.append(header)
+        total += len(header)
         # include full text for small files
         if include_small_files_full and len(content) <= small_file_max_chars:
             excerpt = content.strip()
-            parts.append(excerpt)
-            parts.append("")
-            total += len(header) + len(excerpt) + 2
-            continue
+            if total + len(excerpt) + 2 > max_total_chars:
+                # Not enough budget for full inclusion; fall through to chunk mode.
+                pass
+            else:
+                parts.append(excerpt)
+                parts.append("")
+                total += len(excerpt) + 2
+                fstat["chunks_total"] = 1
+                fstat["chunks_selected"] = 1
+                fstat["included_chars"] = len(excerpt)
+                fstat["inclusion"] = "full"
+                excerpt_count += 1
+                file_stats.append(fstat)
+                continue
 
         chunks = _chunk_text(content)
+        fstat["chunks_total"] = len(chunks)
         scored: list[tuple[int, int, str]] = []
         for idx, ch in enumerate(chunks):
             cl = ch.lower()
@@ -196,9 +225,63 @@ def build_reference_pack(
             parts.append(block)
             parts.append("")
             total += len(block) + 2
-        parts.append("")
+            fstat["chunks_selected"] += 1
+            fstat["included_chars"] += len(ch.strip())
+            excerpt_count += 1
+        if fstat["included_chars"] == 0:
+            # Remove file header if no excerpts were included.
+            if parts and parts[-1] == header:
+                parts.pop()
+                total -= len(header)
+            fstat["inclusion"] = "omitted"
+        elif fstat["included_chars"] >= len(content.strip()):
+            fstat["inclusion"] = "full"
+            parts.append("")
+        else:
+            fstat["inclusion"] = "partial"
+            parts.append("")
 
-    return "\n".join(parts).strip()
+        file_stats.append(fstat)
+
+    pack = "\n".join(parts).strip()
+    if not return_stats:
+        return pack
+
+    selected_files_count = len(task_spec.files or [])
+    files_with_content = sum(1 for s in file_stats if s.get("content_chars", 0) > 0)
+    files_fully_included = sum(1 for s in file_stats if s.get("inclusion") == "full")
+    files_partially_included = sum(1 for s in file_stats if s.get("inclusion") == "partial")
+    files_omitted = sum(1 for s in file_stats if s.get("inclusion") in {"omitted", "empty"})
+    coverage_stats = {
+        "selected_files_count": selected_files_count,
+        "files_with_content": files_with_content,
+        "files_fully_included": files_fully_included,
+        "files_partially_included": files_partially_included,
+        "files_omitted": files_omitted,
+        "excerpt_count": excerpt_count,
+        "max_total_chars": int(max_total_chars),
+        "used_chars": int(total),
+        "pack_chars": len(pack),
+        "files": file_stats,
+    }
+    return pack, coverage_stats
+
+
+def format_reference_pack_summary(stats: dict | None) -> str:
+    """Create a short human-readable coverage summary for UI/status display."""
+    s = stats or {}
+    selected = int(s.get("selected_files_count") or 0)
+    full = int(s.get("files_fully_included") or 0)
+    partial = int(s.get("files_partially_included") or 0)
+    omitted = int(s.get("files_omitted") or 0)
+    used = full + partial
+    pack_chars = int(s.get("pack_chars") or 0)
+    if selected <= 0:
+        return ""
+    return (
+        f"Context coverage: used {used}/{selected} files "
+        f"(full {full}, partial {partial}, omitted {omitted}; pack {pack_chars} chars)"
+    )
 
 
 @dataclass
@@ -382,7 +465,12 @@ class DualLLMOrchestrator:
                 "chatgpt_output": chatgpt_output,
                 "markdown": current_markdown,
                 "feedback": chatgpt_feedback or grok_feedback,  # Use feedback from either model
-                "is_complete": chatgpt_is_complete or grok_is_complete  # Complete if either agrees
+                "is_complete": chatgpt_is_complete or grok_is_complete,  # Complete if either agrees
+                "reference_pack_stats": (
+                    chatgpt_result.get("reference_pack_stats")
+                    or grok_result.get("reference_pack_stats")
+                    or {}
+                ),
             }
             collaboration_history.append(round_data)
             
@@ -417,7 +505,8 @@ class DualLLMOrchestrator:
                             "chatgpt_output": "Agreed with previous version",
                             "markdown": current_markdown,
                             "feedback": "",
-                            "is_complete": True
+                            "is_complete": True,
+                            "reference_pack_stats": grok_review_result.get("reference_pack_stats") or {},
                         }
                         collaboration_history.append(final_round_data)
                         if self._progress_callback:
@@ -597,18 +686,20 @@ def call_grok_api(task_spec: WorkspaceTaskSpec, file_contents: Dict[str, str],
         
         # Build a compact, relevant reference pack for grounding (verbatim excerpts).
         ref_pack = build_reference_pack(
+            return_stats=True,
             task_spec=task_spec,
             file_contents=file_contents or {},
             goal=task_spec.goal,
             feedback=feedback,
             previous_markdown=previous_markdown,
             max_total_chars=int(os.getenv("WORKSPACE_REF_PACK_MAX_CHARS", "60000") or 60000),
-            max_chunks_per_file=int(os.getenv("WORKSPACE_REF_PACK_CHUNKS_PER_FILE", "6") or 6),
+            max_chunks_per_file=int(os.getenv("WORKSPACE_REF_PACK_CHUNKS_PER_FILE", "8") or 8),
             include_small_files_full=True,
             small_file_max_chars=int(os.getenv("WORKSPACE_REF_PACK_SMALL_FILE_MAX_CHARS", "12000") or 12000),
         )
+        ref_pack_text, ref_pack_stats = ref_pack
         has_files = bool(task_spec.files)
-        has_files_content = bool(ref_pack and "### File:" in ref_pack)
+        has_files_content = bool(ref_pack_text and "### File:" in ref_pack_text)
         
         # Warn if files were expected but none were found
         if task_spec.files and not has_files_content:
@@ -630,7 +721,7 @@ Current Date: {current_date}
 Collaboration Round: {round_num}
 
 Reference Pack:
-{ref_pack or "(no files provided)"}
+{ref_pack_text or "(no files provided)"}
 
 Current Markdown (may be empty on round 1):
 {previous_markdown or ""}
@@ -652,6 +743,7 @@ Return STRICT JSON only with:
         parsed = _parse_round_result(raw)
         if not parsed.get("markdown") and previous_markdown:
             parsed["markdown"] = previous_markdown
+        parsed["reference_pack_stats"] = ref_pack_stats
         return parsed
         
     except Exception as e:
@@ -693,16 +785,17 @@ def call_chatgpt_api(task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str],
         grok_markdown = grok_result.get("markdown", "")
         grok_explanation = grok_result.get("explanation", "")
         
-        ref_pack = build_reference_pack(
+        ref_pack_text, ref_pack_stats = build_reference_pack(
             task_spec=task_spec,
             file_contents=file_contents or {},
             goal=task_spec.goal,
             feedback=grok_result.get("feedback"),
             previous_markdown=grok_markdown,
-            max_total_chars=int(os.getenv("WORKSPACE_REF_PACK_MAX_CHARS_OPENAI", "45000") or 45000),
-            max_chunks_per_file=int(os.getenv("WORKSPACE_REF_PACK_CHUNKS_PER_FILE_OPENAI", "5") or 5),
+            max_total_chars=int(os.getenv("WORKSPACE_REF_PACK_MAX_CHARS_OPENAI", "60000") or 60000),
+            max_chunks_per_file=int(os.getenv("WORKSPACE_REF_PACK_CHUNKS_PER_FILE_OPENAI", "8") or 8),
             include_small_files_full=True,
-            small_file_max_chars=int(os.getenv("WORKSPACE_REF_PACK_SMALL_FILE_MAX_CHARS_OPENAI", "8000") or 8000),
+            small_file_max_chars=int(os.getenv("WORKSPACE_REF_PACK_SMALL_FILE_MAX_CHARS_OPENAI", "12000") or 12000),
+            return_stats=True,
         )
         
         system_message = """You are a document reviewer and editor creating finished, publication-ready documents.
@@ -727,7 +820,7 @@ Research Agent's Explanation:
 {grok_explanation}
 
 Reference Pack:
-{ref_pack or "(no files provided)"}
+{ref_pack_text or "(no files provided)"}
 
 Draft Markdown Document:
 {grok_markdown}
@@ -840,6 +933,7 @@ Return STRICT JSON only with:
         parsed = _parse_round_result(content)
         if not parsed.get("markdown"):
             parsed["markdown"] = grok_markdown
+        parsed["reference_pack_stats"] = ref_pack_stats
         return parsed
         
     except Exception as e:
@@ -859,16 +953,17 @@ def call_grok_review(task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str],
 
         grok_markdown = grok_result.get("markdown", "")
 
-        ref_pack = build_reference_pack(
+        ref_pack_text, ref_pack_stats = build_reference_pack(
             task_spec=task_spec,
             file_contents=file_contents or {},
             goal=task_spec.goal,
             feedback=grok_result.get("feedback"),
             previous_markdown=grok_markdown,
             max_total_chars=int(os.getenv("WORKSPACE_REF_PACK_MAX_CHARS", "60000") or 60000),
-            max_chunks_per_file=int(os.getenv("WORKSPACE_REF_PACK_CHUNKS_PER_FILE", "6") or 6),
+            max_chunks_per_file=int(os.getenv("WORKSPACE_REF_PACK_CHUNKS_PER_FILE", "8") or 8),
             include_small_files_full=True,
             small_file_max_chars=int(os.getenv("WORKSPACE_REF_PACK_SMALL_FILE_MAX_CHARS", "12000") or 12000),
+            return_stats=True,
         )
 
         system_message = """You are a document reviewer and editor.
@@ -886,7 +981,7 @@ CRITICAL:
 
 Current Date: {current_date}
 Reference Pack:
-{ref_pack or "(no files provided)"}
+{ref_pack_text or "(no files provided)"}
 
 Draft Markdown Document:
 {grok_markdown}
@@ -906,6 +1001,7 @@ Return STRICT JSON only with:
         parsed = _parse_round_result(raw)
         if not parsed.get("markdown"):
             parsed["markdown"] = grok_markdown
+        parsed["reference_pack_stats"] = ref_pack_stats
         return parsed
         
     except Exception as e:

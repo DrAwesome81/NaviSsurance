@@ -148,3 +148,27 @@ def test_agent_chat_response_empty_output_uses_fallback(monkeypatch):
     monkeypatch.setattr(svc, "grok_completion_messages", lambda messages, model: "   ")
     out = svc.agent_chat_response(_DbStub(), agent_code="atlas", user_message="hello")
     assert "no output right now" in out.lower()
+
+
+def test_agent_chat_response_includes_runtime_context(monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr(svc, "grok_available", lambda: (True, "ok"))
+
+    def _fake_completion(messages, model):
+        captured["messages"] = messages
+        return "done"
+
+    monkeypatch.setattr(svc, "grok_completion_messages", _fake_completion)
+
+    out = svc.agent_chat_response(
+        _DbStub(),
+        agent_code="atlas",
+        user_message="Please revise",
+        runtime_context="Current draft: hello world",
+    )
+
+    assert out == "done"
+    assert any(
+        m["role"] == "system" and "Runtime context:" in m["content"] and "hello world" in m["content"]
+        for m in captured["messages"]
+    )
