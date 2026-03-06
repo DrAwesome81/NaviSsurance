@@ -53,6 +53,29 @@ Record the **result** and **date** for each test item. Aligned with [testing.md]
 
 ---
 
+## Deep Research (web) regression
+
+*Ref: testing.md § Deep Research test cases*
+
+| Test ID   | Result  | Date | Description                         | Notes |
+|-----------|---------|------|-------------------------------------|-------|
+| TC-DR-001 | Pending |      | Deep Research — iterative web research run (round/status updates visible) |       |
+| TC-DR-002 | Pending |      | Deep Research — generate final brief (also writes `data/artifacts/<run_id>/research_brief.md`) |       |
+
+---
+
+## Billing regression
+
+*Ref: testing.md § Billing test cases*
+
+| Test ID     | Result  | Date | Description                                      | Notes |
+|-------------|---------|------|--------------------------------------------------|-------|
+| TC-BILL-001 | Pending |      | Billing — manual time entry                      |       |
+| TC-BILL-002 | Pending |      | Billing — template + invoice draft generation    |       |
+| TC-BILL-003 | Pending |      | Billing — monthly autorun prompt + idempotency   |       |
+
+---
+
 ## Legacy manual catalog
 
 *Ref: testing.md § Legacy manual catalog. Fill in Result and Date as you run each.*

@@ -251,7 +251,7 @@ class CosAssignmentDialog(QDialog):
         self.priority_spin = QSpinBox()
         self.priority_spin.setRange(1, 5)
         self.priority_spin.setValue(3)
-        form.addRow("Priority (P1-P5):", self.priority_spin)
+        form.addRow("Priority (P1-P5, P5 highest urgency):", self.priority_spin)
 
         self.due_edit = QLineEdit()
         self.due_edit.setPlaceholderText("YYYY-MM-DD or leave blank")
@@ -384,6 +384,8 @@ class ChiefOfStaffTab(QWidget):
 
 Use these exact line formats in Navi responses:
 
+- Priority scale: for assignments, P1 is lowest urgency and P5 is highest urgency.
+
 - `ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>`
 - `UPDATE_ASSIGNMENT_STATUS: <A-0007 or 7> | <queued|in_progress|awaiting_review|blocked|done|cancelled> | <optional note>`
 - `BULK_UPDATE_ASSIGNMENT_STATUS: <status> | <AgentName or all> | <open or all (optional)> | <optional note>`
@@ -401,6 +403,8 @@ Use these exact line formats in Navi responses:
 - `BULK_ADD_TASKS_FROM_ASSIGNMENTS: <AgentName or all> | <Business or Personal> | <open or all (optional)>`
 
 Calendar and task actions:
+
+- Priority scale: for dashboard tasks, P0 is lowest urgency and P5 is highest urgency.
 
 - `ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal>`
 - `ADD_CAL_BLOCK: <title> | <start datetime> | <end datetime> | <calendar id or primary>`

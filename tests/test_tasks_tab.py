@@ -76,6 +76,15 @@ def test_parse_due_date_accepts_supported_formats(raw_due, expected):
     assert _parse_due_date(raw_due) == expected
 
 
+def _done_column_index(tab):
+    """Column index for Done (resilient to column order changes)."""
+    for c in range(tab.table.columnCount()):
+        h = tab.table.horizontalHeaderItem(c)
+        if h and h.text() == "Done":
+            return c
+    return 8  # fallback: Done is 8th visible col (ID, Task, Priority, Tags, Next action, Due, Category, Project, Done, Actions)
+
+
 def test_tasks_tab_complete_and_undo(qapp, tmp_db):
     tab = TasksTab(_Parent(tmp_db))
     tab.new_task_input.setText("Complete me")
@@ -92,12 +101,13 @@ def test_tasks_tab_complete_and_undo(qapp, tmp_db):
     tab.show_completed.setChecked(True)
     tab.refresh_tasks()
     assert tab.table.rowCount() == 1
-    assert (tab.table.item(0, 7).text() or "").strip() == "Yes"
+    done_col = _done_column_index(tab)
+    assert (tab.table.item(0, done_col).text() or "").strip() == "Yes"
 
     tab._toggle_done(task_id, 1)  # undo complete
     tab.refresh_tasks()
     assert tab.table.rowCount() == 1
-    assert (tab.table.item(0, 7).text() or "").strip() == ""
+    assert (tab.table.item(0, done_col).text() or "").strip() == ""
 
 
 def test_tasks_tab_delete_task(qapp, tmp_db, monkeypatch):
@@ -179,4 +189,74 @@ def test_tasks_tab_snooze_sets_snoozed_until(qapp, tmp_db):
     rich = next((r for r in rich_rows if int(r.get("id") or 0) == task_id), None)
     assert rich is not None
     assert str(rich.get("snoozed_until") or "").strip() != ""
+
+
+# --- Mason (Project Manager) context and command parsing ---
+
+
+def test_mason_tasks_context_empty(qapp, tmp_db):
+    """Mason context includes task/project headers and command docs when db is empty."""
+    tab = TasksTab(_Parent(tmp_db))
+    ctx = tab._mason_tasks_context()
+    assert "Current tasks (id, text, priority" in ctx
+    assert "  (none)" in ctx
+    assert "Current projects (id, name, client" in ctx
+    assert "ADD_TASK:" in ctx
+    assert "TASK_UPDATE_PRIORITY:" in ctx
+    assert "TASK_COMPLETE:" in ctx
+    assert "PROJECT_UPDATE_STATUS:" in ctx
+
+
+def test_mason_tasks_context_includes_tasks(qapp, tmp_db):
+    """Mason context includes current task list from list_tasks_rich."""
+    tmp_db.add_task("test", "Review FDA memo", "02-28-2026", category="Business")
+    tab = TasksTab(_Parent(tmp_db))
+    ctx = tab._mason_tasks_context()
+    assert "Review FDA memo" in ctx
+    assert "02-28-2026" in ctx
+    assert "Business" in ctx
+
+
+def test_parse_mason_task_commands_add_task(qapp, tmp_db):
+    """Parsing ADD_TASK creates a task in the DB."""
+    tab = TasksTab(_Parent(tmp_db))
+    out = tab._parse_mason_task_commands("ADD_TASK: New item from Mason | 03-01-2026 | Business")
+    rows = tmp_db.list_tasks_rich(include_completed=True, include_snoozed=True, limit=10)
+    match = next((r for r in rows if "New item from Mason" in (r.get("task_text") or "")), None)
+    assert match is not None
+    assert (match.get("due_date") or "").strip() == "03-01-2026"
+    assert (match.get("category") or "").strip() == "Business"
+    assert "ADD_TASK:" not in out or "New item" not in out
+
+
+def test_parse_mason_task_commands_update_priority(qapp, tmp_db):
+    """Parsing TASK_UPDATE_PRIORITY updates task priority."""
+    tid = tmp_db.add_task("test", "Priority task", "02-28-2026", category="Business")
+    tab = TasksTab(_Parent(tmp_db))
+    tab._parse_mason_task_commands(f"TASK_UPDATE_PRIORITY: {tid} | 4")
+    rows = tmp_db.list_tasks_rich(include_completed=True, include_snoozed=True, limit=10)
+    match = next((r for r in rows if int(r.get("id") or 0) == int(tid)), None)
+    assert match is not None
+    assert int(match.get("priority") or 0) == 4
+
+
+def test_parse_mason_task_commands_complete(qapp, tmp_db):
+    """Parsing TASK_COMPLETE marks task completed."""
+    tid = tmp_db.add_task("test", "Complete me", "02-28-2026", category="Business")
+    tab = TasksTab(_Parent(tmp_db))
+    tab._parse_mason_task_commands(f"TASK_COMPLETE: {tid}")
+    rows = tmp_db.list_tasks_rich(include_completed=True, include_snoozed=True, limit=10)
+    match = next((r for r in rows if int(r.get("id") or 0) == int(tid)), None)
+    assert match is not None
+    assert int(match.get("completed") or 0) == 1
+
+
+def test_parse_mason_task_commands_strips_commands_from_response(qapp, tmp_db):
+    """Response processor removes command lines and returns the rest (or fallback)."""
+    tab = TasksTab(_Parent(tmp_db))
+    response = "Here's what I did.\nADD_TASK: Done | 03-01-2026 | Personal\nHope that helps."
+    out = tab._parse_mason_task_commands(response)
+    assert "ADD_TASK:" not in out
+    assert "Here's what I did" in out
+    assert "Hope that helps" in out
 

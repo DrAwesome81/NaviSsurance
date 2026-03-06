@@ -7,10 +7,9 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), "config", ".env"), override=True)
 
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtCore import QRect, Qt, QTimer
 from gui.interface import ChatWindow, EnhancedSplashScreen
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor
-from core.api import get_dropbox_client
 
 # Import centralized paths
 from config import LOGS_DIR
@@ -61,18 +60,8 @@ if __name__ == "__main__":
         splash.update_progress(10, "Initializing...", "Starting NaviSsurance")
         app.processEvents()
         
-        logger.info("Initializing Dropbox client...")
-        try:
-            dbx = get_dropbox_client()
-            logger.info("Dropbox client initialized successfully")
-            splash.update_progress(30, "Dropbox connected", "Dropbox client initialized")
-        except Exception as e:
-            logger.error(f"Error initializing Dropbox client: {e}")
-            dbx = None
-            splash.update_progress(30, "Continuing without Dropbox", f"Dropbox init failed: {e}")
+        splash.update_progress(30, "Skipping Dropbox setup", "Dropbox integration removed from startup")
         app.processEvents()
-        
-        # Dropbox indexing removed - using RAG index instead
         
         logger.info("Setting up application window...")
         if os.path.exists(logo_path):
@@ -82,7 +71,7 @@ if __name__ == "__main__":
         
         logger.info("Creating main window with enhanced splash screen...")
         try:
-            chatWindow = ChatWindow()
+            chatWindow = ChatWindow(defer_dashboard_initial_load=True)
             logger.info("ChatWindow created successfully")
             splash.update_progress(80, "Main window ready", "ChatWindow created successfully")
         except Exception as e:
@@ -90,7 +79,7 @@ if __name__ == "__main__":
             splash.finish(None)
             sys.exit(1)
         app.processEvents()
-        
+
         # Set window geometry with smart sizing based on available screen space
         try:
             # Get available screen geometry (excludes taskbar, dock, etc.)
@@ -129,6 +118,14 @@ if __name__ == "__main__":
             logger.error(f"Error showing main window: {e}", exc_info=True)
         
         splash.finish(chatWindow)
+
+        # Non-blocking startup hydration: show dashboard cache now, then refresh in background.
+        try:
+            if hasattr(chatWindow, "dashboard_tab"):
+                chatWindow.dashboard_tab.show_startup_loading_state()
+                QTimer.singleShot(150, chatWindow.dashboard_tab.run_initial_loads)
+        except Exception as e:
+            logger.warning(f"Deferred dashboard startup loads failed to schedule: {e}")
         
         logger.info("Application initialization complete, entering event loop...")
         try:

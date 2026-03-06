@@ -64,6 +64,9 @@ def run_tool(
         query = kwargs.get("query", "")
         top_n = kwargs.get("top_n", 10)
         from_config = kwargs.get("from_config")
-        return web_research_tool(query=query, top_n=top_n, from_config=from_config)
+        progress_callback = kwargs.get("progress_callback")
+        if progress_callback is None:
+            return web_research_tool(query=query, top_n=top_n, from_config=from_config)
+        return web_research_tool(query=query, top_n=top_n, from_config=from_config, progress_callback=progress_callback)
 
     raise ValueError(f"Unknown tool: {tool_name}")

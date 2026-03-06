@@ -21,6 +21,7 @@ from core.grok_client import (
 )
 from core.cos_calendar import (
     calendar_available,
+    calendar_write_available,
     create_calendar_event,
     format_events_brief,
     get_calendar_events,
@@ -29,8 +30,21 @@ from core.cos_doc_search import doc_search, format_hits
 
 logger = logging.getLogger(__name__)
 
-# Pattern for CoS to add a task: ADD_TASK: text | due_date (MM-DD-YYYY or none) | category (Business or Personal)
-ADD_TASK_PATTERN = re.compile(r"ADD_TASK:\s*(.+?)\s*\|\s*([^|]+?)\s*\|\s*(Business|Personal)", re.IGNORECASE)
+# Pattern for CoS to add a task:
+# ADD_TASK: text | due_date (MM-DD-YYYY or none) | category (Business or Personal) [| priority(P0-P5|0-5|none)] [| next_action(MM-DD-YYYY|none)] [| project_id|none] [| recurrence]
+ADD_TASK_PATTERN = re.compile(r"^\s*ADD_TASK:\s*(.+?)\s*$", re.IGNORECASE)
+# Fallback for rich prose task lists, e.g.:
+# 1. **Task text** (Business) – Due Friday (03-06-2026).
+RICH_TASK_LINE_PATTERN = re.compile(
+    r"^\s*\d+\.\s*(?:\*\*)?(?P<task>.+?)(?:\*\*)?\s*\((?P<category>Business|Personal)\)\s*[–—-]\s*Due\b[^\(\n]*\((?P<due>\d{2}-\d{2}-\d{4})\)",
+    re.IGNORECASE,
+)
+# Fallback for compact pipe format in prose/bullets, e.g.:
+# - CoDentist: ... | 03-02-2026 | Business
+RICH_PIPE_TASK_PATTERN = re.compile(
+    r"(?:^|[\r\n]|(?:\s[-*•]\s))(?P<task>[^|\r\n]+?)\s*\|\s*(?P<due>\d{2}-\d{2}-\d{4}|none)\s*\|\s*(?P<category>Business|Personal)\b",
+    re.IGNORECASE,
+)
 # Pattern for CoS to schedule a calendar block:
 # ADD_CAL_BLOCK: title | start_datetime | end_datetime | optional_calendar_id
 ADD_CAL_BLOCK_PATTERN = re.compile(
@@ -144,6 +158,21 @@ MEMORY_SEARCH_TRIGGER = re.compile(r"^\s*MEMORY_SEARCH:\s*(.+?)\s*$", re.IGNOREC
 
 def _now_local():
     return datetime.now()
+
+
+def _local_time_context(now: Optional[datetime] = None) -> str:
+    """
+    Build stable local time context for every interaction.
+    """
+    dt = now or _now_local()
+    local_dt = dt.astimezone() if getattr(dt, "tzinfo", None) else datetime.now().astimezone()
+    today = local_dt.strftime("%Y-%m-%d")
+    time_str = local_dt.strftime("%I:%M %p").lstrip("0")
+    tz_name = local_dt.tzname() or "local"
+    offset = local_dt.strftime("%z")
+    if len(offset) == 5:
+        offset = f"{offset[:3]}:{offset[3:]}"
+    return f"Today is {today}, current local time is {time_str} ({tz_name}, UTC{offset})."
 
 
 def _parse_calendar_datetime(value: str) -> Optional[datetime]:
@@ -271,6 +300,7 @@ def _calendar_context() -> str:
     if not ok:
         return "**Calendar:** (unavailable) " + msg
 
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
     now = datetime.now(timezone.utc)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     tomorrow = today + timedelta(days=1)
@@ -284,9 +314,9 @@ def _calendar_context() -> str:
         upcoming = get_calendar_events(time_min=time_min_week, time_max=time_max_week)
         return (
             "**Calendar (today):**\n"
-            + format_events_brief(todays, tz=timezone.utc)
+            + format_events_brief(todays, tz=local_tz)
             + "\n\n**Calendar (next 7 days):**\n"
-            + format_events_brief(upcoming, tz=timezone.utc)
+            + format_events_brief(upcoming, tz=local_tz)
         )
     except Exception as e:
         return "**Calendar:** (error loading) " + str(e)
@@ -483,6 +513,51 @@ def _normalize_due_date_input(value: str) -> tuple[bool, Optional[str]]:
     return False, None
 
 
+def _normalize_dashboard_mmddyyyy(value: str) -> tuple[bool, Optional[str]]:
+    """
+    Parse a dashboard-task date input into MM-DD-YYYY.
+    Accepts:
+    - MM-DD-YYYY
+    - YYYY-MM-DD
+    - none/null/n/a/blank -> None
+    """
+    raw = (value or "").strip()
+    if not raw or raw.lower() in {"none", "null", "n/a"}:
+        return True, None
+    if re.match(r"^\d{2}-\d{2}-\d{4}$", raw):
+        try:
+            dt = datetime.strptime(raw, "%m-%d-%Y")
+        except Exception:
+            return False, None
+        return True, dt.strftime("%m-%d-%Y")
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
+        try:
+            dt = datetime.strptime(raw, "%Y-%m-%d")
+        except Exception:
+            return False, None
+        return True, dt.strftime("%m-%d-%Y")
+    return False, None
+
+
+def _parse_task_priority_value(value: str) -> Optional[int]:
+    """Parse task priority like P0..P5 or 0..5 into int."""
+    s = str(value or "").strip()
+    if not s or s.lower() in {"none", "null", "n/a"}:
+        return None
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if digits == "":
+        return None
+    try:
+        p = int(digits)
+    except Exception:
+        return None
+    if p < 0:
+        p = 0
+    if p > 5:
+        p = 5
+    return p
+
+
 def _resolve_bulk_scope(db: DatabaseManager, scope_raw: str) -> tuple[bool, Optional[str], str]:
     """
     Resolve a bulk-update scope value into (ok, assignee_code_or_none, display_label).
@@ -592,8 +667,7 @@ def cos_response(
             return f"Error: {e}"
 
     now = _now_local()
-    today = now.strftime("%Y-%m-%d")
-    time_str = now.strftime("%H:%M")
+    local_time_ctx = _local_time_context(now)
     prefs = db.cos_get_preferences()
     prefs_ctx = _preferences_context(prefs)
 
@@ -602,22 +676,40 @@ def cos_response(
     cal_ctx = _calendar_context()
     mem_ctx = _memory_context(db, user_message, chat_id)
 
-    system = """You are an AI Chief of Staff for Adam. He tells you in plain text what he's working on and what has come up that needs to be dealt with. You help him plan, prioritize, and reduce cognitive load. You respect his constraints: time freedom, low context switching, family boundaries. You give direct, concise advice and challenge assumptions when useful. You do not take autonomous actions—only recommend and advise. Respond in whatever form is most helpful; no required format.
-
-You can see his current dashboard task list and may add tasks to it. To add a task, write one or more lines in this exact format (one task per line):
-ADD_TASK: <task description> | <due date as MM-DD-YYYY or "none"> | <Business or Personal>
-Example: ADD_TASK: Send follow-up to client | 02-25-2026 | Business
-Omit ADD_TASK lines if you are not adding any tasks.
+    cal_ok, cal_reason = calendar_write_available()
+    if cal_ok:
+        calendar_instructions = """
 
 You may also schedule calendar blocks when he explicitly asks for it. To schedule a block, write one or more lines in this exact format (one block per line):
 ADD_CAL_BLOCK: <title> | <start datetime> | <end datetime> | <calendar id or "primary">
 Example: ADD_CAL_BLOCK: Deep work - client report | 2026-02-25T13:00:00-05:00 | 2026-02-25T14:30:00-05:00 | primary
 Prefer ISO-8601 datetimes with timezone offsets.
 Omit ADD_CAL_BLOCK lines if you are not scheduling calendar blocks.
+""".rstrip()
+    else:
+        reason = (cal_reason or "").strip() or "not configured"
+        calendar_instructions = f"""
+
+Calendar scheduling is currently unavailable ({reason}). Do not output ADD_CAL_BLOCK lines or claim you scheduled anything. If the user asks to schedule, propose times and/or add a dashboard task reminder instead.
+""".rstrip()
+
+    system = f"""You are an AI Chief of Staff for Adam. He tells you in plain text what he's working on and what has come up that needs to be dealt with. You help him plan, prioritize, and reduce cognitive load. You respect his constraints: time freedom, low context switching, family boundaries. You give direct, concise advice and challenge assumptions when useful. You do not take autonomous actions—only recommend and advise. Respond in whatever form is most helpful; no required format.
+
+Priority scale is numeric and consistent:
+- Dashboard tasks: P0 (lowest urgency) … P5 (highest urgency).
+- Delegation assignments: P1 (lowest urgency) … P5 (highest urgency).
+
+You can see his current dashboard task list and may add tasks to it. To add a task, write one or more lines in this exact format (one task per line):
+ADD_TASK: <task description> | <due date as MM-DD-YYYY or "none"> | <Business or Personal> [| <priority P0-P5 or 0-5 or none>] [| <next action date MM-DD-YYYY or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]
+Examples:
+- ADD_TASK: Send follow-up to client | 02-25-2026 | Business
+- ADD_TASK: Draft DHF gap memo | 03-05-2026 | Business | P1 | 03-03-2026 | 12 | Weekly
+Omit ADD_TASK lines if you are not adding any tasks.
+{calendar_instructions}
 
 You may also delegate work to named team members by writing one or more lines in this exact format:
 ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>
-Example: ASSIGN: Atlas | FDA PCCP research brief | Research latest guidance and summarize with citations. | P1 | 2026-03-01
+Example: ASSIGN: Atlas | FDA PCCP research brief | Research latest guidance and summarize with citations. | P5 | 2026-03-01
 Available agent names: Atlas, Quill, Sentinel, Lex, Scout, Mason, Ledger, Archive, Pulse, Shield.
 Omit ASSIGN lines if you are not delegating work.
 
@@ -701,7 +793,9 @@ If you need more information to answer well, you may request one of these tools 
 - DOC_SEARCH:<query>   (searches local docs/notes and optional RAG index)
 - MEMORY_SEARCH:<query> (searches stored CoS memory)
 
-If you request a tool, you must return only that single tool line (no other text)."""
+If you request a tool, you must return only that single tool line (no other text).
+
+Always interpret and communicate schedule/time references in the user's local timezone provided in context, and include timezone for time-sensitive schedule updates."""
 
     def _tool_results_for_trigger(out: str) -> Optional[tuple[str, str]]:
         """
@@ -780,7 +874,7 @@ If you request a tool, you must return only that single tool line (no other text
 
     if not conversation_history or len(conversation_history) == 0:
         # Single turn
-        user = f"""Today is {today}, current time {time_str} (user's local time)."""
+        user = local_time_ctx
         if prefs_ctx:
             user += f"""
 
@@ -812,7 +906,7 @@ If you request a tool, you must return only that single tool line (no other text
             return f"Error: {e}"
 
     # Multi-turn: build messages list. Caller must have saved the current user message and included it in conversation_history.
-    time_ctx = f"Today is {today}, current time {time_str} (user's local time)."
+    time_ctx = local_time_ctx
     if prefs_ctx:
         time_ctx += f"\n\n**His stated preferences / constraints:**\n{prefs_ctx}"
     if cal_ctx:
@@ -869,6 +963,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     block_failure_reasons: list[str] = []
     cleaned_lines = []
     existing_assignment_task_ids_cache: set[int] | None = None
+    explicit_add_task_seen = False
 
     def _existing_assignment_task_ids() -> set[int]:
         nonlocal existing_assignment_task_ids_cache
@@ -920,26 +1015,64 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     for line in response.splitlines():
         stripped = line.strip()
 
-        m = ADD_TASK_PATTERN.search(stripped)
+        m = ADD_TASK_PATTERN.match(stripped)
         if m:
-            task_text = m.group(1).strip()
-            due_part = m.group(2).strip().lower()
-            category = m.group(3).strip()
-            due_date = None if due_part == "none" or not due_part else due_part
-            # Normalize to MM-DD-YYYY if we got YYYY-MM-DD
-            if due_date and len(due_date) == 10 and due_date[4] == "-":
-                parts = due_date.split("-")
-                if len(parts) == 3:
-                    due_date = f"{parts[1]}-{parts[2]}-{parts[0]}"
+            explicit_add_task_seen = True
+            payload = (m.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|")]
+            if len(parts) < 3:
+                logger.warning("CoS ADD_TASK rejected due to invalid format: %r", stripped)
+                continue
+
+            task_text = (parts[0] or "").strip()
+            due_raw = (parts[1] or "").strip()
+            category = (parts[2] or "").strip().title()
+            if not task_text or category not in {"Business", "Personal"}:
+                logger.warning("CoS ADD_TASK rejected due to invalid task/category: %r", stripped)
+                continue
+
+            due_ok, due_norm = _normalize_dashboard_mmddyyyy(due_raw)
+            if not due_ok:
+                logger.warning("CoS ADD_TASK rejected due to invalid due date: %r", due_raw)
+                continue
+
+            priority = _parse_task_priority_value(parts[3] if len(parts) > 3 else "")
+            next_action_ok, next_action = _normalize_dashboard_mmddyyyy(parts[4] if len(parts) > 4 else "")
+            if not next_action_ok:
+                logger.warning("CoS ADD_TASK rejected due to invalid next-action date: %r", parts[4] if len(parts) > 4 else "")
+                continue
+            project_raw = (parts[5] if len(parts) > 5 else "").strip()
+            recurrence_raw = (parts[6] if len(parts) > 6 else "").strip()
+            recurrence = recurrence_raw if recurrence_raw else "None"
+            if recurrence.lower() in {"none", "null", "n/a"}:
+                recurrence = "None"
+            # Keep recurrence constrained to known UI options unless explicitly custom.
+            if recurrence not in {"None", "Daily", "Weekly", "Monthly"}:
+                recurrence = "None"
+
+            cos_project_id: Optional[int] = None
+            if project_raw and project_raw.lower() not in {"none", "null", "n/a"}:
+                try:
+                    cos_project_id = int(project_raw)
+                except Exception:
+                    cos_project_id = None
             try:
-                db.add_task(
+                task_id = db.add_task(
                     session_id=session_id,
                     task_text=task_text,
-                    due_date=due_date or "",
+                    due_date=due_norm or "",
                     category=category,
-                    recurrence="None",
+                    recurrence=recurrence,
                     completed=0,
+                    cos_project_id=cos_project_id,
                 )
+                # Apply optional richer fields available in the Tasks table.
+                if priority is not None or next_action is not None:
+                    db.update_task_by_id(
+                        task_id=int(task_id),
+                        priority=priority if priority is not None else db._UNSET,  # type: ignore[attr-defined]
+                        next_action_date=next_action if next_action is not None else db._UNSET,  # type: ignore[attr-defined]
+                    )
                 added_tasks += 1
             except Exception as e:
                 logger.warning("CoS add_task failed: %s", e)
@@ -1803,6 +1936,82 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
             continue
 
         cleaned_lines.append(line)
+
+    # Fallback parse for rich markdown output when model omitted ADD_TASK lines.
+    # Keeps extraction strict (numbered line + category + explicit MM-DD-YYYY date).
+    if added_tasks == 0 and not explicit_add_task_seen:
+        try:
+            seen_in_response: set[tuple[str, str, str]] = set()
+            for line in response.splitlines():
+                m_rich = RICH_TASK_LINE_PATTERN.match((line or "").strip())
+                if not m_rich:
+                    continue
+                task_text = (m_rich.group("task") or "").strip().strip(" .-")
+                # Don't let fallback parsing turn CoS action lines into dashboard tasks.
+                if any(task_text.upper().startswith(prefix) for prefix in ACTION_COMMAND_PREFIXES):
+                    continue
+                category = (m_rich.group("category") or "").strip().title()
+                due_date = (m_rich.group("due") or "").strip()
+                if not task_text or category not in {"Business", "Personal"}:
+                    continue
+                dedupe_key = (task_text.casefold(), due_date, category)
+                if dedupe_key in seen_in_response:
+                    continue
+                seen_in_response.add(dedupe_key)
+                try:
+                    db.add_task(
+                        session_id=session_id,
+                        task_text=task_text,
+                        due_date=due_date,
+                        category=category,
+                        recurrence="None",
+                        completed=0,
+                    )
+                    added_tasks += 1
+                except Exception as e:
+                    logger.warning("CoS rich-task fallback add_task failed: %s", e)
+
+            # Also parse compact "task | due | category" triplets from prose/bullets.
+            for m_pipe in RICH_PIPE_TASK_PATTERN.finditer(response):
+                task_text = (m_pipe.group("task") or "").strip()
+                task_text = task_text.strip(" -*•\t\r\n")
+                # Strip common section labels that may precede inline bullets.
+                task_text = re.sub(
+                    r"^(?:#{1,6}\s*)?(?:high|medium|low)\s+priority(?:\s*\([^)]+\))?\s*[-:]\s*",
+                    "",
+                    task_text,
+                    flags=re.IGNORECASE,
+                ).strip()
+                # Strip trailing heading remnants from one-line formats:
+                # "(... - ... ) - Actual task text"
+                task_text = re.sub(r"^.*\)\s*-\s*", "", task_text).strip()
+                # Don't let fallback parsing turn CoS action lines into dashboard tasks.
+                if any(task_text.upper().startswith(prefix) for prefix in ACTION_COMMAND_PREFIXES):
+                    continue
+                due_raw = (m_pipe.group("due") or "").strip()
+                category = (m_pipe.group("category") or "").strip().title()
+                if not task_text or category not in {"Business", "Personal"}:
+                    continue
+                due_date = "" if due_raw.lower() == "none" else due_raw
+                dedupe_key = (task_text.casefold(), due_date, category)
+                if dedupe_key in seen_in_response:
+                    continue
+                seen_in_response.add(dedupe_key)
+                try:
+                    db.add_task(
+                        session_id=session_id,
+                        task_text=task_text,
+                        due_date=due_date,
+                        category=category,
+                        recurrence="None",
+                        completed=0,
+                    )
+                    added_tasks += 1
+                except Exception as e:
+                    logger.warning("CoS rich-pipe fallback add_task failed: %s", e)
+        except Exception as e:
+            logger.warning("CoS rich-task fallback parsing failed: %s", e)
+
     out = "\n".join(cleaned_lines).strip()
     action_notes = []
     if added_tasks:

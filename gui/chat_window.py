@@ -8,6 +8,44 @@ import time
 from datetime import datetime
 from dateutil import parser
 
+PIPE_TASK_PATTERN = re.compile(
+    r"(?:^|[\r\n]|(?:\s[-*•]\s))(?P<task>[^|\r\n]+?)\s*\|\s*(?P<due>\d{2}-\d{2}-\d{4}|none)\s*\|\s*(?P<category>Business|Personal)\b",
+    re.IGNORECASE,
+)
+
+
+def extract_pipe_tasks(response: str) -> list[tuple[str, str]]:
+    """
+    Extract task tuples from compact prose/bullet format:
+    - Task text | MM-DD-YYYY | Business|Personal
+    Returns (task_text, due_date_mmddyyyy_or_today_for_none).
+    """
+    out: list[tuple[str, str]] = []
+    if not (response or "").strip():
+        return out
+    seen: set[tuple[str, str]] = set()
+    for m in PIPE_TASK_PATTERN.finditer(response):
+        task_text = (m.group("task") or "").strip().strip(" -*•\t\r\n")
+        # Remove priority heading remnants from one-line blobs.
+        task_text = re.sub(
+            r"^(?:#{1,6}\s*)?(?:high|medium|low)\s+priority(?:\s*\([^)]+\))?\s*[-:]\s*",
+            "",
+            task_text,
+            flags=re.IGNORECASE,
+        ).strip()
+        task_text = re.sub(r"^.*\)\s*-\s*", "", task_text).strip()
+        due_raw = (m.group("due") or "").strip()
+        due_date = datetime.now().strftime("%m-%d-%Y") if due_raw.lower() == "none" else due_raw
+        if not task_text:
+            continue
+        key = (task_text.casefold(), due_date)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((task_text, due_date))
+    return out
+
+
 class ChatThread(QThread):
     response_signal = pyqtSignal(str)
 
@@ -168,6 +206,16 @@ class ChatThread(QThread):
                                 
                                 if i < len(task_segments) - 1:
                                     time.sleep(0.1)
+                else:
+                    # Fallback: parse compact rich format lines:
+                    # "- task text | MM-DD-YYYY | Business"
+                    pipe_tasks = extract_pipe_tasks(response)
+                    if pipe_tasks:
+                        print(f"DEBUG: Found {len(pipe_tasks)} pipe-format task(s), emitting signals...")
+                        for i, (task_text, due_date) in enumerate(pipe_tasks):
+                            self.chat_handler.task_added_signal.emit(task_text, due_date)
+                            if i < len(pipe_tasks) - 1:
+                                time.sleep(0.1)
                 
                 self.response_signal.emit(response)
             else:

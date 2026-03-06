@@ -44,6 +44,10 @@ This document tracks implementation status and remaining roadmap work.
 
 Use exact line formats in CoS-generated actions:
 
+- Priority scale:
+  - dashboard tasks: P0 (lowest urgency) … P5 (highest urgency)
+  - delegation assignments: P1 (lowest urgency) … P5 (highest urgency)
+
 - `ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>`
 - `UPDATE_ASSIGNMENT_STATUS: <A-0007 or 7> | <queued|in_progress|awaiting_review|blocked|done|cancelled> | <optional note>`
 - `BULK_UPDATE_ASSIGNMENT_STATUS: <status> | <AgentName or all> | <open or all (optional)> | <optional note>`

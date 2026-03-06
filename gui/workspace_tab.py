@@ -1,10 +1,25 @@
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-                            QListWidget, QListWidgetItem, QTextEdit, QSplitter, 
-                            QFileDialog, QProgressBar, QCheckBox, QInputDialog, QApplication, QSpinBox, QGroupBox)
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QListWidget,
+    QListWidgetItem,
+    QTextEdit,
+    QSplitter,
+    QFileDialog,
+    QProgressBar,
+    QCheckBox,
+    QInputDialog,
+    QApplication,
+    QSpinBox,
+    QGroupBox,
+    QMessageBox,
+    QComboBox,
+)
 from PyQt6.QtCore import Qt, QMimeData, QThread, pyqtSignal, QTimer, QSize
 from PyQt6.QtGui import QDropEvent, QDragEnterEvent, QPainter, QColor
-from core.api import DropboxClient
-from dropbox import files
 # from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 import json
 import os
@@ -21,9 +36,21 @@ from core.workspace_orchestrator import (
     format_reference_pack_summary,
 )
 from core.file_handler import extract_text_from_file
+from core.task_extract import parse_suggested_tasks
+from gui.task_import_dialog import TaskImportDialog
 from gui.agent_console import AgentConsole
 
 logger = logging.getLogger(__name__)
+
+_WORKSPACE_SUPPORTED_EXTS = {
+    ".pdf",
+    ".docx",
+    ".md",
+    ".markdown",
+    ".txt",
+}
+
+_WORKSPACE_MAX_FILES_PER_FOLDER = 800
 
 class CollaborationWorker(QThread):
     """Worker thread to run the AI collaboration workflow without freezing the UI."""
@@ -109,8 +136,8 @@ class WorkspaceTab(QWidget):
         super().__init__()
         self.db = db
         self.chat_handler = chat_handler
-        self.dropbox_client = DropboxClient()
         self.selected_files = []
+        self._seen_paths: set[str] = set()
         
         # NEW: dual-LLM orchestrator that will talk to Grok + ChatGPT
         # Initialize with real API call functions
@@ -122,6 +149,64 @@ class WorkspaceTab(QWidget):
         self._last_workspace_files = []
         
         self.setup_ui()
+
+    def _prompt_templates(self) -> dict[str, dict[str, str]]:
+        """
+        Small set of proven instruction templates that reliably produce:
+        - a CEO-friendly executive summary
+        - a structured body (so the output is skimmable)
+        - an importable task section (when the toggle is enabled)
+        """
+        return {
+            "ceo_strategy_memo_v1": {
+                "label": "CEO Strategy Memo (v1)",
+                "prompt": (
+                    "Draft a CEO-facing regulatory strategy memo.\n\n"
+                    "Audience: startup CEO.\n"
+                    "Tone: calm, direct, decision-oriented.\n\n"
+                    "Required sections:\n"
+                    "1) Executive summary (5–8 bullets)\n"
+                    "2) Recommended path (primary + fallback) and why\n"
+                    "3) Evidence plan (software, clinical, HF, cybersecurity, labeling)\n"
+                    "4) Timeline ranges + key dependencies\n"
+                    "5) Top risks + mitigations\n"
+                    "6) Next 30/60/90 days plan\n\n"
+                    "Constraints:\n"
+                    "- Be explicit about assumptions.\n"
+                    "- If uncertain, present options and the decision criteria.\n"
+                    "- Keep it skimmable with short paragraphs and bullets.\n\n"
+                    "Also include a '## Suggested Tasks (importable)' section with ~12 tasks."
+                ),
+            },
+            "ceo_board_update_v1": {
+                "label": "Board/Investor Update (v1)",
+                "prompt": (
+                    "Create a board/investor update draft based on the provided materials.\n\n"
+                    "Audience: investors + board.\n"
+                    "Tone: crisp, credible, non-hype.\n\n"
+                    "Required sections:\n"
+                    "1) Executive summary (3–6 bullets)\n"
+                    "2) What changed since last update\n"
+                    "3) Regulatory status + key decisions needed\n"
+                    "4) Evidence/status (what’s done, what’s next)\n"
+                    "5) Risks/unknowns + mitigation plan\n"
+                    "6) Asks (what we need from the board/investors)\n\n"
+                    "Also include a '## Suggested Tasks (importable)' section with ~10 tasks."
+                ),
+            },
+            "product_brief_to_plan_v1": {
+                "label": "Product Brief → Execution Plan (v1)",
+                "prompt": (
+                    "Convert the provided product brief into an execution-ready plan.\n\n"
+                    "Required sections:\n"
+                    "1) Executive summary (CEO-readable)\n"
+                    "2) Key open questions (what must be clarified)\n"
+                    "3) Workstreams (Reg/QA, Clinical, Engineering, GTM) with 1–2 paragraphs each\n"
+                    "4) Milestones (next 12 weeks) with dependencies\n\n"
+                    "Also include a '## Suggested Tasks (importable)' section with 15–20 tasks."
+                ),
+            },
+        }
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -208,6 +293,37 @@ class WorkspaceTab(QWidget):
         rounds_layout.addWidget(self.max_rounds_spinbox)
         rounds_layout.addStretch()
         file_layout.addLayout(rounds_layout)
+
+        # Prompt template picker (keeps outputs consistent and importable)
+        template_row = QHBoxLayout()
+        template_label = QLabel("Template:")
+        template_label.setStyleSheet("color: #e8eaed; padding: 4px; font-size: 13px;")
+        template_row.addWidget(template_label)
+
+        self.prompt_template_combo = QComboBox()
+        self.prompt_template_combo.setStyleSheet(
+            "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
+            "border-radius: 6px; padding: 8px;"
+        )
+        self.prompt_template_combo.setMinimumHeight(36)
+        self.prompt_template_combo.addItem("Custom", "custom")
+        for key, meta in self._prompt_templates().items():
+            self.prompt_template_combo.addItem(str(meta["label"]), key)
+        self.prompt_template_combo.setToolTip(
+            "Optional. Pick a template to prefill the instruction prompt with a proven structure."
+        )
+        template_row.addWidget(self.prompt_template_combo, 1)
+        template_row.addStretch()
+        file_layout.addLayout(template_row)
+
+        # Suggested tasks contract toggle
+        self.include_task_suggestions_checkbox = QCheckBox("Include “Suggested Tasks (importable)” section")
+        self.include_task_suggestions_checkbox.setChecked(True)
+        self.include_task_suggestions_checkbox.setStyleSheet("color: #e8eaed; padding: 6px; font-size: 13px;")
+        self.include_task_suggestions_checkbox.setToolTip(
+            "When enabled, the generated markdown should include a parseable task list we can extract into reviewable Tasks."
+        )
+        file_layout.addWidget(self.include_task_suggestions_checkbox)
         
         # Select and Generate Draft buttons
         btn_layout = QHBoxLayout()
@@ -217,6 +333,13 @@ class WorkspaceTab(QWidget):
         select_btn.setMinimumWidth(170)
         select_btn.clicked.connect(self.select_files)
         btn_layout.addWidget(select_btn)
+
+        folder_btn = QPushButton("Add Folder…")
+        folder_btn.setStyleSheet("background-color: #3a3b3e; color: #e8eaed; border: 1px solid #2e2f32; padding: 8px 16px; border-radius: 6px; font-weight: 500;")
+        folder_btn.setMinimumHeight(38)
+        folder_btn.setMinimumWidth(140)
+        folder_btn.clicked.connect(self.select_folder)
+        btn_layout.addWidget(folder_btn)
         
         self.generate_draft_btn = QPushButton("Generate Draft")
         self.generate_draft_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 500;")
@@ -342,6 +465,18 @@ class WorkspaceTab(QWidget):
         self.export_button.clicked.connect(self.export_markdown)
         self.export_button.setEnabled(False)  # Disabled until document is generated
         button_bar.addWidget(self.export_button)
+
+        self.extract_tasks_button = QPushButton("Extract Suggested Tasks…")
+        self.extract_tasks_button.setStyleSheet(
+            "background-color: #3a3b3e; color: #e8eaed; border: 1px solid #2e2f32; "
+            "padding: 8px 16px; border-radius: 6px; font-weight: 500;"
+        )
+        self.extract_tasks_button.setMinimumHeight(38)
+        self.extract_tasks_button.setMinimumWidth(220)
+        self.extract_tasks_button.clicked.connect(self.extract_suggested_tasks)
+        self.extract_tasks_button.setEnabled(False)
+        button_bar.addWidget(self.extract_tasks_button)
+
         button_bar.addStretch()
         markdown_layout.addLayout(button_bar)
 
@@ -386,17 +521,20 @@ class WorkspaceTab(QWidget):
                 # Skip if file doesn't exist
                 if not os.path.exists(path):
                     continue
-                    
-                file_info = {
-                    'name': os.path.basename(path),
-                    'path': path,
-                    'is_folder': os.path.isdir(path),
-                    'size': os.path.getsize(path) if os.path.isfile(path) else 0,
-                    'modified': datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S"),
-                    'marked': False
-                }
-                self.add_file_to_list(file_info)
-                valid_files_count += 1
+
+                if os.path.isdir(path):
+                    valid_files_count += self._add_folder_recursive(path)
+                else:
+                    file_info = {
+                        'name': os.path.basename(path),
+                        'path': path,
+                        'is_folder': False,
+                        'size': os.path.getsize(path) if os.path.isfile(path) else 0,
+                        'modified': datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S"),
+                        'marked': False
+                    }
+                    if self.add_file_to_list(file_info):
+                        valid_files_count += 1
                 
             self.status_label.setText(f"Added {valid_files_count} files")
             self.progress_bar.setVisible(False)
@@ -410,45 +548,123 @@ class WorkspaceTab(QWidget):
             dialog.setFileMode(QFileDialog.FileMode.AnyFile)
             dialog.setOption(QFileDialog.Option.ShowDirsOnly, False)
             if dialog.exec():
+                added = 0
                 for path in dialog.selectedFiles():
+                    if os.path.isdir(path):
+                        added += self._add_folder_recursive(path)
+                        continue
                     file_info = {
                         'name': os.path.basename(path),
                         'path': path,
-                        'is_folder': os.path.isdir(path),
+                        'is_folder': False,
                         'size': os.path.getsize(path) if os.path.isfile(path) else 0,
                         'modified': datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S"),
                         'marked': False
                     }
-                    self.add_file_to_list(file_info)
-                self.status_label.setText(f"Added {len(dialog.selectedFiles())} files")
+                    if self.add_file_to_list(file_info):
+                        added += 1
+                self.status_label.setText(f"Added {added} files")
         except Exception as e:
             self.status_label.setText(f"Error selecting files: {str(e)}")
 
-    def add_file_to_list(self, file_info):
-        if not file_info['is_folder']:
-            icon = "📄"
-            item_text = file_info['name'][:30] + "..." if len(file_info['name']) > 30 else file_info['name']
-            item = QListWidgetItem()
-            widget = QWidget()
-            layout = QHBoxLayout(widget)
-            layout.setContentsMargins(8, 6, 8, 6)
-            layout.setSpacing(10)
-            checkbox = QCheckBox()
-            checkbox.setMinimumSize(22, 22)
-            checkbox.setChecked(file_info['marked'])
-            checkbox.stateChanged.connect(lambda state: self.toggle_mark(file_info, state))
-            layout.addWidget(checkbox)
-            label = QLabel(f"{icon} {item_text}")
-            label.setToolTip(file_info['name'])
-            label.setMinimumHeight(24)
-            layout.addWidget(label)
-            layout.addStretch()
-            widget.setMinimumHeight(40)
-            item.setSizeHint(QSize(0, 44))
-            item.setData(Qt.ItemDataRole.UserRole, file_info)
-            self.file_list.addItem(item)
-            self.file_list.setItemWidget(item, widget)
-            self.selected_files.append(file_info)
+    def select_folder(self):
+        try:
+            folder = QFileDialog.getExistingDirectory(self, "Select folder to add")
+            if not folder:
+                return
+            self.status_label.setText("Scanning folder…")
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            QApplication.processEvents()
+            added = self._add_folder_recursive(folder)
+            self.status_label.setText(f"Added {added} files from folder")
+        except Exception as e:
+            self.status_label.setText(f"Error selecting folder: {str(e)}")
+        finally:
+            self.progress_bar.setVisible(False)
+
+    def _is_supported_workspace_file(self, path: str) -> bool:
+        ext = os.path.splitext(path or "")[1].lower()
+        return ext in _WORKSPACE_SUPPORTED_EXTS
+
+    def _add_folder_recursive(self, folder_path: str) -> int:
+        folder = os.path.abspath(folder_path)
+        if not os.path.isdir(folder):
+            return 0
+        added = 0
+        seen_in_run = 0
+        for base, _dirs, files in os.walk(folder):
+            for fn in files:
+                if added >= _WORKSPACE_MAX_FILES_PER_FOLDER:
+                    self.status_label.setText(
+                        f"Folder import capped at {_WORKSPACE_MAX_FILES_PER_FOLDER} files (skipped the rest)"
+                    )
+                    return added
+                full = os.path.abspath(os.path.join(base, fn))
+                if not self._is_supported_workspace_file(full):
+                    continue
+                if full in self._seen_paths:
+                    continue
+                try:
+                    size = os.path.getsize(full) if os.path.isfile(full) else 0
+                    modified = datetime.fromtimestamp(os.path.getmtime(full)).strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    size = 0
+                    modified = None
+                file_info = {
+                    "name": os.path.basename(full),
+                    "path": full,
+                    "is_folder": False,
+                    "size": size,
+                    "modified": modified,
+                    "marked": False,
+                }
+                if self.add_file_to_list(file_info):
+                    added += 1
+                seen_in_run += 1
+                if self.progress_bar and self.progress_bar.isVisible():
+                    # Nonlinear but cheap feedback: just cycle 0-100 as we scan.
+                    self.progress_bar.setValue((seen_in_run * 7) % 100)
+                    if seen_in_run % 50 == 0:
+                        QApplication.processEvents()
+        return added
+
+    def add_file_to_list(self, file_info) -> bool:
+        if file_info.get("is_folder"):
+            return False
+        raw_path = file_info.get("path") or ""
+        full_path = os.path.abspath(raw_path)
+        if not full_path or not os.path.exists(full_path):
+            return False
+        if full_path in self._seen_paths:
+            return False
+        self._seen_paths.add(full_path)
+        file_info["path"] = full_path
+
+        icon = "📄"
+        item_text = file_info['name'][:30] + "..." if len(file_info['name']) > 30 else file_info['name']
+        item = QListWidgetItem()
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(10)
+        checkbox = QCheckBox()
+        checkbox.setMinimumSize(22, 22)
+        checkbox.setChecked(file_info['marked'])
+        checkbox.stateChanged.connect(lambda state: self.toggle_mark(file_info, state))
+        layout.addWidget(checkbox)
+        label = QLabel(f"{icon} {item_text}")
+        label.setToolTip(file_info['name'])
+        label.setMinimumHeight(24)
+        layout.addWidget(label)
+        layout.addStretch()
+        widget.setMinimumHeight(40)
+        item.setSizeHint(QSize(0, 44))
+        item.setData(Qt.ItemDataRole.UserRole, file_info)
+        self.file_list.addItem(item)
+        self.file_list.setItemWidget(item, widget)
+        self.selected_files.append(file_info)
+        return True
 
     def toggle_mark(self, file_info, state):
         file_info['marked'] = state == Qt.CheckState.Checked.value
@@ -623,11 +839,22 @@ class WorkspaceTab(QWidget):
                 prompt_text = f"Describe what you want Grok + ChatGPT to do with these {len(marked_files)} file(s):"
             else:
                 prompt_text = "Describe what you want Grok + ChatGPT to research and create (no files uploaded):"
+
+            default_instructions = ""
+            try:
+                template_key = None
+                if getattr(self, "prompt_template_combo", None) is not None:
+                    template_key = self.prompt_template_combo.currentData()
+                if template_key and template_key != "custom":
+                    default_instructions = str(self._prompt_templates().get(str(template_key), {}).get("prompt") or "")
+            except Exception:
+                default_instructions = ""
             
             instructions, ok = QInputDialog.getText(
                 self,
                 "AI Collaboration Instructions",
-                prompt_text
+                prompt_text,
+                text=default_instructions,
             )
             if not ok or not instructions.strip():
                 self.status_label.setText("AI collaboration cancelled")
@@ -677,9 +904,19 @@ class WorkspaceTab(QWidget):
 
             # Build the task spec with user-defined max_rounds
             max_rounds = self.max_rounds_spinbox.value()
+            context = ""
+            if getattr(self, "include_task_suggestions_checkbox", None) and self.include_task_suggestions_checkbox.isChecked():
+                context = (
+                    "Output contract:\n"
+                    "- The markdown MUST include a section exactly titled: '## Suggested Tasks (importable)'.\n"
+                    "- Under that header, include one task per line in this exact format:\n"
+                    "  - [ ] <task title> | due: <MM-DD-YYYY or none> | category: <Business or Personal>\n"
+                    "- Use realistic due dates; if unknown, use 'none'.\n"
+                    "- Keep task titles short and action-oriented.\n"
+                )
             task_spec = WorkspaceTaskSpec(
                 goal=instructions.strip(),
-                context="",  # Could be extended to ask for context
+                context=context,
                 files=workspace_files,
                 max_rounds=max_rounds,
             )
@@ -865,6 +1102,8 @@ class WorkspaceTab(QWidget):
             self.save_button.setEnabled(True)
         if hasattr(self, 'export_button'):
             self.export_button.setEnabled(True)
+        if hasattr(self, "extract_tasks_button"):
+            self.extract_tasks_button.setEnabled(bool(self._current_markdown.strip()))
 
         status_text = f"AI collaboration complete ({status}, {rounds} round{'s' if rounds != 1 else ''})"
         if latest_coverage:
@@ -873,6 +1112,61 @@ class WorkspaceTab(QWidget):
         self.progress_bar.setValue(100)
         QApplication.processEvents()
         self.progress_bar.setVisible(False)
+
+    def extract_suggested_tasks(self):
+        """
+        Parse the current markdown for a '## Suggested Tasks (importable)' section,
+        then open a review dialog that lets the user accept/decline/edit before insertion.
+        """
+        md = (self._current_markdown or "").strip()
+        if not md:
+            QMessageBox.information(self, "Suggested Tasks", "No markdown document is available yet.")
+            return
+
+        tasks, warnings = parse_suggested_tasks(md)
+        if not tasks:
+            details = "\n".join(warnings) if warnings else "No tasks found."
+            QMessageBox.information(self, "Suggested Tasks", f"No importable tasks were found.\n\n{details}")
+            return
+
+        dlg = TaskImportDialog(tasks=tasks, warnings=warnings, parent=self)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            self.status_label.setText("Task import cancelled")
+            return
+
+        selected = dlg.selected_tasks()
+        if not selected:
+            self.status_label.setText("No tasks selected for import")
+            return
+
+        created = 0
+        failed = 0
+        for t in selected:
+            try:
+                self.db.add_task(
+                    "workspace_import",
+                    t.title,
+                    t.due_mmddyyyy,
+                    category=t.category,
+                )
+                created += 1
+            except Exception:
+                failed += 1
+
+        if failed:
+            QMessageBox.warning(
+                self,
+                "Suggested Tasks",
+                f"Imported {created} task(s), but {failed} failed to insert.\n\n"
+                "Open the Tasks tab to confirm what was created.",
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Suggested Tasks",
+                f"Imported {created} task(s).\n\nOpen the Tasks tab (or Dashboard) to view them.",
+            )
+        self.status_label.setText(f"Imported {created} task(s){' (some failed)' if failed else ''}")
     
     def _on_collaboration_error(self, error_msg):
         """Handle errors from collaboration workflow"""

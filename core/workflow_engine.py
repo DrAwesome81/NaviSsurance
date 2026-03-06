@@ -8,7 +8,8 @@ Runs: Plan -> Research -> Synthesis -> Parallel synthesis (Grok + ChatGPT) -> GA
 
 import json
 import logging
-from typing import Any, Optional
+import os
+from typing import Any, Callable, Optional
 
 from core.agent_schemas import (
     AgentType,
@@ -16,6 +17,7 @@ from core.agent_schemas import (
     DraftArtifact,
     InternalRetrievalBrief,
     QAReport,
+    ResearchBriefArtifact,
     TaskPlan,
     TaskPlanItem,
     UnifiedBrief,
@@ -41,66 +43,24 @@ class WorkflowEngine:
         """
         Create a TaskPlan from goals and mode, store it, and insert project_tasks.
 
-        Mode: "internal_only" | "internal_web" | "web_only".
-        Plan: research tasks (internal and/or web per mode), then writer, then editor_qa.
+        Deep Research is web-first. This plan creates a single web research task.
+        The pipeline stops after synthesis for user review.
         """
         tasks: list[TaskPlanItem] = []
         task_id = 1
 
-        if mode in ("internal_only", "internal_web"):
-            tasks.append(
-                TaskPlanItem(
-                    task_id=f"t{task_id}",
-                    title="Internal document research",
-                    description=goals,
-                    agent_type=AgentType.INTERNAL_LIBRARIAN,
-                    dependencies=[],
-                    definition_of_done="InternalRetrievalBrief stored.",
-                    expected_artifacts=[ArtifactType.INTERNAL_RETRIEVAL_BRIEF.value],
-                )
-            )
-            task_id += 1
-
-        if mode in ("web_only", "internal_web"):
-            tasks.append(
-                TaskPlanItem(
-                    task_id=f"t{task_id}",
-                    title="Web research",
-                    description=goals,
-                    agent_type=AgentType.WEB_RESEARCHER,
-                    dependencies=[],
-                    definition_of_done="WebResearchBrief stored.",
-                    expected_artifacts=[ArtifactType.WEB_RESEARCH_BRIEF.value],
-                )
-            )
-            task_id += 1
-
-        deps_writer = [t.task_id for t in tasks]
         tasks.append(
             TaskPlanItem(
                 task_id=f"t{task_id}",
-                title="Draft document",
+                title="Web research",
                 description=goals,
-                agent_type=AgentType.WRITER,
-                dependencies=deps_writer,
-                definition_of_done="DraftArtifact with citations stored.",
-                expected_artifacts=[ArtifactType.DRAFT.value],
+                agent_type=AgentType.WEB_RESEARCHER,
+                dependencies=[],
+                definition_of_done="WebResearchBrief stored.",
+                expected_artifacts=[ArtifactType.WEB_RESEARCH_BRIEF.value],
             )
         )
-        writer_task_id = f"t{task_id}"
         task_id += 1
-
-        tasks.append(
-            TaskPlanItem(
-                task_id=f"t{task_id}",
-                title="QA / Edit",
-                description="Review draft against briefs.",
-                agent_type=AgentType.EDITOR_QA,
-                dependencies=[writer_task_id],
-                definition_of_done="QAReport and optional DraftArtifact v2 stored.",
-                expected_artifacts=[ArtifactType.QA_REPORT.value],
-            )
-        )
 
         plan = TaskPlan(project_id=str(project_id), tasks=tasks)
         plan_json = plan.model_dump_json()
@@ -117,8 +77,8 @@ class WorkflowEngine:
             )
         logger.info("Created plan for project %s with %s tasks.", project_id, len(tasks))
 
-    def run_research(self, project_id: int) -> None:
-        """Run all research tasks (Internal Librarian and/or Web Researcher) and store briefs."""
+    def run_research(self, project_id: int, progress_callback: Optional[Callable[[str], None]] = None) -> None:
+        """Run web research tasks and store briefs."""
         self.db.update_project_status(project_id, "running")
         plan_row = self.db.get_task_plan_for_project(project_id)
         query_by_task_id = {}
@@ -130,22 +90,26 @@ class WorkflowEngine:
         tasks = self.db.get_project_tasks(project_id)
         for row in tasks:
             pt_id, _, plan_task_id, title, agent_type_str, status, deps_json, dod, _, _ = row
-            if agent_type_str not in (AgentType.INTERNAL_LIBRARIAN.value, AgentType.WEB_RESEARCHER.value):
+            if agent_type_str != AgentType.WEB_RESEARCHER.value:
                 continue
             if status == "completed":
                 continue
             self.db.update_project_task_status(pt_id, "running")
             agent_type = AgentType(agent_type_str)
-            tool_name = "internal_retrieval" if agent_type == AgentType.INTERNAL_LIBRARIAN else "web_research"
+            tool_name = "web_research"
             query = query_by_task_id.get(plan_task_id) or title
             run_id = self.db.insert_run(project_id, pt_id, agent_type_str, model_used=None)
             try:
-                result = run_tool(agent_type, tool_name, query=query)
+                if progress_callback:
+                    progress_callback(f"Research task '{title}' started.")
+                result = run_tool(agent_type, tool_name, query=query, progress_callback=progress_callback)
                 content_json = result.model_dump_json()
-                artifact_type = ArtifactType.INTERNAL_RETRIEVAL_BRIEF.value if agent_type == AgentType.INTERNAL_LIBRARIAN else ArtifactType.WEB_RESEARCH_BRIEF.value
+                artifact_type = ArtifactType.WEB_RESEARCH_BRIEF.value
                 self.db.insert_artifact(project_id, artifact_type, content_json, run_id=run_id, project_task_id=pt_id)
                 self.db.update_run_status(run_id, "completed")
                 self.db.update_project_task_status(pt_id, "completed")
+                if progress_callback:
+                    progress_callback(f"Research task '{title}' completed.")
             except Exception as e:
                 logger.exception("Research task %s failed: %s", plan_task_id, e)
                 self.db.update_run_status(run_id, "failed", error_message=str(e))
@@ -259,6 +223,118 @@ class WorkflowEngine:
         self.run_draft(project_id)
         self.run_qa(project_id)
         self.finalize(project_id)
+
+    def generate_research_brief(self, project_id: int, user_feedback: Optional[str] = None) -> None:
+        """
+        Deep Research post-review step.
+
+        Requires project status awaiting_research_review. Optionally stores user_feedback, then generates a
+        final research brief (markdown) meant to be reused elsewhere (e.g., as input to Workspace drafting).
+        """
+        row = self.db.get_project(project_id)
+        if not row:
+            raise ValueError(f"Project {project_id} not found")
+        _id, _name, _mode, status, _created, _config = row
+        if status != STATUS_AWAITING_RESEARCH_REVIEW:
+            raise ValueError(
+                f"Project {project_id} status is '{status}'; expected '{STATUS_AWAITING_RESEARCH_REVIEW}'. "
+                "Review research first, then generate a research brief."
+            )
+
+        if user_feedback:
+            self.db.insert_artifact(
+                project_id, "user_research_feedback", json.dumps({"content": user_feedback}), project_task_id=None
+            )
+
+        artifacts = self.db.get_artifacts_for_project(project_id)
+        unified_json = None
+        synthesis_grok = ""
+        synthesis_chatgpt = ""
+        for _id2, art_type, content_json, _path, _created2 in artifacts:
+            if art_type == ArtifactType.UNIFIED_BRIEF.value:
+                unified_json = content_json
+            elif art_type == "synthesis_grok" and content_json:
+                try:
+                    synthesis_grok = json.loads(content_json).get("content", "") or ""
+                except Exception:
+                    synthesis_grok = content_json
+            elif art_type == "synthesis_chatgpt" and content_json:
+                try:
+                    synthesis_chatgpt = json.loads(content_json).get("content", "") or ""
+                except Exception:
+                    synthesis_chatgpt = content_json
+
+        if not unified_json:
+            raise ValueError(f"No UnifiedBrief found for project {project_id}")
+
+        unified = UnifiedBrief.model_validate_json(unified_json)
+        research_text = self._brief_summary_for_prompt(unified)
+
+        system = (
+            "You are a deep research analyst. Produce a structured research brief in markdown based ONLY on the research summary and syntheses. "
+            "Goal: a reusable brief (not a final deliverable document) with clear sections and explicit, linked sources. "
+            "Requirements: (1) Executive summary; (2) Key findings (bulleted); (3) Evidence & sources (use markdown links: [text](url)); "
+            "(4) Gaps / open questions; (5) Recommended next research steps. Output only markdown, no meta commentary."
+        )
+
+        user = f"Research summary:\n{research_text}\n\n"
+        if synthesis_grok:
+            user += f"Grok synthesis:\n{synthesis_grok}\n\n"
+        if synthesis_chatgpt:
+            user += f"ChatGPT synthesis:\n{synthesis_chatgpt}\n\n"
+        if user_feedback:
+            user += f"User focus / constraints:\n{user_feedback}\n\n"
+        user += "Write the research brief now."
+
+        grok_draft = ""
+        try:
+            grok_draft = call_grok_simple(system, user)
+        except Exception as e:
+            logger.exception("Grok research brief failed: %s", e)
+            grok_draft = f"[Grok research brief failed: {e}]"
+        self.db.insert_artifact(
+            project_id, "research_brief_grok", json.dumps({"content": grok_draft}), project_task_id=None
+        )
+
+        chatgpt_final = ""
+        try:
+            user2 = (
+                "Here is a draft research brief.\n\n"
+                f"{grok_draft}\n\n"
+                "Please produce the final research brief in markdown. Ensure sources are clickable markdown links where applicable."
+            )
+            chatgpt_final = call_chatgpt_simple(system, user2)
+        except Exception as e:
+            logger.exception("ChatGPT research brief failed: %s", e)
+            chatgpt_final = grok_draft
+
+        brief = ResearchBriefArtifact(
+            version="1",
+            markdown_body=chatgpt_final or "# Research brief\n\n(No content generated.)",
+            assumptions=[],
+            open_questions=[],
+        )
+        # Persist a markdown file for easy export/reuse.
+        file_path = None
+        try:
+            store_dir = self.db.get_artifact_store_path(project_id, create=True)
+            file_path = os.path.join(store_dir, "research_brief.md")
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(brief.markdown_body or "")
+        except Exception as e:
+            logger.exception("Failed to write research brief file: %s", e)
+            file_path = None
+
+        self.db.insert_artifact(
+            project_id,
+            ArtifactType.RESEARCH_BRIEF.value,
+            brief.model_dump_json(),
+            project_task_id=None,
+            file_path=file_path,
+        )
+
+        # Mark done (brief ready).
+        self.db.update_project_status(project_id, "done")
 
     def run_draft(self, project_id: int) -> None:
         """
@@ -388,14 +464,20 @@ class WorkflowEngine:
         self.db.update_project_status(project_id, "done")
         logger.info("Project %s finalized.", project_id)
 
-    def run_pipeline(self, project_id: int, goals: str, mode: str) -> None:
+    def run_pipeline(
+        self,
+        project_id: int,
+        goals: str,
+        mode: str,
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ) -> None:
         """
         Create plan, then run Research -> Synthesis -> Parallel synthesis (Grok + ChatGPT).
         Stops with status awaiting_research_review. User reviews research; then call
         continue_to_draft(project_id, user_feedback=None) to run draft -> QA -> finalize.
         """
         self.create_plan(project_id, goals, mode)
-        self.run_research(project_id)
+        self.run_research(project_id, progress_callback=progress_callback)
         self.run_synthesis(project_id)
         self.run_parallel_synthesis(project_id)
         # Pipeline stops here; user reviews research, then continue_to_draft(...)

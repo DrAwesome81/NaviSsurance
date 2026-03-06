@@ -423,6 +423,73 @@ class TestChiefOfStaffService:
         assert tasks[0][2] in (None, "", "none")
         assert tasks[0][3] == "Personal"
 
+    def test_cos_response_parses_rich_prioritized_task_lines_without_add_task_commands(
+        self, mock_grok, cos_db
+    ):
+        """Fallback parser should extract numbered rich-format tasks when ADD_TASK lines are absent."""
+        mock_grok.return_value = (
+            "#### High Priority\n"
+            "1. **CoDentist: Create shared folder, add current docs + draft hazard analysis** (Business) – Due today (03-02-2026).\n"
+            "2. **Call plumber** (Personal) – Due Wednesday (03-04-2026).\n"
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Prioritize these and add tasks.")
+        tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+        assert len(tasks) == 2
+        texts = {t[1] for t in tasks}
+        assert "CoDentist: Create shared folder, add current docs + draft hazard analysis" in texts
+        assert "Call plumber" in texts
+        assert "Added 2 task(s)" in result
+
+    def test_cos_response_parses_pipe_tasks_from_inline_priority_text(self, mock_grok, cos_db):
+        """Fallback parser should extract inline bullet/pipe task triplets from prose responses."""
+        mock_grok.return_value = (
+            "High Priority - CoDentist: Create shared folder, add current docs + draft hazard analysis | 03-02-2026 | Business "
+            "- Call plumber | 03-04-2026 | Personal"
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Shorten this into tasks.")
+        tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+        assert len(tasks) == 2
+        texts = {t[1] for t in tasks}
+        assert "CoDentist: Create shared folder, add current docs + draft hazard analysis" in texts
+        assert "Call plumber" in texts
+        assert "Added 2 task(s)" in result
+
+    def test_cos_response_parses_single_line_repeated_priority_list_with_trailing_added_note(
+        self, mock_grok, cos_db
+    ):
+        """Should parse one-line bullet/pipe list even when model includes a trailing '*Added N task(s)*' note."""
+        mock_grok.return_value = (
+            "Understood—repeating the shortened to-do list from my last response for your formatting check. "
+            "(No changes made; tasks remain as previously added to your dashboard.) "
+            "### High Priority (Today/Tomorrow - Unblock Progress) "
+            "- CoDentist: Create shared folder, add current docs + draft hazard analysis | 03-02-2026 | Business "
+            "- Dova: Push Animesh/Ben on CAPAs/DHF progress and ask about design review delay | 03-03-2026 | Business "
+            "- Peritia: Ping on SoW status for P5 Design's device | 03-03-2026 | Business "
+            "- Blue Goat Cyber: Ping rep on partnership deal status | 03-03-2026 | Business "
+            "### Medium Priority (This Week - Advance Projects) "
+            "- HippoClinic: Check in with Fei on testing status | 03-04-2026 | Business "
+            "- Dova: Research simple de novo submission process for dovavision to speed authorization | 03-06-2026 | Business "
+            "- iQSurgical: Reach out to KK for study design help; start drafting pre-submission | 03-06-2026 | Business "
+            "### Low Priority (Fit Around Family - Non-Urgent) "
+            "- Call plumber | 03-04-2026 | Personal "
+            "- Call foundation repair guy | 03-04-2026 | Personal "
+            "If this matches what you expected or needs further tweaks, let me know. "
+            "— *Added 9 task(s) to your dashboard.*"
+        )
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(cos_db, "Repeat list for formatting check.")
+        tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+        assert len(tasks) == 9
+        texts = {t[1] for t in tasks}
+        assert "CoDentist: Create shared folder, add current docs + draft hazard analysis" in texts
+        assert "Call foundation repair guy" in texts
+        assert "Added 9 task(s)" in result
+
     def test_cos_response_parses_add_cal_block_and_creates_event(self, mock_grok, cos_db):
         """ADD_CAL_BLOCK creates one Google Calendar event and strips command line from response."""
         mock_grok.return_value = (
@@ -1268,11 +1335,11 @@ def test_chief_of_staff_open_assignment_uses_ancestor_tab_host(qapp, cos_db):
 
     host = QWidget()
     host.tab_widget = QTabWidget(host)
-    host.projects_tab = QWidget()
-    host.projects_tab.atlas_chat_group = QGroupBox(host.projects_tab)
-    host.projects_tab.atlas_chat_group.setCheckable(True)
-    host.projects_tab.atlas_console = _DummyConsole()
-    host.tab_widget.addTab(host.projects_tab, "AI Projects")
+    host.deep_research_tab = QWidget()
+    host.deep_research_tab.atlas_chat_group = QGroupBox(host.deep_research_tab)
+    host.deep_research_tab.atlas_chat_group.setCheckable(True)
+    host.deep_research_tab.atlas_console = _DummyConsole()
+    host.tab_widget.addTab(host.deep_research_tab, "Deep Research")
 
     mid = QWidget(host)
     mid_layout = QVBoxLayout(mid)
@@ -1284,6 +1351,6 @@ def test_chief_of_staff_open_assignment_uses_ancestor_tab_host(qapp, cos_db):
         with patch("gui.chief_of_staff_tab.QMessageBox.warning") as warn_mock:
             tab._open_assignment_in_assignee_console()
 
-    assert host.projects_tab.atlas_console.focused == int(aid)
+    assert host.deep_research_tab.atlas_console.focused == int(aid)
     assert not info_mock.called
     assert not warn_mock.called

@@ -1,5 +1,18 @@
 # NaviSsurance Testing
 
+## Automated tests (recommended first)
+
+- Full unit suite:
+  - `python -m pytest -q`
+- Focused suites:
+  - `python -m pytest tests/test_chief_of_staff.py -q`
+  - `python -m pytest tests/test_workflow_engine.py -q`
+
+### Optional UI test flags
+- Qt/UI tests are disabled by default:
+  - `set RUN_QT_TESTS=1` (Windows)
+  - `export RUN_QT_TESTS=1` (macOS/Linux)
+
 ## Chief of Staff + Executive Team Manual Regression (Current)
 
 Last revised: 2026-02-23
@@ -15,6 +28,10 @@ Last revised: 2026-02-23
   - Missing token should degrade gracefully (no crash, no auth popup).
 - Optional document RAG:
   - `COS_ENABLE_RAG_SEARCH=1` and available index for semantic retrieval checks.
+
+### Deep Research (web) prerequisites
+- Web research requires OpenAI access:
+  - Set `OPENAI_API_KEY` so `core/tools/web_research.py` can call ChatGPT via the Responses API hosted `web_search` tool (with a fallback to non-browsing ChatGPT if needed).
 
 ### Fast smoke (10–15 min)
 
@@ -127,12 +144,63 @@ Last revised: 2026-02-23
 - Expected:
   - Invalid dates are rejected; existing data remains unchanged.
 
+#### TC-DR-001: Deep Research — web research run
+- Steps:
+  1. Open `Deep Research` tab.
+  2. Enter a short objective (e.g., “latest FDA PCCP draft guidance updates this month”).
+  3. Click “Start deep research”.
+- Expected:
+  - Pipeline runs without UI freeze.
+  - Status line updates during research rounds (e.g., `Web research round 3/8…`, elapsed time, total sources).
+  - A `Web brief` artifact appears for review.
+  - Status reaches `awaiting_research_review` (research ready for review).
+
+#### TC-DR-002: Deep Research — generate final research brief
+- Steps:
+  1. After TC-DR-001 completes, add optional constraints (e.g., “focus on official FDA sources”).
+  2. Click “Generate final research brief”.
+- Expected:
+  - Final brief renders in the markdown pane.
+  - Final brief is also written to `data/artifacts/<run_id>/research_brief.md`.
+  - Status becomes `done`.
+
+Note:
+- If `Auto-generate final research brief when research completes` is enabled, TC-DR-002 should happen automatically immediately after TC-DR-001 completes.
+
+#### TC-BILL-001: Billing — manual time entry
+- Steps:
+  1. Open `Billing` tab.
+  2. Create a client if prompted.
+  3. Enter a description, click `Start`, wait ~10 seconds, click `Stop & Save`.
+  4. Verify the entry appears in the time entry table.
+- Expected:
+  - Entry is stored and visible with minutes/hours and description.
+
+#### TC-BILL-002: Billing — template + invoice draft generation
+- Steps:
+  1. Open `Billing` tab.
+  2. Select/create a template and include `{{line_items_md}}` and `{{total_hours}}` placeholders.
+  3. Click `Generate previous month` (or pick a custom range with existing entries).
+  4. Select the created draft from the drafts list.
+- Expected:
+  - Draft renders in preview.
+  - Draft is written to `data/artifacts/invoice_drafts/<draft_id>/…` and can be opened/saved.
+
+#### TC-BILL-003: Billing — monthly autorun prompt + idempotency
+- Steps:
+  1. In `Billing` tab, enable auto-draft and set `Day of month` to today.
+  2. Restart the app.
+  3. Wait for the billing prompt.
+  4. Dismiss it, then wait for the next periodic check (or restart again).
+- Expected:
+  - Prompt appears once for the month (no repeated prompts/duplicate drafts for the same month).
+
 ### Automated test commands (recommended)
 
 - Focused CoS suite:
-  - `python3 -m pytest tests/test_chief_of_staff.py -q`
+  - `python -m pytest tests/test_chief_of_staff.py -q`
 - Additional memory/DB smoke:
-  - `python3 -m pytest tests/test_cos_memory.py tests/test_db.py -q`
+  - `python -m pytest tests/test_cos_memory.py tests/test_db.py -q`
 
 ---
 
@@ -240,13 +308,29 @@ Description: Verify the single `Generate Draft` workflow starts correctly and re
 Steps:
 Open NaviSsurance (interface.py).
 Navigate to Workspace Tab.
-Add one or more files and mark them in scope.
+Add one or more files (or a folder via `Add Folder…`) and mark them in scope.
 Click `Generate Draft`.
 When prompted, cancel once and confirm the workflow exits cleanly.
 Run again with a valid prompt and verify round/status updates.
 
 Expected Result: `Generate Draft` starts collaboration, updates panes/status, and shows completion with context coverage note.
 Actual Result: [Pending: Re-test on current Workspace], 2026-02-25.
+Status: Pending
+
+TC-008b: Workspace Extract Suggested Tasks
+
+Description: Verify `Extract Suggested Tasks…` parses the importable section and inserts tasks only after review.
+Steps:
+Open NaviSsurance (interface.py).
+Navigate to Workspace Tab.
+Generate a draft that includes:
+`## Suggested Tasks (importable)`
+with at least 2 task lines.
+Click `Extract Suggested Tasks…`.
+Uncheck 1 task, edit 1 due date, click `Apply`.
+
+Expected Result: Only checked tasks are inserted into SQLite tasks; edited fields persist; cancelled import creates nothing.
+Actual Result: [Pending], 2026-02-27.
 Status: Pending
 
 Note-Taking System Tests

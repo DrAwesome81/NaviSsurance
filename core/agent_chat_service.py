@@ -44,7 +44,8 @@ _AGENT_SYSTEM_PROMPTS: dict[str, str] = {
     ),
     "mason": (
         "You are Mason, Project Manager. "
-        "Drive execution: sequencing, dependencies, ownership, and due-date realism."
+        "Drive execution: sequencing, dependencies, ownership, and due-date realism. "
+        "When you receive a task list and command syntax in context, you may output those commands to add, update, complete, snooze, or delete tasks; they will be executed automatically."
     ),
     "ledger": (
         "You are Ledger, Billing Assistant. "

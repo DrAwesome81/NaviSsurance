@@ -49,27 +49,33 @@ class NewsWorker(QThread):
             except Exception:
                 pass
             
-            # Use the chat handler to get news
-            if hasattr(self.chat_handler, 'get_response'):
-                print("NewsWorker: Chat handler has get_response method")
-                
-                # Single API call with direct search query
-                news_query = self.chat_handler.get_response(
-                    f"WEB_SEARCH:{direct_search_query}", 
-                    session_id="dashboard_news_query", 
-                    conversation_history=[]
-                )
-                
-                # Clean up the query if it contains WEB_SEARCH: prefix
-                if "WEB_SEARCH:" in news_query:
-                    news_query = news_query.split("WEB_SEARCH:")[1].strip()
-                else:
-                    news_query = news_query.strip()
-                
-                print(f"NewsWorker: Got news response: {news_query[:100]}...")
-                self.news_loaded.emit(news_query)
-            else:
-                self.error_occurred.emit("Chat handler does not have get_response method")
+            # IMPORTANT: Do not route news through ChatManager.get_response (local llama worker).
+            # Instead use Grok web_search + Grok structuring to preserve URLs.
+            from core.grok_client import grok_available, grok_web_search, grok_completion
+
+            ok, msg = grok_available()
+            if not ok:
+                self.error_occurred.emit(f"News unavailable: {msg}")
+                return
+
+            results = grok_web_search(direct_search_query, model="grok-4-1-fast") or ""
+            if not results.strip():
+                self.error_occurred.emit("News unavailable: empty search results")
+                return
+
+            system = (
+                "You are a news extraction assistant. "
+                "Return ONLY a valid JSON array (no prose, no markdown). "
+                "Each item MUST be an object with keys: title, content, url, source, published_date. "
+                "The url MUST be the full article URL starting with https://. "
+                "Only use URLs that appear in the provided results text; never invent URLs. "
+                "If you cannot find a URL, set url to an empty string. "
+                "Keep title plain text (no ####, no **). "
+                "Limit to 8 items."
+            )
+            user = f"Extract up to 8 MedTech news items from these results:\n\n{results}"
+            payload = grok_completion(system=system, user=user, model="grok-4-1-fast-reasoning-latest") or ""
+            self.news_loaded.emit(payload.strip() or "[]")
                 
         except Exception as e:
             print(f"NewsWorker: Error loading news: {e}")
@@ -121,19 +127,405 @@ class BriefingWorker(QThread):
 import re
 
 class DashboardTab(QWidget):
-    def __init__(self, chat_handler, todo_list, db, parent=None):
+    def __init__(self, chat_handler, todo_list, db, parent=None, defer_initial_loads: bool = False):
         super().__init__(parent)
         self.chat_handler = chat_handler
         self.todo_list = todo_list
         self.db = db
+        self.defer_initial_loads = bool(defer_initial_loads)
         self.tasks_panel = None
         # Update TodoList's parent to point to this dashboard tab
         if self.todo_list:
             self.todo_list.parent = self
-            # Set up the todo list filters in the dashboard
+        # Ensure filter UI is prepared before building the task widget.
+        # (create_task_widget may embed TasksTab or fall back to legacy table+filters.)
+        try:
             self.setup_todo_filters()
+        except Exception:
+            pass
         self.setup_ui()
-        print("DEBUG: DashboardTab initialized, about to call load_tasks_filtered")
+
+    def _setup_status_items(self) -> list[tuple[str, bool, str]]:
+        """
+        Return a small list of (label, ok, detail) items for the Setup/Connectivity banner.
+        Best-effort only; this must never raise.
+        """
+        items: list[tuple[str, bool, str]] = []
+        # Keys / integrations
+        try:
+            import os
+
+            openai_ok = bool(str(os.getenv("OPENAI_API_KEY", "") or "").strip())
+            items.append(("OpenAI web research", openai_ok, "Set OPENAI_API_KEY in config/.env"))
+
+            assembly_ok = bool(str(os.getenv("ASSEMBLYAI_API_KEY", "") or "").strip())
+            items.append(("AssemblyAI transcripts", assembly_ok, "Set ASSEMBLYAI_API_KEY in config/.env"))
+        except Exception:
+            pass
+
+        # Grok availability
+        try:
+            from core.grok_client import grok_available
+
+            ok, msg = grok_available()
+            items.append(("Grok (xAI)", bool(ok), str(msg or "").strip() or "OK"))
+        except Exception:
+            # Fall back to env check
+            try:
+                import os
+
+                grok_ok = bool(str(os.getenv("GROK_API_KEY", "") or "").strip())
+                items.append(("Grok (xAI)", grok_ok, "Set GROK_API_KEY in config/.env"))
+            except Exception:
+                pass
+
+        # Local dependencies (Meetings video extraction)
+        try:
+            import shutil
+
+            ffmpeg_ok = shutil.which("ffmpeg") is not None
+            items.append(("ffmpeg", ffmpeg_ok, "Install ffmpeg and ensure it is on PATH (Meetings video support)"))
+        except Exception:
+            pass
+
+        # Briefing/email mode
+        try:
+            from config import BRIEFING_AND_EMAIL_DISABLED
+
+            items.append(
+                (
+                    "Briefing/email",
+                    not bool(BRIEFING_AND_EMAIL_DISABLED),
+                    "Enabled" if not bool(BRIEFING_AND_EMAIL_DISABLED) else "Disabled via BRIEFING_AND_EMAIL_DISABLED=1",
+                )
+            )
+        except Exception:
+            pass
+
+        return items
+
+    def _render_setup_banner_html(self) -> str:
+        items = self._setup_status_items()
+        if not items:
+            return ""
+        parts: list[str] = []
+        for label, ok, _detail in items:
+            dot = "●"
+            color = "#34a853" if ok else "#fbbc04"
+            parts.append(f"<span style='color:{color}; font-weight:600;'>{dot}</span> {label}")
+        return (
+            "<div style='color:#9aa0a6; font-size:12px;'>"
+            "<b style='color:#e8eaed;'>Setup:</b> "
+            + " &nbsp; | &nbsp; ".join(parts)
+            + "</div>"
+        )
+
+    def _show_setup_details(self) -> None:
+        try:
+            from PyQt6.QtWidgets import QMessageBox
+
+            items = self._setup_status_items()
+            lines = []
+            for label, ok, detail in items:
+                status = "OK" if ok else "Missing / limited"
+                lines.append(f"- {label}: {status}\n  {detail}".rstrip())
+            QMessageBox.information(self, "Setup / Connectivity", "\n\n".join(lines) if lines else "No setup information available.")
+        except Exception:
+            return
+
+    def _today_utc_str(self) -> str:
+        return datetime.utcnow().strftime("%Y-%m-%d")
+
+    def _get_cached_briefing_html_for_today(self) -> str:
+        try:
+            cached_date = str(self.db.get_setting("daily_briefing_cache_date", "") or "").strip()
+            if cached_date != self._today_utc_str():
+                return ""
+            return str(self.db.get_setting("daily_briefing_cache_html", "") or "").strip()
+        except Exception:
+            return ""
+
+    def _set_cached_briefing_html_for_today(self, html: str) -> None:
+        try:
+            self.db.set_setting("daily_briefing_cache_date", self._today_utc_str())
+            self.db.set_setting("daily_briefing_cache_html", str(html or ""))
+        except Exception:
+            pass
+
+    def _get_cached_briefing_raw_for_today(self) -> str:
+        """Fallback cache from ChatHandler when HTML cache is unavailable."""
+        try:
+            cached_date = str(self.db.get_setting("daily_briefing_raw_date", "") or "").strip()
+            if cached_date != self._today_utc_str():
+                return ""
+            return str(self.db.get_setting("daily_briefing_raw_text", "") or "").strip()
+        except Exception:
+            return ""
+
+    def _restore_briefing_from_raw_cache(self) -> bool:
+        """Render raw briefing cache into HTML cache and display it."""
+        raw_text = self._get_cached_briefing_raw_for_today()
+        if not raw_text:
+            return False
+        html = self._render_briefing_to_html(raw_text, None, use_llm=False)
+        self._set_cached_briefing_html_for_today(html)
+        if hasattr(self, "briefing_display"):
+            self.briefing_display.setHtml(html)
+        return True
+
+    def _get_cached_schedule_html(self) -> str:
+        try:
+            return str(self.db.get_setting("dashboard_schedule_cache_html", "") or "").strip()
+        except Exception:
+            return ""
+
+    def _set_cached_schedule_html(self, html: str) -> None:
+        try:
+            self.db.set_setting("dashboard_schedule_cache_html", str(html or ""))
+            self.db.set_setting("dashboard_schedule_cache_at", datetime.utcnow().isoformat())
+        except Exception:
+            pass
+
+    def _linkify_briefing_urls(self, text: str) -> str:
+        """Turn http(s) URLs in plain text into clickable HTML links."""
+        import re
+        from html import escape
+        def repl(m):
+            url = m.group(1)
+            safe_href = escape(url, quote=True)
+            display = escape(url)
+            return f'<a href="{safe_href}" style="color: #8ab4f8;">{display}</a>'
+        return re.sub(r'(https?://[^\s<>"\']+)', repl, text)
+
+    def _render_briefing_to_html(self, briefing: str, chat_handler_obj, *, use_llm: bool = False) -> str:
+        """Render daily briefing text into dashboard HTML (best-effort). URLs become clickable links."""
+        if not use_llm:
+            fallback = (briefing or "").replace("\n", "<br>")
+            fallback = self._linkify_briefing_urls(fallback)
+            return f"<div style='color: #e8eaed; padding: 10px; line-height: 1.5;'>{fallback}</div>"
+        try:
+            from core.response_handler import ResponseHandler
+
+            response_handler = ResponseHandler(chat_handler_obj, None)
+            formatted_briefing = response_handler.chat_with_llama(
+                [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Turn this briefing into a concise, helpful rundown in Navi's tone (direct, professional, calm; no snark). "
+                            "Use <br><br> between sections and keep it skimmable. "
+                            "Suggest concrete next actions for urgent items. "
+                            f"Briefing:\n\n{briefing}"
+                        ),
+                    }
+                ],
+                "briefing_session",
+            )
+
+            formatted_briefing = re.sub(r"\n+", "\n", formatted_briefing)
+            formatted_briefing = re.sub(r"^#+\s*", "", formatted_briefing, flags=re.MULTILINE)
+            lines = formatted_briefing.split("\n")
+            formatted_lines = [line.strip() for line in lines if line.strip()]
+            formatted_briefing = "\n".join(formatted_lines)
+            formatted_briefing = formatted_briefing.replace("\n\n", "<br><br>").replace("\n", "<br>")
+            formatted_briefing = re.sub(r"^<br><br>", "", formatted_briefing.strip())
+            formatted_briefing = self._linkify_briefing_urls(formatted_briefing)
+            return f"<div style='color: #e8eaed; padding: 10px; line-height: 1.5;'>{formatted_briefing}</div>"
+        except Exception as e:
+            print(f"Error formatting briefing: {e}")
+            fallback = (briefing or "").replace("\n", "<br>")
+            fallback = self._linkify_briefing_urls(fallback)
+            return f"<div style='color: #e8eaed; padding: 10px; line-height: 1.5;'>{fallback}</div>"
+
+    def run_initial_loads(self, *, skip_news: bool = False, skip_briefing: bool = False):
+        """Run dashboard initial loads (used for normal startup and splash-preload startup)."""
+        self._set_startup_refresh_indicator(True)
+        self.load_schedule()
+        try:
+            # Keep the embedded tasks panel aligned with the Tasks tab.
+            self.load_tasks_filtered()
+        except Exception:
+            pass
+        if not skip_news:
+            self.load_news()
+        try:
+            self.load_unreplied_emails()
+        except Exception:
+            pass
+
+        if skip_briefing:
+            return
+        try:
+            from config import BRIEFING_AND_EMAIL_DISABLED
+        except ImportError:
+            BRIEFING_AND_EMAIL_DISABLED = False
+        if not BRIEFING_AND_EMAIL_DISABLED:
+            QTimer.singleShot(2000, self.load_daily_briefing)
+        else:
+            QTimer.singleShot(500, self._show_briefing_disabled)
+        QTimer.singleShot(12000, lambda: self._set_startup_refresh_indicator(False))
+
+    def show_startup_loading_state(self) -> None:
+        """Show cached dashboard content immediately, then refresh asynchronously."""
+        self._set_startup_refresh_indicator(True)
+        try:
+            cached_schedule = self._get_cached_schedule_html()
+            if cached_schedule and hasattr(self, "schedule_display"):
+                self.schedule_display.setHtml(cached_schedule)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "news_display"):
+                self.display_stored_news()
+        except Exception:
+            pass
+        try:
+            cached_html = self._get_cached_briefing_html_for_today()
+            if cached_html and hasattr(self, "briefing_display"):
+                self.briefing_display.setHtml(cached_html)
+            elif hasattr(self, "briefing_display"):
+                self._restore_briefing_from_raw_cache()
+        except Exception:
+            pass
+
+    def _set_startup_refresh_indicator(self, visible: bool) -> None:
+        try:
+            if not hasattr(self, "startup_refresh_label"):
+                return
+            self.startup_refresh_label.setVisible(bool(visible))
+            if visible:
+                self.startup_refresh_label.setText("Refreshing latest dashboard data in background...")
+        except Exception:
+            pass
+
+    def preload_news_sync(self):
+        """Blocking news prefetch for splash startup flow (best-effort)."""
+        # Honor same staleness policy as async load_news.
+        current_time = datetime.utcnow().timestamp()
+        one_hour_ago = current_time - 3600
+        try:
+            last_news_update = self.db.get_last_news_update()
+        except Exception:
+            last_news_update = 0
+        if last_news_update and last_news_update > one_hour_ago:
+            try:
+                self.display_stored_news()
+            except Exception:
+                pass
+            return
+
+        direct_search_query = (
+            "recent MedTech news AI machine learning IVD SaMD FDA regulations guidances "
+            "medical devices EHR electronic health records clinical decision support generative AI"
+        )
+        try:
+            subjects = []
+            if hasattr(self.chat_handler, "chat_handler") and hasattr(self.chat_handler.chat_handler, "data_fetcher"):
+                df = self.chat_handler.chat_handler.data_fetcher
+                if hasattr(df, "get_gmail_news_seeds"):
+                    subjects = df.get_gmail_news_seeds(days=3, max_messages=15) or []
+            if subjects:
+                counts = {}
+                for s in subjects:
+                    for w in re.findall(r"[A-Za-z0-9][A-Za-z0-9\\-]{2,}", s or ""):
+                        lw = w.lower()
+                        if lw in {"the", "and", "for", "with", "your", "from", "this", "that", "news", "update", "weekly", "daily"}:
+                            continue
+                        counts[lw] = counts.get(lw, 0) + 1
+                keywords = [w for w, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:6]]
+                if keywords:
+                    direct_search_query = direct_search_query + " " + " ".join(keywords)
+        except Exception:
+            pass
+
+        # For splash preload, avoid ChatManager.get_response to prevent local worker dependency.
+        self.db.update_last_news_update()
+        try:
+            from core.grok_client import grok_available, grok_web_search, grok_completion
+
+            ok, msg = grok_available()
+            if not ok:
+                raise RuntimeError(msg)
+
+            results = grok_web_search(direct_search_query, model="grok-4-1-fast") or ""
+            if not results.strip():
+                raise RuntimeError("empty search results")
+
+            system = (
+                "You are a news extraction assistant. "
+                "Return ONLY a valid JSON array (no prose, no markdown). "
+                "Each item MUST be an object with keys: title, content, url, source, published_date. "
+                "The url MUST be the full article URL starting with https://. "
+                "Only use URLs that appear in the provided results text; never invent URLs. "
+                "If you cannot find a URL, set url to an empty string. "
+                "Keep title plain text (no ####, no **). "
+                "Limit to 8 items."
+            )
+            user = f"Extract up to 8 MedTech news items from these results:\n\n{results}"
+            payload = grok_completion(system=system, user=user, model="grok-4-1-fast-reasoning-latest") or "[]"
+            self.process_and_store_news(str(payload))
+            self.display_stored_news()
+        except Exception:
+            # Fail-open: fall back to whatever is already stored.
+            try:
+                self.display_stored_news()
+            except Exception:
+                pass
+
+    def preload_briefing_sync(self, *, force_refresh: bool = False) -> bool:
+        """
+        Blocking briefing preload for splash startup flow.
+        Returns True when briefing is available (cached or generated), False otherwise.
+        """
+        try:
+            from config import BRIEFING_AND_EMAIL_DISABLED
+        except ImportError:
+            BRIEFING_AND_EMAIL_DISABLED = False
+        if BRIEFING_AND_EMAIL_DISABLED:
+            self._show_briefing_disabled()
+            return False
+
+        cached_html = "" if force_refresh else self._get_cached_briefing_html_for_today()
+        if cached_html:
+            if hasattr(self, "briefing_display"):
+                self.briefing_display.setHtml(cached_html)
+            return True
+        if not force_refresh and self._restore_briefing_from_raw_cache():
+            return True
+
+        briefing = None
+        chat_handler_obj = None
+        if force_refresh:
+            if hasattr(self.chat_handler, "chat_handler") and hasattr(self.chat_handler.chat_handler, "daily_briefing"):
+                chat_handler_obj = self.chat_handler.chat_handler
+                briefing = self.chat_handler.chat_handler.daily_briefing()
+            elif hasattr(self.chat_handler, "daily_briefing"):
+                chat_handler_obj = self.chat_handler
+                briefing = self.chat_handler.daily_briefing()
+        else:
+            if hasattr(self.chat_handler, "start_briefing"):
+                briefing = self.chat_handler.start_briefing()
+                chat_handler_obj = self.chat_handler.chat_handler if hasattr(self.chat_handler, "chat_handler") else None
+            elif hasattr(self.chat_handler, "chat_handler") and hasattr(self.chat_handler.chat_handler, "start_briefing"):
+                briefing = self.chat_handler.chat_handler.start_briefing()
+                chat_handler_obj = self.chat_handler.chat_handler.chat_handler if hasattr(self.chat_handler.chat_handler, "chat_handler") else None
+            elif hasattr(self.chat_handler, "daily_briefing"):
+                briefing = self.chat_handler.daily_briefing()
+                chat_handler_obj = self.chat_handler
+
+        if not briefing:
+            cached_html = self._get_cached_briefing_html_for_today()
+            if cached_html and hasattr(self, "briefing_display"):
+                self.briefing_display.setHtml(cached_html)
+                return True
+            return False
+
+        # During splash preload, avoid local worker formatting path.
+        html = self._render_briefing_to_html(str(briefing), chat_handler_obj, use_llm=False)
+        if hasattr(self, "briefing_display"):
+            self.briefing_display.setHtml(html)
+        self._set_cached_briefing_html_for_today(html)
+        return True
 
     def setup_todo_filters(self):
         """Set up the todo list filter controls in the dashboard."""
@@ -177,12 +569,13 @@ class DashboardTab(QWidget):
 
     def load_tasks_filtered(self):
         """Load tasks with current filter settings using batch optimization."""
-        # Use canonical TasksTab behavior when embedded.
         if self.tasks_panel is not None:
             try:
                 self.tasks_panel.refresh_tasks()
             except Exception as e:
                 print(f"Error refreshing embedded tasks panel: {e}")
+            return
+        if not getattr(self, "task_list", None):
             return
 
         try:
@@ -225,6 +618,24 @@ class DashboardTab(QWidget):
                 ]
 
             print(f"DEBUG: Retrieved {len(tasks)} tasks from database")
+
+            # Dashboard policy: only show tasks due today or overdue, ordered by due date.
+            today = datetime.now().date()
+            due_window_tasks = []
+            for t in tasks:
+                due_raw = str(t.get("due_date") or "").strip()
+                if not due_raw or due_raw.lower() == "unknown":
+                    continue
+                try:
+                    due_dt = datetime.strptime(due_raw, "%m-%d-%Y").date()
+                except Exception:
+                    continue
+                if due_dt <= today:
+                    due_window_tasks.append((due_dt, t))
+
+            due_window_tasks.sort(key=lambda item: item[0])
+            tasks = [t for _, t in due_window_tasks]
+            print(f"DEBUG: Dashboard due/overdue filter kept {len(tasks)} tasks")
 
             # Clear current tasks
             self.task_list.setRowCount(0)
@@ -524,6 +935,8 @@ class DashboardTab(QWidget):
             except Exception as e:
                 print(f"Error adding task via embedded tasks panel: {e}")
             return
+        if not getattr(self, "task_list", None):
+            return
 
         task_text = self.taskInput.text().strip()
         if not task_text:
@@ -576,38 +989,63 @@ class DashboardTab(QWidget):
         dashboard_header.setStyleSheet("color: #e8eaed; font-weight: 600; font-size: 16px; padding: 10px; background-color: transparent; border: none;")
         dashboard_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(dashboard_header)
+
+        self.startup_refresh_label = QLabel("Refreshing latest dashboard data in background...")
+        self.startup_refresh_label.setStyleSheet(
+            "color: #9aa0a6; font-size: 11px; padding: 2px 8px; background-color: transparent;"
+        )
+        self.startup_refresh_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.startup_refresh_label.setVisible(False)
+        layout.addWidget(self.startup_refresh_label)
+
+        # Setup/Connectivity banner (prevents silent demo failures when keys/deps are missing)
+        try:
+            banner_row = QHBoxLayout()
+            self.setup_banner = QTextBrowser()
+            self.setup_banner.setOpenExternalLinks(True)
+            self.setup_banner.setFixedHeight(34)
+            self.setup_banner.setStyleSheet(
+                "QTextBrowser { background-color: #1c1e24; border: 1px solid #2e2f32; border-radius: 6px; padding: 6px; }"
+            )
+            self.setup_banner.setHtml(self._render_setup_banner_html())
+            banner_row.addWidget(self.setup_banner, 1)
+            details_btn = QPushButton("Details…")
+            details_btn.setFixedHeight(30)
+            details_btn.clicked.connect(self._show_setup_details)
+            banner_row.addWidget(details_btn, 0)
+            layout.addLayout(banner_row)
+        except Exception:
+            pass
         
-        # Daily Briefing Widget (top of dashboard)
-        briefing_widget = self.create_briefing_widget()
-        layout.addWidget(briefing_widget)
-        
-        # Main horizontal layout for left and right columns
+        # Main horizontal layout: left column (schedule + briefing), right column (news + unreplied)
         main_layout = QHBoxLayout()
         main_layout.setSpacing(12)
         
-        # Left column: Schedule and Task List
+        # Left column: Today's events + Task List + Daily briefing
         left_column = QVBoxLayout()
         left_column.setSpacing(12)
-        
-        # Top: Schedule
         schedule_widget = self.create_schedule_widget()
-        left_column.addWidget(schedule_widget)
+        left_column.addWidget(schedule_widget, 3)
+
+        # Task list (embed TasksTab when available; otherwise legacy task widget)
+        try:
+            task_widget = self.create_task_widget()
+            left_column.addWidget(task_widget, 4)
+        except Exception:
+            pass
+
+        briefing_widget = self.create_briefing_widget()
+        left_column.addWidget(briefing_widget, 6)
         
-        # Bottom: Task List
-        task_widget = self.create_task_widget()
-        left_column.addWidget(task_widget)
-        
-        # Right column: Unreplied emails + News Feed
+        # Right column: News (top ~70%), Unreplied emails (bottom ~30%)
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(12)
-
-        unreplied_widget = self.create_unreplied_emails_widget()
-        right_layout.addWidget(unreplied_widget)
-
         news_widget = self.create_news_widget()
-        right_layout.addWidget(news_widget, 1)
+        right_layout.addWidget(news_widget, 7)  # 70% of right column height
+        unreplied_widget = self.create_unreplied_emails_widget()
+        right_layout.addWidget(unreplied_widget, 3)  # 30% of right column height
         
         # Add columns to main layout
         main_layout.addLayout(left_column, 2)  # Left column takes 2/3 of space
@@ -615,37 +1053,14 @@ class DashboardTab(QWidget):
         
         layout.addLayout(main_layout)
         
-        # Add refresh button at bottom
-        refresh_layout = QHBoxLayout()
-        refresh_layout.addStretch()
-        
-        refresh_news_btn = QPushButton("Refresh News")
-        refresh_news_btn.clicked.connect(self.refresh_news_feed)
-        refresh_layout.addWidget(refresh_news_btn)
-        
-        layout.addLayout(refresh_layout)
-        
         # Setup auto-refresh timer for schedule (every 15 minutes)
         self.schedule_timer = QTimer()
         self.schedule_timer.timeout.connect(self.load_schedule)
         self.schedule_timer.start(900000)  # 15 minutes
         
-        # Initial loads
-        self.load_schedule()
-        self.load_news()
-        try:
-            self.load_unreplied_emails()
-        except Exception:
-            pass
-        # Load daily briefing if available (with delay to let other components initialize)
-        try:
-            from config import BRIEFING_AND_EMAIL_DISABLED
-        except ImportError:
-            BRIEFING_AND_EMAIL_DISABLED = False
-        if not BRIEFING_AND_EMAIL_DISABLED:
-            QTimer.singleShot(2000, self.load_daily_briefing)
-        else:
-            QTimer.singleShot(500, self._show_briefing_disabled)
+        # Initial loads (can be deferred for splash-gated startup)
+        if not self.defer_initial_loads:
+            self.run_initial_loads()
 
     def create_task_widget(self):
         # Keep Dashboard and Tasks tab aligned by reusing the same task manager UI.
@@ -824,6 +1239,8 @@ class DashboardTab(QWidget):
 
     def edit_task(self, row, column=None):
         """Edit a task (including priority/tags/next-action/snooze)."""
+        if not getattr(self, "task_list", None):
+            return
         try:
             task_widget = self.task_list.cellWidget(row, 0)
             if not task_widget or not hasattr(task_widget, "task_data"):
@@ -870,6 +1287,8 @@ class DashboardTab(QWidget):
 
     def delete_task(self, row, column=None):
         """Delete a task."""
+        if not getattr(self, "task_list", None):
+            return
         try:
             # Get task data from the task widget
             task_widget = self.task_list.cellWidget(row, 0)
@@ -908,6 +1327,8 @@ class DashboardTab(QWidget):
 
     def show_task_context_menu(self, position):
         """Show context menu for task items."""
+        if not getattr(self, "task_list", None):
+            return
         item = self.task_list.itemAt(position)
         if item is None:
             return
@@ -967,6 +1388,8 @@ class DashboardTab(QWidget):
 
     def archive_completed_tasks(self):
         """Archive completed tasks."""
+        if not getattr(self, "task_list", None):
+            return
         try:
             db_name = DATABASE_PATH
             with sqlite3.connect(db_name) as conn:
@@ -1097,12 +1520,19 @@ class DashboardTab(QWidget):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(5, 5, 5, 5)
         
-        # Header
+        # Header row: title + Refresh News
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
         news_header = QLabel("News Feed")
         news_header.setStyleSheet("color: #e8eaed; font-weight: 600; padding: 3px; background-color: transparent; border: none; font-size: 13px;")
-        news_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         news_header.setMaximumHeight(25)
-        layout.addWidget(news_header)
+        header_row.addWidget(news_header)
+        header_row.addStretch()
+        refresh_news_btn = QPushButton("Refresh News")
+        refresh_news_btn.clicked.connect(self.refresh_news_feed)
+        refresh_news_btn.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        header_row.addWidget(refresh_news_btn)
+        layout.addLayout(header_row)
 
         # Settings row
         settings_row = QHBoxLayout()
@@ -1267,6 +1697,8 @@ class DashboardTab(QWidget):
 
     def load_unreplied_emails(self):
         try:
+            self.unreplied_table.setRowCount(1)
+            self.unreplied_table.setItem(0, 0, QTableWidgetItem("Refreshing latest unreplied emails..."))
             only_cp = True
             try:
                 only_cp = bool(self.unreplied_only_client.isChecked())
@@ -1333,6 +1765,8 @@ class DashboardTab(QWidget):
         self.load_unreplied_emails()
 
     def load_tasks(self):
+        if not getattr(self, "task_list", None):
+            return
         start_time = time.time()
         print(f"TIMING: load_tasks START at {start_time:.6f}")
         # Flag to prevent update_task_status from running during loading
@@ -1660,6 +2094,10 @@ class DashboardTab(QWidget):
 
     def load_schedule(self):
         try:
+            if hasattr(self, "schedule_display"):
+                self.schedule_display.setHtml(
+                    "<div style='color: #9aa0a6; text-align: center; padding: 16px;'>Refreshing schedule...</div>"
+                )
             # Check if we have access to calendar data
             if hasattr(self.chat_handler, 'data_fetcher'):
                 data_fetcher = self.chat_handler.data_fetcher
@@ -1696,8 +2134,11 @@ class DashboardTab(QWidget):
                 schedule_html += "</ul>"
                 schedule_html += "</div>"
                 self.schedule_display.setHtml(schedule_html)
+                self._set_cached_schedule_html(schedule_html)
             else:
-                self.schedule_display.setHtml("<div style='color: #e8eaed;'>No events scheduled for today</div>")
+                empty_html = "<div style='color: #e8eaed;'>No events scheduled for today</div>"
+                self.schedule_display.setHtml(empty_html)
+                self._set_cached_schedule_html(empty_html)
         except Exception as e:
             self.schedule_display.setHtml(f"<div style='color: #e8eaed;'>Error loading schedule: {str(e)}</div>")
 
@@ -1709,6 +2150,12 @@ class DashboardTab(QWidget):
             if not hasattr(self, 'news_display'):
                 print("News widget not yet created, skipping load_news")
                 return
+
+            # Always render cached items first so startup/manual refresh stays populated.
+            try:
+                self.display_stored_news()
+            except Exception:
+                pass
             
             # Check if news was updated within the last hour
             from datetime import datetime, timezone, timedelta
@@ -1730,9 +2177,10 @@ class DashboardTab(QWidget):
             
             # Update timestamp immediately when starting news fetch
             self.db.update_last_news_update()
-            
-            # Show loading message
-            self.news_display.setHtml("<div style='color: #e8eaed; text-align: center; padding: 20px;'>Loading latest news...</div>")
+            try:
+                self._set_startup_refresh_indicator(True)
+            except Exception:
+                pass
             
             # Use QThread to make API call without blocking UI
             self.news_thread = NewsWorker(self.chat_handler)
@@ -1762,6 +2210,12 @@ class DashboardTab(QWidget):
             if BRIEFING_AND_EMAIL_DISABLED:
                 self._show_briefing_disabled()
                 return
+            cached_html = self._get_cached_briefing_html_for_today()
+            if cached_html:
+                self.briefing_display.setHtml(cached_html)
+                return
+            if self._restore_briefing_from_raw_cache():
+                return
             # Check if briefing widget exists
             if not hasattr(self, 'briefing_display'):
                 print("Briefing widget not yet created, skipping load_daily_briefing")
@@ -1776,6 +2230,8 @@ class DashboardTab(QWidget):
                 self.briefing_thread.briefing_loaded.connect(self.on_briefing_loaded)
                 self.briefing_thread.error_occurred.connect(self.on_briefing_error)
                 self.briefing_thread.start()
+                # Guard against indefinite worker hangs so UI doesn't stay on loading forever.
+                QTimer.singleShot(45000, self._briefing_load_timeout_check)
                 
         except Exception as e:
             print(f"Error starting briefing thread: {e}")
@@ -1783,6 +2239,27 @@ class DashboardTab(QWidget):
             traceback.print_exc()
             if hasattr(self, 'briefing_display'):
                 self.briefing_display.setHtml(f"<div style='color: #e8eaed;'>Error loading briefing: {str(e)}</div>")
+
+    def _briefing_load_timeout_check(self):
+        """If briefing worker is still running after timeout, fail-open the UI message."""
+        try:
+            if not hasattr(self, "briefing_thread"):
+                return
+            if not self.briefing_thread or not self.briefing_thread.isRunning():
+                return
+            if not hasattr(self, "briefing_display"):
+                return
+            cached_html = self._get_cached_briefing_html_for_today()
+            if cached_html:
+                self.briefing_display.setHtml(cached_html)
+            else:
+                self.briefing_display.setHtml(
+                    "<div style='color: #e8eaed; text-align: center; padding: 20px;'>"
+                    "Daily briefing is taking longer than expected. You can continue using the app and click Refresh to retry."
+                    "</div>"
+                )
+        except Exception:
+            pass
     
     def on_briefing_loaded(self, briefing, chat_handler_obj):
         """Called when briefing is loaded successfully in the worker thread."""
@@ -1794,46 +2271,11 @@ class DashboardTab(QWidget):
         try:
             if not hasattr(self, 'briefing_display'):
                 return
-            
-            # Format the briefing using response_handler
-            try:
-                from core.response_handler import ResponseHandler
-                response_handler = ResponseHandler(chat_handler_obj, None)
-                
-                # Format the briefing with LLM
-                formatted_briefing = response_handler.chat_with_llama(
-                    [
-                        {
-                            "role": "user",
-                            "content": (
-                                "Turn this briefing into a concise, helpful rundown in Navi's tone (direct, professional, calm; no snark). "
-                                "Use <br><br> between sections and keep it skimmable. "
-                                "Suggest concrete next actions for urgent items. "
-                                f"Briefing:\n\n{briefing}"
-                            ),
-                        }
-                    ],
-                    "briefing_session",
-                )
-                
-                # Clean up formatting
-                formatted_briefing = re.sub(r'\n+', '\n', formatted_briefing)
-                formatted_briefing = re.sub(r'^#+\s*', '', formatted_briefing, flags=re.MULTILINE)
-                lines = formatted_briefing.split('\n')
-                formatted_lines = [line.strip() for line in lines if line.strip()]
-                formatted_briefing = '\n'.join(formatted_lines)
-                formatted_briefing = formatted_briefing.replace('\n\n', '<br><br>').replace('\n', '<br>')
-                formatted_briefing = re.sub(r'^<br><br>', '', formatted_briefing.strip())
-                
-                # Display formatted briefing
-                self.briefing_display.setHtml(f"<div style='color: #e8eaed; padding: 10px; line-height: 1.5;'>{formatted_briefing}</div>")
-            except Exception as e:
-                print(f"Error formatting briefing: {e}")
-                import traceback
-                traceback.print_exc()
-                # Fallback: display raw briefing
-                briefing_html = briefing.replace('\n', '<br>')
-                self.briefing_display.setHtml(f"<div style='color: #e8eaed; padding: 10px; line-height: 1.5;'>{briefing_html}</div>")
+
+            # Keep dashboard briefing independent of local llama worker stability.
+            html = self._render_briefing_to_html(str(briefing or ""), chat_handler_obj, use_llm=False)
+            self.briefing_display.setHtml(html)
+            self._set_cached_briefing_html_for_today(html)
         except Exception as e:
             print(f"Error in briefing display: {e}")
             import traceback
@@ -1851,7 +2293,18 @@ class DashboardTab(QWidget):
                 return
             
             if "already shown today" in error_message:
-                self.briefing_display.setHtml("<div style='color: #e8eaed; text-align: center; padding: 20px;'>Daily briefing has already been shown today. Click 'Refresh' to generate a new one.</div>")
+                cached_html = self._get_cached_briefing_html_for_today()
+                if cached_html:
+                    self.briefing_display.setHtml(cached_html)
+                elif self._restore_briefing_from_raw_cache():
+                    return
+                else:
+                    self.briefing_display.setHtml(
+                        "<div style='color: #e8eaed; text-align: center; padding: 20px;'>"
+                        "No cached copy was found for today's briefing. Regenerating now..."
+                        "</div>"
+                    )
+                    QTimer.singleShot(0, self.refresh_daily_briefing)
             else:
                 self.briefing_display.setHtml(f"<div style='color: #e8eaed;'>Error loading briefing: {error_message}</div>")
         except Exception as e:
@@ -1870,6 +2323,8 @@ class DashboardTab(QWidget):
             
             # Show loading message
             self.briefing_display.setHtml("<div style='color: #e8eaed; text-align: center; padding: 20px;'>Generating new briefing... (this may take a moment)</div>")
+            self.db.set_setting("daily_briefing_cache_date", "")
+            self.db.set_setting("daily_briefing_cache_html", "")
             
             # Create a worker that forces new briefing (calls daily_briefing directly, not start_briefing)
             if not hasattr(self, 'briefing_refresh_thread') or not self.briefing_refresh_thread.isRunning():
@@ -1929,6 +2384,7 @@ class DashboardTab(QWidget):
             
             # Display the stored news
             self.display_stored_news()
+            self._set_startup_refresh_indicator(False)
             
         except Exception as e:
             print(f"Error processing loaded news: {e}")
@@ -1943,6 +2399,7 @@ class DashboardTab(QWidget):
     def _on_news_error_safe(self, error_message):
         """Thread-safe version of on_news_error."""
         print(f"News error: {error_message}")
+        self._set_startup_refresh_indicator(False)
         if hasattr(self, 'news_display'):
             # Check if it's a credit limit error
             if "credit" in error_message.lower() or "spending limit" in error_message.lower():
@@ -2150,6 +2607,31 @@ class DashboardTab(QWidget):
         # Processing news results
         
         stored_count = 0
+        source_urls = []
+
+        def _extract_candidate_urls(text: str) -> list[str]:
+            found = []
+            if not text:
+                return found
+            # Markdown links first: [label](https://...)
+            for m in re.findall(r"\[[^\]]*\]\((https?://[^)\s]+)\)", text or "", flags=re.IGNORECASE):
+                cleaned = str(m).strip().rstrip(".,;)]}\"'")
+                if self.is_valid_news_url(cleaned):
+                    found.append(cleaned)
+            # Plain URLs.
+            for m in re.findall(r"https?://[^\s<>\"]+", text or "", flags=re.IGNORECASE):
+                cleaned = str(m).strip().rstrip(".,;)]}\"'")
+                if self.is_valid_news_url(cleaned):
+                    found.append(cleaned)
+            # Preserve order, drop duplicates.
+            deduped = []
+            seen = set()
+            for u in found:
+                if u in seen:
+                    continue
+                seen.add(u)
+                deduped.append(u)
+            return deduped
         
         try:
             # First, try to parse as JSON
@@ -2157,6 +2639,7 @@ class DashboardTab(QWidget):
             
             # Clean the response to extract JSON
             response_clean = news_results.strip()
+            source_urls.extend(_extract_candidate_urls(response_clean))
             
             # Look for JSON array in the response
             json_match = re.search(r'\[.*\]', response_clean, re.DOTALL)
@@ -2173,6 +2656,13 @@ class DashboardTab(QWidget):
                             url = item.get('url', '').strip() or None
                             source = item.get('source', '').strip() or None
                             published_date = item.get('published_date', '').strip() or None
+                            if not url:
+                                local_urls = _extract_candidate_urls(content)
+                                if local_urls:
+                                    url = local_urls[0]
+                            if not url and source_urls:
+                                # Best-effort link preservation when model omits per-item URL.
+                                url = source_urls.pop(0)
                             
                             # Validate the news item before storing
                             if self.is_valid_news_item(title, content):
@@ -2218,7 +2708,9 @@ class DashboardTab(QWidget):
             
         # Fallback: Parse as text (original method)
         # Falling back to text parsing
-        news_items = news_results.split('\n\n')
+        cleaned_text = news_results or ""
+        cleaned_text = re.sub(r"\n?\s*Sources:\s*.+$", "", cleaned_text, flags=re.IGNORECASE | re.DOTALL)
+        news_items = cleaned_text.split('\n\n')
         
         for item in news_items:
             if item.strip():
@@ -2306,6 +2798,13 @@ class DashboardTab(QWidget):
             suppress_days = getattr(self, "news_suppress_days", 2) or 2
             # Pull more candidates than we display so suppression + rerank still yields a full set.
             recent_news = self.db.get_news_for_dashboard(days=7, suppress_days=int(suppress_days), limit=200)
+            # If daily briefing ran first, it may have marked top items as "shown" which can
+            # suppress everything from the dashboard feed. Fail open: show unsuppressed feed.
+            if (not recent_news) and int(suppress_days) > 0:
+                try:
+                    recent_news = self.db.get_news_for_dashboard(days=7, suppress_days=0, limit=200)
+                except Exception:
+                    recent_news = recent_news
             
             # Filter out items with old published dates (older than 7 days)
             from datetime import datetime, timedelta
@@ -2364,6 +2863,12 @@ class DashboardTab(QWidget):
                 shown_ids = []
                 for news_id, title, content, url, source, published_date, created_at in display_news:
                     shown_ids.append(news_id)
+                    if not url and content:
+                        maybe = re.search(r"https?://[^\s<>\"]+", content or "", re.IGNORECASE)
+                        if maybe:
+                            cand = maybe.group(0).strip().rstrip(".,;)]}\"'")
+                            if self.is_valid_news_url(cand):
+                                url = cand
                     news_text += "<div style='margin-bottom: 15px; padding: 12px; background-color: #22252c; border: 1px solid #2e2f32; border-radius: 6px;'>"
                     news_text += f"<h4 style='color: #e8eaed; margin: 0 0 8px 0; font-size: 13px; line-height: 1.3;'>{title}</h4>"
                     if content:

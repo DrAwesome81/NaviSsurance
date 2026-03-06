@@ -1,5 +1,3 @@
-from dropbox import Dropbox
-from core.api import get_dropbox_client
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 import pickle
@@ -20,10 +18,12 @@ logger = logging.getLogger(__name__)
 
 class DataFetcher:
     def __init__(self):
-        self.dropbox = get_dropbox_client()
+        self.dropbox = None
         self.SCOPES = [
             'https://www.googleapis.com/auth/gmail.readonly',
-            'https://www.googleapis.com/auth/calendar.readonly'
+            # Calendar write is required for Navi scheduling (ADD_CAL_BLOCK).
+            # This may require re-auth if your existing token was created with calendar.readonly.
+            'https://www.googleapis.com/auth/calendar'
         ]
         from config import CONFIG_DIR
         self.CRED_FILE = os.path.join(CONFIG_DIR, "client_secret.json")
@@ -759,5 +759,5 @@ class DataFetcher:
         return self.conversation_map.get(message_id)
 
     def search_dropbox(self, query):
-        # Placeholder—replace with your Dropbox search logic if different
-        return self.dropbox.files_search_v2(query).matches
+        # Dropbox integration removed from active flow.
+        return []

@@ -96,11 +96,13 @@ class AgentConsole(QWidget):
         agent_code: str,
         parent=None,
         context_provider: Callable[[], str] | None = None,
+        response_processor: Callable[[str], str] | None = None,
     ):
         super().__init__(parent)
         self.db = db
         self.agent_code = (agent_code or "").strip().lower()
         self._context_provider = context_provider
+        self._response_processor = response_processor
         self.agent = self.db.agent_get(self.agent_code) or self.db.agent_resolve_by_name(self.agent_code) or {}
         if self.agent:
             self.agent_code = str(self.agent.get("code") or self.agent_code).strip().lower()
@@ -576,12 +578,19 @@ class AgentConsole(QWidget):
 
     def _on_ask_finished(self, result: str):
         try:
+            # Optional processor can parse commands from the reply and apply side effects (e.g. task updates)
+            display_result = result or ""
+            if callable(self._response_processor):
+                try:
+                    display_result = self._response_processor(display_result)
+                except Exception as e:
+                    logger.warning("Response processor failed: %s", e)
             if self._current_thread_id is not None:
                 session_id = self._thread_session_id(self._current_thread_id)
                 if session_id:
-                    self.db.save_message(session_id, "assistant", result or "")
+                    self.db.save_message(session_id, "assistant", display_result or "")
                     self.db.agent_touch_thread(int(self._current_thread_id), bump_last_message=True)
-            self._last_assistant_message = (result or "").strip()
+            self._last_assistant_message = (display_result or "").strip()
             if self._current_assignment_id is not None and self._last_assistant_message:
                 try:
                     aid = int(self._current_assignment_id)

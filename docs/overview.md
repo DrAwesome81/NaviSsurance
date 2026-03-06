@@ -5,7 +5,9 @@ NaviSsurance is an AI-powered medical device regulatory consulting platform, ser
 
 ## Features
 - **Dashboard Tab**: New comprehensive dashboard with task list, schedule display (Google Calendar integration), and news feed (AI-powered MedTech news with 7-day persistence and hyperlinks). Features auto-refresh timers and interactive task completion.
-- **Workspace Tab**: Advanced document workspace with QSplitter layout: left panel (Dropbox file tree), center panel (document preview), and right sidebar (analysis tools for compliance, chunking, and document generation).
+- **Workspace Tab**: Document-centered drafting workflow: add files/folders, mark scope, run the dual-LLM collaboration to produce a markdown deliverable, then optionally extract a reviewable “Suggested Tasks (importable)” section and import accepted tasks into SQLite.
+- **Deep Research Tab**: Web-first deep research workflow that runs iterative web research (max 8 rounds, 30-minute timebox) + synthesis and produces a reusable research brief (markdown) with linked sources. Uses OpenAI Responses API hosted `web_search` when configured, shows continuous “still working” status updates during rounds, and writes the final brief to `data/artifacts/<project_id>/research_brief.md`.
+- **Billing Tab**: Manual time entry and template-based invoice drafting. Generates invoice drafts as markdown and prompts for review after monthly auto-draft runs (no auto-send).
 - **Note-Taking System**: AI-powered note-taking with context-aware formatting and dynamic categorization. Features include context setting, automatic note formatting with robust JSON parsing, intelligent categorization, thread-safe UI updates, and DOCX export via Save As dialog. Uses local Llama 3.1-8B-Instruct model with deterministic settings (temperature=0.2, top_p=0.7).
 - **Compliance Checking**: Grok-powered three-column UI (`interface.py`) for analyzing SOPs, PDFs, or URLs against standards (e.g., ISO 13485, 21 CFR 801), outputting JSON results (`[{section, issue, fix, reference}]`) for client recommendations.
 - **Lead Generation**: DB-backed Leads Tab (`gui/leads_tab.py`) runs a two-pass discover→verify pipeline with evidence links, openFDA 510(k) signals, scoring/filters, and one-click follow-up task creation (see `docs/lead_generation.md`).
@@ -18,8 +20,8 @@ NaviSsurance is an AI-powered medical device regulatory consulting platform, ser
 
 ## Tech Stack
 - **Core**: Python 3.12.7, PyQt6 (UI), SQLite (`core/db.py` for data storage).
-- **AI Models**: Local Llama 3.1-8B-Instruct model for note-taking and chat interactions, with 1000-token response limits for comprehensive outputs.
-- **APIs**: xAI Grok (compliance, document generation, lead generation), LinkedIn (Share, Sign In, Community Management), AssemblyAI (transcription).
+- **AI Models**: Local Llama 3.1-8B-Instruct model for note-taking and some chat interactions; OpenAI (ChatGPT) is used for web research where configured.
+- **APIs**: xAI Grok (compliance, document generation, lead generation), OpenAI (web research), LinkedIn (Share, Sign In, Community Management), AssemblyAI (transcription).
 - **Tools**: Cursor (IDE), Git/GitHub (version control), Dropbox (storage at `C:/Users/adamo/Dropbox/_Consulting/NaviSsurance`).
 
 ## Status

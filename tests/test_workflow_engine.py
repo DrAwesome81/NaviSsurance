@@ -21,7 +21,7 @@ class _DbWorkflowStub:
         self.inserted_tasks: list[dict] = []
         self.artifacts: list[tuple[str, str]] = []
         self.status_updates: list[str] = []
-        self.project_row = (1, "Demo", "internal_web", STATUS_AWAITING_RESEARCH_REVIEW, "", None)
+        self.project_row = (1, "Demo", "web_only", STATUS_AWAITING_RESEARCH_REVIEW, "", None)
 
     def insert_task_plan(self, project_id: int, plan_json: str):
         self.task_plan_json = plan_json
@@ -73,14 +73,8 @@ def test_create_plan_internal_web_builds_expected_tasks():
     engine.create_plan(project_id=1, goals="Prepare strategy memo", mode="internal_web")
 
     assert db.task_plan_json is not None
-    assert len(db.inserted_tasks) == 4  # internal + web + writer + qa
-    assert db.inserted_tasks[0]["agent_type"] == "internal_librarian"
-    assert db.inserted_tasks[1]["agent_type"] == "web_researcher"
-    assert db.inserted_tasks[2]["agent_type"] == "writer"
-    assert db.inserted_tasks[3]["agent_type"] == "editor_qa"
-    # writer depends on first two tasks
-    writer_deps = json.loads(db.inserted_tasks[2]["dependencies_json"])
-    assert writer_deps == ["t1", "t2"]
+    assert len(db.inserted_tasks) == 1  # web only
+    assert db.inserted_tasks[0]["agent_type"] == "web_researcher"
 
 
 def test_brief_summary_for_prompt_includes_internal_and_web_sections():
@@ -130,7 +124,7 @@ def test_run_parallel_synthesis_stores_both_outputs_and_sets_review_status(monke
 
 def test_continue_to_draft_requires_awaiting_research_review_status():
     db = _DbWorkflowStub()
-    db.project_row = (1, "Demo", "internal_web", "running", "", None)
+    db.project_row = (1, "Demo", "web_only", "running", "", None)
     engine = WorkflowEngine(db=db)
 
     with pytest.raises(ValueError):

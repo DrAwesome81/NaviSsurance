@@ -19,7 +19,7 @@ This manual is written as a practical reference so you can quickly find how to d
   - `Dashboard`
   - `Tasks`
   - `Workspace`
-  - `AI Projects`
+  - `Deep Research`
   - `Compliance`
   - `Meetings`
   - `Leads`
@@ -136,6 +136,10 @@ This is the main AI planning/delegation interface.
 
 Use exact formats when entering explicit action commands.
 
+### Priority scale
+- Dashboard tasks: `P0` (lowest urgency) … `P5` (highest urgency).
+- Delegation assignments: `P1` (lowest urgency) … `P5` (highest urgency).
+
 ### Task and calendar
 - `ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal>`
 - `ADD_CAL_BLOCK: <title> | <start datetime> | <end datetime> | <calendar id or primary>`
@@ -182,13 +186,14 @@ Use this to inspect agent metadata and navigate to an agent workspace.
 Use this for document-centered drafting with one primary action: `Generate Draft`.
 
 ### What Workspace does
-- Lets you add and preview source files.
+- Lets you add and preview source files (including adding an entire folder of documents).
 - Lets you mark exactly which files are in scope for the draft.
 - Runs an AI collaboration workflow to produce a Markdown draft from your prompt.
+- Optionally extracts a **reviewable task list** from the generated markdown and lets you import accepted tasks into the app.
 
 ### Typical workflow
 1. Open the `Workspace` tab.
-2. Click `Select File/Folder` (or drag/drop files into the file list).
+2. Click `Select File/Folder`, `Add Folder…` (recursive), or drag/drop files/folders into the file list.
 3. Mark files to include using the checkbox next to each file.
 4. Optionally click a file to preview extracted content.
 5. Set `Max Rounds` (how many review/refinement cycles to allow).
@@ -201,11 +206,18 @@ Use this for document-centered drafting with one primary action: `Generate Draft
    - Status line for a context coverage note (how many selected files were fully/partially included).
 9. Edit the markdown manually if needed.
 10. Save using `Save Markdown` or `Export as...`.
+11. (Optional) Click `Extract Suggested Tasks…` to review/edit/accept tasks and import them into `Tasks`.
 
 ### Prompting tips
 - Be specific about audience, structure, and desired output length.
 - Ask for explicit sections (for example: summary, risks, recommendations, next steps).
 - If no files are marked, Workspace can still generate a research-only draft from your prompt.
+
+### Suggested Tasks (importable) format
+If `Include “Suggested Tasks (importable)” section` is enabled, the draft is expected to include:
+- `## Suggested Tasks (importable)`
+- One task per line in the exact format:
+  - `- [ ] <task title> | due: <MM-DD-YYYY or none> | category: <Business or Personal>`
 
 ## 9) Compliance
 
@@ -225,6 +237,28 @@ Use for discover/verify lead workflows and follow-up tasking.
 - Review evidence/scoring.
 - Create follow-up tasks.
 
+## 11) Billing
+
+Use this to log hours and generate invoice drafts for review.
+
+### What Billing does
+- Manual time entry against a client (timer-based + quick manual add).
+- Invoice template editor (safe placeholders like `{{client_name}}`, `{{line_items_md}}`, `{{total_hours}}`).
+- Draft generation for previous month or a custom period.
+- Draft review + export (no auto-send).
+- Monthly auto-draft runs (in-app) on a chosen day of month, then prompts you to review.
+
+### Typical workflow
+1. Open `Billing`.
+2. Create/select a client.
+3. Log time using `Start` → `Stop & Save` (or `Manual add…`).
+4. Create/select an invoice template and click `Set default`.
+5. Generate drafts (`Generate previous month` or choose a period).
+6. Review drafts in the preview pane and use `Save As…` / `Open file…` as needed.
+
+### Where drafts are saved
+- Draft markdown is stored in SQLite and also written to:\n  - `data/artifacts/invoice_drafts/<draft_id>/invoice_<client>_<yyyymm>.md`
+
 ## 11) Notes
 
 Use for AI-assisted notes and export.
@@ -234,13 +268,24 @@ Use for AI-assisted notes and export.
 - Organize with AI formatting/categorization.
 - Export (for example to DOCX/TXT/PDF where available).
 
-## 12) AI Projects / Specialist Tabs
+## 12) Deep Research / Specialist Tabs
 
-Tabs such as `AI Projects`, `Billing`, `Library`, `Intel`, and `Security` host specialist agent consoles or workflows.
+Tabs such as `Deep Research`, `Billing`, `Library`, `Intel`, and `Security` host specialist agent consoles or workflows.
 
 Use them when:
 - CoS routes you to a specific assignee console.
 - You want to work directly in that domain area.
+
+### Deep Research (what it’s for)
+- Web-first deep research (iterative searching + synthesis) to produce a reusable research brief.
+- Not intended for internal database/document scouring (use `Workspace` / `Library` for internal doc workflows).
+
+### Deep Research (how it runs)
+- **Iterative research loop**: The web research stage runs up to **8 rounds** and is **timeboxed to 30 minutes**.
+- **Visible working indicator**: While research runs, the status line updates with round/elapsed/source-count messages and the progress bar stays active.
+- **Auto-generate final brief**: If `Auto-generate final research brief when research completes` is enabled, the app will generate the final brief immediately after research is ready (no extra click).
+- **File output**: The final markdown is stored in SQLite and also written to `data/artifacts/<run_id>/research_brief.md`.
+- **Prereq**: Web research requires `OPENAI_API_KEY` set (see `config/.env`).
 
 ## 13) Troubleshooting
 

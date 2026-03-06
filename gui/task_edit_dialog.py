@@ -67,6 +67,72 @@ class TaskEditDialog(QDialog):
         row1.addStretch(1)
         layout.addLayout(row1)
 
+        row1b = QHBoxLayout()
+        row1b.addWidget(QLabel("Project:"))
+        self.project_combo = QComboBox()
+        self.project_combo.addItem("(None)", None)
+        db = getattr(self.parent(), "db", None)
+        if db is not None:
+            try:
+                for row in (db.cos_get_projects() or []):
+                    pid, name = row[0], (row[1] or "").strip() or f"Project {row[0]}"
+                    self.project_combo.addItem(name, int(pid))
+            except Exception:
+                pass
+        cur_proj = self._task.get("cos_project_id")
+        if cur_proj is not None:
+            try:
+                idx = self.project_combo.findData(int(cur_proj))
+                if idx >= 0:
+                    self.project_combo.setCurrentIndex(idx)
+            except Exception:
+                pass
+        row1b.addWidget(self.project_combo)
+        row1b.addStretch(1)
+        layout.addLayout(row1b)
+
+        # Scheduling / effort / dependencies
+        row_effort = QHBoxLayout()
+        row_effort.setSpacing(8)
+        row_effort.addWidget(QLabel("Estimate (minutes):"))
+        self.estimate_minutes = QSpinBox()
+        self.estimate_minutes.setRange(0, 100000)
+        try:
+            self.estimate_minutes.setValue(int(self._task.get("estimate_minutes") or 0))
+        except Exception:
+            self.estimate_minutes.setValue(0)
+        row_effort.addWidget(self.estimate_minutes)
+
+        self.start_enabled = QCheckBox("Start:")
+        self.start_enabled.setChecked(bool((self._task.get("start_date") or "").strip()))
+        row_effort.addWidget(self.start_enabled)
+        self.start_date = QDateEdit()
+        self.start_date.setCalendarPopup(True)
+        qs0 = _qdate_from_mmddyyyy(self._task.get("start_date"))
+        self.start_date.setDate(qs0 if qs0 else QDate.currentDate())
+        row_effort.addWidget(self.start_date)
+        row_effort.addStretch(1)
+        layout.addLayout(row_effort)
+
+        layout.addWidget(QLabel("Blockers (free text):"))
+        self.blockers = QLineEdit()
+        self.blockers.setText(str(self._task.get("blockers") or "").strip())
+        layout.addWidget(self.blockers)
+
+        layout.addWidget(QLabel("Dependencies (task IDs, comma-separated):"))
+        self.depends_on = QLineEdit()
+        dep_val = ""
+        dep_json = self._task.get("depends_on_json")
+        try:
+            if dep_json:
+                arr = json.loads(dep_json)
+                if isinstance(arr, list):
+                    dep_val = ", ".join(str(int(x)) for x in arr if str(x).strip())
+        except Exception:
+            dep_val = str(dep_json or "")
+        self.depends_on.setText(dep_val)
+        layout.addWidget(self.depends_on)
+
         layout.addWidget(QLabel("Tags (comma-separated):"))
         self.tags = QLineEdit()
         tags_json = self._task.get("tags_json")
@@ -136,14 +202,36 @@ class TaskEditDialog(QDialog):
         due = _mmddyyyy_from_qdate(self.due_date.date()) if self.due_enabled.isChecked() else None
         next_action = _mmddyyyy_from_qdate(self.next_action.date()) if self.next_enabled.isChecked() else None
         snoozed = _mmddyyyy_from_qdate(self.snoozed_until.date()) if self.snooze_enabled.isChecked() else None
+        start_date = _mmddyyyy_from_qdate(self.start_date.date()) if self.start_enabled.isChecked() else None
 
+        blockers = (self.blockers.text() or "").strip() or None
+
+        depends_raw = (self.depends_on.text() or "").strip()
+        depends_ids: list[int] = []
+        if depends_raw:
+            for part in depends_raw.split(","):
+                p = part.strip()
+                if not p:
+                    continue
+                try:
+                    depends_ids.append(int(p))
+                except Exception:
+                    continue
+        depends_on_json = json.dumps(sorted(set(depends_ids)), ensure_ascii=False)
+
+        cos_project_id = self.project_combo.currentData()
         return {
             "task_text": text,
             "category": category,
             "priority": priority,
             "tags_json": tags_json,
             "due_date": due,
+            "start_date": start_date,
+            "estimate_minutes": int(self.estimate_minutes.value() or 0),
+            "blockers": blockers,
+            "depends_on_json": depends_on_json,
             "next_action_date": next_action,
             "snoozed_until": snoozed,
+            "cos_project_id": int(cos_project_id) if cos_project_id is not None else None,
         }
 

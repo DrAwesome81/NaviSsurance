@@ -16,6 +16,7 @@ def _config_paths() -> tuple[str, str]:
 
 def calendar_available() -> tuple[bool, str]:
     """
+    Read-only calendar availability check.
     Return (ok, message). This is intentionally conservative to avoid triggering OAuth flows.
     """
     try:
@@ -41,6 +42,40 @@ def _load_creds(token_path: str):
         with open(token_path, "wb") as f:
             pickle.dump(creds, f)
     return creds
+
+
+_WRITE_SCOPES: set[str] = {
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.events.owned",
+}
+
+
+def calendar_write_available() -> tuple[bool, str]:
+    """
+    Write-capability check for creating events.
+    Returns (ok, message). Never triggers interactive OAuth.
+    """
+    ok, msg = calendar_available()
+    if not ok:
+        return False, msg
+    token_path, _ = _config_paths()
+    try:
+        creds = _load_creds(token_path)
+    except Exception as e:
+        return False, f"Could not load Google token file: {e}"
+
+    scopes = set(getattr(creds, "scopes", None) or [])
+    # Some credential objects may not expose scopes; in that case we can't preflight.
+    if not scopes:
+        return True, ""
+    if scopes.intersection(_WRITE_SCOPES):
+        return True, ""
+    return (
+        False,
+        "Google token is missing Calendar write scope. Re-authorize with "
+        "'https://www.googleapis.com/auth/calendar' (delete config/navi_token.pkl and re-auth).",
+    )
 
 
 def get_calendar_events(
@@ -109,7 +144,7 @@ def create_calendar_event(
     Create a Google Calendar event.
     Returns (ok, message, created_event_dict_or_none).
     """
-    ok, msg = calendar_available()
+    ok, msg = calendar_write_available()
     if not ok:
         return False, msg, None
 

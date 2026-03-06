@@ -104,6 +104,35 @@ Acceptance Criteria:
 
 Status: Implemented (no Vikunja required).
 
+Deep Research (WEB-FIRST - IMPLEMENTED)
+
+User Story: As a consultant, I want a dedicated deep web research workflow that produces a reusable research brief with citations, so I can quickly ground downstream drafting and decision-making.
+
+Acceptance Criteria:
+- Provide a `Deep Research` tab with:
+  - research name and objective input
+  - a run button that executes a web research pipeline asynchronously (no UI blocking)
+  - an iterative web research loop (max 8 rounds, 30-minute timebox) that stops when it stops finding new sources
+  - a visible “still working” indicator during long runs (status updates + progress bar)
+  - a review gate (status becomes `awaiting_research_review`) with visible web research artifacts
+  - a button to generate a final research brief (markdown), with an optional auto-generate toggle
+- Persist artifacts to SQLite (`projects`, `task_plans`, `project_tasks`, `runs`, `artifacts` tables).
+- Deep Research is web-only (not internal database/document scouring).
+ - Final research brief is also written to `data/artifacts/<run_id>/research_brief.md`.
+
+Billing (TIME TRACKING + INVOICE DRAFTS - IMPLEMENTED)
+
+User Story: As a consultant, I want to log billable hours and generate monthly invoice drafts automatically on a set day, so I can review and send invoices efficiently.
+
+Acceptance Criteria:
+- Provide a `Billing` tab with:
+  - manual time entry (timer + quick manual add) associated with a client
+  - invoice template editor using safe placeholders (e.g., `{{client_name}}`, `{{line_items_md}}`, `{{total_hours}}`)
+  - invoice draft generation for previous month and custom periods
+  - invoice draft review and export (no auto-send)
+- Monthly auto-draft runs (in-app, while running) on a configurable day-of-month (1–28) and prompts for review afterwards.
+- Persist billing entities in SQLite: clients, time entries, templates, invoice drafts, and artifact file paths.
+
 CRM Integration (PLANNED)
 
 User Story: As a consultant, I want to unify leads, compliance results, and emails, so I can streamline client interactions.

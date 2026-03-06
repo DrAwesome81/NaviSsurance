@@ -41,6 +41,21 @@ Features:
 Code: core/chat.py (compliance, study design calls), gui/interface.py (lead generation, news search).
 Notes: Commercial use allowed per ToS; verify at https://x.ai/grok.
 
+OpenAI (ChatGPT) — Web Research (Deep Research Tab)
+
+Purpose: Provides web research text that is structured into a `WebResearchBrief` and then synthesized into a final research brief (markdown) in the `Deep Research` tab.
+
+Authentication: API key (`OPENAI_API_KEY`) in `.env` / `config/.env` depending on setup.
+
+Code:
+- Web research tool: `core/tools/web_research.py` (calls `core.llm_collab.call_chatgpt_simple`)
+- Pipeline orchestration: `core/workflow_engine.py`
+- UI: `gui/deep_research_tab.py`
+
+Notes:
+- This is web research only. Internal document workflows live in `Workspace` and `Library`.
+- If `OPENAI_API_KEY` is missing, web research should degrade gracefully (artifact notes indicate failure).
+
 LinkedIn APIs (Share, Sign In, Community Management)
 
 Purpose: Posts content, authenticates users, manages NaviSure's LinkedIn page.

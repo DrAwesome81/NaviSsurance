@@ -9,14 +9,18 @@ import os
 from config import DATABASE_PATH, ARTIFACTS_DIR
 
 class DatabaseManager:
-    def __init__(self):
-        self.db_name = DATABASE_PATH
-        self.current_schema_version = 11  # Increment this when making schema changes
+    def __init__(self, db_name: str | None = None):
+        self.db_name = str(db_name or DATABASE_PATH)
+        self.current_schema_version = 13  # Increment this when making schema changes
         self.setup_db()
         self.create_indexes()
         # Additive tables for newer features (safe for legacy DBs)
         try:
             self.init_workspace_collab_tables()
+        except Exception:
+            pass
+        try:
+            self.init_meetings_tables()
         except Exception:
             pass
         try:
@@ -108,6 +112,17 @@ class DatabaseManager:
                     conn.execute("ALTER TABLE tasks ADD COLUMN snoozed_until TEXT")
                 if "updated_at" not in columns:
                     conn.execute("ALTER TABLE tasks ADD COLUMN updated_at DATETIME")
+                if "cos_project_id" not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN cos_project_id INTEGER")
+                # Project-management extensions
+                if "start_date" not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN start_date TEXT")
+                if "estimate_minutes" not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN estimate_minutes INTEGER NOT NULL DEFAULT 0")
+                if "blockers" not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN blockers TEXT")
+                if "depends_on_json" not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN depends_on_json TEXT")
 
                 conn.commit()
             except Exception:
@@ -665,6 +680,20 @@ class DatabaseManager:
                 "CREATE INDEX IF NOT EXISTS idx_agent_artifacts_thread "
                 "ON agent_artifacts(thread_id)"
             )
+
+            # Billing tables
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_billing_clients_active "
+                "ON billing_clients(is_active, name)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_time_entries_client_start "
+                "ON time_entries(client_id, start_ts)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_invoice_drafts_client_period "
+                "ON invoice_drafts(client_id, period_start, period_end)"
+            )
             
             conn.commit()
 
@@ -702,16 +731,64 @@ class DatabaseManager:
             cursor = conn.execute(query, params)
             return cursor.fetchall()
 
-    def add_task(self, session_id, task_text, due_date, category="Business", recurrence="None", completed=0):
+    def add_task(
+        self,
+        session_id,
+        task_text,
+        due_date,
+        category="Business",
+        recurrence="None",
+        completed=0,
+        cos_project_id=None,
+        *,
+        start_date: str | None = None,
+        estimate_minutes: int | None = None,
+        blockers: str | None = None,
+        depends_on_json: str | None = None,
+    ):
         with sqlite3.connect(self.db_name) as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO tasks
-                    (session_id, task_text, due_date, category, recurrence, completed, priority, tags_json, next_action_date, snoozed_until, created_at, updated_at)
+                    (
+                        session_id,
+                        task_text,
+                        due_date,
+                        category,
+                        recurrence,
+                        completed,
+                        priority,
+                        tags_json,
+                        next_action_date,
+                        snoozed_until,
+                        created_at,
+                        updated_at,
+                        cos_project_id,
+                        start_date,
+                        estimate_minutes,
+                        blockers,
+                        depends_on_json
+                    )
                 VALUES
-                    (?, ?, ?, ?, ?, ?, COALESCE(?, 0), COALESCE(?, '[]'), ?, ?, datetime('now'), datetime('now'))
+                    (?, ?, ?, ?, ?, ?, COALESCE(?, 0), COALESCE(?, '[]'), ?, ?, datetime('now'), datetime('now'), ?, ?, COALESCE(?, 0), ?, COALESCE(?, '[]'))
                 """,
-                (session_id, task_text, due_date, category, recurrence, completed, 0, "[]", None, None),
+                (
+                    session_id,
+                    task_text,
+                    due_date,
+                    category,
+                    recurrence,
+                    completed,
+                    0,
+                    "[]",
+                    None,
+                    None,
+                    int(cos_project_id) if cos_project_id is not None else None,
+                    start_date,
+                    int(estimate_minutes) if estimate_minutes is not None else 0,
+                    blockers,
+                    depends_on_json,
+                ),
             )
             conn.commit()
             return cursor.lastrowid
@@ -724,12 +801,17 @@ class DatabaseManager:
         *,
         task_text: str | object = _UNSET,
         due_date: str | None | object = _UNSET,
+        start_date: str | None | object = _UNSET,
         category: str | object = _UNSET,
         completed: int | object = _UNSET,
         priority: int | object = _UNSET,
         tags_json: str | None | object = _UNSET,
         next_action_date: str | None | object = _UNSET,
         snoozed_until: str | None | object = _UNSET,
+        cos_project_id: int | None | object = _UNSET,
+        estimate_minutes: int | object = _UNSET,
+        blockers: str | None | object = _UNSET,
+        depends_on_json: str | None | object = _UNSET,
     ) -> None:
         fields = []
         params = []
@@ -739,6 +821,9 @@ class DatabaseManager:
         if due_date is not self._UNSET:
             fields.append("due_date = ?")
             params.append(due_date)
+        if start_date is not self._UNSET:
+            fields.append("start_date = ?")
+            params.append(start_date)
         if category is not self._UNSET:
             fields.append("category = ?")
             params.append(str(category))
@@ -757,6 +842,18 @@ class DatabaseManager:
         if snoozed_until is not self._UNSET:
             fields.append("snoozed_until = ?")
             params.append(snoozed_until)
+        if cos_project_id is not self._UNSET:
+            fields.append("cos_project_id = ?")
+            params.append(int(cos_project_id) if cos_project_id is not None else None)
+        if estimate_minutes is not self._UNSET:
+            fields.append("estimate_minutes = ?")
+            params.append(int(estimate_minutes) if estimate_minutes is not None else 0)
+        if blockers is not self._UNSET:
+            fields.append("blockers = ?")
+            params.append(blockers)
+        if depends_on_json is not self._UNSET:
+            fields.append("depends_on_json = ?")
+            params.append(str(depends_on_json) if depends_on_json is not None else "[]")
         if not fields:
             return
         fields.append("updated_at = datetime('now')")
@@ -776,6 +873,8 @@ class DatabaseManager:
         include_completed: bool = False,
         include_snoozed: bool = False,
         search: str | None = None,
+        cos_project_id: int | None = None,
+        sort_by: str | None = None,
         limit: int = 500,
     ) -> list[dict]:
         """
@@ -808,13 +907,23 @@ class DatabaseManager:
                     COALESCE(tags_json, '[]') AS tags_json,
                     next_action_date,
                     snoozed_until,
-                    created_at
+                    created_at,
+                    cos_project_id,
+                    start_date,
+                    COALESCE(estimate_minutes, 0) AS estimate_minutes,
+                    COALESCE(blockers, '') AS blockers,
+                    COALESCE(depends_on_json, '[]') AS depends_on_json
                 FROM tasks
                 WHERE 1=1
                 """
                 + (" AND category = ?" if category else "")
+                + (" AND cos_project_id = ?" if cos_project_id is not None else "")
                 + " ORDER BY id DESC LIMIT ?",
-                tuple(([category] if category else []) + [int(limit) * 5]),
+                tuple(
+                    ([category] if category else [])
+                    + ([int(cos_project_id)] if cos_project_id is not None else [])
+                    + [int(limit) * 5]
+                ),
             )
             rows = [dict(r) for r in cur.fetchall()]
 
@@ -860,20 +969,31 @@ class DatabaseManager:
                 if search_l not in tt and search_l not in tags:
                     continue
 
+            # Project filter (cos_project_id already in SQL when provided)
+            # (handled in WHERE clause)
+
             r["_due_dt"] = due_dt
             r["_next_dt"] = next_dt
             r["_snooze_dt"] = snooze_dt
             out.append(r)
 
-        # Sort: priority desc, next action asc (if present), due asc (if present), newest last
+        # Sort
+        sort_by = (sort_by or "").strip().lower() or "priority"
         def _key(r):
             pr = int(r.get("priority") or 0)
             nd = r.get("_next_dt")
             dd = r.get("_due_dt")
-            # push None dates to end
             nd_sort = nd if nd is not None else datetime.max
             dd_sort = dd if dd is not None else datetime.max
-            return (-pr, nd_sort, dd_sort, -int(r.get("id") or 0))
+            rid = int(r.get("id") or 0)
+            if sort_by == "due_date":
+                return (dd_sort, nd_sort, -pr, -rid)
+            if sort_by == "next_action":
+                return (nd_sort, dd_sort, -pr, -rid)
+            if sort_by == "newest":
+                return (-rid, -pr, dd_sort, nd_sort)
+            # default: priority desc, then next action, due, newest
+            return (-pr, nd_sort, dd_sort, -rid)
 
         out.sort(key=_key)
         return out[: int(limit)]
@@ -1017,6 +1137,108 @@ class DatabaseManager:
                 )
             """)
             conn.execute("INSERT OR IGNORE INTO last_run (id, timestamp) VALUES (1, 0)")
+            conn.commit()
+
+    def init_meetings_tables(self):
+        """Create tables used by the Meetings tab (safe additive init)."""
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS meeting_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    meeting_date TEXT NOT NULL,
+                    meeting_with TEXT,
+                    notes TEXT,
+                    source TEXT NOT NULL DEFAULT 'recording',
+                    audio_file_path TEXT,
+                    transcript_text TEXT,
+                    transcript_file_path TEXT,
+                    transcription_provider TEXT,
+                    provider_transcript_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    error_message TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_meeting_records_date ON meeting_records(meeting_date)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_meeting_records_status ON meeting_records(status)")
+            conn.commit()
+
+    def create_meeting_record(
+        self,
+        *,
+        meeting_date: str,
+        meeting_with: str | None = None,
+        notes: str | None = None,
+        source: str = "recording",
+        audio_file_path: str | None = None,
+        transcription_provider: str | None = None,
+        status: str = "pending",
+    ) -> int:
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO meeting_records
+                    (meeting_date, meeting_with, notes, source, audio_file_path, transcription_provider, status, created_at, updated_at)
+                VALUES
+                    (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                """,
+                (
+                    str(meeting_date),
+                    (meeting_with or "").strip(),
+                    (notes or "").strip(),
+                    (source or "recording").strip(),
+                    str(audio_file_path) if audio_file_path else None,
+                    (transcription_provider or "").strip() or None,
+                    (status or "pending").strip(),
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def update_meeting_record(
+        self,
+        meeting_id: int,
+        *,
+        status: str | None = None,
+        meeting_with: str | None = None,
+        notes: str | None = None,
+        provider_transcript_id: str | None = None,
+        transcript_text: str | None = None,
+        transcript_file_path: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        fields = []
+        params: list[object] = []
+        if status is not None:
+            fields.append("status = ?")
+            params.append(str(status))
+        if meeting_with is not None:
+            fields.append("meeting_with = ?")
+            params.append(str(meeting_with))
+        if notes is not None:
+            fields.append("notes = ?")
+            params.append(str(notes))
+        if provider_transcript_id is not None:
+            fields.append("provider_transcript_id = ?")
+            params.append(str(provider_transcript_id) if provider_transcript_id else None)
+        if transcript_text is not None:
+            fields.append("transcript_text = ?")
+            params.append(str(transcript_text))
+        if transcript_file_path is not None:
+            fields.append("transcript_file_path = ?")
+            params.append(str(transcript_file_path) if transcript_file_path else None)
+        if error_message is not None:
+            fields.append("error_message = ?")
+            params.append(str(error_message) if error_message else None)
+        if not fields:
+            return
+        fields.append("updated_at = datetime('now')")
+        params.append(int(meeting_id))
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(f"UPDATE meeting_records SET {', '.join(fields)} WHERE id = ?", params)
             conn.commit()
 
     def update_last_run(self):
@@ -1470,25 +1692,42 @@ class DatabaseManager:
 
                 # Backward-compat: check by exact title or URL match
                 cursor = conn.execute(
-                    "SELECT id FROM news_items WHERE title = ? OR (url IS NOT NULL AND url = ?)",
+                    "SELECT id, url, source, published_date FROM news_items WHERE title = ? OR (url IS NOT NULL AND url = ?)",
                     (title, canonical_url),
                 )
                 existing = cursor.fetchone()
                 if existing:
+                    existing_id, existing_url, existing_source, existing_published_date = existing
+                    # Enrich existing rows when earlier ingest missed URL/source/date.
+                    if (
+                        (not existing_url and canonical_url)
+                        or (not existing_source and source)
+                        or (not existing_published_date and published_date)
+                    ):
+                        conn.execute(
+                            """
+                            UPDATE news_items
+                            SET url = COALESCE(url, ?),
+                                source = COALESCE(source, ?),
+                                published_date = COALESCE(published_date, ?)
+                            WHERE id = ?
+                            """,
+                            (canonical_url, source, published_date, existing_id),
+                        )
                     # Attach a dedup key mapping so future checks are stable
                     conn.execute(
                         """
                         INSERT OR REPLACE INTO news_dedup (dedup_key, news_id, first_seen, last_seen)
                         VALUES (?, ?, datetime('now'), datetime('now'))
                         """,
-                        (key_url, existing[0]),
+                        (key_url, existing_id),
                     )
                     conn.execute(
                         """
                         INSERT OR REPLACE INTO news_dedup (dedup_key, news_id, first_seen, last_seen)
                         VALUES (?, ?, datetime('now'), datetime('now'))
                         """,
-                        (key_title, existing[0]),
+                        (key_title, existing_id),
                     )
                     conn.commit()
                     return False
@@ -2167,8 +2406,332 @@ class DatabaseManager:
                 print("    - Agent workflow tables created")
             except Exception as e:
                 print(f"    - Error creating agent workflow tables: {e}")
+
+        # Version 11 to 12: Billing tables (manual time entry + invoice drafts)
+        if from_version < 12 and to_version >= 12:
+            print("  - Creating billing tables: billing_clients, time_entries, invoice_templates, invoice_drafts")
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS billing_clients (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        billing_email TEXT,
+                        default_rate REAL,
+                        currency TEXT NOT NULL DEFAULT 'USD',
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS time_entries (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        client_id INTEGER NOT NULL,
+                        start_ts TEXT NOT NULL,
+                        end_ts TEXT NOT NULL,
+                        minutes INTEGER NOT NULL,
+                        description TEXT NOT NULL DEFAULT '',
+                        is_billable INTEGER NOT NULL DEFAULT 1,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (client_id) REFERENCES billing_clients(id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS invoice_templates (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        template_body TEXT NOT NULL,
+                        engine TEXT NOT NULL DEFAULT 'placeholder_v1',
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS invoice_drafts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        client_id INTEGER NOT NULL,
+                        period_start TEXT NOT NULL,
+                        period_end TEXT NOT NULL,
+                        generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        status TEXT NOT NULL DEFAULT 'draft',
+                        totals_json TEXT NOT NULL DEFAULT '{}',
+                        rendered_body_md TEXT NOT NULL DEFAULT '',
+                        file_path TEXT,
+                        FOREIGN KEY (client_id) REFERENCES billing_clients(id)
+                    )
+                    """
+                )
+                conn.commit()
+                print("    - Billing tables created")
+            except Exception as e:
+                print(f"    - Error creating billing tables: {e}")
+
+        # Version 12 to 13: Normalize assignment priority semantics (P5 = most urgent)
+        # Historically some parts of the app treated lower numbers as "more urgent".
+        # We standardize so higher numbers are more urgent everywhere.
+        if from_version < 13 and to_version >= 13:
+            print("  - Normalizing agent_assignments priority scale (invert 1..5)")
+            try:
+                # Only run if the table exists.
+                row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_assignments' LIMIT 1"
+                ).fetchone()
+                if row:
+                    conn.execute(
+                        """
+                        UPDATE agent_assignments
+                        SET priority = (6 - priority)
+                        WHERE priority BETWEEN 1 AND 5
+                        """
+                    )
+                    conn.commit()
+                    # Avoid non-ASCII output (Windows console encoding).
+                    print("    - agent_assignments priority values inverted (1<->5, 2<->4, 3 unchanged)")
+            except Exception as e:
+                print(f"    - Error normalizing agent_assignments priority: {e}")
         
         print(f"Schema migration from version {from_version} to {to_version} completed.")
+
+    # -------------------------------------------------------------------------
+    # Billing methods (clients, time entries, templates, invoice drafts)
+    # -------------------------------------------------------------------------
+
+    def billing_client_create(
+        self,
+        *,
+        name: str,
+        billing_email: str | None = None,
+        default_rate: float | None = None,
+        currency: str = "USD",
+        is_active: int = 1,
+    ) -> int:
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO billing_clients (name, billing_email, default_rate, currency, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(name).strip(),
+                    (str(billing_email).strip() if billing_email else None),
+                    float(default_rate) if default_rate is not None else None,
+                    str(currency or "USD").strip() or "USD",
+                    int(is_active),
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def billing_clients_list(self, *, active_only: bool = True) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            if active_only:
+                rows = conn.execute(
+                    "SELECT * FROM billing_clients WHERE is_active = 1 ORDER BY name"
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM billing_clients ORDER BY name").fetchall()
+            return [dict(r) for r in rows]
+
+    def billing_client_get(self, client_id: int) -> dict | None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM billing_clients WHERE id = ?", (int(client_id),)).fetchone()
+            return dict(row) if row else None
+
+    def billing_client_update(self, client_id: int, **kwargs) -> bool:
+        allowed = {"name", "billing_email", "default_rate", "currency", "is_active"}
+        updates = []
+        values = []
+        for k, v in kwargs.items():
+            if k not in allowed:
+                continue
+            updates.append(f"{k} = ?")
+            values.append(v)
+        if not updates:
+            return False
+        updates.append("updated_at = ?")
+        values.append(datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        values.append(int(client_id))
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(f"UPDATE billing_clients SET {', '.join(updates)} WHERE id = ?", values)
+            conn.commit()
+            return True
+
+    def time_entry_add(
+        self,
+        *,
+        client_id: int,
+        start_ts: str,
+        end_ts: str,
+        minutes: int,
+        description: str = "",
+        is_billable: int = 1,
+    ) -> int:
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO time_entries (client_id, start_ts, end_ts, minutes, description, is_billable, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(client_id),
+                    str(start_ts),
+                    str(end_ts),
+                    int(minutes),
+                    str(description or ""),
+                    int(is_billable),
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def time_entries_list(
+        self,
+        *,
+        client_id: int,
+        start_ts: str | None = None,
+        end_ts: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            q = "SELECT * FROM time_entries WHERE client_id = ?"
+            params: list[object] = [int(client_id)]
+            if start_ts:
+                q += " AND start_ts >= ?"
+                params.append(str(start_ts))
+            if end_ts:
+                q += " AND end_ts <= ?"
+                params.append(str(end_ts))
+            q += " ORDER BY start_ts DESC LIMIT ?"
+            params.append(int(limit))
+            rows = conn.execute(q, tuple(params)).fetchall()
+            return [dict(r) for r in rows]
+
+    def time_entry_delete(self, entry_id: int) -> bool:
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute("DELETE FROM time_entries WHERE id = ?", (int(entry_id),))
+            conn.commit()
+            return int(cur.rowcount) > 0
+
+    def invoice_template_create(self, *, name: str, template_body: str, engine: str = "placeholder_v1") -> int:
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO invoice_templates (name, template_body, engine, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (str(name).strip(), str(template_body or ""), str(engine or "placeholder_v1"), now, now),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def invoice_templates_list(self) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT * FROM invoice_templates ORDER BY updated_at DESC, id DESC").fetchall()
+            return [dict(r) for r in rows]
+
+    def invoice_template_get(self, template_id: int) -> dict | None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM invoice_templates WHERE id = ?", (int(template_id),)).fetchone()
+            return dict(row) if row else None
+
+    def invoice_template_update(self, template_id: int, *, name: str | None = None, template_body: str | None = None) -> bool:
+        updates = []
+        values = []
+        if name is not None:
+            updates.append("name = ?")
+            values.append(str(name).strip())
+        if template_body is not None:
+            updates.append("template_body = ?")
+            values.append(str(template_body))
+        if not updates:
+            return False
+        updates.append("updated_at = ?")
+        values.append(datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        values.append(int(template_id))
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(f"UPDATE invoice_templates SET {', '.join(updates)} WHERE id = ?", values)
+            conn.commit()
+            return True
+
+    def invoice_draft_create(
+        self,
+        *,
+        client_id: int,
+        period_start: str,
+        period_end: str,
+        totals_json: str,
+        rendered_body_md: str,
+        file_path: str | None = None,
+        status: str = "draft",
+    ) -> int:
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO invoice_drafts (client_id, period_start, period_end, status, totals_json, rendered_body_md, file_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(client_id),
+                    str(period_start),
+                    str(period_end),
+                    str(status or "draft"),
+                    str(totals_json or "{}"),
+                    str(rendered_body_md or ""),
+                    str(file_path) if file_path else None,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def invoice_drafts_list(self, *, client_id: int | None = None, limit: int = 200) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            if client_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM invoice_drafts ORDER BY generated_at DESC, id DESC LIMIT ?",
+                    (int(limit),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM invoice_drafts WHERE client_id = ? ORDER BY generated_at DESC, id DESC LIMIT ?",
+                    (int(client_id), int(limit)),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def invoice_draft_get(self, draft_id: int) -> dict | None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM invoice_drafts WHERE id = ?", (int(draft_id),)).fetchone()
+            return dict(row) if row else None
+
+    def invoice_draft_update_status(self, draft_id: int, *, status: str) -> bool:
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                "UPDATE invoice_drafts SET status = ? WHERE id = ?",
+                (str(status or "draft"), int(draft_id)),
+            )
+            conn.commit()
+            return int(cur.rowcount) > 0
 
     # -------------------------------------------------------------------------
     # Lead generation methods
@@ -3112,8 +3675,8 @@ class DatabaseManager:
                 "atlas",
                 "Atlas",
                 "Deep Researcher",
-                "AI Projects",
-                ["atlas", "researcher", "ai projects", "deep research"],
+                "Deep Research",
+                ["atlas", "researcher", "deep research", "research"],
                 ["deep_research", "synthesis", "citations", "briefing"],
             ),
             (
@@ -3534,7 +4097,7 @@ class DatabaseManager:
                         WHEN 'cancelled' THEN 5
                         ELSE 6
                     END,
-                    priority ASC,
+                    priority DESC,
                     COALESCE(due_date, '9999-12-31') ASC,
                     id DESC
                 LIMIT ?

@@ -596,6 +596,11 @@ Return only the relevant emails, nothing else."""
         briefing += f"[SECTION:Unreplied Emails]\n{unreplied_str}\n\n" \
                   f"[SECTION:Scheduling Suggestions]\n{scheduling_str}"
         
+        try:
+            self.db.set_setting("daily_briefing_raw_date", today.strftime("%Y-%m-%d"))
+            self.db.set_setting("daily_briefing_raw_text", briefing)
+        except Exception:
+            pass
         self.db.update_last_run()
         return briefing
 

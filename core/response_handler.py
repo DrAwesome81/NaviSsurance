@@ -252,7 +252,13 @@ class ResponseHandler:
                     if not ok:
                         return f"News (Grok) unavailable: {msg}"
                     return "Unable to fetch current news. Please try again."
-            grok_response = self.hybrid_wrapper(conversation_history, session_id)
+            # Give Navi visibility into tasks and projects for planning/priorities (same as Mason)
+            navi_context = self._get_navi_tasks_projects_context()
+            messages_for_llm = (
+                [{"role": "system", "content": "Current tasks and projects (use for planning and priorities when the user asks):\n" + navi_context}]
+                + list(conversation_history)
+            ) if navi_context else conversation_history
+            grok_response = self.hybrid_wrapper(messages_for_llm, session_id)
             print(f"DEBUG: hybrid_wrapper returned: {grok_response[:200] if grok_response else 'None'}...")
             task_segments = [seg for seg in grok_response.split("ADD_TASK:") if seg.strip()]
             print(f"DEBUG: task_segments count: {len(task_segments)}, has ADD_TASK: {'ADD_TASK:' in grok_response}")
@@ -389,6 +395,46 @@ All Tasks:
             summary += f"- {task['name']} (due: {task['due_date']}, status: {task['status']}{overdue_indicator})\n"
         
         return summary
+
+    def _get_navi_tasks_projects_context(self):
+        """Build a read-only snapshot of tasks and projects for Navi (planning/priorities)."""
+        try:
+            db = self.chat_handler.db
+            tasks = db.list_tasks_rich(
+                include_completed=False,
+                include_snoozed=False,
+                limit=100,
+            )
+            lines = ["Tasks (id, text, priority P0–P5, due, next action, category):"]
+            if not tasks:
+                lines.append("  (none)")
+            else:
+                for t in tasks:
+                    tid = t.get("id") or ""
+                    text = (str(t.get("task_text") or "").strip() or "(no text)")[:80]
+                    prio = t.get("priority", 0)
+                    due = t.get("due_date") or "—"
+                    next_act = t.get("next_action_date") or "—"
+                    cat = t.get("category") or "—"
+                    lines.append(f"  {tid}: {text} | P{prio} | due {due} | next {next_act} | {cat}")
+            try:
+                proj_rows = db.cos_get_projects() or []
+                lines.append("")
+                lines.append("Projects (id, name, client, status, deadline):")
+                if not proj_rows:
+                    lines.append("  (none)")
+                else:
+                    for row in proj_rows:
+                        pid, name, client = row[0], row[1] or "", row[2] or ""
+                        status = (row[4] or "") if len(row) > 4 else "—"
+                        deadline = (str(row[6] or "")[:10]) if len(row) > 6 and row[6] else "—"
+                        lines.append(f"  {pid}: {name} | {client} | {status} | {deadline}")
+            except Exception:
+                pass
+            return "\n".join(lines)
+        except Exception as e:
+            logger.debug("Navi tasks/projects context failed: %s", e)
+            return ""
     
     def _handle_vikunja_task_creation(self, *args, **kwargs):
         """
@@ -403,5 +449,18 @@ All Tasks:
         This method is called when a task is added via the old task system.
         Tasks are persisted locally in SQLite via DatabaseManager.
         """
-        # Kept for backward compatibility with signal connections.
-        pass
+        try:
+            text = str(task_text or "").strip()
+            if not text:
+                return
+            due = str(due_date or "").strip()
+            try:
+                if not due or due.lower() in {"none", "unknown", "n/a"}:
+                    due = datetime.now().strftime("%m-%d-%Y")
+                else:
+                    due = parser.parse(due, default=datetime.now()).strftime("%m-%d-%Y")
+            except Exception:
+                due = datetime.now().strftime("%m-%d-%Y")
+            self.chat_handler.db.add_task("chat_task_capture", text, due, category="Business", recurrence="None", completed=0)
+        except Exception as e:
+            logger.warning("handle_task_added failed: %s", e)

@@ -14,6 +14,61 @@ import requests
 logger = logging.getLogger(__name__)
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+
+
+def _extract_responses_output_text_and_citations(resp_json: object) -> tuple[str, list[dict]]:
+    """
+    Extract assistant output text and url_citation annotations from a Responses API payload.
+
+    Returns:
+        (text, citations) where citations are dicts: {url, title}
+    """
+    if isinstance(resp_json, list):
+        output_items = resp_json
+        sources_field = []
+    elif isinstance(resp_json, dict):
+        output_items = resp_json.get("output", []) or []
+        sources_field = resp_json.get("sources", []) or []
+    else:
+        return "", []
+
+    text_parts: list[str] = []
+    citations: list[dict] = []
+    seen_urls: set[str] = set()
+
+    def _add_url(url: str | None, title: str | None = None) -> None:
+        u = (url or "").strip()
+        if not u or u in seen_urls:
+            return
+        seen_urls.add(u)
+        citations.append({"url": u, "title": (title or "").strip() or None})
+
+    for item in output_items:
+        if not isinstance(item, dict):
+            continue
+
+        if item.get("type") == "message":
+            for content in item.get("content", []) or []:
+                if not isinstance(content, dict):
+                    continue
+                if content.get("type") != "output_text":
+                    continue
+                t = content.get("text", "")
+                if isinstance(t, str) and t.strip():
+                    text_parts.append(t)
+                for ann in content.get("annotations", []) or []:
+                    if not isinstance(ann, dict):
+                        continue
+                    if ann.get("type") == "url_citation":
+                        _add_url(ann.get("url"), ann.get("title"))
+
+    # Also add sources (more complete than citations, may include items without inline citations).
+    for s in sources_field:
+        if isinstance(s, dict):
+            _add_url(s.get("url"), s.get("title"))
+
+    return ("\n".join(text_parts)).strip(), citations
 
 
 def call_grok_simple(system: str, user: str, from_config: Optional[dict] = None) -> str:
@@ -60,3 +115,54 @@ def call_chatgpt_simple(system: str, user: str, from_config: Optional[dict] = No
     out = response.json()
     content = (out.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
     return content
+
+
+def call_chatgpt_web_search(
+    system: str,
+    user: str,
+    *,
+    from_config: Optional[dict] = None,
+    model: str = "gpt-4o",
+    timeout_s: int = 180,
+    external_web_access: bool = True,
+) -> tuple[str, list[dict]]:
+    """
+    Call OpenAI Responses API with hosted web_search tool enabled.
+
+    Returns:
+        (text, citations) where citations are dicts: {url, title}
+
+    Notes:
+        - Uses OPENAI_API_KEY from env unless overridden by from_config["openai_api_key"].
+        - Raises on API error. Returns ("", []) if no key is configured.
+    """
+    api_key = (from_config or {}).get("openai_api_key") or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        logger.warning("OPENAI_API_KEY not set")
+        return "", []
+
+    req_headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    # Responses API supports message-style input; keep it close to call_chatgpt_simple.
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "tools": [
+            {
+                "type": "web_search",
+                "external_web_access": bool(external_web_access),
+            }
+        ],
+    }
+
+    response = requests.post(OPENAI_RESPONSES_URL, headers=req_headers, json=payload, timeout=timeout_s)
+    response.raise_for_status()
+    out = response.json()
+    text, citations = _extract_responses_output_text_and_citations(out)
+    return text, citations

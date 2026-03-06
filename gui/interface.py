@@ -4,10 +4,10 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QTabWidget, QSplashScreen,
     QTextBrowser, QLineEdit, QPushButton, QListWidget, QListWidgetItem, QDateEdit, QTableWidget,
     QTableWidgetItem, QCheckBox, QComboBox, QLabel, QSplitter, QTextEdit, QDialog, QDialogButtonBox,
-    QHeaderView, QMessageBox, QFileDialog, QMenu, QProgressBar, QApplication
+    QHeaderView, QMessageBox, QFileDialog, QMenu, QProgressBar, QApplication, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QDate, QTimer, pyqtSlot, QUrl, QThread, pyqtSignal, QMetaObject, Q_ARG
-from PyQt6.QtGui import QPixmap, QAction, QDesktopServices, QColor, QPainter
+from PyQt6.QtGui import QPixmap, QAction, QDesktopServices, QColor, QPainter, QKeyEvent
 from core.db import DatabaseManager
 from gui.chat_window import ChatThread, sendMessage, saveChat, loadChat
 from core.response_handler import ResponseHandler
@@ -21,13 +21,62 @@ import PyPDF2
 from bs4 import BeautifulSoup
 import markdown
 from core.compliance import ComplianceChecker, DocumentGenerator
-from core.api import DropboxClient
 from docx import Document
 from fpdf import FPDF
-from dropbox import files
 import re
 import requests
 from gui.notes_tab import NoteTakingSystem, NoteProcessingThread
+import html
+
+
+class ChatEntryEdit(QTextEdit):
+    """
+    Multi-line chat input:
+    - Enter sends
+    - Shift+Enter inserts newline
+    - Auto-grows up to a max number of lines
+    """
+
+    returnPressed = pyqtSignal()
+
+    def __init__(self, *args, min_lines: int = 2, max_lines: int = 7, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._min_lines = int(min_lines)
+        self._max_lines = int(max_lines)
+
+        self.setAcceptRichText(False)
+        self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        self.document().contentsChanged.connect(self._update_height)
+        self._update_height()
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                super().keyPressEvent(event)
+            else:
+                self.returnPressed.emit()
+                event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _update_height(self):
+        try:
+            fm = self.fontMetrics()
+            line_h = max(1, int(fm.lineSpacing()))
+            min_h = int(line_h * max(1, self._min_lines) + 18)
+            max_h = int(line_h * max(1, self._max_lines) + 18)
+
+            doc_h = float(self.document().size().height())
+            target = int(doc_h + 12)
+            target = max(min_h, min(max_h, target))
+
+            if self.height() != target:
+                self.setFixedHeight(target)
+        except Exception:
+            return
 
 def robust_json_parse(response_text, logger=None):
     """
@@ -135,9 +184,10 @@ from gui.compliance_tab import ComplianceTab, ComplianceThread
 from gui.meetings_tab import MeetingsTab
 from gui.leads_tab import LeadsTab
 from gui.workspace_tab import WorkspaceTab
-from gui.projects_tab import ProjectsTab
+from gui.deep_research_tab import DeepResearchTab
 from gui.chief_of_staff_tab import ChiefOfStaffTab
 from gui.agent_tab import AgentTab
+from gui.billing_tab import BillingTab
 from gui.team_directory_tab import TeamDirectoryTab
 from gui.utils import *
 
@@ -305,10 +355,15 @@ class SettingsDialog(QDialog):
 class ChatWindow(QMainWindow):
     task_added_signal = pyqtSignal(str, str)
 
-    def __init__(self):
+    def __init__(self, *, defer_dashboard_initial_load: bool = False):
         super().__init__()
         self.db = DatabaseManager()
         self.chat_handler = ChatManager(self)  # Pass self (ChatWindow) to ChatManager
+        self._defer_dashboard_initial_load = bool(defer_dashboard_initial_load)
+        try:
+            self._chat_history_render_limit = max(10, int(os.getenv("CHAT_HISTORY_RENDER_LIMIT", "40")))
+        except Exception:
+            self._chat_history_render_limit = 40
         self.todoList = QListWidget()
         self.todoList.setStyleSheet("QListWidget::item { border: none; padding: 0; }")
         self.todo_list = TodoList(self)
@@ -321,6 +376,114 @@ class ChatWindow(QMainWindow):
         self.chat_handler.task_added_signal.connect(self.response_handler.handle_task_added)
         
         self.load_chat_history()
+        self._billing_autorun_worker = None
+        self._init_billing_autorun_scheduler()
+
+    def _init_billing_autorun_scheduler(self) -> None:
+        """
+        In-app monthly billing auto-run.
+
+        Notes:
+        - This runs only while the app is open.
+        - It is idempotent by YYYY-MM via app_settings key billing.last_autorun_yyyymm.
+        """
+        try:
+            self._billing_autorun_timer = QTimer(self)
+            self._billing_autorun_timer.setInterval(6 * 60 * 60 * 1000)  # every 6 hours
+            self._billing_autorun_timer.timeout.connect(self._maybe_run_billing_autorun)
+            self._billing_autorun_timer.start()
+            QTimer.singleShot(15_000, self._maybe_run_billing_autorun)  # after startup
+        except Exception:
+            pass
+
+    def _open_billing_tab(self) -> None:
+        try:
+            if hasattr(self, "tab_widget"):
+                for i in range(self.tab_widget.count()):
+                    if str(self.tab_widget.tabText(i) or "").strip().lower() == "billing":
+                        self.tab_widget.setCurrentIndex(i)
+                        return
+        except Exception:
+            return
+
+    def _maybe_run_billing_autorun(self) -> None:
+        # Avoid overlapping runs.
+        if self._billing_autorun_worker is not None:
+            return
+
+        try:
+            from datetime import date as _date
+            from core.billing.autorun import should_autorun, run_monthly_autodraft
+
+            today = _date.today()
+            if not should_autorun(self.db, today=today):
+                return
+
+            # Guard: don't re-prompt multiple times in the same month if the user dismisses.
+            yyyymm = f"{today.year:04d}-{today.month:02d}"
+            last_prompt = str(self.db.get_setting("billing.last_prompt_yyyymm", "") or "").strip()
+            if last_prompt == yyyymm:
+                return
+
+            class _BillingAutoRunWorker(QThread):
+                finished_signal = pyqtSignal(object)  # AutoRunResult
+                error_signal = pyqtSignal(str)
+
+                def __init__(self, db):
+                    super().__init__()
+                    self.db = db
+
+                def run(self):
+                    try:
+                        out = run_monthly_autodraft(self.db)
+                        self.finished_signal.emit(out)
+                    except Exception as e:
+                        self.error_signal.emit(str(e))
+
+            self._billing_autorun_worker = _BillingAutoRunWorker(self.db)
+
+            def _on_done(result):
+                self._billing_autorun_worker = None
+                try:
+                    # Mark that we've prompted this month (even if zero drafts).
+                    self.db.set_setting("billing.last_prompt_yyyymm", yyyymm)
+                except Exception:
+                    pass
+
+                try:
+                    draft_ids = getattr(result, "draft_ids", []) or []
+                    notes = getattr(result, "notes", "") or ""
+                    if notes:
+                        msg = notes
+                    elif draft_ids:
+                        msg = f"{len(draft_ids)} invoice draft(s) are ready for review."
+                    else:
+                        msg = "No invoice drafts were generated."
+
+                    box = QMessageBox(self)
+                    box.setWindowTitle("Billing")
+                    box.setText(msg)
+                    open_btn = box.addButton("Open Billing", QMessageBox.ButtonRole.AcceptRole)
+                    box.addButton("Dismiss", QMessageBox.ButtonRole.RejectRole)
+                    box.exec()
+                    if box.clickedButton() == open_btn:
+                        self._open_billing_tab()
+                except Exception:
+                    pass
+
+            def _on_err(err: str):
+                self._billing_autorun_worker = None
+                try:
+                    QMessageBox.warning(self, "Billing autorun error", err)
+                except Exception:
+                    pass
+
+            self._billing_autorun_worker.finished_signal.connect(_on_done)
+            self._billing_autorun_worker.error_signal.connect(_on_err)
+            self._billing_autorun_worker.start()
+        except Exception:
+            self._billing_autorun_worker = None
+            return
 
     def open_settings(self):
         dialog = SettingsDialog(self)
@@ -406,10 +569,14 @@ class ChatWindow(QMainWindow):
         input_layout.setContentsMargins(0, 0, 0, 0)
         input_layout.setSpacing(5)
         
-        self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText("Type your message here...")
+        self.chat_input = ChatEntryEdit(min_lines=2, max_lines=7)
+        self.chat_input.setPlaceholderText("Type your message… (Enter to send, Shift+Enter for new line)")
+        self.chat_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.chat_input.returnPressed.connect(self.sendMessage)
-        input_layout.addWidget(self.chat_input)
+        self.chat_input.setStyleSheet(
+            "QTextEdit { background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 6px; padding: 8px 10px; font-size: 13px; }"
+        )
+        input_layout.addWidget(self.chat_input, 1)
 
         self.send_button = QPushButton('Send')
         self.send_button.clicked.connect(self.sendMessage)
@@ -432,7 +599,13 @@ class ChatWindow(QMainWindow):
     def create_tabs(self):
         """Create and add all tabs after the chat handler is fully initialized."""
         logger.info("Creating tabs...")
-        self.dashboard_tab = DashboardTab(self.chat_handler, self.todo_list, self.db, self)
+        self.dashboard_tab = DashboardTab(
+            self.chat_handler,
+            self.todo_list,
+            self.db,
+            self,
+            defer_initial_loads=self._defer_dashboard_initial_load,
+        )
         self.tab_widget.addTab(self.dashboard_tab, "Dashboard")
         logger.info("Dashboard tab added")
         
@@ -470,8 +643,10 @@ class ChatWindow(QMainWindow):
         self.workspace_tab = WorkspaceTab(self.db, self.chat_handler)
         self.tab_widget.addTab(self.workspace_tab, "Workspace")
         
-        self.projects_tab = ProjectsTab(self.db)
-        self.tab_widget.addTab(self.projects_tab, "AI Projects")
+        self.deep_research_tab = DeepResearchTab(self.db)
+        self.tab_widget.addTab(self.deep_research_tab, "Deep Research")
+        # Backward-compat attribute name (some routing/tests used `projects_tab`)
+        self.projects_tab = self.deep_research_tab
         
         self.compliance_tab = ComplianceTab(self.db, self.chat_handler)
         self.tab_widget.addTab(self.compliance_tab, "Compliance")
@@ -482,13 +657,7 @@ class ChatWindow(QMainWindow):
         self.leads_tab = LeadsTab(self.chat_handler, 'data', self)
         self.tab_widget.addTab(self.leads_tab, "Leads")
 
-        self.billing_tab = AgentTab(
-            self.db,
-            agent_code="ledger",
-            heading="Billing — Ledger",
-            subtitle="Draft invoices and billing follow-ups with Ledger.",
-            parent=self,
-        )
+        self.billing_tab = BillingTab(self.db, parent=self)
         self.tab_widget.addTab(self.billing_tab, "Billing")
 
         self.library_tab = AgentTab(
@@ -564,10 +733,15 @@ class ChatWindow(QMainWindow):
         return f"cos_{self._get_dashboard_cos_chat_id()}"
 
     def sendMessage(self):
-        message = self.chat_input.text().strip()
+        message = (self.chat_input.toPlainText() or "").strip()
         if message:
-            self.chat_display.append(f"<b>You:</b> {message}<br>")
+            safe = html.escape(message).replace("\n", "<br>")
+            self.chat_display.append(f"<b>You:</b> {safe}<br>")
             self.chat_input.clear()
+            try:
+                self.chat_input._update_height()
+            except Exception:
+                pass
 
             # Chief of Staff replaces Navi in the dashboard chat.
             session_id = self._dashboard_session_id()
@@ -588,29 +762,62 @@ class ChatWindow(QMainWindow):
     def handle_response(self, response):
         # Use thread-safe UI update
         QTimer.singleShot(0, lambda: self._handle_response_safe(response))
+
+    def _format_chat_response_html(self, response: str) -> str:
+        """
+        Format assistant text for readable chat rendering.
+        Handles markdown and common one-line LLM outputs that contain headings/bullets.
+        """
+        text = str(response or "")
+        if not text.strip():
+            return ""
+
+        # If model returns a long single-line "markdown-like" response, recover structure.
+        if (
+            "\n" not in text
+            and "###" in text
+            and len(re.findall(r"\|\s*\d{2}-\d{2}-\d{4}\s*\|\s*(Business|Personal)\b", text, re.IGNORECASE)) >= 2
+        ):
+            # Separate headings and list bullets for markdown parser.
+            text = re.sub(r"\s+(#{1,6}\s)", r"\n\n\1", text)
+            text = re.sub(r"\s-\s(?=[A-Za-z0-9])", r"\n- ", text)
+
+        # Render markdown into HTML for QTextBrowser.
+        html = markdown.markdown(text, extensions=["extra", "nl2br", "sane_lists"])
+        return html or text.replace("\n", "<br>")
     
     def _handle_response_safe(self, response):
         """Thread-safe version of handle_response."""
-        self.chat_display.append(f"<b>Navi:</b> {response}<br>")
-        # If Navi added tasks via CoS chat, refresh the Dashboard task table immediately.
+        rendered = self._format_chat_response_html(response) if isinstance(response, str) else str(response)
+        self.chat_display.append(f"<b>Navi:</b> {rendered}<br>")
+        # If Navi changed tasks via CoS chat, refresh task views immediately.
         try:
-            if isinstance(response, str) and re.search(r"\bAdded\s+\d+\s+task", response):
+            if isinstance(response, str) and (
+                re.search(r"\bAdded\s+\d+\s+task", response)
+                or re.search(r"\bdashboard task\(s\)\b", response, re.IGNORECASE)
+            ):
                 if hasattr(self, "dashboard_tab") and hasattr(self.dashboard_tab, "load_tasks_filtered"):
                     QTimer.singleShot(0, self.dashboard_tab.load_tasks_filtered)
+                if hasattr(self, "tasks_tab") and hasattr(self.tasks_tab, "refresh_tasks"):
+                    QTimer.singleShot(0, self.tasks_tab.refresh_tasks)
         except Exception:
             pass
 
     def load_chat_history(self):
         # Load Dashboard chat history from the persistent CoS session.
         session_id = self._dashboard_session_id()
-        history = self.db.get_chat_history(session_id, limit=100)
+        history = self.db.get_chat_history(session_id, limit=self._chat_history_render_limit)
         for role, message in history:
             label = "You" if role == "user" else "Navi"
-            self.chat_display.append(f"<b>{label}:</b> {message}<br>")
+            if role == "assistant":
+                rendered = self._format_chat_response_html(str(message or ""))
+                self.chat_display.append(f"<b>{label}:</b> {rendered}<br>")
+            else:
+                self.chat_display.append(f"<b>{label}:</b> {message}<br>")
 
     def closeEvent(self, event):
-        if hasattr(self, "projects_tab") and hasattr(self.projects_tab, "save_state"):
-            self.projects_tab.save_state()
+        if hasattr(self, "deep_research_tab") and hasattr(self.deep_research_tab, "save_state"):
+            self.deep_research_tab.save_state()
         self.db.close()
         super().closeEvent(event)
 

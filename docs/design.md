@@ -10,7 +10,9 @@ See `docs/diagrams/architecture.png` for a visual representation.
 
 ## Module Descriptions
 - **Dashboard Tab** (`gui/interface.py`): Comprehensive dashboard with task list (interactive with double-click completion), schedule display (Google Calendar integration), and news feed (AI-powered MedTech news with 7-day persistence and hyperlinks). Features auto-refresh timers and real-time updates.
-- **Workspace Tab** (`gui/interface.py`): Advanced document workspace with QSplitter layout: left panel (Dropbox file tree), center panel (document preview), and right sidebar (analysis tools for compliance, chunking, and document generation).
+- **Workspace Tab** (`gui/workspace_tab.py`): Document drafting workflow: add files/folders, mark scope, run Grok+ChatGPT iterative collaboration to produce a markdown draft, and optionally extract/import a parseable `## Suggested Tasks (importable)` section into SQLite tasks (with an approval/edit dialog).
+- **Deep Research Tab** (`gui/deep_research_tab.py`): Web-first deep research pipeline. Runs iterative web research (max 8 rounds, 30-minute timebox) → synthesis → review gate → final research brief (markdown). The UI shows continuous “still working” status updates during research rounds. Artifacts persist to SQLite via `core/workflow_engine.py` + `core/db.py`, and the final brief is also written to `data/artifacts/<project_id>/research_brief.md`.
+- **Billing Tab** (`gui/billing_tab.py`): Manual time entry + invoice draft generation. Uses SQLite tables for clients/time entries/templates/drafts. Drafts are generated from a user-defined template and written to `data/artifacts/invoice_drafts/<draft_id>/…` for review/export. Monthly auto-draft runs happen in-app (while the app is open) and prompt the user to review drafts.
 - **Note-Taking System** (`gui/interface.py`): AI-powered note-taking with context setting, automatic formatting, dynamic categorization, and export capabilities. Uses local Llama model for processing with robust JSON response handling.
 - **Tasks Tab** (`gui/tasks_tab.py`): Local (SQLite-backed) task manager. Uses the same task store as the Dashboard + CoS task capture. Supports search, filters, quick add, completion toggling, and deletion.
 - **Compliance Tab** (`interface.py`): Three-column UI for uploading SOPs/URLs, analyzing with Grok, and displaying JSON results (`[{section, issue, fix, reference}]`).
@@ -32,6 +34,7 @@ See `docs/diagrams/architecture.png` for a visual representation.
 - **LinkedIn (Share, Sign In, Community Management)**: Posts content, authenticates users; endpoints: `https://api.linkedin.com/v2` (`interface.py`).
 - **AssemblyAI**: Meeting transcription; endpoints: `https://api.assemblyai.com` (`interface.py`).
 - **Task storage (SQLite)**: Tasks are persisted in `core/db.py` (`tasks` table) and surfaced in Dashboard + Tasks tab. The Chief of Staff can create tasks via `ADD_TASK`.
+- **Web research (OpenAI)**: Deep Research web research uses OpenAI (ChatGPT) via the Responses API + hosted `web_search` tool (`core.llm_collab.call_chatgpt_web_search`) and requires `OPENAI_API_KEY` when enabled. A fallback to non-browsing ChatGPT (`call_chatgpt_simple`) is used if web_search is unavailable.
 
 ## Database Schema
 - **Tasks**: `id`, `session_id`, `task`, `due_date`, `completed`, `created_at`
@@ -40,6 +43,11 @@ See `docs/diagrams/architecture.png` for a visual representation.
 - **Dropbox Files**: `id`, `name`, `path`, `link`, `modified_time`, `size`
 - **Conversations**: FTS5 virtual table for full-text search
 - **Task Metadata**: Tasks are stored in SQLite with `id`, `task_text`, `due_date`, `category`, `recurrence`, `completed`, `created_at`.
+- **Billing**:
+  - `billing_clients`: clients, optional default rate/currency
+  - `time_entries`: manual time entries (start/end/minutes/description/billable)
+  - `invoice_templates`: user-editable template bodies with `{{placeholders}}`
+  - `invoice_drafts`: rendered markdown drafts + totals + artifact file path
 
 ## Diagram
 See `docs/diagrams/architecture.png`.

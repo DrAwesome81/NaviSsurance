@@ -35,6 +35,9 @@ class ArtifactType(str, Enum):
     INTERNAL_RETRIEVAL_BRIEF = "internal_retrieval_brief"
     WEB_RESEARCH_BRIEF = "web_research_brief"
     UNIFIED_BRIEF = "unified_brief"
+    # A final, exportable deep-research brief (markdown) generated after review.
+    RESEARCH_BRIEF = "research_brief"
+    # Legacy: document drafting artifacts (kept for backward compatibility).
     DRAFT = "draft"
     QA_REPORT = "qa_report"
 
@@ -153,6 +156,18 @@ class DraftArtifact(BaseModel):
     citations: Citations = Field(default_factory=Citations, description="Internal and web citations.")
     assumptions: list[str] = Field(default_factory=list, description="Assumptions made while drafting.")
     open_questions: list[str] = Field(default_factory=list, description="Questions left for the user or later.")
+
+
+# ---------------------------------------------------------------------------
+# ResearchBriefArtifact (Deep Research output)
+# ---------------------------------------------------------------------------
+
+class ResearchBriefArtifact(BaseModel):
+    """Output of Deep Research: a structured brief (markdown) suitable for reuse elsewhere."""
+    version: str = Field(default="1", description="Version of the brief.")
+    markdown_body: str = Field(..., description="The brief content in markdown.")
+    assumptions: list[str] = Field(default_factory=list, description="Assumptions made while writing the brief.")
+    open_questions: list[str] = Field(default_factory=list, description="Questions left unresolved.")
 
 
 # ---------------------------------------------------------------------------

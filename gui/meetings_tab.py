@@ -1,15 +1,187 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTextEdit, QFileDialog, QMessageBox
-from PyQt6.QtCore import Qt
+from __future__ import annotations
+
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QTextEdit,
+    QFileDialog,
+    QMessageBox,
+    QDialog,
+    QFormLayout,
+    QLineEdit,
+    QDateEdit,
+    QDialogButtonBox,
+    QLabel,
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDate
 import os
 import requests
-from PyQt6.QtCore import QTimer
 import numpy as np
+from datetime import datetime
+
+
+def _safe_filename_part(value: str, *, fallback: str = "unknown") -> str:
+    v = (value or "").strip()
+    if not v:
+        return fallback
+    keep = []
+    for ch in v:
+        if ch.isalnum() or ch in ("-", "_", " "):
+            keep.append(ch)
+    out = "".join(keep).strip().replace(" ", "_")
+    return out[:80] if out else fallback
+
+
+class MeetingMetadataDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None, *, default_date: QDate | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Label meeting")
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.date_edit = QDateEdit(self)
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_edit.setDate(default_date or QDate.currentDate())
+
+        self.with_edit = QLineEdit(self)
+        self.with_edit.setPlaceholderText("e.g., Acme — John Smith (Reg Affairs)")
+
+        self.notes_edit = QTextEdit(self)
+        self.notes_edit.setPlaceholderText("Key decisions, action items, follow-ups…")
+        self.notes_edit.setMinimumHeight(140)
+
+        form.addRow("Meeting date", self.date_edit)
+        form.addRow("Meeting with", self.with_edit)
+        form.addRow("Notes", self.notes_edit)
+
+        layout.addLayout(form)
+
+        hint = QLabel("This will be saved with the transcript for later reference.", self)
+        hint.setStyleSheet("color: #888;")
+        layout.addWidget(hint)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def values(self) -> tuple[str, str, str]:
+        meeting_date = self.date_edit.date().toString("yyyy-MM-dd")
+        meeting_with = (self.with_edit.text() or "").strip()
+        notes = (self.notes_edit.toPlainText() or "").strip()
+        return meeting_date, meeting_with, notes
+
+
+class AssemblyAITranscriptionWorker(QThread):
+    status = pyqtSignal(str)
+    started_job = pyqtSignal(str)  # transcript_id
+    completed = pyqtSignal(str, str)  # formatted_text, transcript_id
+    failed = pyqtSignal(str)
+
+    def __init__(self, *, audio_path: str, api_key: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.audio_path = str(audio_path)
+        self.api_key = str(api_key)
+
+    def run(self) -> None:
+        import time
+        from datetime import datetime as _dt, timedelta
+
+        try:
+            if not os.path.exists(self.audio_path):
+                self.failed.emit("Audio file not found.")
+                return
+
+            self.status.emit("Uploading audio file to AssemblyAI…")
+            headers = {"authorization": self.api_key}
+            with open(self.audio_path, "rb") as f:
+                up = requests.post("https://api.assemblyai.com/v2/upload", headers=headers, data=f, timeout=120)
+            up.raise_for_status()
+            upload_url = up.json().get("upload_url", "")
+            if not upload_url:
+                self.failed.emit("AssemblyAI upload failed (no upload_url returned).")
+                return
+
+            self.status.emit("Starting transcription job…")
+            endpoint = "https://api.assemblyai.com/v2/transcript"
+            payload = {
+                "audio_url": upload_url,
+                "speaker_labels": True,
+                "speakers_expected": 16,
+                "auto_highlights": True,
+                "iab_categories": True,
+                "auto_chapters": True,
+            }
+            headers = {"authorization": self.api_key, "content-type": "application/json"}
+            resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+            resp.raise_for_status()
+            transcript_id = resp.json().get("id", "")
+            if not transcript_id:
+                self.failed.emit("AssemblyAI transcript creation failed (no id returned).")
+                return
+            self.started_job.emit(transcript_id)
+
+            start = _dt.now()
+            timeout = timedelta(minutes=12)
+            last_status = ""
+
+            while True:
+                if _dt.now() - start > timeout:
+                    self.failed.emit("Transcription timed out after 12 minutes (still processing on AssemblyAI).")
+                    return
+
+                r = requests.get(f"{endpoint}/{transcript_id}", headers=headers, timeout=60)
+                r.raise_for_status()
+                data = r.json()
+                status = (data.get("status") or "").strip()
+                if status and status != last_status:
+                    self.status.emit(f"Status: {status}")
+                    last_status = status
+
+                if status == "completed":
+                    utterances = data.get("utterances") or []
+                    formatted = []
+                    formatted.append("Note: speakers who only spoke briefly may not be detected separately.")
+                    formatted.append("----------------------------------------\n")
+                    if utterances:
+                        for u in utterances:
+                            speaker = f"Speaker {u.get('speaker')}"
+                            text = (u.get("text") or "").strip()
+                            if text:
+                                formatted.append(f"{speaker}: {text}")
+                        final_text = "\n\n".join(formatted).strip()
+                    else:
+                        final_text = (data.get("text") or "").strip()
+                    self.completed.emit(final_text, transcript_id)
+                    return
+
+                if status == "error":
+                    msg = data.get("error") or "Unknown error"
+                    self.failed.emit(f"Transcription failed: {msg}")
+                    return
+
+                time.sleep(4 if status == "queued" else 3)
+
+        except Exception as e:
+            self.failed.emit(f"{type(e).__name__}: {e}")
+
 
 class MeetingsTab(QWidget):
     def __init__(self, chat_handler):
         super().__init__()
         self.chat_handler = chat_handler
         self.recording = False
+        self._transcription_worker: AssemblyAITranscriptionWorker | None = None
+        self._current_meeting_id: int | None = None
+        self._current_meeting_date: str | None = None
+        self._current_meeting_with: str | None = None
+        self._current_meeting_notes: str | None = None
+        self._current_audio_path: str | None = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -125,9 +297,12 @@ class MeetingsTab(QWidget):
             import scipy.io.wavfile as wavfile
             self.transcribeButton.setEnabled(True)
             print("Recording stopped")
-            self.audio_file_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "temp_recording.wav"
-            )
+            from config import ARTIFACTS_DIR
+
+            meetings_dir = os.path.join(ARTIFACTS_DIR, "meetings")
+            os.makedirs(meetings_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.audio_file_path = os.path.join(meetings_dir, f"meeting_{timestamp}.wav")
             # audio_data is list of chunks; concatenate
             audio_array = np.concatenate(self.audio_data, axis=0)
             if audio_array.dtype != np.int16:
@@ -135,7 +310,13 @@ class MeetingsTab(QWidget):
             wavfile.write(self.audio_file_path, self.sample_rate, audio_array)
             print(f"Audio saved to {self.audio_file_path}")
             self.selected_audio_path = self.audio_file_path
-            self.meetingTranscript.setText(f"Recording saved. Click 'Generate Transcript' to transcribe.")
+            self.meetingTranscript.setText("Recording saved. Sending for transcription…")
+            self._begin_meeting_transcription_flow(
+                audio_path=self.selected_audio_path,
+                source="recording",
+                default_date=QDate.currentDate(),
+                prompt_for_metadata=True,
+            )
         except Exception as e:
             print(f"Stop/save error: {e}")
             QMessageBox.critical(
@@ -146,127 +327,160 @@ class MeetingsTab(QWidget):
             self.meetingTranscript.setText(f"Error saving recording: {e}")
 
     def transcribe_meeting(self):
-        print("Transcription TBD")
         """
         Transcribe the recorded audio file or a selected audio/video file using AssemblyAI's API.
-        Display the transcript with speaker separation in the meetingTranscript text area.
+        Prompts for meeting label/notes and saves the transcript + metadata automatically.
         """
-        import os
-        import requests
-        import time
-        from datetime import datetime, timedelta
+        audio_path = getattr(self, "selected_audio_path", "") or ""
+        if not audio_path or not os.path.exists(audio_path):
+            self.meetingTranscript.setText("Error: No file found for transcription.")
+            self.saveTranscriptButton.setEnabled(False)
+            return
+        self._begin_meeting_transcription_flow(
+            audio_path=audio_path,
+            source="file",
+            default_date=QDate.currentDate(),
+            prompt_for_metadata=True,
+        )
 
-        self.transcribeButton.setEnabled(False)
-        print("Transcribing audio...")
-        
-        # Load AssemblyAI API key from environment
-        api_key = os.getenv('ASSEMBLYAI_API_KEY', '')
+    def _begin_meeting_transcription_flow(
+        self,
+        *,
+        audio_path: str,
+        source: str,
+        default_date: QDate,
+        prompt_for_metadata: bool,
+    ) -> None:
+        # Load AssemblyAI API key from environment early (avoid popping dialogs when we can't proceed).
+        api_key = os.getenv("ASSEMBLYAI_API_KEY", "").strip()
         if not api_key:
-            self.meetingTranscript.setText("Error: AssemblyAI API key not found. Please set ASSEMBLYAI_API_KEY in config/.env.")
+            self.meetingTranscript.setText(
+                "Error: AssemblyAI API key not found. Please set ASSEMBLYAI_API_KEY in config/.env."
+            )
             self.saveTranscriptButton.setEnabled(False)
             return
 
-        try:
-            # Check if we have an audio file to transcribe
-            if hasattr(self, 'selected_audio_path') and os.path.exists(self.selected_audio_path):
-                self.meetingTranscript.setText("Uploading audio file...")
-                print(f"Transcribing audio file: {self.selected_audio_path}")
-                
-                # Upload the audio file
-                headers = {'authorization': api_key}
-                with open(self.selected_audio_path, 'rb') as f:
-                    response = requests.post('https://api.assemblyai.com/v2/upload',
-                                          headers=headers,
-                                          data=f)
-                upload_url = response.json()['upload_url']
-                self.meetingTranscript.append("File uploaded successfully. Starting transcription...")
-                
-                # Start transcription with speaker diarization
-                endpoint = "https://api.assemblyai.com/v2/transcript"
-                json = {
-                    "audio_url": upload_url,
-                    "speaker_labels": True,
-                    "speakers_expected": 16,  # Increased to handle up to 16 speakers
-                    "auto_highlights": True,  # Added to help identify important parts
-                    "iab_categories": True,  # Added to help with context
-                    "auto_chapters": True    # Added to help with structure
-                }
-                headers = {
-                    "authorization": api_key,
-                    "content-type": "application/json"
-                }
-                response = requests.post(endpoint, json=json, headers=headers)
-                transcript_id = response.json()['id']
-                self.meetingTranscript.append(f"Transcription job started. ID: {transcript_id}")
-                
-                # Poll for completion with timeout
-                self.meetingTranscript.append("Processing audio...")
-                start_time = datetime.now()
-                timeout = timedelta(minutes=10)  # Increased timeout to 10 minutes
-                last_status = None
-                last_progress = 0
-                
-                while True:
-                    # Check for timeout
-                    if datetime.now() - start_time > timeout:
-                        raise TimeoutError("Transcription timed out after 10 minutes")
-                    
-                    response = requests.get(f"{endpoint}/{transcript_id}", headers=headers)
-                    status = response.json()['status']
-                    progress = response.json().get('confidence', 0) or 0  # Ensure progress is never None
-                    
-                    # Update status message if it changed
-                    if status != last_status or (progress > 0 and progress != last_progress):
-                        status_message = f"Status: {status}"
-                        if progress > 0:
-                            status_message += f" (Progress: {progress:.1%})"
-                        self.meetingTranscript.append(status_message)
-                        last_status = status
-                        last_progress = progress
-                    
-                    if status == 'completed':
-                        # Format transcript with speaker labels
-                        transcript = response.json()['text']
-                        utterances = response.json()['utterances']
-                        formatted_transcript = []
-                        
-                        # Add a note about speaker detection
-                        formatted_transcript.append("Note: Speakers who only spoke briefly may not be detected separately.")
-                        formatted_transcript.append("----------------------------------------\n")
-                        
-                        for utterance in utterances:
-                            speaker = f"Speaker {utterance['speaker']}"
-                            text = utterance['text']
-                            formatted_transcript.append(f"{speaker}: {text}")
-                        
-                        final_transcript = "\n\n".join(formatted_transcript)
-                        self.meetingTranscript.setText(final_transcript)
-                        self.saveTranscriptButton.setEnabled(True)
-                        print("Transcription completed")
-                        self.meetingTranscript.append("\n\nTranscription completed.")
-                        break
-                    elif status == 'error':
-                        error_msg = response.json().get('error', 'Unknown error')
-                        raise Exception(f"Transcription failed: {error_msg}")
-                    elif status == 'queued':
-                        time.sleep(5)  # Longer wait for queued status
-                    else:
-                        time.sleep(3)  # Normal polling interval
-                        
+        if self._transcription_worker is not None and self._transcription_worker.isRunning():
+            self.meetingTranscript.append("A transcription is already running. Please wait for it to finish.")
+            return
+
+        meeting_date = None
+        meeting_with = ""
+        notes = ""
+        if prompt_for_metadata:
+            dlg = MeetingMetadataDialog(self, default_date=default_date)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                meeting_date, meeting_with, notes = dlg.values()
             else:
-                self.meetingTranscript.setText("Error: No file found for transcription.")
-                self.saveTranscriptButton.setEnabled(False)
-                return
-        except TimeoutError as e:
-            self.meetingTranscript.setText(f"Error: {str(e)}\nThe transcription is still processing on AssemblyAI's servers.\nYou can try again later to retrieve the completed transcript.")
-            self.transcribeButton.setEnabled(True)
-            print(f"Transcription timeout: {e}")
-        except Exception as e:
-            self.meetingTranscript.setText(f"Error during transcription: {str(e)}")
-            self.transcribeButton.setEnabled(True)
-            print(f"Transcription error: {e}")
-        finally:
-            self.saveTranscriptButton.setEnabled(False)
+                meeting_date = default_date.toString("yyyy-MM-dd")
+        else:
+            meeting_date = default_date.toString("yyyy-MM-dd")
+
+        self._current_meeting_date = meeting_date
+        self._current_meeting_with = meeting_with
+        self._current_meeting_notes = notes
+        self._current_audio_path = str(audio_path)
+
+        meeting_id = None
+        try:
+            if getattr(self.chat_handler, "db", None) is not None:
+                meeting_id = self.chat_handler.db.create_meeting_record(
+                    meeting_date=meeting_date,
+                    meeting_with=meeting_with,
+                    notes=notes,
+                    source=source,
+                    audio_file_path=str(audio_path),
+                    transcription_provider="assemblyai",
+                    status="uploading",
+                )
+        except Exception:
+            meeting_id = None
+
+        self._current_meeting_id = meeting_id
+
+        header_lines = [
+            f"Meeting date: {meeting_date}",
+            f"Meeting with: {meeting_with or '(unlabeled)'}",
+        ]
+        if notes:
+            header_lines.append("Notes:\n" + notes)
+        header_lines.append("\nTranscription started…\n")
+        self.meetingTranscript.setPlainText("\n".join(header_lines))
+
+        self.transcribeButton.setEnabled(False)
+        self.saveTranscriptButton.setEnabled(False)
+
+        worker = AssemblyAITranscriptionWorker(audio_path=str(audio_path), api_key=api_key, parent=self)
+        self._transcription_worker = worker
+        worker.status.connect(lambda msg: self.meetingTranscript.append(msg))
+        worker.started_job.connect(self._on_transcription_started)
+        worker.completed.connect(self._on_transcription_completed)
+        worker.failed.connect(self._on_transcription_failed)
+        worker.start()
+
+    def _on_transcription_started(self, transcript_id: str) -> None:
+        mid = self._current_meeting_id
+        if mid is not None and getattr(self.chat_handler, "db", None) is not None:
+            try:
+                self.chat_handler.db.update_meeting_record(
+                    mid, status="processing", provider_transcript_id=str(transcript_id)
+                )
+            except Exception:
+                pass
+        self.meetingTranscript.append(f"Transcription job ID: {transcript_id}")
+
+    def _on_transcription_completed(self, formatted_text: str, transcript_id: str) -> None:
+        # Persist transcript to disk for easy re-use.
+        transcript_path = None
+        try:
+            from config import ARTIFACTS_DIR
+
+            meetings_dir = os.path.join(ARTIFACTS_DIR, "meetings")
+            os.makedirs(meetings_dir, exist_ok=True)
+            mid = self._current_meeting_id or 0
+            date_s = _safe_filename_part(self._current_meeting_date or "", fallback="date")
+            with_s = _safe_filename_part(self._current_meeting_with or "", fallback="unlabeled")
+            transcript_path = os.path.join(meetings_dir, f"meeting_{mid}_{date_s}_{with_s}_transcript.txt")
+            with open(transcript_path, "w", encoding="utf-8") as f:
+                f.write(formatted_text or "")
+        except Exception:
+            transcript_path = None
+
+        mid = self._current_meeting_id
+        if mid is not None and getattr(self.chat_handler, "db", None) is not None:
+            try:
+                self.chat_handler.db.update_meeting_record(
+                    mid,
+                    status="completed",
+                    provider_transcript_id=str(transcript_id),
+                    transcript_text=formatted_text,
+                    transcript_file_path=transcript_path,
+                    error_message=None,
+                )
+            except Exception:
+                pass
+
+        header = []
+        if self._current_meeting_date:
+            header.append(f"Meeting date: {self._current_meeting_date}")
+        header.append(f"Meeting with: {self._current_meeting_with or '(unlabeled)'}")
+        if self._current_meeting_notes:
+            header.append("Notes:\n" + self._current_meeting_notes)
+        header.append("\n--- Transcript ---\n")
+        self.meetingTranscript.setPlainText("\n".join(header) + (formatted_text or ""))
+        self.saveTranscriptButton.setEnabled(True)
+        self.transcribeButton.setEnabled(True)
+
+    def _on_transcription_failed(self, error_message: str) -> None:
+        mid = self._current_meeting_id
+        if mid is not None and getattr(self.chat_handler, "db", None) is not None:
+            try:
+                self.chat_handler.db.update_meeting_record(mid, status="error", error_message=str(error_message))
+            except Exception:
+                pass
+        self.meetingTranscript.append(f"\nError during transcription: {error_message}")
+        self.transcribeButton.setEnabled(True)
+        self.saveTranscriptButton.setEnabled(False)
 
     def select_file(self):
         """
@@ -342,7 +556,6 @@ class MeetingsTab(QWidget):
             print(f"Audio extraction error: {e}")
 
     def save_transcript(self):
-        print("Transcript save TBD")
         """
         Save the transcript text to a file using a file dialog.
         """
@@ -357,7 +570,12 @@ class MeetingsTab(QWidget):
 
         # Get the default filename with timestamp
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        default_filename = f"transcript_{timestamp}.txt"
+        if self._current_meeting_date or self._current_meeting_with:
+            date_s = _safe_filename_part(self._current_meeting_date or "", fallback="date")
+            with_s = _safe_filename_part(self._current_meeting_with or "", fallback="unlabeled")
+            default_filename = f"meeting_{date_s}_{with_s}_transcript_{timestamp}.txt"
+        else:
+            default_filename = f"transcript_{timestamp}.txt"
         
         # Open file dialog
         file_path, _ = QFileDialog.getSaveFileName(
