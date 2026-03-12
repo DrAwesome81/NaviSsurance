@@ -1,24 +1,32 @@
 .env
 __pycache__/
+*.pyc
+*.pyo
 todo.db
 navissurance.db
 navissurance_documents.db
 Get_Tokens
 cuda_env/ 
-config/
 data/
 logs/
 models/
 .vscode/
 codebase_export.txt
 *.jsonl
-*.json
-!rag_config.json
+COMMIT_MESSAGE.txt
+
+# Local RAG config may contain secrets
+rag_config.json
+!rag_config.example.json
+
+# Allow JSON content in repo (schemas, docs, safe configs)
 *.wav
 
 # Auth tokens (never commit)
-config/navi_token.pkl
-config/mailbird_tokens.json
+config/.env
+config/*.pkl
+config/*tokens*.json
+config/client_secret.json
 
 llama_cpp_python-0.3.8+cu128.gemma3-cp312-cp312-win_amd64.whl
 chroma_index_test/
@@ -30,13 +38,16 @@ naviSsurance_index.db
 gui/interface_backup.py
 gui/interface_duplicated_backup.py
 gui/interface_backup_refactor.py
-.gitignore
 gui/interface_backup_final.py
 
 test_table_widget.py
 notes_export.docx
 notes_export.pdf
 notes_export.txt
+
+# Local billing outputs
+NaviSure Consulting Invoice_*.docx
+NaviSure Consulting Invoice_*.pdf
 
 # Local Vikunja dev data
 vikunja/db/

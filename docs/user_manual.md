@@ -33,7 +33,7 @@ This manual is written as a practical reference so you can quickly find how to d
 
 ### Where to start each day
 1. Open `Dashboard` for current tasks/schedule/news.
-2. Open `Chief of Staff` for planning, delegation, and assignment control.
+2. Open `Chief of Staff` for planning, delegation, assignment control, and AM Sweep triage.
 3. Open `Tasks` to batch-clean task list if needed.
 
 ## 3) Dashboard
@@ -114,9 +114,11 @@ This is the main AI planning/delegation interface.
 - Bulk assignment actions.
 - Convert assignments into dashboard tasks.
 - Optional calendar block creation commands.
+- AM Sweep: morning triage loop that classifies work into Dispatch/Prep/Yours/Skip and can emit machine actions.
 
 ### Everyday use pattern
 1. Ask for plan-of-day.
+1. (Optional) Run AM Sweep when you want a structured morning triage output.
 2. Delegate work (single or bulk).
 3. Review assignment board.
 4. Open assignee chat from assignment when needed.
@@ -142,6 +144,8 @@ Use exact formats when entering explicit action commands.
 
 ### Task and calendar
 - `ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal>`
+- `TASK_SET_TAGS: <task_id> | <json array of tags>` (example: `TASK_SET_TAGS: 123 | ["triage:dispatch","source:am_sweep"]`)
+- `TASK_SET_ESTIMATE: <task_id> | <minutes>` (0-600, example: `TASK_SET_ESTIMATE: 123 | 45`)
 - `ADD_CAL_BLOCK: <title> | <start datetime> | <end datetime> | <calendar id or primary>`
 
 ### Assignment create/update
@@ -257,7 +261,8 @@ Use this to log hours and generate invoice drafts for review.
 6. Review drafts in the preview pane and use `Save As…` / `Open file…` as needed.
 
 ### Where drafts are saved
-- Draft markdown is stored in SQLite and also written to:\n  - `data/artifacts/invoice_drafts/<draft_id>/invoice_<client>_<yyyymm>.md`
+- Draft markdown is stored in SQLite and also written to:
+  - `data/artifacts/invoice_drafts/<draft_id>/invoice_<client>_<yyyymm>.md`
 
 ## 11) Notes
 

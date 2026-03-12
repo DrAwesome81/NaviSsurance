@@ -49,8 +49,11 @@ def test_show_briefing_disabled_sets_message(qapp):
 
 def test_on_briefing_error_shows_already_shown_message(qapp):
     d = _dash_with_widgets()
+    d._get_cached_briefing_html_for_today = lambda: ""
+    d._restore_briefing_from_raw_cache = lambda: False
+    d.refresh_daily_briefing = lambda: None
     d._on_briefing_error_safe("Daily briefing already shown today")
-    assert "already been shown today" in d.briefing_display.toPlainText()
+    assert "No cached copy was found" in d.briefing_display.toPlainText()
 
 
 def test_on_news_error_credit_path_calls_cached_display(qapp):
@@ -89,14 +92,15 @@ def test_on_briefing_loaded_fallback_displays_raw_when_formatter_fails(monkeypat
     d = _dash_with_widgets()
 
     class _BoomResponseHandler:
-        def __init__(self, chat_handler_obj, _arg):
-            self.chat_handler_obj = chat_handler_obj
-
         def chat_with_llama(self, messages, session_id):
             raise RuntimeError("formatter failed")
-
-    monkeypatch.setattr("core.response_handler.ResponseHandler", _BoomResponseHandler)
-
-    d._on_briefing_loaded_safe("Line 1\nLine 2", chat_handler_obj=object())
+    chat_handler_obj = type("_ChatMgr", (), {"response_handler": _BoomResponseHandler()})()
+    d._on_briefing_loaded_safe("Line 1\nLine 2", chat_handler_obj=chat_handler_obj)
     txt = d.briefing_display.toPlainText()
     assert "Line 1" in txt and "Line 2" in txt
+
+
+def test_render_briefing_to_html_falls_back_without_response_handler(qapp):
+    d = _dash_with_widgets()
+    html = d._render_briefing_to_html("Line 1\nLine 2", chat_handler_obj=object(), use_llm=True)
+    assert "Line 1" in html and "Line 2" in html

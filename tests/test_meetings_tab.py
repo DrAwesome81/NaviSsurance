@@ -14,6 +14,7 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+from docx import Document
 
 if not os.getenv("RUN_QT_TESTS"):
     pytest.skip(
@@ -24,6 +25,7 @@ if not os.getenv("RUN_QT_TESTS"):
 pytest.importorskip("PyQt6")
 
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PyQt6.QtWidgets import QDialog
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -111,6 +113,25 @@ def test_save_transcript_writes_file(monkeypatch, meetings_tab, tmp_path):
 
     assert out_path.exists()
     assert out_path.read_text(encoding="utf-8") == "Speaker 1: Hello"
+    assert meetings_tab.saveTranscriptButton.isEnabled() is False
+
+
+def test_save_transcript_writes_docx(monkeypatch, meetings_tab, tmp_path):
+    out_path = tmp_path / "transcript.docx"
+    meetings_tab.meetingTranscript.setPlainText("Speaker 1: Hello\nSpeaker 2: Hi")
+    meetings_tab.saveTranscriptButton.setEnabled(True)
+
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(out_path), "Word Documents (*.docx)"),
+    )
+
+    meetings_tab.save_transcript()
+
+    assert out_path.exists()
+    doc = Document(str(out_path))
+    assert [p.text for p in doc.paragraphs] == ["Speaker 1: Hello", "Speaker 2: Hi"]
     assert meetings_tab.saveTranscriptButton.isEnabled() is False
 
 
@@ -225,3 +246,87 @@ def test_extract_audio_from_video_failure_disables_transcribe(monkeypatch, meeti
 
     assert meetings_tab.transcribeButton.isEnabled() is False
     assert "Error extracting audio" in meetings_tab.meetingTranscript.toPlainText()
+
+
+def test_on_transcription_completed_enables_task_drafting_and_autostarts(monkeypatch, meetings_tab):
+    called = {"count": 0, "auto": None}
+    monkeypatch.setattr(
+        meetings_tab,
+        "extract_tasks_from_transcript",
+        lambda auto=False: (called.__setitem__("count", called["count"] + 1), called.__setitem__("auto", auto)),
+    )
+
+    meetings_tab._current_meeting_date = "2026-03-07"
+    meetings_tab._current_meeting_with = "Acme"
+    meetings_tab._current_meeting_notes = "Discuss follow-up items"
+
+    meetings_tab._on_transcription_completed("Speaker 1: Do the draft.", "tr_123")
+
+    assert meetings_tab.extractTasksButton.isEnabled() is True
+    assert meetings_tab._current_transcript_text == "Speaker 1: Do the draft."
+    assert called["count"] == 1
+    assert called["auto"] is True
+
+
+def test_task_extraction_completed_imports_selected_tasks(monkeypatch, meetings_tab):
+    class _Db:
+        def __init__(self):
+            self.added = []
+            self.updated = []
+
+        def add_task(self, session_id, task_text, due_date, category="Business", recurrence="None", completed=0):
+            self.added.append((session_id, task_text, due_date, category))
+            return len(self.added)
+
+        def update_task_by_id(self, task_id, **kwargs):
+            self.updated.append((task_id, kwargs))
+
+    class _Dialog:
+        def __init__(self, tasks, warnings=None, parent=None):
+            self._tasks = list(tasks)
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def selected_tasks(self):
+            return self._tasks[:1]
+
+    db = _Db()
+    meetings_tab.chat_handler.db = db
+    meetings_tab._current_meeting_id = 7
+    meetings_tab._current_meeting_date = "2026-03-07"
+    meetings_tab._current_meeting_with = "Acme"
+    meetings_tab._current_meeting_notes = "Capture follow-up items"
+    meetings_tab._current_transcript_text = "Transcript body"
+    meetings_tab.extractTasksButton.setEnabled(False)
+
+    monkeypatch.setattr("gui.meetings_tab.TaskImportDialog", _Dialog)
+
+    meetings_tab._on_task_extraction_completed(
+        "## Suggested Tasks (importable)\n- [ ] Send follow-up memo | due: 03-10-2026 | category: Business\n",
+        auto=False,
+    )
+
+    assert meetings_tab.extractTasksButton.isEnabled() is True
+    assert len(db.added) == 1
+    assert db.added[0][1] == "Send follow-up memo"
+    assert db.added[0][2] == "03-10-2026"
+    assert db.added[0][3] == "Business"
+    assert db.updated and db.updated[0][0] == 1
+    assert "Imported 1 draft task" in meetings_tab.meetingTranscript.toPlainText()
+
+
+def test_task_extraction_completed_with_no_tasks_shows_message(monkeypatch, meetings_tab):
+    info = {"count": 0}
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda *args, **kwargs: info.__setitem__("count", info["count"] + 1),
+    )
+    meetings_tab._current_transcript_text = "Transcript body"
+    meetings_tab.extractTasksButton.setEnabled(False)
+
+    meetings_tab._on_task_extraction_completed("## Suggested Tasks (importable)\n", auto=False)
+
+    assert meetings_tab.extractTasksButton.isEnabled() is True
+    assert info["count"] == 1

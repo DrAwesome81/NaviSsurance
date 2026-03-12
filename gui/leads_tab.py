@@ -828,10 +828,11 @@ class LeadsTab(QWidget):
         msg = QMessageBox(self)
         msg.setWindowTitle("LinkedIn Message")
         msg.setText(message)
-        msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Copy)
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        copy_button = msg.addButton("Copy", QMessageBox.ButtonRole.ActionRole)
         msg.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        ret = msg.exec()
-        if ret == QMessageBox.StandardButton.Copy:
+        msg.exec()
+        if msg.clickedButton() is copy_button:
             try:
                 QApplication.clipboard().setText(message or "")
             except Exception:

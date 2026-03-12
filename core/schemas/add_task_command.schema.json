@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "naviSsurance.add_task_command.schema.json",
+  "title": "NaviSsurance ADD_TASK command",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["command", "task_description", "due_date"],
+  "properties": {
+    "command": {
+      "type": "string",
+      "const": "ADD_TASK"
+    },
+    "task_description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 400,
+      "description": "Human-readable task text. Must not contain the '|' character."
+    },
+    "due_date": {
+      "type": "string",
+      "description": "Either MM-DD-YYYY or the literal 'none'.",
+      "pattern": "^(none|\\d{2}-\\d{2}-\\d{4})$"
+    }
+  }
+}

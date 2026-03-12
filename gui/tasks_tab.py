@@ -28,11 +28,28 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QDialog,
     QDateEdit,
+    QCalendarWidget,
+    QDialogButtonBox,
     QGroupBox,
     QTabWidget,
 )
 
 from core.db import DatabaseManager
+from core.task_command_contract import (
+    AddProjectCommand,
+    AddTaskCommand,
+    ProjectDeleteCommand,
+    ProjectSetDeadlineCommand,
+    ProjectUpdateStatusCommand,
+    TaskCompleteCommand,
+    TaskDeleteCommand,
+    TaskSetDueCommand,
+    TaskSetNextActionCommand,
+    TaskSetProjectCommand,
+    TaskSnoozeCommand,
+    TaskUpdatePriorityCommand,
+    parse_action_line,
+)
 from gui.agent_console import AgentConsole
 from gui.task_edit_dialog import TaskEditDialog
 from gui.project_management_panel import ProjectManagementPanel
@@ -249,22 +266,32 @@ class TasksTab(QWidget):
         self.new_task_input = QLineEdit()
         self.new_task_input.setPlaceholderText("New task…")
         self.new_task_input.setStyleSheet(field_style)
+        self.new_task_input.setMinimumHeight(32)
         self.new_task_input.returnPressed.connect(self.add_task)
         add_row.addWidget(self.new_task_input, 2)
 
         self.new_task_category = QComboBox()
         self.new_task_category.addItems(["Business", "Personal"])
         self.new_task_category.setStyleSheet(field_style)
+        self.new_task_category.setMinimumHeight(32)
         add_row.addWidget(self.new_task_category)
 
         self.new_task_due = QLineEdit()
         self.new_task_due.setPlaceholderText("Due (MM-DD-YYYY, optional)")
         self.new_task_due.setStyleSheet(field_style)
+        self.new_task_due.setMinimumHeight(32)
         self.new_task_due.returnPressed.connect(self.add_task)
         add_row.addWidget(self.new_task_due)
 
+        self.new_task_due_picker_btn = QPushButton("Date")
+        self.new_task_due_picker_btn.setStyleSheet(button_style)
+        self.new_task_due_picker_btn.setMinimumHeight(32)
+        self.new_task_due_picker_btn.clicked.connect(self._pick_new_task_due_date)
+        add_row.addWidget(self.new_task_due_picker_btn)
+
         self.add_btn = QPushButton("Add")
         self.add_btn.setStyleSheet(primary_button_style)
+        self.add_btn.setMinimumHeight(32)
         self.add_btn.clicked.connect(self.add_task)
         add_row.addWidget(self.add_btn)
 
@@ -415,6 +442,53 @@ class TasksTab(QWidget):
         self.new_task_input.clear()
         self.new_task_due.clear()
         self.refresh_tasks()
+        # Keep dashboard's embedded task list in sync.
+        try:
+            win = self.window()
+            if hasattr(win, "dashboard_tab") and hasattr(win.dashboard_tab, "load_tasks_filtered"):
+                win.dashboard_tab.load_tasks_filtered()
+        except Exception:
+            pass
+
+    def _pick_new_task_due_date(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Select Due Date")
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+        cleared = {"value": False}
+
+        calendar = QCalendarWidget(dlg)
+        raw_due = (self.new_task_due.text() or "").strip()
+        parsed_due = _parse_due_date(raw_due)
+        if parsed_due and parsed_due != "unknown":
+            try:
+                dt = datetime.strptime(parsed_due, "%m-%d-%Y")
+                from PyQt6.QtCore import QDate
+
+                calendar.setSelectedDate(QDate(dt.year, dt.month, dt.day))
+            except Exception:
+                pass
+        layout.addWidget(calendar)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Reset
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        reset_btn = buttons.button(QDialogButtonBox.StandardButton.Reset)
+        if reset_btn is not None:
+            reset_btn.setText("Clear")
+            reset_btn.clicked.connect(lambda: cleared.__setitem__("value", True))
+            reset_btn.clicked.connect(self.new_task_due.clear)
+            reset_btn.clicked.connect(dlg.accept)
+        layout.addWidget(buttons)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted and not cleared["value"]:
+            picked = calendar.selectedDate()
+            self.new_task_due.setText(picked.toString("MM-dd-yyyy"))
 
     def refresh_tasks(self):
         try:
@@ -526,10 +600,31 @@ class TasksTab(QWidget):
                 it_project.setFlags(it_project.flags() ^ Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(r, 7, it_project)
 
-                it_done = QTableWidgetItem("Yes" if done else "")
-                it_done.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                it_done.setFlags(it_done.flags() ^ Qt.ItemFlag.ItemIsEditable)
-                self.table.setItem(r, 8, it_done)
+                if self._compact:
+                    done_widget = QWidget()
+                    done_layout = QHBoxLayout(done_widget)
+                    done_layout.setContentsMargins(0, 0, 0, 0)
+                    done_layout.setSpacing(0)
+                    done_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    done_checkbox = QCheckBox()
+                    done_checkbox.blockSignals(True)
+                    done_checkbox.setChecked(bool(done))
+                    done_checkbox.blockSignals(False)
+                    done_checkbox.setStyleSheet(
+                        "QCheckBox::indicator { width: 16px; height: 16px; "
+                        "background-color: #22252c; border: 1px solid #2e2f32; border-radius: 3px; }"
+                        "QCheckBox::indicator:checked { background-color: #FD6262; border: 1px solid #FD6262; }"
+                    )
+                    done_checkbox.stateChanged.connect(
+                        lambda state, tid=task_id: self._set_done(tid, state == Qt.CheckState.Checked.value)
+                    )
+                    done_layout.addWidget(done_checkbox)
+                    self.table.setCellWidget(r, 8, done_widget)
+                else:
+                    it_done = QTableWidgetItem("Yes" if done else "")
+                    it_done.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    it_done.setFlags(it_done.flags() ^ Qt.ItemFlag.ItemIsEditable)
+                    self.table.setItem(r, 8, it_done)
 
                 if not self._compact:
                     # Actions: spaced buttons so column isn’t a barcode (Tasks tab)
@@ -614,162 +709,108 @@ class TasksTab(QWidget):
         if not (response or "").strip():
             return response or ""
         cleaned_lines = []
+        proposed_unsafe: list[str] = []
         for line in response.splitlines():
             stripped = line.strip()
-            applied = False
+            confirm = False
+            if stripped.upper().startswith("CONFIRM:"):
+                confirm = True
+                stripped = stripped[len("CONFIRM:") :].strip()
 
-            m = _ADD_TASK_PATTERN.search(stripped)
-            if m:
-                task_text = m.group(1).strip()
-                due_part = m.group(2).strip().lower()
-                category = m.group(3).strip()
-                proj_part = (m.group(4) or "").strip().lower() if m.lastindex >= 4 else ""
-                due_date = None if due_part == "none" or not due_part else due_part
-                if due_date and len(due_date) == 10 and due_date[4] == "-":
-                    parts = due_date.split("-")
-                    if len(parts) == 3:
-                        due_date = f"{parts[1]}-{parts[2]}-{parts[0]}"
-                cos_project_id = None
-                if proj_part and proj_part != "none":
-                    try:
-                        cos_project_id = int(proj_part)
-                    except ValueError:
-                        pass
+            cmd = parse_action_line(stripped)
+            if isinstance(cmd, AddTaskCommand):
                 try:
-                    self.db.add_task(
-                        "mason_tasks_tab",
-                        task_text=task_text,
-                        due_date=due_date or "",
-                        category=category or "Business",
-                        recurrence="None",
+                    task_id = self.db.add_task(
+                        session_id="mason_tasks_tab",
+                        task_text=cmd.description,
+                        due_date=cmd.due_date,
+                        category=cmd.category,
+                        recurrence=cmd.recurrence,
                         completed=0,
-                        cos_project_id=cos_project_id,
+                        cos_project_id=cmd.project_id,
                     )
-                    applied = True
+                    # Apply richer optional fields.
+                    if cmd.priority is not None or cmd.next_action_date is not None:
+                        self.db.update_task_by_id(
+                            int(task_id),
+                            priority=cmd.priority if cmd.priority is not None else self.db._UNSET,  # type: ignore[attr-defined]
+                            next_action_date=cmd.next_action_date
+                            if cmd.next_action_date is not None
+                            else self.db._UNSET,  # type: ignore[attr-defined]
+                        )
                 except Exception as e:
                     logger.warning("Mason ADD_TASK failed: %s", e)
                 continue
-
-            m = _TASK_UPDATE_PRIORITY_PATTERN.search(stripped)
-            if m:
+            if isinstance(cmd, TaskUpdatePriorityCommand):
                 try:
-                    tid, prio = int(m.group(1)), int(m.group(2))
-                    self.db.update_task_by_id(tid, priority=prio)
-                    applied = True
+                    self.db.update_task_by_id(int(cmd.task_id), priority=int(cmd.priority))
                 except Exception as e:
                     logger.warning("Mason TASK_UPDATE_PRIORITY failed: %s", e)
                 continue
-
-            m = _TASK_COMPLETE_PATTERN.search(stripped)
-            if m:
+            if isinstance(cmd, TaskCompleteCommand):
                 try:
-                    self.db.update_task_by_id(int(m.group(1)), completed=1)
-                    applied = True
+                    self.db.update_task_by_id(int(cmd.task_id), completed=1)
                 except Exception as e:
                     logger.warning("Mason TASK_COMPLETE failed: %s", e)
                 continue
-
-            m = _TASK_SET_DUE_PATTERN.search(stripped)
-            if m:
+            if isinstance(cmd, TaskSetDueCommand):
                 try:
-                    tid, due_part = int(m.group(1)), (m.group(2) or "").strip().lower()
-                    due_date = None if due_part == "none" or not due_part else due_part
-                    if due_date and len(due_date) == 10 and due_date[4] == "-":
-                        parts = due_date.split("-")
-                        if len(parts) == 3:
-                            due_date = f"{parts[1]}-{parts[2]}-{parts[0]}"
-                    self.db.update_task_by_id(tid, due_date=due_date)
-                    applied = True
+                    self.db.update_task_by_id(int(cmd.task_id), due_date=cmd.due_date)
                 except Exception as e:
                     logger.warning("Mason TASK_SET_DUE failed: %s", e)
                 continue
-
-            m = _TASK_SET_NEXT_ACTION_PATTERN.search(stripped)
-            if m:
+            if isinstance(cmd, TaskSetNextActionCommand):
                 try:
-                    tid, date_part = int(m.group(1)), (m.group(2) or "").strip().lower()
-                    next_action = None if date_part == "none" or not date_part else date_part
-                    if next_action and len(next_action) == 10 and next_action[4] == "-":
-                        parts = next_action.split("-")
-                        if len(parts) == 3:
-                            next_action = f"{parts[1]}-{parts[2]}-{parts[0]}"
-                    self.db.update_task_by_id(tid, next_action_date=next_action)
-                    applied = True
+                    self.db.update_task_by_id(int(cmd.task_id), next_action_date=cmd.next_action_date)
                 except Exception as e:
                     logger.warning("Mason TASK_SET_NEXT_ACTION failed: %s", e)
                 continue
-
-            m = _TASK_SNOOZE_PATTERN.search(stripped)
-            if m:
+            if isinstance(cmd, TaskSnoozeCommand):
                 try:
-                    tid, days = int(m.group(1)), int(m.group(2))
-                    until = (datetime.now() + timedelta(days=max(1, days))).strftime("%m-%d-%Y")
-                    self.db.update_task_by_id(tid, snoozed_until=until)
-                    applied = True
+                    until = (datetime.now() + timedelta(days=max(1, int(cmd.days)))).strftime("%m-%d-%Y")
+                    self.db.update_task_by_id(int(cmd.task_id), snoozed_until=until)
                 except Exception as e:
                     logger.warning("Mason TASK_SNOOZE failed: %s", e)
                 continue
-
-            m = _TASK_DELETE_PATTERN.search(stripped)
-            if m:
+            if isinstance(cmd, TaskDeleteCommand):
+                if not confirm:
+                    proposed_unsafe.append(f"TASK_DELETE: {int(cmd.task_id)}")
+                    continue
                 try:
-                    self.db.delete_task_by_id(int(m.group(1)))
-                    applied = True
+                    self.db.delete_task_by_id(int(cmd.task_id))
                 except Exception as e:
                     logger.warning("Mason TASK_DELETE failed: %s", e)
                 continue
-
-            m = _TASK_SET_PROJECT_PATTERN.search(stripped)
-            if m:
+            if isinstance(cmd, TaskSetProjectCommand):
                 try:
-                    tid, proj_part = int(m.group(1)), (m.group(2) or "").strip().lower()
-                    cos_project_id = None if proj_part == "none" or not proj_part else int(proj_part)
-                    self.db.update_task_by_id(tid, cos_project_id=cos_project_id)
-                    applied = True
+                    self.db.update_task_by_id(int(cmd.task_id), cos_project_id=cmd.project_id)
                 except Exception as e:
                     logger.warning("Mason TASK_SET_PROJECT failed: %s", e)
                 continue
-
-            m = _ADD_PROJECT_PATTERN.search(stripped)
-            if m:
+            if isinstance(cmd, AddProjectCommand):
                 try:
-                    name, client, status = m.group(1).strip(), (m.group(2) or "").strip(), m.group(3).strip()
-                    self.db.cos_insert_project(name=name, client=client or None, status=status)
-                    applied = True
+                    self.db.cos_insert_project(name=cmd.name, client=cmd.client, status=cmd.status)
                 except Exception as e:
                     logger.warning("Mason ADD_PROJECT failed: %s", e)
                 continue
-
-            m = _PROJECT_UPDATE_STATUS_PATTERN.search(stripped)
-            if m:
+            if isinstance(cmd, ProjectUpdateStatusCommand):
                 try:
-                    pid, status = int(m.group(1)), m.group(2).strip()
-                    self.db.cos_update_project(pid, status=status)
-                    applied = True
+                    self.db.cos_update_project(int(cmd.project_id), status=cmd.status)
                 except Exception as e:
                     logger.warning("Mason PROJECT_UPDATE_STATUS failed: %s", e)
                 continue
-
-            m = _PROJECT_SET_DEADLINE_PATTERN.search(stripped)
-            if m:
+            if isinstance(cmd, ProjectSetDeadlineCommand):
                 try:
-                    pid, date_part = int(m.group(1)), (m.group(2) or "").strip().lower()
-                    deadline = None if date_part == "none" or not date_part else date_part
-                    if deadline and len(deadline) == 10:
-                        parts = deadline.split("-")
-                        if len(parts) == 3 and len(parts[0]) == 2 and len(parts[2]) == 4:
-                            deadline = f"{parts[2]}-{parts[0]}-{parts[1]}"
-                    self.db.cos_update_project(pid, deadline=deadline)
-                    applied = True
+                    self.db.cos_update_project(int(cmd.project_id), deadline=cmd.deadline)
                 except Exception as e:
                     logger.warning("Mason PROJECT_SET_DEADLINE failed: %s", e)
                 continue
-
-            m = _PROJECT_DELETE_PATTERN.search(stripped)
-            if m:
+            if isinstance(cmd, ProjectDeleteCommand):
+                if not confirm:
+                    proposed_unsafe.append(f"PROJECT_DELETE: {int(cmd.project_id)}")
+                    continue
                 try:
-                    self.db.cos_delete_project(int(m.group(1)))
-                    applied = True
+                    self.db.cos_delete_project(int(cmd.project_id))
                 except Exception as e:
                     logger.warning("Mason PROJECT_DELETE failed: %s", e)
                 continue
@@ -781,7 +822,18 @@ class TasksTab(QWidget):
                 self.project_panel.refresh_projects()
         except Exception:
             pass
-        return "\n".join(cleaned_lines).strip() or "(Updates applied.)"
+        base = "\n".join(cleaned_lines).strip()
+        if proposed_unsafe:
+            proposal_lines = "\n".join(f"- {x}" for x in proposed_unsafe)
+            confirm_lines = "\n".join(f"CONFIRM: {x}" for x in proposed_unsafe)
+            note = (
+                "Proposed (not executed):\n"
+                f"{proposal_lines}\n\n"
+                "To execute, reply with:\n"
+                f"{confirm_lines}"
+            )
+            return (base + "\n\n" + note).strip() if base else note
+        return base or "(Updates applied.)"
 
     def _mason_tasks_context(self) -> str:
         """Build task list and command instructions for Mason (Project Manager)."""
@@ -790,68 +842,173 @@ class TasksTab(QWidget):
                 category=None,
                 date_filter=None,
                 specific_date=None,
-                include_completed=True,
+                include_completed=False,
                 include_snoozed=True,
                 search=None,
-                limit=100,
+                limit=500,
             )
-            lines = ["Current tasks (id, text, priority, due, next action, category, status):"]
-            if not tasks:
+            now = datetime.now()
+            today = now.date()
+            horizon = today + timedelta(days=7)
+
+            def _parse_mmddyyyy(s: str) -> datetime | None:
+                ss = (s or "").strip()
+                if not ss:
+                    return None
+                try:
+                    return datetime.strptime(ss, "%m-%d-%Y")
+                except Exception:
+                    return None
+
+            open_tasks = tasks or []
+            overdue_count = 0
+            due_7_count = 0
+            snoozed_count = 0
+            no_due_count = 0
+
+            scored: list[tuple[tuple[int, int, int, int], dict]] = []
+            for t in open_tasks:
+                tid = int(t.get("id") or 0)
+                prio = int(t.get("priority") or 0)
+                due_raw = str(t.get("due_date") or "").strip()
+                next_raw = str(t.get("next_action_date") or "").strip()
+                snoozed_until = str(t.get("snoozed_until") or "").strip()
+
+                due_dt = _parse_mmddyyyy(due_raw)
+                next_dt = _parse_mmddyyyy(next_raw)
+                snooze_dt = _parse_mmddyyyy(snoozed_until)
+
+                is_snoozed = bool(snoozed_until)
+                if is_snoozed:
+                    snoozed_count += 1
+
+                if not due_dt:
+                    no_due_count += 1
+
+                is_overdue = bool(due_dt and due_dt.date() < today)
+                if is_overdue:
+                    overdue_count += 1
+
+                is_due_soon = bool(due_dt and today <= due_dt.date() <= horizon)
+                if is_due_soon:
+                    due_7_count += 1
+
+                # If snoozed past the horizon, de-prioritize heavily unless overdue.
+                snooze_block = 0
+                if snooze_dt and snooze_dt.date() > horizon and not is_overdue:
+                    snooze_block = 1
+
+                days_to_due = (due_dt.date() - today).days if due_dt else 9999
+                days_to_next = (next_dt.date() - today).days if next_dt else 9999
+
+                # Sort key: overdue first, then due soon, then priority, then next-action soon.
+                key = (
+                    0 if is_overdue else 1,
+                    0 if is_due_soon else 1,
+                    0 if snooze_block == 0 else 1,
+                    days_to_due if days_to_due >= 0 else 0,
+                )
+                # Secondary tie-breakers.
+                key2 = (-prio, days_to_next if days_to_next >= 0 else 0)
+                scored.append(((key[0], key[1], key[2], key[3] * 10 + (99 - prio)), {**t, "_k2": key2, "_tid": tid}))
+
+            # Keep the final ordering stable and high-signal.
+            scored.sort(key=lambda x: (x[0], x[1].get("_k2")))
+            focus = [t for _k, t in scored[:40]]
+
+            lines = [
+                "Task snapshot (open only; use for prioritization):",
+                f"- counts: open={len(open_tasks)}, overdue={overdue_count}, due_next_7_days={due_7_count}, snoozed={snoozed_count}, no_due={no_due_count}",
+                "",
+                "Top focus tasks (highest urgency/relevance):",
+            ]
+            if not focus:
                 lines.append("  (none)")
             else:
-                for t in tasks:
-                    tid = t.get("id") or ""
-                    text = (str(t.get("task_text") or "").strip() or "(no text)")[:80]
-                    prio = t.get("priority", 0)
-                    due = t.get("due_date") or "—"
-                    next_act = t.get("next_action_date") or "—"
+                for t in focus:
+                    tid = t.get("_tid") or t.get("id") or ""
+                    text = (str(t.get("task_text") or "").strip() or "(no text)")[:72]
+                    prio = int(t.get("priority") or 0)
+                    due = (t.get("due_date") or "").strip() or "none"
+                    next_act = (t.get("next_action_date") or "").strip() or "none"
                     cat = t.get("category") or "—"
-                    done = " [DONE]" if t.get("completed") else ""
-                    snoozed = " [snoozed]" if (t.get("snoozed_until") or "").strip() else ""
+                    snoozed = str(t.get("snoozed_until") or "").strip()
+                    snooze_tag = f" snoozed_until={snoozed}" if snoozed else ""
                     proj = t.get("cos_project_id")
                     proj_s = f" project={proj}" if proj else ""
-                    lines.append(f"  {tid}: {text} | P{prio} | due {due} | next {next_act} | {cat}{proj_s}{done}{snoozed}")
+                    lines.append(f"  {tid}: {text} | P{prio} | due {due} | next {next_act} | {cat}{proj_s}{snooze_tag}")
             lines.append("")
             try:
                 proj_rows = self.db.cos_get_projects() or []
-                lines.append("Current projects (id, name, client, status, deadline):")
+                proj_task_counts: dict[int, int] = {}
+                for t in open_tasks:
+                    pid = t.get("cos_project_id")
+                    if pid is None:
+                        continue
+                    try:
+                        proj_task_counts[int(pid)] = proj_task_counts.get(int(pid), 0) + 1
+                    except Exception:
+                        continue
+
+                lines.append("Projects (showing those with open tasks or active status):")
                 if not proj_rows:
                     lines.append("  (none)")
                 else:
+                    keep: list[tuple[int, str, str, str, str, int]] = []
                     for row in proj_rows:
-                        pid, name, client, status = row[0], row[1] or "", row[2] or "", row[4] or ""
+                        pid = int(row[0] or 0)
+                        name = (row[1] or "").strip()
+                        client = (row[2] or "").strip()
+                        status = (row[4] or "").strip() if len(row) > 4 else ""
                         deadline = (row[6] or "")[:10] if len(row) > 6 and row[6] else "—"
-                        lines.append(f"  {pid}: {name} | {client} | {status} | {deadline}")
+                        open_count = proj_task_counts.get(pid, 0)
+                        if status == "Active" or open_count > 0:
+                            keep.append((pid, name, client, status or "—", deadline, open_count))
+                    keep.sort(key=lambda x: (0 if x[3] == "Active" else 1, -x[5], x[0]))
+                    if not keep:
+                        lines.append("  (none)")
+                    else:
+                        for pid, name, client, status, deadline, open_count in keep[:20]:
+                            nm = name or f"Project {pid}"
+                            client_s = client or "—"
+                            lines.append(f"  {pid}: {nm} | {client_s} | {status} | deadline {deadline} | open_tasks {open_count}")
             except Exception:
                 pass
             lines.append("")
             lines.append(
                 "You can change tasks and projects by outputting exactly these lines (one per action); they will be executed and removed from your reply."
             )
-            lines.append("Tasks: ADD_TASK: <description> | <MM-DD-YYYY or none> | Business|Personal [| project_id]")
+            lines.append("If you think important tasks/projects are missing, ask Adam for a filter (project id, keyword, category, date range). Do not assume you saw everything.")
+            lines.append("")
+            lines.append(
+                "Tasks: ADD_TASK: <description> | <MM-DD-YYYY or none> | Business|Personal [| <priority P0-P5 or 0-5 or none>] [| <next action MM-DD-YYYY or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]"
+            )
             lines.append("TASK_UPDATE_PRIORITY: <task_id> | <0-5>")
             lines.append("TASK_COMPLETE: <task_id>")
             lines.append("TASK_SET_DUE: <task_id> | <MM-DD-YYYY or none>")
             lines.append("TASK_SET_NEXT_ACTION: <task_id> | <MM-DD-YYYY or none>")
             lines.append("TASK_SNOOZE: <task_id> | <days>")
-            lines.append("TASK_DELETE: <task_id>")
+            lines.append("TASK_DELETE: <task_id> (requires confirmation; you may propose it)")
             lines.append("TASK_SET_PROJECT: <task_id> | <project_id or none>")
             lines.append("Projects: ADD_PROJECT: <name> | <client> | Active|Waiting|On Hold|Done|Cancelled")
             lines.append("PROJECT_UPDATE_STATUS: <project_id> | Active|Waiting|On Hold|Done|Cancelled")
             lines.append("PROJECT_SET_DEADLINE: <project_id> | YYYY-MM-DD or none")
-            lines.append("PROJECT_DELETE: <project_id>")
+            lines.append("PROJECT_DELETE: <project_id> (requires confirmation; you may propose it)")
             return "\n".join(lines)
         except Exception as e:
             logger.warning("Mason tasks context failed: %s", e)
             return "Current tasks: (unable to load)"
 
-    def _toggle_done(self, task_id: int, current_done: int):
+    def _set_done(self, task_id: int, completed: bool):
         try:
-            self.db.update_task_by_id(int(task_id), completed=0 if int(current_done) else 1)
+            self.db.update_task_by_id(int(task_id), completed=1 if completed else 0)
         except Exception as e:
             QMessageBox.warning(self, "Tasks", f"Could not update task:\n\n{type(e).__name__}: {e}")
             return
         self.refresh_tasks()
+
+    def _toggle_done(self, task_id: int, current_done: int):
+        self._set_done(task_id, not bool(int(current_done)))
 
     def _snooze_task(self, task_id: int, days: int = 1):
         try:

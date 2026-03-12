@@ -1,10 +1,12 @@
 import sqlite3
 import logging
+from collections import deque
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QTabWidget, QSplashScreen,
     QTextBrowser, QLineEdit, QPushButton, QListWidget, QListWidgetItem, QDateEdit, QTableWidget,
     QTableWidgetItem, QCheckBox, QComboBox, QLabel, QSplitter, QTextEdit, QDialog, QDialogButtonBox,
-    QHeaderView, QMessageBox, QFileDialog, QMenu, QProgressBar, QApplication, QSizePolicy
+    QHeaderView, QMessageBox, QFileDialog, QMenu, QProgressBar, QApplication, QSizePolicy,
+    QSystemTrayIcon, QStyle
 )
 from PyQt6.QtCore import Qt, QDate, QTimer, pyqtSlot, QUrl, QThread, pyqtSignal, QMetaObject, Q_ARG
 from PyQt6.QtGui import QPixmap, QAction, QDesktopServices, QColor, QPainter, QKeyEvent
@@ -26,6 +28,7 @@ from fpdf import FPDF
 import re
 import requests
 from gui.notes_tab import NoteTakingSystem, NoteProcessingThread
+from gui.notifications import play_notification_sound
 import html
 
 
@@ -367,6 +370,10 @@ class ChatWindow(QMainWindow):
         self.todoList = QListWidget()
         self.todoList.setStyleSheet("QListWidget::item { border: none; padding: 0; }")
         self.todo_list = TodoList(self)
+        self.notification_tray: QSystemTrayIcon | None = None
+        self.chat_thread = None
+        self._dashboard_chat_queue = deque()
+        self._dashboard_chat_in_flight = False
         self.initUI()
         # Create tabs first so tasks_tab is available
         self.create_tabs()
@@ -376,8 +383,50 @@ class ChatWindow(QMainWindow):
         self.chat_handler.task_added_signal.connect(self.response_handler.handle_task_added)
         
         self.load_chat_history()
+        self._setup_notification_tray()
         self._billing_autorun_worker = None
         self._init_billing_autorun_scheduler()
+
+    def _setup_notification_tray(self) -> None:
+        try:
+            if not QSystemTrayIcon.isSystemTrayAvailable():
+                self.notification_tray = None
+                return
+            icon = self.windowIcon()
+            if icon.isNull():
+                icon = QApplication.windowIcon()
+            if icon.isNull():
+                icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+            self.notification_tray = QSystemTrayIcon(icon, self)
+            self.notification_tray.setToolTip("NaviSsurance")
+            self.notification_tray.show()
+        except Exception:
+            self.notification_tray = None
+
+    def play_app_sound(self, kind: str = "complete") -> None:
+        play_notification_sound(kind)
+
+    def notify_background_complete(self, title: str, message: str) -> None:
+        self.play_app_sound("complete")
+        try:
+            if self.notification_tray is not None:
+                self.notification_tray.showMessage(
+                    title,
+                    message,
+                    QSystemTrayIcon.MessageIcon.Information,
+                    5000,
+                )
+                return
+        except Exception:
+            pass
+        try:
+            self.statusBar().showMessage(f"{title}: {message}", 5000)
+        except Exception:
+            pass
+
+    def notify_chat_response(self, source: str = "Navi") -> None:
+        _ = source
+        self.play_app_sound("chat")
 
     def _init_billing_autorun_scheduler(self) -> None:
         """
@@ -732,32 +781,64 @@ class ChatWindow(QMainWindow):
     def _dashboard_session_id(self) -> str:
         return f"cos_{self._get_dashboard_cos_chat_id()}"
 
+    def _scroll_chat_to_bottom(self):
+        try:
+            scrollbar = self.chat_display.verticalScrollBar()
+            QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum()))
+        except Exception:
+            pass
+
+    def _update_dashboard_send_button(self) -> None:
+        queued = len(self._dashboard_chat_queue)
+        if queued > 0:
+            self.send_button.setText(f"Send ({queued} queued)")
+        else:
+            self.send_button.setText("Send")
+
+    def _start_next_dashboard_chat_message(self) -> None:
+        if self._dashboard_chat_in_flight or not self._dashboard_chat_queue:
+            self._update_dashboard_send_button()
+            return
+
+        message = str(self._dashboard_chat_queue.popleft() or "").strip()
+        if not message:
+            self._update_dashboard_send_button()
+            QTimer.singleShot(0, self._start_next_dashboard_chat_message)
+            return
+
+        session_id = self._dashboard_session_id()
+        try:
+            self.db.save_message(session_id, "user", message)
+        except Exception:
+            pass
+
+        history = []
+        try:
+            history = self.db.get_chat_history(session_id, limit=50)
+        except Exception:
+            history = []
+
+        self._dashboard_chat_in_flight = True
+        self.chat_thread = ChatThread(self.chat_handler, message, session_id, history)
+        self.chat_thread.response_signal.connect(self.handle_response)
+        self.chat_thread.start()
+        self._update_dashboard_send_button()
+
     def sendMessage(self):
         message = (self.chat_input.toPlainText() or "").strip()
         if message:
             safe = html.escape(message).replace("\n", "<br>")
             self.chat_display.append(f"<b>You:</b> {safe}<br>")
+            self._scroll_chat_to_bottom()
             self.chat_input.clear()
             try:
                 self.chat_input._update_height()
             except Exception:
                 pass
 
-            # Chief of Staff replaces Navi in the dashboard chat.
-            session_id = self._dashboard_session_id()
-            try:
-                self.db.save_message(session_id, "user", message)
-            except Exception:
-                pass
-            history = []
-            try:
-                history = self.db.get_chat_history(session_id, limit=50)
-            except Exception:
-                history = []
-
-            self.chat_thread = ChatThread(self.chat_handler, message, session_id, history)
-            self.chat_thread.response_signal.connect(self.handle_response)
-            self.chat_thread.start()
+            self._dashboard_chat_queue.append(message)
+            self._update_dashboard_send_button()
+            self._start_next_dashboard_chat_message()
 
     def handle_response(self, response):
         # Use thread-safe UI update
@@ -788,8 +869,12 @@ class ChatWindow(QMainWindow):
     
     def _handle_response_safe(self, response):
         """Thread-safe version of handle_response."""
+        self._dashboard_chat_in_flight = False
+        self.chat_thread = None
         rendered = self._format_chat_response_html(response) if isinstance(response, str) else str(response)
         self.chat_display.append(f"<b>Navi:</b> {rendered}<br>")
+        self._scroll_chat_to_bottom()
+        self.notify_chat_response("Navi")
         # If Navi changed tasks via CoS chat, refresh task views immediately.
         try:
             if isinstance(response, str) and (
@@ -802,6 +887,8 @@ class ChatWindow(QMainWindow):
                     QTimer.singleShot(0, self.tasks_tab.refresh_tasks)
         except Exception:
             pass
+        self._update_dashboard_send_button()
+        QTimer.singleShot(0, self._start_next_dashboard_chat_message)
 
     def load_chat_history(self):
         # Load Dashboard chat history from the persistent CoS session.
@@ -814,6 +901,7 @@ class ChatWindow(QMainWindow):
                 self.chat_display.append(f"<b>{label}:</b> {rendered}<br>")
             else:
                 self.chat_display.append(f"<b>{label}:</b> {message}<br>")
+        self._scroll_chat_to_bottom()
 
     def closeEvent(self, event):
         if hasattr(self, "deep_research_tab") and hasattr(self.deep_research_tab, "save_state"):

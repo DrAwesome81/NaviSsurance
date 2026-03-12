@@ -13,9 +13,10 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QPushButton, QLabel, QTextEdit,
     QTextBrowser, QListWidget, QListWidgetItem, QFormLayout, QSpinBox, QTabWidget,
     QMessageBox, QProgressBar, QDialog, QDialogButtonBox, QMenu, QToolButton,
-    QSizePolicy, QComboBox, QLineEdit, QInputDialog, QFileDialog
+    QSizePolicy, QComboBox, QLineEdit, QInputDialog, QFileDialog, QDateEdit, QCheckBox,
+    QDoubleSpinBox
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QDate, QTimer
 from PyQt6.QtGui import QAction, QKeyEvent
 
 
@@ -34,8 +35,9 @@ class ChatEntryEdit(QTextEdit):
             super().keyPressEvent(event)
 
 from core.db import DatabaseManager
-from core.chief_of_staff_service import cos_response
+from core.chief_of_staff_service import cos_response, cos_am_sweep
 from gui.agent_routing import route_for_agent
+from gui.notifications import notify_chat_response
 
 logger = logging.getLogger(__name__)
 ASSIGNMENT_REF_PATTERN = re.compile(r"\bA-(\d{1,8})\b")
@@ -154,6 +156,28 @@ class CosAskWorker(QThread):
             self.error_signal.emit(str(e))
 
 
+class CosAmSweepWorker(QThread):
+    finished_signal = pyqtSignal(str)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, db: DatabaseManager, conversation_history: list, chat_id: int = None):
+        super().__init__()
+        self.db = db
+        self.conversation_history = conversation_history or []
+        self.chat_id = chat_id
+
+    def run(self):
+        try:
+            result = cos_am_sweep(self.db, conversation_history=self.conversation_history, chat_id=self.chat_id)
+            if result.startswith("Error"):
+                self.error_signal.emit(result)
+                return
+            self.finished_signal.emit(result)
+        except Exception as e:
+            logger.exception("CoS AM Sweep: %s", e)
+            self.error_signal.emit(str(e))
+
+
 class CosPreferencesDialog(QDialog):
     """Preferences window opened from Options menu."""
     def __init__(self, db: DatabaseManager, parent=None):
@@ -220,6 +244,337 @@ class CosPreferencesDialog(QDialog):
         )
         QMessageBox.information(self, "Preferences", "Saved.")
         self.accept()
+
+
+class GlobalMemoryDialog(QDialog):
+    """Inspect and prune global durable memory entries."""
+
+
+    class EditDialog(QDialog):
+        def __init__(self, *, parent=None, row: Optional[tuple] = None):
+            super().__init__(parent)
+            self._memory_id = int(row[0]) if row else None
+            self.setWindowTitle("Edit Global Memory" if row else "Add Global Memory")
+            layout = QVBoxLayout(self)
+            form = QFormLayout()
+
+            self.kind_combo = QComboBox()
+            for label, value in (
+                ("Taught", "taught"),
+                ("Fact", "fact"),
+                ("Preference", "preference"),
+                ("Alias", "alias"),
+                ("Note", "note"),
+            ):
+                self.kind_combo.addItem(label, value)
+            form.addRow("Kind:", self.kind_combo)
+
+            self.source_edit = QLineEdit()
+            self.source_edit.setPlaceholderText("teach_navi, auto_chat, manual, etc.")
+            form.addRow("Source:", self.source_edit)
+
+            self.confidence_spin = QDoubleSpinBox()
+            self.confidence_spin.setRange(0.0, 1.0)
+            self.confidence_spin.setDecimals(2)
+            self.confidence_spin.setSingleStep(0.05)
+            self.confidence_spin.setValue(1.0)
+            form.addRow("Confidence:", self.confidence_spin)
+
+            self.content_edit = QTextEdit()
+            self.content_edit.setMinimumHeight(100)
+            form.addRow("Content:", self.content_edit)
+
+            self.json_edit = QTextEdit()
+            self.json_edit.setPlaceholderText("Optional JSON metadata")
+            self.json_edit.setMinimumHeight(90)
+            form.addRow("JSON data:", self.json_edit)
+
+            layout.addLayout(form)
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+            buttons.accepted.connect(self._on_save)
+            buttons.rejected.connect(self.reject)
+            layout.addWidget(buttons)
+
+            if row:
+                _mem_id, kind, content, source, confidence, json_data, _created_at, _updated_at = row
+                idx = max(0, self.kind_combo.findData(str(kind or "").strip()))
+                self.kind_combo.setCurrentIndex(idx)
+                self.source_edit.setText(str(source or ""))
+                self.confidence_spin.setValue(float(confidence or 0))
+                self.content_edit.setPlainText(str(content or ""))
+                self.json_edit.setPlainText("" if json_data is None else str(json_data))
+            else:
+                self.kind_combo.setCurrentIndex(max(0, self.kind_combo.findData("fact")))
+                self.source_edit.setText("manual")
+
+        def _on_save(self):
+            content = (self.content_edit.toPlainText() or "").strip()
+            if not content:
+                QMessageBox.warning(self, "Global Memory", "Content is required.")
+                return
+            json_text = (self.json_edit.toPlainText() or "").strip()
+            if json_text:
+                try:
+                    json.loads(json_text)
+                except json.JSONDecodeError:
+                    QMessageBox.warning(self, "Global Memory", "JSON data must be valid JSON.")
+                    return
+            self.accept()
+
+        def values(self) -> dict:
+            json_text = (self.json_edit.toPlainText() or "").strip()
+            return {
+                "id": self._memory_id,
+                "kind": (self.kind_combo.currentData() or "note").strip(),
+                "source": (self.source_edit.text() or "").strip() or "manual",
+                "confidence": float(self.confidence_spin.value()),
+                "content": (self.content_edit.toPlainText() or "").strip(),
+                "json_data": json_text or None,
+            }
+
+    def __init__(self, db: DatabaseManager, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.setWindowTitle("Navi Global Memory")
+        self.resize(860, 540)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Inspect what Navi has stored globally. You can search, filter, add, edit, refresh, and delete entries."))
+
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("Search:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Search memory content...")
+        self.search_edit.returnPressed.connect(self._reload)
+        controls.addWidget(self.search_edit, 1)
+        controls.addWidget(QLabel("Kind:"))
+        self.kind_filter = QComboBox()
+        self.kind_filter.addItem("All", "")
+        self.kind_filter.addItem("Taught", "taught")
+        self.kind_filter.addItem("Fact", "fact")
+        self.kind_filter.addItem("Preference", "preference")
+        self.kind_filter.addItem("Alias", "alias")
+        self.kind_filter.currentIndexChanged.connect(self._reload)
+        controls.addWidget(self.kind_filter)
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self._reload)
+        controls.addWidget(self.refresh_btn)
+        layout.addLayout(controls)
+
+        body = QHBoxLayout()
+        self.memory_list = QListWidget()
+        self.memory_list.currentItemChanged.connect(self._update_detail)
+        body.addWidget(self.memory_list, 2)
+        self.detail_browser = QTextBrowser()
+        self.detail_browser.setPlaceholderText("Select a memory entry to inspect it.")
+        body.addWidget(self.detail_browser, 3)
+        layout.addLayout(body)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        self.add_btn = QPushButton("Add Memory")
+        self.add_btn.clicked.connect(self._add_memory)
+        buttons.addButton(self.add_btn, QDialogButtonBox.ButtonRole.ActionRole)
+        self.edit_btn = QPushButton("Edit Selected")
+        self.edit_btn.clicked.connect(self._edit_selected)
+        buttons.addButton(self.edit_btn, QDialogButtonBox.ButtonRole.ActionRole)
+        self.delete_btn = QPushButton("Delete Selected")
+        self.delete_btn.clicked.connect(self._delete_selected)
+        buttons.addButton(self.delete_btn, QDialogButtonBox.ButtonRole.ActionRole)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+        self._reload()
+
+    def _row_label(self, row: tuple) -> str:
+        _mem_id, kind, content, source, confidence, _json_data, created_at, _updated_at = row
+        text = (str(content or "").strip() or "(empty)").replace("\n", " ")
+        if len(text) > 88:
+            text = text[:85] + "..."
+        kind_s = str(kind or "note").strip() or "note"
+        source_s = str(source or "unknown").strip() or "unknown"
+        return f"[{kind_s}] {text} ({source_s}, {float(confidence or 0):.2f})"
+
+    def _reload(self):
+        query = (self.search_edit.text() or "").strip()
+        kind = (self.kind_filter.currentData() or "").strip() or None
+        try:
+            if query:
+                rows = self.db.user_memory_search(query=query, kind=kind, limit=200)
+            else:
+                rows = self.db.user_memory_recent(kind=kind, limit=200)
+        except Exception as e:
+            QMessageBox.warning(self, "Global Memory", f"Could not load memory entries.\n\n{e}")
+            return
+        self.memory_list.clear()
+        for row in rows:
+            item = QListWidgetItem(self._row_label(row))
+            item.setData(Qt.ItemDataRole.UserRole, row)
+            self.memory_list.addItem(item)
+        if self.memory_list.count() > 0:
+            self.memory_list.setCurrentRow(0)
+        else:
+            self.detail_browser.setHtml("<p style='color: #9aa0a6;'>(No matching memory entries.)</p>")
+
+    def _update_detail(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem] = None):
+        if current is None:
+            self.detail_browser.setHtml("<p style='color: #9aa0a6;'>(No selection)</p>")
+            return
+        row = current.data(Qt.ItemDataRole.UserRole)
+        if not row:
+            self.detail_browser.setHtml("<p style='color: #9aa0a6;'>(No selection)</p>")
+            return
+        mem_id, kind, content, source, confidence, json_data, created_at, updated_at = row
+        json_html = ""
+        if json_data:
+            json_html = (
+                "<p><b>JSON data</b></p><pre>"
+                + str(json_data).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                + "</pre>"
+            )
+        html = (
+            f"<p><b>ID:</b> {mem_id}<br>"
+            f"<b>Kind:</b> {kind}<br>"
+            f"<b>Source:</b> {source}<br>"
+            f"<b>Confidence:</b> {float(confidence or 0):.2f}<br>"
+            f"<b>Created:</b> {created_at}<br>"
+            f"<b>Updated:</b> {updated_at}</p>"
+            f"<p><b>Content</b></p><pre>{str(content or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')}</pre>"
+            f"{json_html}"
+        )
+        self.detail_browser.setHtml(html)
+
+    def _selected_row(self) -> Optional[tuple]:
+        item = self.memory_list.currentItem()
+        if item is None:
+            return None
+        return item.data(Qt.ItemDataRole.UserRole)
+
+    def _add_memory(self):
+        d = self.EditDialog(parent=self)
+        if d.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = d.values()
+        self.db.user_memory_add(
+            kind=values["kind"],
+            content=values["content"],
+            source=values["source"],
+            confidence=values["confidence"],
+            json_data=values["json_data"],
+        )
+        self._reload()
+
+    def _edit_selected(self):
+        row = self._selected_row()
+        if not row:
+            QMessageBox.information(self, "Global Memory", "Select a memory entry first.")
+            return
+        d = self.EditDialog(parent=self, row=row)
+        if d.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = d.values()
+        ok = self.db.user_memory_update(
+            int(values["id"]),
+            kind=values["kind"],
+            content=values["content"],
+            source=values["source"],
+            confidence=values["confidence"],
+            json_data=values["json_data"],
+        )
+        if not ok:
+            QMessageBox.warning(self, "Global Memory", "That memory entry could not be updated.")
+            return
+        self._reload()
+
+    def _delete_selected(self):
+        row = self._selected_row()
+        if not row:
+            QMessageBox.information(self, "Global Memory", "Select a memory entry first.")
+            return
+        mem_id = int(row[0])
+        kind = str(row[1] or "note")
+        content = str(row[2] or "").strip()
+        preview = content if len(content) <= 120 else content[:117] + "..."
+        reply = QMessageBox.question(
+            self,
+            "Delete Memory",
+            f"Delete this {kind} memory?\n\n{preview}",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if not self.db.user_memory_delete(mem_id):
+            QMessageBox.warning(self, "Global Memory", "That memory entry could not be deleted.")
+            return
+        self._reload()
+
+
+class BulkDueDateDialog(QDialog):
+    """Pick a due date (YYYY-MM-DD) or set to none, with manual override."""
+
+    def __init__(self, *, parent=None, default_due: Optional[str] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Bulk Update Due Date")
+        self._due_value: Optional[str] = None
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Pick a due date, choose none, or type a manual ISO value."))
+
+        form = QFormLayout()
+        self.none_check = QCheckBox("No due date (none)")
+        form.addRow("", self.none_check)
+
+        self.date_edit = QDateEdit()
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_edit.setDate(QDate.currentDate())
+        if default_due:
+            try:
+                dt = datetime.strptime(str(default_due).strip(), "%Y-%m-%d")
+                self.date_edit.setDate(QDate(dt.year, dt.month, dt.day))
+            except Exception:
+                pass
+        form.addRow("Pick date:", self.date_edit)
+
+        self.manual_edit = QLineEdit()
+        self.manual_edit.setPlaceholderText("YYYY-MM-DD or none (optional manual override)")
+        form.addRow("Manual override:", self.manual_edit)
+
+        layout.addLayout(form)
+
+        def _sync_enabled():
+            is_none = bool(self.none_check.isChecked())
+            self.date_edit.setEnabled(not is_none)
+
+        self.none_check.stateChanged.connect(lambda _v: _sync_enabled())
+        _sync_enabled()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._on_ok)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_ok(self):
+        raw = (self.manual_edit.text() or "").strip()
+        if raw:
+            ok, due = _normalize_iso_due_date_input(raw)
+            if not ok:
+                QMessageBox.warning(self, "Assignments", "Due date must be YYYY-MM-DD or none.")
+                return
+            self._due_value = due
+            self.accept()
+            return
+
+        if self.none_check.isChecked():
+            self._due_value = None
+            self.accept()
+            return
+
+        qd = self.date_edit.date()
+        self._due_value = qd.toString("yyyy-MM-dd")
+        self.accept()
+
+    def due_date(self) -> Optional[str]:
+        return self._due_value
 
 
 class CosAssignmentDialog(QDialog):
@@ -306,9 +661,29 @@ class ChiefOfStaffTab(QWidget):
         super().__init__(parent)
         self.db = db
         self._ask_worker = None
+        self._am_sweep_worker = None
         self._current_chat_id = None
         self._current_assignment_id = None
         self._setup_ui()
+
+    def _refresh_task_views(self) -> None:
+        """Best-effort refresh of Tasks tab + Dashboard task list."""
+        try:
+            win = self.window()
+        except Exception:
+            win = None
+        if win is None:
+            return
+        try:
+            if hasattr(win, "dashboard_tab") and hasattr(win.dashboard_tab, "load_tasks_filtered"):
+                QTimer.singleShot(0, win.dashboard_tab.load_tasks_filtered)
+        except Exception:
+            pass
+        try:
+            if hasattr(win, "tasks_tab") and hasattr(win.tasks_tab, "refresh_tasks"):
+                QTimer.singleShot(0, win.tasks_tab.refresh_tasks)
+        except Exception:
+            pass
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -317,11 +692,11 @@ class ChiefOfStaffTab(QWidget):
         splitter.setHandleWidth(6)
         splitter.addWidget(self._build_chat_panel())
         sidebar = self._build_sidebar()
-        sidebar.setMinimumWidth(220)
+        sidebar.setMinimumWidth(420)
         splitter.addWidget(sidebar)
         splitter.setStretchFactor(0, 7)
         splitter.setStretchFactor(1, 3)
-        splitter.setSizes([700, 300])
+        splitter.setSizes([880, 520])
         layout.addWidget(splitter)
 
     def _build_chat_panel(self):
@@ -335,14 +710,24 @@ class ChiefOfStaffTab(QWidget):
         options_btn = QToolButton()
         options_btn.setText("⋮ Options")
         options_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        options_btn.setMinimumHeight(32)
         options_btn.setStyleSheet(
             "QToolButton { color: #e8eaed; background-color: #22252c; border: 1px solid #2e2f32; padding: 6px 12px; border-radius: 6px; }"
             "QToolButton:hover { background-color: #3a3b3e; color: #e8eaed; }"
         )
         menu = QMenu()
+        am_sweep_action = QAction("AM Sweep", self)
+        am_sweep_action.triggered.connect(self._on_am_sweep)
+        menu.addAction(am_sweep_action)
+        am_sweep_rerun_action = QAction("AM Sweep (Run again)", self)
+        am_sweep_rerun_action.triggered.connect(self._on_am_sweep_rerun)
+        menu.addAction(am_sweep_rerun_action)
         prefs_action = QAction("Preferences…", self)
         prefs_action.triggered.connect(self._open_preferences)
         menu.addAction(prefs_action)
+        memory_action = QAction("Global Memory…", self)
+        memory_action.triggered.connect(self._open_global_memory)
+        menu.addAction(memory_action)
         commands_action = QAction("Action Commands…", self)
         commands_action.triggered.connect(self._open_command_cheatsheet)
         menu.addAction(commands_action)
@@ -360,12 +745,15 @@ class ChiefOfStaffTab(QWidget):
         entry_row = QHBoxLayout()
         self.ask_input = ChatEntryEdit()
         self.ask_input.setPlaceholderText("What you're working on and what has come up… (Enter to send, Shift+Enter for new line)")
-        self.ask_input.setMaximumHeight(80)
+        self.ask_input.setMaximumHeight(120)
+        self.ask_input.setMinimumHeight(48)
         self.ask_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.ask_input.returnPressed.connect(self._on_send)
         entry_row.addWidget(self.ask_input)
         self.ask_btn = QPushButton("Send")
         self.ask_btn.clicked.connect(self._on_send)
+        self.ask_btn.setMinimumHeight(40)
+        self.ask_btn.setMinimumWidth(88)
         self.ask_progress = QProgressBar()
         self.ask_progress.setRange(0, 0)
         self.ask_progress.setVisible(False)
@@ -376,6 +764,10 @@ class ChiefOfStaffTab(QWidget):
 
     def _open_preferences(self):
         d = CosPreferencesDialog(self.db, self)
+        d.exec()
+
+    def _open_global_memory(self):
+        d = GlobalMemoryDialog(self.db, self)
         d.exec()
 
     def _open_command_cheatsheet(self):
@@ -450,37 +842,60 @@ Calendar and task actions:
         asg_layout = QVBoxLayout(asg_panel)
         asg_layout.setContentsMargins(0, 0, 0, 0)
         asg_head = QHBoxLayout()
+        asg_head.setSpacing(8)
         asg_head.addWidget(QLabel("Delegation Board"))
         asg_head.addStretch()
         new_asg_btn = QPushButton("New")
         new_asg_btn.clicked.connect(self._create_assignment_from_board)
+        new_asg_btn.setMinimumHeight(30)
+        new_asg_btn.setMinimumWidth(72)
         asg_head.addWidget(new_asg_btn)
         reassign_btn = QPushButton("Reassign")
         reassign_btn.clicked.connect(self._reassign_selected_assignment)
+        reassign_btn.setMinimumHeight(30)
+        reassign_btn.setMinimumWidth(96)
         asg_head.addWidget(reassign_btn)
         bulk_status_btn = QPushButton("Bulk Status")
         bulk_status_btn.clicked.connect(self._bulk_set_filtered_status)
+        bulk_status_btn.setMinimumHeight(30)
+        bulk_status_btn.setMinimumWidth(110)
         asg_head.addWidget(bulk_status_btn)
         bulk_priority_btn = QPushButton("Bulk Priority")
         bulk_priority_btn.clicked.connect(self._bulk_set_filtered_priority)
+        bulk_priority_btn.setMinimumHeight(30)
+        bulk_priority_btn.setMinimumWidth(116)
         asg_head.addWidget(bulk_priority_btn)
         bulk_due_btn = QPushButton("Bulk Due")
         bulk_due_btn.clicked.connect(self._bulk_set_filtered_due)
+        bulk_due_btn.setMinimumHeight(30)
+        bulk_due_btn.setMinimumWidth(92)
         asg_head.addWidget(bulk_due_btn)
         bulk_reassign_btn = QPushButton("Bulk Reassign")
         bulk_reassign_btn.clicked.connect(self._bulk_reassign_filtered_assignments)
+        bulk_reassign_btn.setMinimumHeight(30)
+        bulk_reassign_btn.setMinimumWidth(126)
         asg_head.addWidget(bulk_reassign_btn)
         export_btn = QPushButton("Export")
         export_btn.clicked.connect(self._export_assignment_board_markdown)
+        export_btn.setMinimumHeight(30)
+        export_btn.setMinimumWidth(84)
         asg_head.addWidget(export_btn)
         refresh_asg_btn = QPushButton("Refresh")
         refresh_asg_btn.clicked.connect(self._refresh_assignment_list)
+        refresh_asg_btn.setMinimumHeight(30)
+        refresh_asg_btn.setMinimumWidth(88)
         asg_head.addWidget(refresh_asg_btn)
         asg_layout.addLayout(asg_head)
 
         filters = QHBoxLayout()
         filters.setContentsMargins(0, 0, 0, 0)
         filters.setSpacing(6)
+        self.assignment_scope_filter = QComboBox()
+        self.assignment_scope_filter.addItem("Open only", "open")
+        self.assignment_scope_filter.addItem("All (include done/cancelled)", "all")
+        self.assignment_scope_filter.currentTextChanged.connect(lambda _t: self._refresh_assignment_list())
+        filters.addWidget(self.assignment_scope_filter)
+
         self.assignment_status_filter = QComboBox()
         self.assignment_status_filter.addItems(
             ["All", "queued", "in_progress", "awaiting_review", "blocked", "done", "cancelled"]
@@ -834,22 +1249,10 @@ Calendar and task actions:
         if not rows:
             QMessageBox.information(self, "Assignments", "No assignments match the current filters.")
             return
-        text, ok = QInputDialog.getText(
-            self,
-            "Bulk Update Due Date",
-            "Due date (YYYY-MM-DD or none):",
-            text="none",
-        )
-        if not ok:
+        dlg = BulkDueDateDialog(parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        due_ok, due = _normalize_iso_due_date_input((text or "").strip())
-        if not due_ok:
-            QMessageBox.warning(
-                self,
-                "Assignments",
-                "Due date must be a real calendar date in YYYY-MM-DD or none.",
-            )
-            return
+        due = dlg.due_date()
         note_ok, custom_note = self._prompt_optional_bulk_note("Bulk Update Due Date")
         if not note_ok:
             return
@@ -969,6 +1372,13 @@ Calendar and task actions:
             item.setData(Qt.ItemDataRole.UserRole, id_)
             self.chat_list.addItem(item)
 
+    def _scroll_chat_to_bottom(self):
+        try:
+            scrollbar = self.chat_display.verticalScrollBar()
+            QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum()))
+        except Exception:
+            pass
+
     def _assistant_html_with_assignment_links(self, content: str) -> str:
         raw_html = _md_to_html(content or "")
 
@@ -999,12 +1409,16 @@ Calendar and task actions:
                 html_parts.append(f"<p><b>Navi:</b></p>{self._assistant_html_with_assignment_links(content)}")
         self.chat_display.setHtml("<br>".join(html_parts) if html_parts else "<p style='color:#9aa0a6;'>(No messages yet.)</p>")
         self.ask_output = self.chat_display  # for tests that expect ask_output
+        self._scroll_chat_to_bottom()
 
-    def _assignment_filters(self) -> tuple[Optional[str], Optional[str], str, Optional[str]]:
+    def _assignment_filters(self) -> tuple[Optional[str], Optional[str], str, Optional[str], bool]:
         status = None
         health = None
         assignee = None
         query = ""
+        include_closed = False
+        if hasattr(self, "assignment_scope_filter"):
+            include_closed = str(self.assignment_scope_filter.currentData() or "").strip().lower() == "all"
         if hasattr(self, "assignment_status_filter"):
             st = (self.assignment_status_filter.currentText() or "").strip().lower()
             status = None if st in ("", "all") else st
@@ -1014,11 +1428,15 @@ Calendar and task actions:
             assignee = (self.assignment_assignee_filter.currentData() or "").strip().lower() or None
         if hasattr(self, "assignment_search_input"):
             query = (self.assignment_search_input.text() or "").strip().lower()
-        return status, assignee, query, health
+        return status, assignee, query, health, include_closed
 
     def _filtered_assignment_rows(self):
-        status, assignee, query, health = self._assignment_filters()
+        status, assignee, query, health, include_closed = self._assignment_filters()
         rows = self.db.agent_list_assignments(status=status, assignee_code=assignee, limit=500)
+        if not include_closed:
+            rows = [
+                r for r in rows if str(r.get("status") or "").strip().lower() not in {"done", "cancelled"}
+            ]
         if query:
             qnorm = query.replace("a-", "").lstrip("0")
             filtered = []
@@ -1471,6 +1889,7 @@ Calendar and task actions:
             return
 
         QMessageBox.information(self, "Assignments", "Dashboard task created from assignment.")
+        self._refresh_task_views()
         self._focus_assignment_by_id(int(self._current_assignment_id))
 
     def _bulk_create_tasks_from_filtered_assignments(self):
@@ -1578,6 +1997,7 @@ Calendar and task actions:
                 f"Failed: {failed}"
             ),
         )
+        self._refresh_task_views()
         if self._current_assignment_id:
             self._focus_assignment_by_id(int(self._current_assignment_id))
 
@@ -1648,6 +2068,8 @@ Calendar and task actions:
                 self._on_assignment_clicked(item)
                 return True
         # If filters hide the target assignment, reset filters and retry once.
+        if hasattr(self, "assignment_scope_filter"):
+            self.assignment_scope_filter.setCurrentIndex(1)
         if hasattr(self, "assignment_status_filter"):
             self.assignment_status_filter.setCurrentText("All")
         if hasattr(self, "assignment_assignee_filter"):
@@ -1762,6 +2184,8 @@ Calendar and task actions:
     def _on_send(self):
         if self._ask_worker and self._ask_worker.isRunning():
             return
+        if self._am_sweep_worker and self._am_sweep_worker.isRunning():
+            return
         msg = self.ask_input.toPlainText().strip()
         if not msg:
             return
@@ -1771,6 +2195,8 @@ Calendar and task actions:
             self._current_chat_id = self.db.cos_create_chat(title=title)
         session_id = f"cos_{self._current_chat_id}"
         self.db.save_message(session_id, "user", msg)
+        self._refresh_chat_list()
+        self._render_chat_history()
         history = self.db.get_chat_history(session_id, limit=50)
         self._ask_worker = CosAskWorker(self.db, msg, history, chat_id=self._current_chat_id)
         self._ask_worker.finished_signal.connect(self._on_ask_finished)
@@ -1780,8 +2206,102 @@ Calendar and task actions:
         self.ask_input.clear()
         self._ask_worker.start()
 
+    def _on_am_sweep(self):
+        """Run AM Sweep if not already run today; otherwise focus today's sweep chat."""
+        if self._ask_worker and self._ask_worker.isRunning():
+            return
+        if self._am_sweep_worker and self._am_sweep_worker.isRunning():
+            return
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        title = f"AM Sweep {today}"
+        existing_id = None
+        try:
+            if hasattr(self.db, "cos_find_chat_by_title"):
+                existing_id = self.db.cos_find_chat_by_title(title)
+        except Exception:
+            existing_id = None
+
+        # Ensure we have a deterministic per-day chat for persistence across restart.
+        if existing_id is not None:
+            self._current_chat_id = int(existing_id)
+        elif self._current_chat_id is None:
+            self._current_chat_id = self.db.cos_create_chat(title=title)
+
+        # Focus the chosen chat in the UI.
+        try:
+            self._refresh_chat_list()
+        except Exception:
+            pass
+        self._render_chat_history()
+
+        # If this chat already contains an AM Sweep run (AM Sweep -> assistant output), do not re-run.
+        session_id = f"cos_{self._current_chat_id}"
+        history_all = self.db.get_chat_history(session_id, limit=200)
+        last_trigger_idx = -1
+        for i, (role, content) in enumerate(history_all):
+            if str(role or "").strip().lower() == "user" and str(content or "").strip() == "AM Sweep":
+                last_trigger_idx = i
+        already_has_output = False
+        if last_trigger_idx >= 0:
+            for role, _content in history_all[last_trigger_idx + 1 :]:
+                if str(role or "").strip().lower() == "assistant":
+                    already_has_output = True
+                    break
+        if already_has_output:
+            # Just focus existing output; user can choose "Run again" if they want a refresh.
+            return
+
+        # Persist the sweep trigger as a user message for auditability and run it.
+        self.db.save_message(session_id, "user", "AM Sweep")
+        history = self.db.get_chat_history(session_id, limit=50)
+
+        self._am_sweep_worker = CosAmSweepWorker(self.db, history, chat_id=self._current_chat_id)
+        self._am_sweep_worker.finished_signal.connect(self._on_ask_finished)
+        self._am_sweep_worker.error_signal.connect(self._on_ask_error)
+
+        self.ask_btn.setEnabled(False)
+        self.ask_progress.setVisible(True)
+        self.ask_input.clear()
+        self._am_sweep_worker.start()
+
+    def _on_am_sweep_rerun(self):
+        """Always run AM Sweep (creates/uses today's sweep chat)."""
+        if self._ask_worker and self._ask_worker.isRunning():
+            return
+        if self._am_sweep_worker and self._am_sweep_worker.isRunning():
+            return
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        title = f"AM Sweep {today}"
+        existing_id = None
+        try:
+            if hasattr(self.db, "cos_find_chat_by_title"):
+                existing_id = self.db.cos_find_chat_by_title(title)
+        except Exception:
+            existing_id = None
+
+        if existing_id is not None:
+            self._current_chat_id = int(existing_id)
+        elif self._current_chat_id is None:
+            self._current_chat_id = self.db.cos_create_chat(title=title)
+
+        session_id = f"cos_{self._current_chat_id}"
+        self.db.save_message(session_id, "user", "AM Sweep")
+        history = self.db.get_chat_history(session_id, limit=50)
+
+        self._am_sweep_worker = CosAmSweepWorker(self.db, history, chat_id=self._current_chat_id)
+        self._am_sweep_worker.finished_signal.connect(self._on_ask_finished)
+        self._am_sweep_worker.error_signal.connect(self._on_ask_error)
+
+        self.ask_btn.setEnabled(False)
+        self.ask_progress.setVisible(True)
+        self.ask_input.clear()
+        self._am_sweep_worker.start()
+
     def _on_ask_finished(self, result: str):
         self._ask_worker = None
+        self._am_sweep_worker = None
         self.ask_btn.setEnabled(True)
         self.ask_progress.setVisible(False)
         if self._current_chat_id is not None:
@@ -1791,9 +2311,13 @@ Calendar and task actions:
         self._refresh_chat_list()
         self._refresh_assignment_list()
         self._render_chat_history()
+        self._refresh_task_views()
+        notify_chat_response(self, "Navi")
 
     def _on_ask_error(self, err: str):
         self._ask_worker = None
+        self._am_sweep_worker = None
         self.ask_btn.setEnabled(True)
         self.ask_progress.setVisible(False)
         self.chat_display.append(f"<p style='color: #e07a7a;'>Error: {err}</p>")
+        self._scroll_chat_to_bottom()

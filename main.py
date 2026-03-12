@@ -72,6 +72,14 @@ if __name__ == "__main__":
         logger.info("Creating main window with enhanced splash screen...")
         try:
             chatWindow = ChatWindow(defer_dashboard_initial_load=True)
+            if os.path.exists(logo_path):
+                try:
+                    icon = QIcon(logo_path)
+                    chatWindow.setWindowIcon(icon)
+                    if getattr(chatWindow, "notification_tray", None) is not None:
+                        chatWindow.notification_tray.setIcon(icon)
+                except Exception:
+                    pass
             logger.info("ChatWindow created successfully")
             splash.update_progress(80, "Main window ready", "ChatWindow created successfully")
         except Exception as e:

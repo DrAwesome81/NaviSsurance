@@ -16,10 +16,15 @@ from PyQt6.QtWidgets import (
     QLabel,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDate
+import json
 import os
 import requests
 import numpy as np
 from datetime import datetime
+from docx import Document
+
+from core.task_extract import SuggestedTask, parse_suggested_tasks
+from gui.task_import_dialog import TaskImportDialog
 
 
 def _safe_filename_part(value: str, *, fallback: str = "unknown") -> str:
@@ -171,6 +176,75 @@ class AssemblyAITranscriptionWorker(QThread):
             self.failed.emit(f"{type(e).__name__}: {e}")
 
 
+class MeetingTaskExtractionWorker(QThread):
+    completed = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        *,
+        response_handler,
+        transcript_text: str,
+        meeting_date: str | None = None,
+        meeting_with: str | None = None,
+        notes: str | None = None,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.response_handler = response_handler
+        self.transcript_text = str(transcript_text or "")
+        self.meeting_date = str(meeting_date or "")
+        self.meeting_with = str(meeting_with or "")
+        self.notes = str(notes or "")
+
+    def run(self) -> None:
+        try:
+            if self.response_handler is None or not hasattr(self.response_handler, "chat_with_llama"):
+                self.failed.emit("Task extraction is unavailable because the local response handler is not ready.")
+                return
+
+            meeting_context = []
+            if self.meeting_date:
+                meeting_context.append(f"Meeting date: {self.meeting_date}")
+            if self.meeting_with:
+                meeting_context.append(f"Meeting with: {self.meeting_with}")
+            if self.notes:
+                meeting_context.append(f"Meeting notes: {self.notes}")
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You extract actionable tasks from meeting transcripts for NaviSsurance. "
+                        "Return only a markdown section in this exact format:\n"
+                        "## Suggested Tasks (importable)\n"
+                        "- [ ] <task title> | due: <MM-DD-YYYY or none> | category: <Business or Personal>\n\n"
+                        "Rules:\n"
+                        "- Include only concrete action items, follow-ups, deliverables, or commitments.\n"
+                        "- Do not include vague topics, discussion summaries, or non-actionable ideas.\n"
+                        "- Prefer category Business unless the transcript clearly indicates Personal.\n"
+                        "- Use due: none unless an actual date or deadline is stated.\n"
+                        "- Keep titles concise and imperative.\n"
+                        "- If there are no actionable tasks, return exactly:\n"
+                        "## Suggested Tasks (importable)\n"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "\n".join(meeting_context)
+                        + ("\n\n" if meeting_context else "")
+                        + "Transcript:\n"
+                        + self.transcript_text
+                    ).strip(),
+                },
+            ]
+            result = self.response_handler.chat_with_llama(messages, "meeting_task_extract")
+            self.completed.emit(str(result or "").strip())
+        except Exception as e:
+            self.failed.emit(f"{type(e).__name__}: {e}")
+
+
 class MeetingsTab(QWidget):
     def __init__(self, chat_handler):
         super().__init__()
@@ -182,6 +256,8 @@ class MeetingsTab(QWidget):
         self._current_meeting_with: str | None = None
         self._current_meeting_notes: str | None = None
         self._current_audio_path: str | None = None
+        self._current_transcript_text: str | None = None
+        self._task_extraction_worker: MeetingTaskExtractionWorker | None = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -217,6 +293,11 @@ class MeetingsTab(QWidget):
         self.saveTranscriptButton.clicked.connect(self.save_transcript)
         self.saveTranscriptButton.setEnabled(False)
         controls.addWidget(self.saveTranscriptButton)
+
+        self.extractTasksButton = QPushButton("Draft Tasks", self)
+        self.extractTasksButton.clicked.connect(self.extract_tasks_from_transcript)
+        self.extractTasksButton.setEnabled(False)
+        controls.addWidget(self.extractTasksButton)
 
         layout.addLayout(controls)
         
@@ -380,6 +461,7 @@ class MeetingsTab(QWidget):
         self._current_meeting_with = meeting_with
         self._current_meeting_notes = notes
         self._current_audio_path = str(audio_path)
+        self._current_transcript_text = None
 
         meeting_id = None
         try:
@@ -467,9 +549,12 @@ class MeetingsTab(QWidget):
         if self._current_meeting_notes:
             header.append("Notes:\n" + self._current_meeting_notes)
         header.append("\n--- Transcript ---\n")
+        self._current_transcript_text = formatted_text or ""
         self.meetingTranscript.setPlainText("\n".join(header) + (formatted_text or ""))
         self.saveTranscriptButton.setEnabled(True)
+        self.extractTasksButton.setEnabled(bool((formatted_text or "").strip()))
         self.transcribeButton.setEnabled(True)
+        self.extract_tasks_from_transcript(auto=True)
 
     def _on_transcription_failed(self, error_message: str) -> None:
         mid = self._current_meeting_id
@@ -481,6 +566,122 @@ class MeetingsTab(QWidget):
         self.meetingTranscript.append(f"\nError during transcription: {error_message}")
         self.transcribeButton.setEnabled(True)
         self.saveTranscriptButton.setEnabled(False)
+        self.extractTasksButton.setEnabled(False)
+
+    def extract_tasks_from_transcript(self, *, auto: bool = False):
+        transcript_text = (self._current_transcript_text or "").strip()
+        if not transcript_text:
+            if not auto:
+                QMessageBox.information(self, "Draft Tasks", "No completed transcript is available yet.")
+            return
+
+        if self._task_extraction_worker is not None and self._task_extraction_worker.isRunning():
+            if not auto:
+                self.meetingTranscript.append("Task extraction is already running. Please wait.")
+            return
+
+        response_handler = getattr(self.chat_handler, "response_handler", None)
+        if response_handler is None or not hasattr(response_handler, "chat_with_llama"):
+            if not auto:
+                QMessageBox.warning(self, "Draft Tasks", "Task extraction is unavailable right now.")
+            return
+
+        self.extractTasksButton.setEnabled(False)
+        if not auto:
+            self.meetingTranscript.append("\nExtracting draft tasks from transcript…")
+
+        worker = MeetingTaskExtractionWorker(
+            response_handler=response_handler,
+            transcript_text=transcript_text,
+            meeting_date=self._current_meeting_date,
+            meeting_with=self._current_meeting_with,
+            notes=self._current_meeting_notes,
+            parent=self,
+        )
+        self._task_extraction_worker = worker
+        worker.completed.connect(lambda markdown: self._on_task_extraction_completed(markdown, auto=auto))
+        worker.failed.connect(lambda err: self._on_task_extraction_failed(err, auto=auto))
+        worker.start()
+
+    def _on_task_extraction_completed(self, markdown: str, *, auto: bool) -> None:
+        self._task_extraction_worker = None
+        self.extractTasksButton.setEnabled(bool((self._current_transcript_text or "").strip()))
+
+        tasks, warnings = parse_suggested_tasks(markdown or "")
+        if not tasks:
+            if not auto:
+                QMessageBox.information(
+                    self,
+                    "Draft Tasks",
+                    "No actionable tasks were detected in this transcript.",
+                )
+            return
+
+        dlg = TaskImportDialog(tasks, warnings=warnings, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected = dlg.selected_tasks()
+        if not selected:
+            return
+
+        db = getattr(self.chat_handler, "db", None)
+        if db is None or not hasattr(db, "add_task"):
+            QMessageBox.warning(self, "Draft Tasks", "Tasks database is unavailable.")
+            return
+
+        meeting_label = self._meeting_task_source_label()
+        added = 0
+        for task in selected:
+            due = None if str(task.due_mmddyyyy).strip().lower() == "none" else task.due_mmddyyyy
+            task_id = db.add_task(
+                f"meeting_transcript_{self._current_meeting_id or 'manual'}",
+                task.title,
+                due,
+                category=task.category,
+            )
+            if hasattr(db, "update_task_by_id"):
+                try:
+                    tags = ["meeting_transcript", "draft_import"]
+                    if self._current_meeting_id is not None:
+                        tags.append(f"meeting_{int(self._current_meeting_id)}")
+                    db.update_task_by_id(
+                        int(task_id),
+                        blockers=meeting_label,
+                        tags_json=json.dumps(tags),
+                    )
+                except Exception:
+                    pass
+            added += 1
+
+        self._refresh_task_views()
+        self.meetingTranscript.append(f"\nImported {added} draft task(s) from this transcript.")
+
+    def _on_task_extraction_failed(self, error_message: str, *, auto: bool) -> None:
+        self._task_extraction_worker = None
+        self.extractTasksButton.setEnabled(bool((self._current_transcript_text or "").strip()))
+        if not auto:
+            QMessageBox.warning(self, "Draft Tasks", f"Could not extract tasks:\n{error_message}")
+
+    def _meeting_task_source_label(self) -> str:
+        parts = ["Drafted from meeting transcript"]
+        if self._current_meeting_date:
+            parts.append(f"on {self._current_meeting_date}")
+        if self._current_meeting_with:
+            parts.append(f"with {self._current_meeting_with}")
+        if self._current_meeting_notes:
+            parts.append(f"Notes: {self._current_meeting_notes}")
+        return " | ".join(parts)
+
+    def _refresh_task_views(self) -> None:
+        try:
+            win = self.window()
+            if hasattr(win, "tasks_tab") and hasattr(win.tasks_tab, "refresh_tasks"):
+                win.tasks_tab.refresh_tasks()
+            if hasattr(win, "dashboard_tab") and hasattr(win.dashboard_tab, "load_tasks_filtered"):
+                win.dashboard_tab.load_tasks_filtered()
+        except Exception:
+            pass
 
     def select_file(self):
         """
@@ -559,7 +760,6 @@ class MeetingsTab(QWidget):
         """
         Save the transcript text to a file using a file dialog.
         """
-        from PyQt6.QtWidgets import QFileDialog
         import os
         import time
 
@@ -573,22 +773,33 @@ class MeetingsTab(QWidget):
         if self._current_meeting_date or self._current_meeting_with:
             date_s = _safe_filename_part(self._current_meeting_date or "", fallback="date")
             with_s = _safe_filename_part(self._current_meeting_with or "", fallback="unlabeled")
-            default_filename = f"meeting_{date_s}_{with_s}_transcript_{timestamp}.txt"
+            default_stem = f"meeting_{date_s}_{with_s}_transcript_{timestamp}"
         else:
-            default_filename = f"transcript_{timestamp}.txt"
+            default_stem = f"transcript_{timestamp}"
         
         # Open file dialog
-        file_path, _ = QFileDialog.getSaveFileName(
+        file_path, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Save Transcript",
-            default_filename,
-            "Text Files (*.txt);;All Files (*)"
+            f"{default_stem}.txt",
+            "Text Files (*.txt);;Word Documents (*.docx);;All Files (*)"
         )
         
         if file_path:  # If user didn't cancel
             try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(transcript_text)
+                is_docx = file_path.lower().endswith(".docx") or "docx" in (selected_filter or "").lower()
+                if is_docx:
+                    if not file_path.lower().endswith(".docx"):
+                        file_path += ".docx"
+                    doc = Document()
+                    for line in transcript_text.splitlines():
+                        doc.add_paragraph(line)
+                    doc.save(file_path)
+                else:
+                    if not os.path.splitext(file_path)[1]:
+                        file_path += ".txt"
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(transcript_text)
                 print(f"Transcript saved to {file_path}")
                 self.saveTranscriptButton.setEnabled(False)
                 self.meetingTranscript.append(f"<i>Transcript saved to {file_path}</i>")

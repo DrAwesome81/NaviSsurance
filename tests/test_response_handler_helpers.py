@@ -9,7 +9,15 @@ def _rh() -> ResponseHandler:
     rh = ResponseHandler.__new__(ResponseHandler)
     rh.process = None
     rh.model_loaded = False
-    rh.chat_handler = SimpleNamespace(db=SimpleNamespace(get_tasks=lambda: []))
+    rh.chat_handler = SimpleNamespace(
+        db=SimpleNamespace(
+            get_tasks=lambda: [],
+            user_memory_search=lambda **kw: [],
+            user_memory_recent=lambda **kw: [],
+            user_memory_add=lambda **kw: 1,
+            user_memory_add_many=lambda **kw: 0,
+        )
+    )
     return rh
 
 
@@ -68,10 +76,29 @@ def _rh_with_rich_db():
     rh = ResponseHandler.__new__(ResponseHandler)
     rh.process = None
     rh.model_loaded = False
+    memory_rows = []
+
+    def _user_memory_add(*, kind, content, source="unknown", confidence=1.0, json_data=None):
+        row = (len(memory_rows) + 1, kind, content, source, confidence, json_data, "now", "now")
+        memory_rows.insert(0, row)
+        return row[0]
+
+    def _user_memory_add_many(*, items):
+        added = 0
+        for item in items:
+            _user_memory_add(**item)
+            added += 1
+        return added
+
     db = SimpleNamespace(
         get_tasks=lambda: [],
         list_tasks_rich=lambda **kw: [],
         cos_get_projects=lambda status=None, client=None: [],
+        user_memory_search=lambda **kw: [],
+        user_memory_recent=lambda **kw: [],
+        user_memory_add=_user_memory_add,
+        user_memory_add_many=_user_memory_add_many,
+        _memory_rows=memory_rows,
     )
     rh.chat_handler = SimpleNamespace(db=db)
     return rh
@@ -154,6 +181,27 @@ def test_get_response_injects_navi_context_when_nonempty(monkeypatch):
     assert "What should I focus on today?" in msgs[1]["content"]
 
 
+def test_get_response_injects_user_memory_context(monkeypatch):
+    rh = _rh_with_rich_db()
+    rh.chat_handler.db.user_memory_search = lambda **kw: [
+        (1, "preference", "Prefer concise bullets.", "teach_navi", 1.0, None, "now", "now"),
+    ]
+    captured = []
+
+    def capture_hybrid(messages, session_id):
+        captured.append(messages)
+        return "All set."
+
+    monkeypatch.setattr(rh, "hybrid_wrapper", capture_hybrid)
+    monkeypatch.setattr(rh, "_is_task_query", lambda msg: False)
+
+    rh.get_response("Draft a client reply.", "main_session", [])
+
+    msgs = captured[0]
+    assert any(m["role"] == "system" and "Relevant durable user memory" in m["content"] for m in msgs)
+    assert any(m["role"] == "system" and "Prefer concise bullets." in m["content"] for m in msgs)
+
+
 def test_get_response_no_injection_when_context_empty(monkeypatch):
     rh = _rh_with_rich_db()
     rh.chat_handler.db.list_tasks_rich = lambda **kw: []
@@ -176,3 +224,72 @@ def test_get_response_no_injection_when_context_empty(monkeypatch):
     assert len(msgs) == 1
     assert msgs[0]["role"] == "user"
     assert msgs[0]["content"] == "Hello"
+
+
+def test_get_response_handles_teach_navi_deterministically(monkeypatch):
+    rh = _rh_with_rich_db()
+    monkeypatch.setattr(
+        rh,
+        "hybrid_wrapper",
+        lambda messages, session_id: (_ for _ in ()).throw(AssertionError("LLM should not run")),
+    )
+
+    out = rh.get_response("Teach Navi: My preferred format is bullets.", "main_session", [])
+
+    assert "I'll remember that" in out
+    assert any(row[1] == "taught" and "preferred format" in row[2] for row in rh.chat_handler.db._memory_rows)
+
+
+def test_get_response_auto_stores_user_memory(monkeypatch):
+    rh = _rh_with_rich_db()
+    monkeypatch.setattr(rh, "_is_task_query", lambda msg: False)
+    monkeypatch.setattr(rh, "hybrid_wrapper", lambda messages, session_id: "Sure, here's a draft.")
+    monkeypatch.setattr(rh, "chat_with_llama", lambda messages, session_id: '{"aliases":["Q-sub means quality submission."]}')
+
+    out = rh.get_response("Help me rewrite this.", "main_session", [])
+
+    assert out == "Sure, here's a draft."
+    assert any(row[1] == "alias" and "quality submission" in row[2] for row in rh.chat_handler.db._memory_rows)
+
+
+def test_chat_with_llama_restarts_worker_once_on_comm_error(monkeypatch):
+    rh = _rh()
+    rh.model_loaded = True
+
+    class _Stdout:
+        def readline(self):
+            return '{"response": "Recovered"}\n'
+
+    class _Stdin:
+        def __init__(self):
+            self.calls = 0
+
+        def write(self, text):
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError(22, "Invalid argument")
+
+        def flush(self):
+            return None
+
+    rh.process = SimpleNamespace(stdin=_Stdin(), stdout=_Stdout(), poll=lambda: None)
+    restarted = []
+
+    def _restart():
+        restarted.append(True)
+        rh.model_loaded = True
+
+    monkeypatch.setattr(rh, "_restart_worker", _restart)
+    rh.worker_lock = SimpleNamespace(__enter__=lambda self: None, __exit__=lambda self, exc_type, exc, tb: False)
+
+    class _Lock:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    rh.worker_lock = _Lock()
+    out = rh.chat_with_llama([{"role": "user", "content": "hi"}], "notes_session")
+    assert out == "Recovered"
+    assert restarted == [True]

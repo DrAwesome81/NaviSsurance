@@ -1,12 +1,118 @@
-import PyPDF2
 import requests
 from bs4 import BeautifulSoup
 import json
 import logging
-from pathlib import Path
 import re
+from core.file_handler import extract_text_from_file
+from core.grok_client import grok_available, grok_completion
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_text_from_url(url: str) -> str:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; NaviSsurance/1.0; +https://navisure.com)"
+    }
+    response = requests.get(url, timeout=20, headers=headers)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    text = soup.get_text("\n", strip=True)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _looks_like_worker_failure(response_text: str) -> bool:
+    text = (response_text or "").strip().lower()
+    return (
+        not text
+        or "local ai's acting up" in text
+        or "model not loaded" in text
+        or text.startswith("error:")
+    )
+
+
+def _repair_key_alignments_json_shape(json_str: str) -> str:
+    """
+    Repair a common malformed model output shape where ``key_alignments`` is
+    emitted as multiple adjacent quoted strings instead of one JSON value:
+
+    {"key_alignments":"item 1","item 2","item 3","improvements":[...]}
+
+    We collapse those strings into a single newline-separated string so the
+    payload becomes valid JSON.
+    """
+    key_marker = '"key_alignments"'
+    next_marker = '"improvements"'
+    key_idx = json_str.find(key_marker)
+    next_idx = json_str.find(next_marker, key_idx + len(key_marker))
+    if key_idx < 0 or next_idx < 0:
+        return json_str
+
+    colon_idx = json_str.find(":", key_idx + len(key_marker))
+    if colon_idx < 0 or colon_idx > next_idx:
+        return json_str
+
+    middle = json_str[colon_idx + 1:next_idx]
+    decoder = json.JSONDecoder()
+    strings = []
+    pos = 0
+    while pos < len(middle):
+        while pos < len(middle) and middle[pos] in " \t\r\n,":
+            pos += 1
+        if pos >= len(middle):
+            break
+        if middle[pos] != '"':
+            return json_str
+        try:
+            value, consumed = decoder.raw_decode(middle[pos:])
+        except json.JSONDecodeError:
+            return json_str
+        if not isinstance(value, str):
+            return json_str
+        strings.append(value)
+        pos += consumed
+
+    if not strings:
+        return json_str
+
+    joined = "\n".join(s for s in strings if s.strip())
+    rebuilt = (
+        json_str[:key_idx]
+        + f'{key_marker}: '
+        + json.dumps(joined, ensure_ascii=False)
+        + ", "
+        + json_str[next_idx:]
+    )
+    return rebuilt
+
+
+def _parse_compliance_json_response(response_text: str) -> dict:
+    cleaned_response = re.sub(r"```json|```", "", response_text).strip()
+
+    start = cleaned_response.find("{")
+    json_str = None
+    if start >= 0:
+        depth = 0
+        for i in range(start, len(cleaned_response)):
+            c = cleaned_response[i]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    json_str = cleaned_response[start:i + 1]
+                    break
+    if not json_str:
+        raise ValueError("No JSON object found in response")
+
+    logger.info("Extracted JSON string: %s", json_str)
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        repaired = _repair_key_alignments_json_shape(json_str)
+        if repaired != json_str:
+            logger.info("Repaired malformed key_alignments JSON shape")
+            return json.loads(repaired)
+        raise
 
 class ComplianceChecker:
     def __init__(self, chat_handler=None):
@@ -50,6 +156,41 @@ class ComplianceChecker:
         
         logger.info(f"Extracted {len(results)} items from text")
         return results
+
+    def check_compliance(self, ref_items, assess_items, session_id, conversation_history):
+        """
+        Backward-compatible entry point used by the UI thread wrapper.
+
+        Some callers still invoke ``check_compliance(...)`` while the primary
+        implementation lives in ``run_compliance_check(...)``.
+        """
+        return self.run_compliance_check(ref_items, assess_items, session_id, conversation_history)
+
+    def _request_analysis(self, prompt: str, session_id: str, conversation_history):
+        """
+        Prefer Grok directly for long structured compliance prompts.
+        Fall back to the existing chat handler only if Grok is unavailable.
+        """
+        try:
+            ok, _msg = grok_available()
+            if ok:
+                response = grok_completion(
+                    system=(
+                        "You are a medical device QA/compliance reviewer. "
+                        "Return only a valid JSON object with keys: "
+                        "overview, key_alignments, improvements, recommendations."
+                    ),
+                    user=prompt,
+                    model="grok-4-1-fast-reasoning-latest",
+                )
+                if response and not _looks_like_worker_failure(response):
+                    return response
+        except Exception as e:
+            logger.warning("Direct Grok compliance analysis failed, falling back: %s", e)
+
+        if self.chat_handler:
+            return self.chat_handler.get_response(prompt, session_id, conversation_history)
+        return ""
     
     def run_compliance_check(self, ref_items, assess_items, session_id, conversation_history):
         """
@@ -77,9 +218,9 @@ class ComplianceChecker:
         for item in ref_items + assess_items:
             if item.startswith("http"):
                 try:
-                    response = requests.get(item, timeout=10)
-                    soup = BeautifulSoup(response.text, "html.parser")
-                    text = soup.get_text()
+                    text = _extract_text_from_url(item)
+                    if not text:
+                        raise ValueError("No readable text could be extracted from URL")
                     documents.append({"type": "url", "content": text, "source": item})
                 except Exception as e:
                     return {
@@ -88,11 +229,11 @@ class ComplianceChecker:
                     }
             else:
                 try:
-                    with open(item, "rb") as f:
-                        pdf = PyPDF2.PdfReader(f)
-                        text = "".join(page.extract_text() for page in pdf.pages)
-                        print(f"Extracted text from {item}:length = {len(text)}")
-                        documents.append({"type": "file", "content": text, "source": item})
+                    text = extract_text_from_file(item)
+                    if not text or not text.strip():
+                        raise ValueError("Unsupported file type or no readable text extracted")
+                    print(f"Extracted text from {item}:length = {len(text)}")
+                    documents.append({"type": "file", "content": text, "source": item})
                 except Exception as e:
                     return {
                         "success": False,
@@ -125,58 +266,44 @@ class ComplianceChecker:
 
         # Call chat handler for analysis
         if self.chat_handler:
-            response = self.chat_handler.get_response(prompt, session_id, conversation_history)
+            response = self._request_analysis(prompt, session_id, conversation_history)
+            if _looks_like_worker_failure(response):
+                return {
+                    "success": False,
+                    "error": "Compliance analysis model did not return a usable response.",
+                    "raw_response": response,
+                }
             
             # Parse JSON response
             try:
-                # Extract full JSON object, ignoring code blocks
-                # First, remove code block markers if present
-                cleaned_response = re.sub(r'```json|```', '', response).strip()
+                results = _parse_compliance_json_response(response)
+                logger.info(f"Parsed results: {results}")
                 
-                # Find outermost { ... } with balanced braces (handles nested objects/arrays)
-                start = cleaned_response.find('{')
-                json_str = None
-                if start >= 0:
-                    depth = 0
-                    for i in range(start, len(cleaned_response)):
-                        c = cleaned_response[i]
-                        if c == '{':
-                            depth += 1
-                        elif c == '}':
-                            depth -= 1
-                            if depth == 0:
-                                json_str = cleaned_response[start:i + 1]
-                                break
-                if json_str:
-                    logger.info(f"Extracted JSON string: {json_str}")
-                    results = json.loads(json_str)
-                    logger.info(f"Parsed results: {results}")
-                    
-                    if not isinstance(results, dict):
-                        raise ValueError("Extracted data is not a JSON object")
-                    
-                    # Validate required keys
-                    if 'improvements' not in results or not isinstance(results['improvements'], list):
-                        raise ValueError("Missing or invalid 'improvements' array")
-                    
-                    return {
-                        "success": True,
-                        "data": results,
-                        "raw_response": response
-                    }
-                else:
-                    # Fallback to text extraction if no JSON
-                    logger.info("No JSON found - attempting post-processing extraction")
-                    results = self.extract_from_text(response)
-                    if results:
+                if not isinstance(results, dict):
+                    raise ValueError("Extracted data is not a JSON object")
+                
+                # Validate required keys
+                if 'improvements' not in results or not isinstance(results['improvements'], list):
+                    raise ValueError("Missing or invalid 'improvements' array")
+                
+                return {
+                    "success": True,
+                    "data": results,
+                    "raw_response": response
+                }
+            except Exception as e:
+                # Fallback to text extraction if no valid JSON could be parsed.
+                try:
+                    logger.info("JSON parsing failed - attempting post-processing extraction")
+                    extracted = self.extract_from_text(response)
+                    if extracted:
                         return {
                             "success": True,
-                            "data": {"overview": "", "key_alignments": "", "improvements": results, "recommendations": ""},
+                            "data": {"overview": "", "key_alignments": "", "improvements": extracted, "recommendations": ""},
                             "raw_response": response
                         }
-                    else:
-                        raise ValueError("No extractable data found in response")
-            except Exception as e:
+                except Exception:
+                    pass
                 logger.error(f"Error processing results: {e}")
                 logger.error(f"Raw response: {response}")
                 return {

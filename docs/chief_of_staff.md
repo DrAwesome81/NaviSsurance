@@ -16,6 +16,7 @@ This document tracks implementation status and remaining roadmap work.
 ### Core capabilities in production
 - **CoS conversational actions**
   - `ADD_TASK`, `ADD_CAL_BLOCK`
+  - task update actions: `TASK_SET_TAGS`, `TASK_SET_ESTIMATE`
   - full assignment actions (`ASSIGN`, status/priority/due/title/brief/summary/artifact updates)
   - bulk assignment actions (status/priority/due/reassign)
   - assignment-to-dashboard task actions (single + bulk, duplicate-safe by assignment ID)
@@ -33,6 +34,20 @@ This document tracks implementation status and remaining roadmap work.
 - **Testing**
   - broad CoS parser/service unit coverage with mocked LLM calls
   - additional utility/helper tests for due-date and bulk-mode parsing
+
+### AM Sweep (implemented)
+AM Sweep is a **user-initiated morning triage loop** that gathers context (open tasks, assignments, today/upcoming calendar, unreplied emails, memory) and produces:
+
+- an executive summary and four buckets: **Dispatch**, **Prep**, **Yours**, **Skip**
+- optional prose-only **time-block proposal** (no calendar writes unless explicit machine actions are emitted)
+- a final machine-action section that can:
+  - create assignments (`ASSIGN`) to route work to specialist agents in parallel
+  - tag / estimate existing tasks (`TASK_SET_TAGS`, `TASK_SET_ESTIMATE`)
+
+#### How to run it (UI)
+- Open the `Chief of Staff` tab
+- Use `Options` → `AM Sweep`
+- A dedicated chat thread is created if needed (titled like `AM Sweep YYYY-MM-DD`)
 
 ### Known gaps / next opportunities
 - Planning/prioritization scoring is still heuristic (no formal urgency/importance scoring engine yet).
@@ -64,6 +79,8 @@ Use exact line formats in CoS-generated actions:
 - `ADD_TASK_FROM_ASSIGNMENT: <A-0007 or 7> | <MM-DD-YYYY or none> | <Business or Personal>`
 - `BULK_ADD_TASKS_FROM_ASSIGNMENTS: <AgentName or all> | <Business or Personal> | <open or all (optional)>`
 - `ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal>`
+- `TASK_SET_TAGS: <task_id> | <json array of tags>` (example: `TASK_SET_TAGS: 123 | ["triage:dispatch","source:am_sweep"]`)
+- `TASK_SET_ESTIMATE: <task_id> | <minutes>` (0-600, example: `TASK_SET_ESTIMATE: 123 | 45`)
 - `ADD_CAL_BLOCK: <title> | <start datetime> | <end datetime> | <calendar id or primary>`
 
 ## Product Goals (Chief of Staff)

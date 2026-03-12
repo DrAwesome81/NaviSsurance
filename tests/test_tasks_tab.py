@@ -19,7 +19,7 @@ if not os.getenv("RUN_QT_TESTS"):
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget
+from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget, QCheckBox, QDialog
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -62,6 +62,14 @@ def test_tasks_tab_add_task_shows_in_table(qapp, tmp_db):
     tab.add_task()
     assert tab.table.rowCount() == 1
     assert "Review FDA guidance" in (tab.table.item(0, 1).text() or "")
+
+
+def test_tasks_tab_due_picker_preserves_selected_date(qapp, tmp_db, monkeypatch):
+    tab = TasksTab(_Parent(tmp_db))
+    tab.new_task_due.setText("02-28-2026")
+    monkeypatch.setattr("gui.tasks_tab.QDialog.exec", lambda _self: QDialog.DialogCode.Accepted)
+    tab._pick_new_task_due_date()
+    assert tab.new_task_due.text() == "02-28-2026"
 
 
 @pytest.mark.parametrize(
@@ -108,6 +116,26 @@ def test_tasks_tab_complete_and_undo(qapp, tmp_db):
     tab.refresh_tasks()
     assert tab.table.rowCount() == 1
     assert (tab.table.item(0, done_col).text() or "").strip() == ""
+
+
+def test_tasks_tab_compact_done_column_uses_checkbox(qapp, tmp_db):
+    tab = TasksTab(_Parent(tmp_db), show_header=False, compact=True)
+    tab.new_task_input.setText("Compact complete me")
+    tab.add_task()
+    assert tab.table.rowCount() == 1
+
+    done_col = _done_column_index(tab)
+    done_widget = tab.table.cellWidget(0, done_col)
+    assert done_widget is not None
+    checkbox = done_widget.findChild(QCheckBox)
+    assert checkbox is not None
+    assert checkbox.isChecked() is False
+
+    checkbox.setChecked(True)
+    qapp.processEvents()
+
+    # Completed tasks are hidden by default after refresh.
+    assert tab.table.rowCount() == 0
 
 
 def test_tasks_tab_delete_task(qapp, tmp_db, monkeypatch):
@@ -198,9 +226,9 @@ def test_mason_tasks_context_empty(qapp, tmp_db):
     """Mason context includes task/project headers and command docs when db is empty."""
     tab = TasksTab(_Parent(tmp_db))
     ctx = tab._mason_tasks_context()
-    assert "Current tasks (id, text, priority" in ctx
-    assert "  (none)" in ctx
-    assert "Current projects (id, name, client" in ctx
+    assert "Task snapshot" in ctx
+    assert "(none)" in ctx
+    assert "Projects" in ctx
     assert "ADD_TASK:" in ctx
     assert "TASK_UPDATE_PRIORITY:" in ctx
     assert "TASK_COMPLETE:" in ctx
@@ -259,4 +287,34 @@ def test_parse_mason_task_commands_strips_commands_from_response(qapp, tmp_db):
     assert "ADD_TASK:" not in out
     assert "Here's what I did" in out
     assert "Hope that helps" in out
+
+
+def test_mason_task_delete_requires_confirm(qapp, tmp_db):
+    tid = tmp_db.add_task("test", "Delete me", "03-01-2026", category="Business")
+    tab = TasksTab(_Parent(tmp_db))
+
+    out = tab._parse_mason_task_commands(f"TASK_DELETE: {tid}")
+    assert "Proposed (not executed)" in out
+
+    rows = tmp_db.list_tasks_rich(include_completed=True, include_snoozed=True, limit=50)
+    assert any(int(r.get("id") or 0) == int(tid) for r in rows)
+
+    tab._parse_mason_task_commands(f"CONFIRM: TASK_DELETE: {tid}")
+    rows2 = tmp_db.list_tasks_rich(include_completed=True, include_snoozed=True, limit=50)
+    assert not any(int(r.get("id") or 0) == int(tid) for r in rows2)
+
+
+def test_mason_project_delete_requires_confirm(qapp, tmp_db):
+    pid = tmp_db.cos_insert_project(name="Project X", client="Client", status="Active")
+    tab = TasksTab(_Parent(tmp_db))
+
+    out = tab._parse_mason_task_commands(f"PROJECT_DELETE: {pid}")
+    assert "Proposed (not executed)" in out
+
+    prows = tmp_db.cos_get_projects() or []
+    assert any(int(r[0] or 0) == int(pid) for r in prows)
+
+    tab._parse_mason_task_commands(f"CONFIRM: PROJECT_DELETE: {pid}")
+    prows2 = tmp_db.cos_get_projects() or []
+    assert not any(int(r[0] or 0) == int(pid) for r in prows2)
 

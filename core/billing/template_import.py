@@ -3,9 +3,16 @@ from __future__ import annotations
 import base64
 import html
 import io
+import json
+import os
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
+
+from config import ARTIFACTS_DIR
+from scripts.wire_invoice_docx_template import wire_invoice_docx
 
 
 @dataclass(frozen=True)
@@ -278,4 +285,55 @@ def import_invoice_template_from_pdf(pdf_path: str) -> ImportedTemplate:
     )
     body = wire_invoice_placeholders_html(body)
     return ImportedTemplate(engine="placeholder_v1_html", body=body)
+
+
+def import_invoice_template_from_docx(docx_path: str) -> ImportedTemplate:
+    """
+    Import a DOCX invoice template.
+
+    The DOCX is copied into the app's artifacts folder and the template body stores
+    a JSON pointer to that artifact.
+    """
+    p = Path(docx_path)
+    if not p.exists():
+        raise FileNotFoundError(str(p))
+    if p.suffix.lower() != ".docx":
+        raise ValueError("Expected a .docx file")
+
+    base_dir = os.path.join(str(ARTIFACTS_DIR), "invoice_templates")
+    os.makedirs(base_dir, exist_ok=True)
+
+    safe_stem = re.sub(r"[^a-zA-Z0-9_\\-\\.]+", "_", p.stem).strip("._") or "invoice_template"
+    out_name = f"{safe_stem}_{uuid4().hex[:10]}.docx"
+    out_path = os.path.join(base_dir, out_name)
+    wire_invoice_docx(in_path=p, out_path=Path(out_path))
+
+    rel_path = os.path.join("invoice_templates", out_name).replace("\\", "/")
+    body = json.dumps({"type": "docx", "path": rel_path}, ensure_ascii=False)
+    return ImportedTemplate(engine="docx_v1", body=body)
+
+
+def import_invoice_template_from_docx_preserve_layout(docx_path: str) -> ImportedTemplate:
+    """
+    Import a DOCX invoice template without rewriting it.
+
+    This preserves the exact branded Word layout for Word-native filling/export.
+    """
+    p = Path(docx_path)
+    if not p.exists():
+        raise FileNotFoundError(str(p))
+    if p.suffix.lower() != ".docx":
+        raise ValueError("Expected a .docx file")
+
+    base_dir = os.path.join(str(ARTIFACTS_DIR), "invoice_templates")
+    os.makedirs(base_dir, exist_ok=True)
+
+    safe_stem = re.sub(r"[^a-zA-Z0-9_\\-\\.]+", "_", p.stem).strip("._") or "invoice_template"
+    out_name = f"{safe_stem}_{uuid4().hex[:10]}.docx"
+    out_path = os.path.join(base_dir, out_name)
+    shutil.copyfile(str(p), out_path)
+
+    rel_path = os.path.join("invoice_templates", out_name).replace("\\", "/")
+    body = json.dumps({"type": "docx", "path": rel_path}, ensure_ascii=False)
+    return ImportedTemplate(engine="word_native_v1", body=body)
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from core.db import DatabaseManager
 
 
@@ -36,4 +38,98 @@ def test_notes_pin_and_delete(tmp_path):
     db.delete_note_by_id(note_id)
     notes2 = db.list_notes(limit=10)
     assert all(n["id"] != note_id for n in notes2)
+
+
+def test_notes_documents_save_and_list(tmp_path):
+    db = DatabaseManager()
+    db.db_name = str(tmp_path / "test_notes_documents.db")
+    db.setup_db()
+
+    db.save_note_document(
+        "Project X",
+        document_text="## Regulatory\n- Review Section 5\n",
+        source_note_count=2,
+    )
+
+    doc = db.get_note_document("Project X")
+    assert doc is not None
+    assert doc["context"] == "Project X"
+    assert "Review Section 5" in doc["document_text"]
+
+    docs = db.list_note_documents(limit=10)
+    assert any(d["context"] == "Project X" for d in docs)
+
+
+def test_list_notes_backfills_legacy_updated_at_column(tmp_path):
+    db_path = tmp_path / "legacy_notes.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                formatted_note TEXT NOT NULL,
+                category TEXT NOT NULL,
+                context TEXT,
+                raw_note TEXT,
+                state TEXT NOT NULL DEFAULT 'ready',
+                error_text TEXT,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                timestamp TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO notes (formatted_note, category, context, raw_note, state, error_text, pinned, timestamp, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            ("Legacy note", "General", "Project X", "Legacy note", "ready", None, 0, "2026-03-10 10:00:00"),
+        )
+        conn.commit()
+
+    db = DatabaseManager(db_name=str(db_path))
+    notes = db.list_notes(limit=10)
+
+    assert len(notes) == 1
+    assert notes[0]["formatted_note"] == "Legacy note"
+    assert "updated_at" in notes[0]
+
+
+def test_legacy_ready_notes_backfill_to_context_document(tmp_path):
+    db_path = tmp_path / "legacy_notes_docs.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                formatted_note TEXT NOT NULL,
+                category TEXT NOT NULL,
+                context TEXT,
+                raw_note TEXT,
+                state TEXT NOT NULL DEFAULT 'ready',
+                error_text TEXT,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                timestamp TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO notes (formatted_note, category, context, raw_note, state, error_text, pinned, timestamp, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            """,
+            ("Need to verify Section 5", "Regulatory", "Project X", "raw", "ready", None, 0, "2026-03-10 10:00:00"),
+        )
+        conn.commit()
+
+    db = DatabaseManager(db_name=str(db_path))
+    doc = db.get_note_document("Project X", create=False)
+
+    assert doc is not None
+    assert doc["context"] == "Project X"
+    assert "## Regulatory" in doc["document_text"]
+    assert "Need to verify Section 5" in doc["document_text"]
 

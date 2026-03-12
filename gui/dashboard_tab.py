@@ -304,9 +304,11 @@ class DashboardTab(QWidget):
             fallback = self._linkify_briefing_urls(fallback)
             return f"<div style='color: #e8eaed; padding: 10px; line-height: 1.5;'>{fallback}</div>"
         try:
-            from core.response_handler import ResponseHandler
-
-            response_handler = ResponseHandler(chat_handler_obj, None)
+            response_handler = getattr(chat_handler_obj, "response_handler", None)
+            if response_handler is None:
+                fallback = (briefing or "").replace("\n", "<br>")
+                fallback = self._linkify_briefing_urls(fallback)
+                return f"<div style='color: #e8eaed; padding: 10px; line-height: 1.5;'>{fallback}</div>"
             formatted_briefing = response_handler.chat_with_llama(
                 [
                     {

@@ -7,6 +7,7 @@ import json
 import time
 from datetime import datetime
 from dateutil import parser
+from gui.notifications import notify_chat_response
 
 PIPE_TASK_PATTERN = re.compile(
     r"(?:^|[\r\n]|(?:\s[-*•]\s))(?P<task>[^|\r\n]+?)\s*\|\s*(?P<due>\d{2}-\d{2}-\d{4}|none)\s*\|\s*(?P<category>Business|Personal)\b",
@@ -60,38 +61,13 @@ class ChatThread(QThread):
         try:
             sid = str(self.session_id or "")
 
-            # Chief of Staff replaces Navi for main/dashboard chat:
-            # - If session_id is a CoS session, route directly to cos_response.
-            # - This avoids the legacy "Added..." parsing and keeps CoS memory/calendar/tool loop behavior.
+            # Dashboard/main chat and dedicated CoS chats share the same persistence layer.
+            # Route through the main chat router so dashboard can use a safe local-fast lane,
+            # while other CoS sessions keep the full CoS/Grok behavior.
             if sid.startswith("cos_") or sid == "main_session":
                 try:
-                    from core.chief_of_staff_service import cos_response
-                    db = getattr(self.chat_handler, "db", None)
-                    if db is None:
-                        raise RuntimeError("DatabaseManager not available for CoS chat")
-
-                    chat_id = None
-                    if sid.startswith("cos_"):
-                        try:
-                            chat_id = int(sid.split("_", 1)[1])
-                        except Exception:
-                            chat_id = None
-
-                    response = cos_response(db, self.message, conversation_history=self.history, chat_id=chat_id)
-
-                    # Persist assistant reply to the same session.
-                    try:
-                        self.chat_handler.save_message(sid, "assistant", response)
-                    except Exception:
-                        pass
-
-                    # Update chat list timestamp (if we have a real chat_id)
-                    if chat_id is not None:
-                        try:
-                            db.cos_update_chat(chat_id)
-                        except Exception:
-                            pass
-
+                    from core.main_chat_router import run_main_chat_turn
+                    response = run_main_chat_turn(self.chat_handler, self.message, sid, self.history)
                     self.response_signal.emit(response or "")
                     return
                 except Exception as e:
@@ -256,6 +232,7 @@ class ResponseHandler:
         self.chatInput.setEnabled(True)
         self.chatInput.clear()
         self.chatInput.setFocus()
+        notify_chat_response(self.chatDisplay, "Navi")
 
     def handle_task_added(self, task_text, due_date):
         if hasattr(self, 'window') and hasattr(self.window, 'addTaskFromChat'):

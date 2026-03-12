@@ -12,6 +12,7 @@ import sys
 from unittest.mock import Mock
 
 import pytest
+from docx import Document
 
 if not os.getenv("RUN_QT_TESTS"):
     pytest.skip(
@@ -97,20 +98,33 @@ def test_compliance_run_check_requires_both_lists(compliance_tab):
     assert "Add at least one reference and assessed document" in compliance_tab.results_text.toPlainText()
 
 
-def test_compliance_save_report_to_json(monkeypatch, compliance_tab, tmp_path):
-    out_path = tmp_path / "report.json"
+def test_compliance_save_report_to_txt(monkeypatch, compliance_tab, tmp_path):
+    out_path = tmp_path / "report.txt"
     monkeypatch.setattr(
         "gui.compliance_tab.QFileDialog.getSaveFileName",
-        lambda *args, **kwargs: (str(out_path), "JSON Files (*.json)"),
+        lambda *args, **kwargs: (str(out_path), "Text Files (*.txt)"),
     )
 
     compliance_tab.results_text.setPlainText("Line 1\nLine 2")
     compliance_tab.save_compliance_report()
 
     assert out_path.exists()
-    with open(out_path, "r", encoding="utf-8") as f:
-        arr = json.load(f)
-    assert arr == ["Line 1", "Line 2"]
+    assert out_path.read_text(encoding="utf-8") == "Line 1\nLine 2"
+
+
+def test_compliance_save_report_to_docx(monkeypatch, compliance_tab, tmp_path):
+    out_path = tmp_path / "report.docx"
+    monkeypatch.setattr(
+        "gui.compliance_tab.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (str(out_path), "Word Documents (*.docx)"),
+    )
+
+    compliance_tab.results_text.setPlainText("Line 1\nLine 2")
+    compliance_tab.save_compliance_report()
+
+    assert out_path.exists()
+    doc = Document(str(out_path))
+    assert [p.text for p in doc.paragraphs] == ["Line 1", "Line 2"]
 
 
 def test_compliance_clear_dataset_and_link_message(compliance_tab, tmp_path):
@@ -210,6 +224,19 @@ def test_compliance_complete_success_without_sections_sets_fallback(compliance_t
     assert "No results found." in compliance_tab.results_text.toPlainText()
 
 
+def test_compliance_complete_success_without_sections_shows_raw_response_when_available(compliance_tab):
+    compliance_tab._on_compliance_complete_safe(
+        {
+            "success": True,
+            "data": {"overview": "", "key_alignments": "", "improvements": [], "recommendations": ""},
+            "raw_response": '{"overview":"","key_alignments":"","improvements":[],"recommendations":""}',
+        }
+    )
+    text = compliance_tab.results_text.toPlainText()
+    assert "Compliance check returned no structured sections." in text
+    assert '"improvements":[]' in text
+
+
 def test_run_compliance_check_click_starts_thread_and_disables_button(monkeypatch, compliance_tab):
     compliance_tab.ref_list.addItem("https://example.com/ref")
     compliance_tab.assess_list.addItem("https://example.com/assess")
@@ -248,6 +275,25 @@ def test_run_compliance_check_click_starts_thread_and_disables_button(monkeypatc
     assert compliance_tab.progress_bar.isHidden() is False
     assert "Running compliance check..." in compliance_tab.results_text.toPlainText()
     assert getattr(compliance_tab, "compliance_thread").started is True
+
+
+def test_compliance_thread_emits_checker_result_without_extra_wrapping(qapp):
+    from gui.compliance_tab import ComplianceThread
+
+    payload = {"success": True, "data": {"overview": "ok", "improvements": []}, "raw_response": "{}"}
+
+    class _Checker:
+        def check_compliance(self, ref_items, assess_items, session_id, conversation_history):
+            return payload
+
+    seen = []
+    thread = ComplianceThread(_Checker(), ["r"], ["a"], "compliance_session", [])
+    thread.result_signal.connect(lambda result: seen.append(result))
+
+    # Call run() directly so the test stays deterministic and avoids thread timing issues.
+    thread.run()
+
+    assert seen == [payload]
 
 
 def test_show_ref_context_menu_remove_deletes_selected_item(monkeypatch, compliance_tab):

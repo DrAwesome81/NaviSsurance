@@ -7,8 +7,10 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Tuple, Optional
+from dateutil.tz import tzlocal
 
 from core.db import DatabaseManager
 from core.grok_client import (
@@ -27,8 +29,22 @@ from core.cos_calendar import (
     get_calendar_events,
 )
 from core.cos_doc_search import doc_search, format_hits
+from core.user_memory import build_user_memory_context
 
 logger = logging.getLogger(__name__)
+
+
+def _log_timing(event: str, t0: float, **fields) -> None:
+    """Best-effort per-request timing log (INFO to file)."""
+    try:
+        elapsed_ms = int((time.monotonic() - float(t0)) * 1000)
+        if fields:
+            extra = " ".join(f"{k}={v}" for k, v in fields.items())
+            logger.info("TIMING %s elapsed_ms=%s %s", event, elapsed_ms, extra)
+        else:
+            logger.info("TIMING %s elapsed_ms=%s", event, elapsed_ms)
+    except Exception:
+        return
 
 # Pattern for CoS to add a task:
 # ADD_TASK: text | due_date (MM-DD-YYYY or none) | category (Business or Personal) [| priority(P0-P5|0-5|none)] [| next_action(MM-DD-YYYY|none)] [| project_id|none] [| recurrence]
@@ -128,6 +144,12 @@ BULK_ADD_TASKS_FROM_ASSIGNMENTS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Task update commands (for AM Sweep persistence)
+# TASK_SET_TAGS: task_id | ["tag1","tag2"]
+TASK_SET_TAGS_PATTERN = re.compile(r"^\s*TASK_SET_TAGS:\s*(.+?)\s*$", re.IGNORECASE)
+# TASK_SET_ESTIMATE: task_id | minutes
+TASK_SET_ESTIMATE_PATTERN = re.compile(r"^\s*TASK_SET_ESTIMATE:\s*(.+?)\s*$", re.IGNORECASE)
+
 # Explicit command prefixes that should bypass model translation when the
 # user message is already command-only.
 ACTION_COMMAND_PREFIXES: tuple[str, ...] = (
@@ -148,12 +170,15 @@ ACTION_COMMAND_PREFIXES: tuple[str, ...] = (
     "ADD_ASSIGNMENT_ARTIFACT:",
     "ADD_TASK_FROM_ASSIGNMENT:",
     "BULK_ADD_TASKS_FROM_ASSIGNMENTS:",
+    "TASK_SET_TAGS:",
+    "TASK_SET_ESTIMATE:",
 )
 
 # CoS tool triggers (tool loop)
 WEB_SEARCH_TRIGGER = re.compile(r"^\s*WEB_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
 DOC_SEARCH_TRIGGER = re.compile(r"^\s*DOC_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
 MEMORY_SEARCH_TRIGGER = re.compile(r"^\s*MEMORY_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
+CHAT_HISTORY_SEARCH_TRIGGER = re.compile(r"^\s*CHAT_HISTORY_SEARCH:\s*(.+?)\s*$", re.IGNORECASE)
 
 
 def _now_local():
@@ -165,7 +190,10 @@ def _local_time_context(now: Optional[datetime] = None) -> str:
     Build stable local time context for every interaction.
     """
     dt = now or _now_local()
-    local_dt = dt.astimezone() if getattr(dt, "tzinfo", None) else datetime.now().astimezone()
+    if getattr(dt, "tzinfo", None):
+        local_dt = dt.astimezone()
+    else:
+        local_dt = dt.replace(tzinfo=tzlocal())
     today = local_dt.strftime("%Y-%m-%d")
     time_str = local_dt.strftime("%I:%M %p").lstrip("0")
     tz_name = local_dt.tzname() or "local"
@@ -235,6 +263,89 @@ def _tasks_context(db: DatabaseManager) -> str:
     except Exception as e:
         logger.warning("Could not load tasks for CoS context: %s", e)
         return "**Dashboard tasks:** (unable to load)"
+
+
+def _compact_conversation_history(
+    conversation_history: List[Tuple[str, str]] | None,
+    *,
+    max_messages: int = 6,
+    max_chars_per_message: int = 1200,
+) -> list[tuple[str, str]]:
+    compact: list[tuple[str, str]] = []
+    for item in conversation_history or []:
+        if not isinstance(item, (tuple, list)) or len(item) < 2:
+            continue
+        role = str(item[0] or "").strip().lower()
+        content = str(item[1] or "").strip()
+        if role not in {"user", "assistant"} or not content:
+            continue
+        if len(content) > max_chars_per_message:
+            content = content[: max_chars_per_message - 3].rstrip() + "..."
+        compact.append((role, content))
+    if len(compact) <= max_messages:
+        return compact
+    return compact[-max_messages:]
+
+
+def _chat_history_tool_result(
+    db: DatabaseManager,
+    query: str,
+    *,
+    chat_id: Optional[int] = None,
+) -> tuple[str, str]:
+    if not chat_id:
+        return "CHAT_HISTORY_RESULTS", "CHAT_HISTORY_RESULTS (untrusted):\n(unavailable for this chat)"
+    rows = []
+    try:
+        rows = db.search_chat_history(f"cos_{int(chat_id)}", query, limit=8)
+    except Exception:
+        rows = []
+    lines = []
+    for role, content, timestamp in rows[:8]:
+        snippet = str(content or "").strip().replace("\r", " ").replace("\n", " ")
+        if len(snippet) > 240:
+            snippet = snippet[:237].rstrip() + "..."
+        lines.append(f"- [{timestamp}] {role}: {snippet}")
+    return "CHAT_HISTORY_RESULTS", "CHAT_HISTORY_RESULTS (untrusted):\n" + (
+        "\n".join(lines) if lines else "(no matches)"
+    )
+
+
+def _tasks_context_rich(db: DatabaseManager, *, limit: int = 80) -> str:
+    """
+    Rich task context with IDs and fields so the model can emit TASK_SET_* updates safely.
+    """
+    try:
+        rows = db.list_tasks_rich(
+            category=None,
+            date_filter="All",
+            specific_date=None,
+            include_completed=False,
+            include_snoozed=False,
+            search=None,
+            cos_project_id=None,
+            sort_by="priority",
+            limit=int(limit),
+        )
+        if not rows:
+            return "**Dashboard tasks (rich):** (none)"
+        lines: list[str] = []
+        for r in rows[: int(limit)]:
+            tid = int(r.get("id") or 0)
+            text = str(r.get("task_text") or "").strip() or "(empty task)"
+            due = str(r.get("due_date") or "").strip()
+            pr = int(r.get("priority") or 0)
+            est = int(r.get("estimate_minutes") or 0)
+            next_action = str(r.get("next_action_date") or "").strip()
+            tags_json = str(r.get("tags_json") or "[]").strip()
+            due_part = f" due {due}" if due else ""
+            next_part = f" next {next_action}" if next_action else ""
+            est_part = f" est {est}m" if est else ""
+            lines.append(f"- #{tid} P{pr} {text}{due_part}{next_part}{est_part} tags={tags_json}")
+        return "**Dashboard tasks (rich, open):**\n" + "\n".join(lines)
+    except Exception as e:
+        logger.warning("Could not load rich tasks for CoS context: %s", e)
+        return "**Dashboard tasks (rich):** (unable to load)"
 
 
 def _assignments_context(db: DatabaseManager) -> str:
@@ -322,6 +433,199 @@ def _calendar_context() -> str:
         return "**Calendar:** (error loading) " + str(e)
 
 
+def _emails_context(db: DatabaseManager) -> str:
+    """Format unreplied emails (best-effort) for AM Sweep context."""
+    try:
+        rows = db.list_unreplied_emails(limit=25, days=14, only_clients_or_potentials=True)
+    except Exception as e:
+        logger.warning("Could not load unreplied emails for CoS context: %s", e)
+        return "**Unreplied emails:** (unable to load)"
+
+    if not rows:
+        return "**Unreplied emails (last 14 days):** (none)"
+
+    from datetime import datetime, UTC
+
+    now_utc = datetime.now(UTC)
+    lines: list[str] = []
+    for r in rows[:25]:
+        sender = str(r.get("sender") or "").strip() or "(unknown sender)"
+        subject = str(r.get("subject") or "").strip() or "(no subject)"
+        ts = r.get("timestamp")
+        age = ""
+        try:
+            if ts is not None:
+                dt = datetime.fromtimestamp(int(ts), tz=UTC)
+                delta = now_utc - dt
+                days = int(delta.total_seconds() // 86400)
+                if days <= 0:
+                    age = " (today)"
+                elif days == 1:
+                    age = " (1d ago)"
+                else:
+                    age = f" ({days}d ago)"
+        except Exception:
+            age = ""
+
+        flags: list[str] = []
+        if int(r.get("is_client") or 0) == 1:
+            flags.append("CLIENT")
+        if int(r.get("is_potential") or 0) == 1:
+            flags.append("POTENTIAL")
+        flag_str = f" [{'|'.join(flags)}]" if flags else ""
+
+        folder = str(r.get("folder") or "").strip()
+        account = str(r.get("account") or "").strip()
+        src = str(r.get("source") or "").strip()
+        meta = " / ".join(x for x in (account, folder, src) if x)
+        meta_str = f" — {meta}" if meta else ""
+
+        # Keep line compact; avoid dumping full email bodies into prompt.
+        lines.append(f"- {sender}: {subject}{age}{flag_str}{meta_str}")
+
+    return "**Unreplied emails (unanswered, last 14 days):**\n" + "\n".join(lines)
+
+
+def cos_am_sweep(
+    db: DatabaseManager,
+    *,
+    conversation_history: List[Tuple[str, str]] | None = None,
+    chat_id: Optional[int] = None,
+) -> str:
+    """
+    AM Sweep: triage today's operational state into Dispatch/Prep/Yours/Skip and emit action lines.
+    Reuses the same action parser as cos_response so ASSIGN/ADD_TASK/ADD_CAL_BLOCK side effects work.
+    """
+    t0 = time.monotonic()
+    now = _now_local()
+    local_time_ctx = _local_time_context(now)
+    prefs = db.cos_get_preferences()
+    prefs_ctx = _preferences_context(prefs)
+
+    tasks_ctx = _tasks_context_rich(db)
+    assignments_ctx = _assignments_context(db)
+    cal_ctx = _calendar_context()
+    emails_ctx = _emails_context(db)
+    mem_ctx = _memory_context(db, "AM Sweep", chat_id)
+
+    cal_ok, cal_reason = calendar_write_available()
+    if cal_ok:
+        calendar_instructions = """
+
+Calendar scheduling is available, but it is OPTIONAL. If you include calendar blocks, only schedule blocks for \"Yours\" work and only when you are confident about the time window. To schedule a block, write one or more lines in this exact format (one block per line):
+ADD_CAL_BLOCK: <title> | <start datetime> | <end datetime> | <calendar id or "primary">
+Prefer ISO-8601 datetimes with timezone offsets.
+Omit ADD_CAL_BLOCK lines if you are not scheduling calendar blocks.
+""".rstrip()
+    else:
+        reason = (cal_reason or "").strip() or "not configured"
+        calendar_instructions = f"""
+
+Calendar scheduling is currently unavailable ({reason}). Do not output ADD_CAL_BLOCK lines or claim you scheduled anything. If time-blocking would help, propose a schedule in prose and/or add a dashboard task reminder instead.
+""".rstrip()
+
+    system = f"""You are an AI Chief of Staff running Adam's AM Sweep.
+
+Purpose: take the current operational state (tasks, calendar, unreplied emails, delegated assignments) and produce an action-ready plan for TODAY.
+
+Priority semantics (critical—many systems use P0 for "highest"; we do not):
+- Dashboard tasks: P0 = lowest urgency (background), P5 = highest urgency (urgent).
+- When writing the executive summary or any prose, never call P0 or P1 "high priority".
+- Reserve "high priority" / "urgent" for P4–P5 only. P0 often indicates unspecified or background work.
+
+Hard boundaries:
+- Never send email. You may draft, but drafts must be routed as assignments (Quill) or described as drafts for review.
+- Do not make pricing decisions, relationship-sensitive decisions, or final regulatory strategy calls. If uncertain, choose PREP or YOURS.
+- Prefer explicit, machine-parseable action lines for any change you want executed.
+
+Classification buckets (exactly one per item):
+- Dispatch: can be completed to review-ready output by an agent with minimal ambiguity.
+- Prep: can be brought ~80% ready; requires Adam's judgment to finish.
+- Yours: requires Adam's judgment/presence/sign-off.
+- Skip: not actionable today (defer/snooze), waiting on inputs, or low value today.
+
+Routing (use these agent names in ASSIGN lines):
+- Quill: drafts/rewrites (emails, briefs, follow-ups). Never sends; produces drafts + variants + questions.
+- Atlas: research with citations + gaps + recommended next queries.
+- Lex: contract/policy extraction + obligations + decisions needed.
+- Ledger: billing/invoice prep + anomalies/questions.
+- Archive: notes/filing/timelines + links to source items.
+- Sentinel: QA pass / risk flags / consistency checks.
+- Scout: prospect/lead recon + outreach prep.
+- Mason: task triage + command emission (use sparingly; you are already doing AM Sweep).
+- Pulse: briefing/monitoring summaries (rare in AM Sweep).
+- Shield: secrets/safety check.
+
+Assignment brief templates (use these patterns so outputs are consistent):
+- Quill brief must include: (1) the goal; (2) key facts to preserve; (3) 2 tone variants; (4) explicit questions for Adam; (5) a \"draft only\" reminder.
+- Atlas brief must include: (1) exact research question; (2) scope limits; (3) must cite sources with URLs; (4) deliver: findings + gaps + recommended next queries.
+- Lex brief must include: (1) document type; (2) extraction targets (obligations, deadlines, risks); (3) output: bullet list + decision points.
+- Ledger brief must include: (1) time window; (2) client/project; (3) deliver: draft invoice inputs + anomalies + questions.
+- Archive brief must include: (1) what to update; (2) structure; (3) output: clean notes + action items + links to source items.
+- Sentinel brief must include: (1) what to QA; (2) checklist (clarity, missing info, contradictions, risky wording); (3) output: issues + suggested fixes.
+
+Output format requirements:
+1) Start with a short executive summary (3-6 bullets max).
+2) Then four sections in this order with bullet lists: Dispatch, Prep, Yours, Skip.
+3) Optionally include a short \"Time-block proposal\" paragraph after Skip (prose only). If calendar scheduling is unavailable, this is the ONLY scheduling output you should produce.
+4) End with a final section titled exactly: \"## Actions (machine)\".
+   Under that header, output ONLY machine-action lines (no bullets, no commentary).
+
+Parallelism expectation:
+- If there are multiple Dispatch/Prep items, emit MULTIPLE ASSIGN lines (one per item/agent) so work can run in parallel.
+
+Action commands you may output:
+- ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal> [| <priority P0-P5 or 0-5 or none>] [| <next action date MM-DD-YYYY or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]
+- TASK_SET_TAGS: <task_id> | <json array of tags>    (example: TASK_SET_TAGS: 123 | [\"triage:dispatch\",\"source:am_sweep\"])
+- TASK_SET_ESTIMATE: <task_id> | <minutes>           (0-600, example: TASK_SET_ESTIMATE: 123 | 45)
+- ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>
+{calendar_instructions}
+
+When generating ASSIGN briefs, be specific about expected output and include any needed context from the inputs below.
+Always interpret and communicate schedule/time references in Adam's local timezone; include timezone offsets when scheduling.
+""".strip()
+
+    time_ctx = local_time_ctx
+    if prefs_ctx:
+        time_ctx += f"\n\n**His stated preferences / constraints:**\n{prefs_ctx}"
+    if cal_ctx:
+        time_ctx += f"\n\n{cal_ctx}"
+    if emails_ctx:
+        time_ctx += f"\n\n{emails_ctx}"
+    if mem_ctx:
+        time_ctx += f"\n\n{mem_ctx}"
+    time_ctx += f"\n\n{tasks_ctx}\n\n{assignments_ctx}"
+
+    user_prompt = (
+        "Run AM Sweep now.\n\n"
+        "Remember: put any command lines only under '## Actions (machine)'."
+    )
+
+    try:
+        if conversation_history:
+            messages = [{"role": "system", "content": system + "\n\n" + time_ctx}]
+            for role, content in conversation_history:
+                if role in ("user", "assistant") and content:
+                    messages.append({"role": role, "content": content})
+            messages.append({"role": "user", "content": user_prompt})
+            out = _cos_run_tool_loop_messages(db, messages, chat_id=chat_id)
+        else:
+            out = _cos_run_tool_loop_single(db, system + "\n\n" + time_ctx, user_prompt, chat_id=chat_id)
+        cleaned = _parse_and_add_tasks(db, (out or "").strip(), chat_id=chat_id)
+        _extract_and_store_memory(db, chat_id=chat_id, user_message="AM Sweep", assistant_message=cleaned)
+        _log_timing(
+            "cos_am_sweep",
+            t0,
+            chat_id=chat_id,
+            history_len=len(conversation_history or []),
+            out_chars=len(out or ""),
+        )
+        return cleaned
+    except Exception as e:
+        logger.exception("CoS AM Sweep failed: %s", e)
+        _log_timing("cos_am_sweep_error", t0, chat_id=chat_id)
+        return f"Error: {e}"
+
 def _memory_context(db: DatabaseManager, user_message: str, chat_id: Optional[int]) -> str:
     """
     Retrieve relevant memory (structured + raw conversation) to ground responses.
@@ -353,6 +657,13 @@ def _memory_context(db: DatabaseManager, user_message: str, chat_id: Optional[in
                 excerpt = excerpt[:177] + "..."
             lines.append(f"- ({role}) {excerpt}")
         parts.append("**Relevant past chat snippets (FTS):**\n" + "\n".join(lines))
+
+    try:
+        global_memory = build_user_memory_context(db, q, limit=4, recent_limit=2)
+    except Exception:
+        global_memory = ""
+    if global_memory:
+        parts.append(global_memory)
 
     return "\n\n".join(parts)
 
@@ -641,6 +952,96 @@ def _extract_explicit_action_lines(message: str) -> list[str]:
     return lines
 
 
+def _cos_tool_results_for_trigger(db: DatabaseManager, out: str, *, chat_id: Optional[int] = None) -> Optional[tuple[str, str]]:
+    """
+    If out is a tool trigger, return (tool_name, tool_result_text). Else None.
+    Shared by both AM Sweep and normal CoS responses.
+    """
+    out = (out or "").strip()
+    m_web = WEB_SEARCH_TRIGGER.match(out)
+    m_doc = DOC_SEARCH_TRIGGER.match(out)
+    m_mem = MEMORY_SEARCH_TRIGGER.match(out)
+    m_hist = CHAT_HISTORY_SEARCH_TRIGGER.match(out)
+    if m_web:
+        query = m_web.group(1).strip()
+        ok, _msg = grok_available()
+        results = ""
+        if ok and query:
+            try:
+                results = grok_web_search(query, model=MODEL_FAST)
+            except Exception:
+                results = ""
+        return "WEB_SEARCH_RESULTS", "WEB_SEARCH_RESULTS (untrusted):\n" + (results or "(no results)")
+    if m_doc:
+        query = m_doc.group(1).strip()
+        hits = []
+        try:
+            hits = doc_search(db.db_name, query, limit=10)
+        except Exception:
+            hits = []
+        return "DOC_SEARCH_RESULTS", "DOC_SEARCH_RESULTS (untrusted):\n" + format_hits(hits)
+    if m_mem:
+        query = m_mem.group(1).strip()
+        rows = []
+        try:
+            rows = db.cos_memory_search(query=query, chat_id=chat_id, limit=10)
+        except Exception:
+            rows = []
+        lines = []
+        for _id, _chat_id, kind, content, _json_data, created_at in rows[:10]:
+            lines.append(f"- ({kind}) {content}")
+        return "MEMORY_SEARCH_RESULTS", "MEMORY_SEARCH_RESULTS (untrusted):\n" + ("\n".join(lines) if lines else "(no matches)")
+    if m_hist:
+        query = m_hist.group(1).strip()
+        return _chat_history_tool_result(db, query, chat_id=chat_id)
+    return None
+
+
+def _cos_run_tool_loop_single(
+    db: DatabaseManager,
+    system_text: str,
+    user_text: str,
+    *,
+    chat_id: Optional[int] = None,
+) -> str:
+    """Tool loop for single-turn CoS flows using grok_completion."""
+    user_aug = user_text
+    out = ""
+    for _ in range(3):
+        out = grok_completion(system_text, user_aug, model=MODEL_COS)
+        out = (out or "").strip()
+        if not out:
+            return out
+        tool = _cos_tool_results_for_trigger(db, out, chat_id=chat_id)
+        if not tool:
+            return out
+        _, tool_text = tool
+        user_aug = user_text + "\n\n" + tool_text
+    return out
+
+
+def _cos_run_tool_loop_messages(
+    db: DatabaseManager,
+    messages: list[dict],
+    *,
+    chat_id: Optional[int] = None,
+) -> str:
+    """Tool loop for multi-turn CoS flows using grok_completion_messages."""
+    msgs = list(messages)
+    out = ""
+    for _ in range(3):
+        out = grok_completion_messages(msgs, model=MODEL_COS)
+        out = (out or "").strip()
+        if not out:
+            return out
+        tool = _cos_tool_results_for_trigger(db, out, chat_id=chat_id)
+        if not tool:
+            return out
+        _, tool_text = tool
+        msgs.append({"role": "user", "content": tool_text})
+    return out
+
+
 def cos_response(
     db: DatabaseManager,
     user_message: str,
@@ -651,6 +1052,7 @@ def cos_response(
     Chief of Staff: you say what you're working on and what's come up; model responds.
     If conversation_history is provided (list of (role, content)), uses multi-turn context.
     """
+    t0 = time.monotonic()
     explicit_action_lines = _extract_explicit_action_lines(user_message or "")
     if explicit_action_lines:
         try:
@@ -661,9 +1063,11 @@ def cos_response(
                 user_message=user_message,
                 assistant_message=response,
             )
+            _log_timing("cos_response", t0, mode="explicit", chat_id=chat_id, chars=len(user_message or ""))
             return response
         except Exception as e:
             logger.exception("CoS explicit command handling failed: %s", e)
+            _log_timing("cos_response_error", t0, mode="explicit", chat_id=chat_id)
             return f"Error: {e}"
 
     now = _now_local()
@@ -788,10 +1192,13 @@ This adds one dashboard task per matching assignment using assignment titles.
 Assignments that already have dashboard tasks are skipped automatically.
 Omit BULK_ADD_TASKS_FROM_ASSIGNMENTS lines if you are not bulk-creating tasks from assignments.
 
+In ongoing chats, you may only see a compact recent window of the conversation by default. If older context matters, request chat history instead of guessing.
+
 If you need more information to answer well, you may request one of these tools by returning EXACTLY ONE line with one of:
 - WEB_SEARCH:<query>
 - DOC_SEARCH:<query>   (searches local docs/notes and optional RAG index)
 - MEMORY_SEARCH:<query> (searches stored CoS memory)
+- CHAT_HISTORY_SEARCH:<query> (searches older messages from this chat only)
 
 If you request a tool, you must return only that single tool line (no other text).
 
@@ -805,6 +1212,7 @@ Always interpret and communicate schedule/time references in the user's local ti
         m_web = WEB_SEARCH_TRIGGER.match(out)
         m_doc = DOC_SEARCH_TRIGGER.match(out)
         m_mem = MEMORY_SEARCH_TRIGGER.match(out)
+        m_hist = CHAT_HISTORY_SEARCH_TRIGGER.match(out)
         if m_web:
             query = m_web.group(1).strip()
             ok, _msg = grok_available()
@@ -834,6 +1242,9 @@ Always interpret and communicate schedule/time references in the user's local ti
             for _id, _chat_id, kind, content, _json_data, created_at in rows[:10]:
                 lines.append(f"- ({kind}) {content}")
             return "MEMORY_SEARCH_RESULTS", "MEMORY_SEARCH_RESULTS (untrusted):\n" + ("\n".join(lines) if lines else "(no matches)")
+        if m_hist:
+            query = m_hist.group(1).strip()
+            return _chat_history_tool_result(db, query, chat_id=chat_id)
         return None
 
     def _run_tool_loop_single(system_text: str, user_text: str) -> str:
@@ -900,9 +1311,19 @@ Always interpret and communicate schedule/time references in the user's local ti
             out = _run_tool_loop_single(system, user)
             cleaned = _parse_and_add_tasks(db, out, chat_id=chat_id)
             _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=cleaned)
+            _log_timing(
+                "cos_response",
+                t0,
+                mode="llm_single",
+                chat_id=chat_id,
+                chars=len(user_message or ""),
+                history_len=0,
+                out_chars=len(out or ""),
+            )
             return cleaned
         except Exception as e:
             logger.exception("CoS response failed: %s", e)
+            _log_timing("cos_response_error", t0, mode="llm_single", chat_id=chat_id)
             return f"Error: {e}"
 
     # Multi-turn: build messages list. Caller must have saved the current user message and included it in conversation_history.
@@ -914,8 +1335,9 @@ Always interpret and communicate schedule/time references in the user's local ti
     if mem_ctx:
         time_ctx += f"\n\n{mem_ctx}"
     time_ctx += f"\n\n{tasks_ctx}\n\n{assignments_ctx}"
+    recent_history = _compact_conversation_history(conversation_history)
     messages = [{"role": "system", "content": system + "\n\n" + time_ctx}]
-    for role, content in conversation_history:
+    for role, content in recent_history:
         if role in ("user", "assistant") and content:
             messages.append({"role": role, "content": content})
 
@@ -923,9 +1345,20 @@ Always interpret and communicate schedule/time references in the user's local ti
         out = _run_tool_loop_messages(messages)
         cleaned = _parse_and_add_tasks(db, (out or "").strip(), chat_id=chat_id)
         _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=cleaned)
+        _log_timing(
+            "cos_response",
+            t0,
+            mode="llm_multi",
+            chat_id=chat_id,
+            chars=len(user_message or ""),
+            history_len=len(conversation_history or []),
+            history_used_len=len(recent_history),
+            out_chars=len(out or ""),
+        )
         return cleaned
     except Exception as e:
         logger.exception("CoS response failed: %s", e)
+        _log_timing("cos_response_error", t0, mode="llm_multi", chat_id=chat_id)
         return f"Error: {e}"
 
 
@@ -943,6 +1376,9 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     added_tasks = 0
     added_tasks_from_assignments = 0
     added_blocks = 0
+    updated_task_tags = 0
+    updated_task_estimates = 0
+    task_update_failures: list[str] = []
     created_assignments: list[str] = []
     updated_assignments: list[str] = []
     updated_assignment_priorities: list[str] = []
@@ -1015,6 +1451,113 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     for line in response.splitlines():
         stripped = line.strip()
 
+        m_set_tags = TASK_SET_TAGS_PATTERN.match(stripped)
+        if m_set_tags:
+            payload = (m_set_tags.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 1)]
+            if len(parts) != 2:
+                task_update_failures.append("invalid TASK_SET_TAGS format")
+                logger.warning("CoS TASK_SET_TAGS invalid format: %r", stripped)
+                continue
+            task_id_raw, tags_raw = parts
+            try:
+                task_id = int("".join(ch for ch in task_id_raw if ch.isdigit()) or "0")
+            except Exception:
+                task_id = 0
+            if task_id <= 0:
+                task_update_failures.append(f"invalid task id '{task_id_raw}'")
+                logger.warning("CoS TASK_SET_TAGS invalid task id: %r", task_id_raw)
+                continue
+            try:
+                tags_obj = json.loads(tags_raw)
+            except Exception:
+                tags_obj = None
+            if not isinstance(tags_obj, list):
+                task_update_failures.append(f"TASK_SET_TAGS invalid json for task {task_id}")
+                logger.warning("CoS TASK_SET_TAGS invalid json: %r", tags_raw)
+                continue
+            incoming: list[str] = []
+            for t in tags_obj[:40]:
+                s = str(t).strip()
+                if not s:
+                    continue
+                incoming.append(s[:64] if len(s) > 64 else s)
+            if not incoming:
+                task_update_failures.append(f"TASK_SET_TAGS empty tags for task {task_id}")
+                continue
+
+            row = None
+            try:
+                row = db.get_task_by_id(int(task_id))  # type: ignore[attr-defined]
+            except Exception:
+                row = None
+            if not row:
+                task_update_failures.append(f"TASK_SET_TAGS task not found: {task_id}")
+                continue
+
+            existing_tags: list[str] = []
+            try:
+                existing_obj = json.loads(str(row.get("tags_json") or "[]"))
+                if isinstance(existing_obj, list):
+                    existing_tags = [str(x).strip() for x in existing_obj if str(x).strip()]
+            except Exception:
+                existing_tags = []
+
+            merged: list[str] = []
+            seen: set[str] = set()
+            for t in (existing_tags + incoming):
+                tt = str(t).strip()
+                if not tt or tt in seen:
+                    continue
+                seen.add(tt)
+                merged.append(tt)
+            try:
+                db.update_task_by_id(task_id=int(task_id), tags_json=json.dumps(merged, ensure_ascii=False))
+                updated_task_tags += 1
+            except Exception as e:
+                task_update_failures.append(f"TASK_SET_TAGS update failed for task {task_id}: {e}")
+            continue
+
+        m_set_est = TASK_SET_ESTIMATE_PATTERN.match(stripped)
+        if m_set_est:
+            payload = (m_set_est.group(1) or "").strip()
+            parts = [p.strip() for p in payload.split("|", 1)]
+            if len(parts) != 2:
+                task_update_failures.append("invalid TASK_SET_ESTIMATE format")
+                logger.warning("CoS TASK_SET_ESTIMATE invalid format: %r", stripped)
+                continue
+            task_id_raw, minutes_raw = parts
+            try:
+                task_id = int("".join(ch for ch in task_id_raw if ch.isdigit()) or "0")
+            except Exception:
+                task_id = 0
+            if task_id <= 0:
+                task_update_failures.append(f"invalid task id '{task_id_raw}'")
+                logger.warning("CoS TASK_SET_ESTIMATE invalid task id: %r", task_id_raw)
+                continue
+            try:
+                minutes = int("".join(ch for ch in minutes_raw if ch.isdigit()) or "0")
+            except Exception:
+                minutes = 0
+            if minutes < 0:
+                minutes = 0
+            if minutes > 600:
+                minutes = 600
+            row = None
+            try:
+                row = db.get_task_by_id(int(task_id))  # type: ignore[attr-defined]
+            except Exception:
+                row = None
+            if not row:
+                task_update_failures.append(f"TASK_SET_ESTIMATE task not found: {task_id}")
+                continue
+            try:
+                db.update_task_by_id(task_id=int(task_id), estimate_minutes=int(minutes))
+                updated_task_estimates += 1
+            except Exception as e:
+                task_update_failures.append(f"TASK_SET_ESTIMATE update failed for task {task_id}: {e}")
+            continue
+
         m = ADD_TASK_PATTERN.match(stripped)
         if m:
             explicit_add_task_seen = True
@@ -1060,7 +1603,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 task_id = db.add_task(
                     session_id=session_id,
                     task_text=task_text,
-                    due_date=due_norm or "",
+                    due_date=due_norm,
                     category=category,
                     recurrence=recurrence,
                     completed=0,
@@ -1120,7 +1663,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 db.add_task(
                     session_id=session_id,
                     task_text=task_text,
-                    due_date=due_date or "",
+                    due_date=due_date,
                     category=category,
                     recurrence="None",
                     completed=0,
@@ -1491,18 +2034,25 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
             if not rows:
                 assignment_failures.append(f"no assignments found for scope '{scope_label}'")
                 continue
-            updated_count = 0
+            matched_count = 0
+            eligible_count = 0
+            changed_count = 0
+            unchanged_count = 0
             skipped_closed = 0
+            failed_count = 0
             for r in rows:
                 aid = int(r.get("id") or 0)
                 if aid <= 0:
                     continue
+                matched_count += 1
                 current_status = str(r.get("status") or "").strip().lower()
                 if bulk_mode == "open" and current_status in {"done", "cancelled"}:
                     skipped_closed += 1
                     continue
+                eligible_count += 1
                 current_priority = int(r.get("priority") or 3)
                 if current_priority == int(priority):
+                    unchanged_count += 1
                     continue
                 ok = False
                 try:
@@ -1514,18 +2064,29 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     )
                 except Exception:
                     ok = False
-                if ok:
-                    updated_count += 1
+                if not ok:
+                    failed_count += 1
+                    continue
+                # Verify persisted state before counting as changed.
+                verify_row = db.agent_get_assignment(int(aid)) or {}
+                verify_pri = int(verify_row.get("priority") or 0)
+                if verify_pri == int(priority):
+                    changed_count += 1
+                else:
+                    failed_count += 1
             summary = (
-                f"{scope_label}: {updated_count} -> P{int(priority)}"
-                f"{f' ({skipped_closed} skipped closed)' if skipped_closed else ''}"
+                f"{scope_label}: target=P{int(priority)}, matched={matched_count}, eligible={eligible_count}, "
+                f"changed={changed_count}, unchanged={unchanged_count}, skipped closed={skipped_closed}, failed={failed_count}"
             )
-            if updated_count <= 0 and skipped_closed <= 0:
+            if matched_count <= 0:
                 assignment_failures.append(
-                    f"no assignments updated for scope '{scope_label}' to P{int(priority)}"
+                    f"no assignments matched scope '{scope_label}'"
                 )
-            else:
-                bulk_updated_assignment_priorities.append(summary)
+            elif failed_count > 0 and changed_count <= 0:
+                assignment_failures.append(
+                    f"bulk priority write failed for scope '{scope_label}' (changed=0, failed={failed_count})"
+                )
+            bulk_updated_assignment_priorities.append(summary)
             continue
 
         m_bulk_due = BULK_UPDATE_ASSIGNMENT_DUE_PATTERN.match(stripped)
@@ -1555,18 +2116,25 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
             if not rows:
                 assignment_failures.append(f"no assignments found for scope '{scope_label}'")
                 continue
-            updated_count = 0
+            matched_count = 0
+            eligible_count = 0
+            changed_count = 0
+            unchanged_count = 0
             skipped_closed = 0
+            failed_count = 0
             for r in rows:
                 aid = int(r.get("id") or 0)
                 if aid <= 0:
                     continue
+                matched_count += 1
                 current_status = str(r.get("status") or "").strip().lower()
                 if bulk_mode == "open" and current_status in {"done", "cancelled"}:
                     skipped_closed += 1
                     continue
+                eligible_count += 1
                 current_due = str(r.get("due_date") or "").strip() or None
                 if current_due == (due_date or None):
+                    unchanged_count += 1
                     continue
                 ok = False
                 try:
@@ -1578,18 +2146,29 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     )
                 except Exception:
                     ok = False
-                if ok:
-                    updated_count += 1
+                if not ok:
+                    failed_count += 1
+                    continue
+                # Verify persisted state before counting as changed.
+                verify_row = db.agent_get_assignment(int(aid)) or {}
+                verify_due = str(verify_row.get("due_date") or "").strip() or None
+                if verify_due == (due_date or None):
+                    changed_count += 1
+                else:
+                    failed_count += 1
             summary = (
-                f"{scope_label}: {updated_count} -> {due_date or '(none)'}"
-                f"{f' ({skipped_closed} skipped closed)' if skipped_closed else ''}"
+                f"{scope_label}: target={due_date or '(none)'}, matched={matched_count}, eligible={eligible_count}, "
+                f"changed={changed_count}, unchanged={unchanged_count}, skipped closed={skipped_closed}, failed={failed_count}"
             )
-            if updated_count <= 0 and skipped_closed <= 0:
+            if matched_count <= 0:
                 assignment_failures.append(
-                    f"no assignments updated for scope '{scope_label}' due date"
+                    f"no assignments matched scope '{scope_label}'"
                 )
-            else:
-                bulk_updated_assignment_due_dates.append(summary)
+            elif failed_count > 0 and changed_count <= 0:
+                assignment_failures.append(
+                    f"bulk due-date write failed for scope '{scope_label}' (changed=0, failed={failed_count})"
+                )
+            bulk_updated_assignment_due_dates.append(summary)
             continue
 
         m_bulk_reassign = BULK_REASSIGN_ASSIGNMENTS_PATTERN.match(stripped)
@@ -1625,18 +2204,25 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
             if not rows:
                 assignment_failures.append(f"no assignments found for scope '{from_scope_label}'")
                 continue
-            updated_count = 0
+            matched_count = 0
+            eligible_count = 0
+            changed_count = 0
+            unchanged_count = 0
             skipped_closed = 0
+            failed_count = 0
             for r in rows:
                 aid = int(r.get("id") or 0)
                 if aid <= 0:
                     continue
+                matched_count += 1
                 current_status = str(r.get("status") or "").strip().lower()
                 if bulk_mode == "open" and current_status in {"done", "cancelled"}:
                     skipped_closed += 1
                     continue
+                eligible_count += 1
                 current_assignee = str(r.get("assignee_code") or "").strip().lower()
                 if current_assignee == to_assignee_code:
+                    unchanged_count += 1
                     continue
                 ok = False
                 try:
@@ -1648,23 +2234,34 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     )
                 except Exception:
                     ok = False
-                if ok:
-                    _ensure_assignment_thread_matches_assignee(
-                        assignment_id=aid,
-                        assignee_code=to_assignee_code,
-                        reason="chief_of_staff_bulk_reassign",
-                    )
-                    updated_count += 1
-            summary = (
-                f"{from_scope_label} -> {to_label}: {updated_count}"
-                f"{f' ({skipped_closed} skipped closed)' if skipped_closed else ''}"
-            )
-            if updated_count <= 0 and skipped_closed <= 0:
-                assignment_failures.append(
-                    f"no assignments reassigned from '{from_scope_label}' to '{to_label}'"
+                if not ok:
+                    failed_count += 1
+                    continue
+                _ensure_assignment_thread_matches_assignee(
+                    assignment_id=aid,
+                    assignee_code=to_assignee_code,
+                    reason="chief_of_staff_bulk_reassign",
                 )
-            else:
-                bulk_reassigned_assignments.append(summary)
+                # Verify persisted state before counting as changed.
+                verify_row = db.agent_get_assignment(int(aid)) or {}
+                verify_assignee = str(verify_row.get("assignee_code") or "").strip().lower()
+                if verify_assignee == to_assignee_code:
+                    changed_count += 1
+                else:
+                    failed_count += 1
+            summary = (
+                f"{from_scope_label} -> {to_label}: matched={matched_count}, eligible={eligible_count}, "
+                f"changed={changed_count}, unchanged={unchanged_count}, skipped closed={skipped_closed}, failed={failed_count}"
+            )
+            if matched_count <= 0:
+                assignment_failures.append(
+                    f"no assignments matched scope '{from_scope_label}'"
+                )
+            elif failed_count > 0 and changed_count <= 0:
+                assignment_failures.append(
+                    f"bulk reassignment failed for scope '{from_scope_label}' (changed=0, failed={failed_count})"
+                )
+            bulk_reassigned_assignments.append(summary)
             continue
 
         m_reassign = REASSIGN_PATTERN.match(stripped)
@@ -2016,6 +2613,10 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     action_notes = []
     if added_tasks:
         action_notes.append(f"— *Added {added_tasks} task(s) to your dashboard.*")
+    if updated_task_tags:
+        action_notes.append(f"— *Updated tags on {updated_task_tags} task(s).*")
+    if updated_task_estimates:
+        action_notes.append(f"— *Updated time estimates on {updated_task_estimates} task(s).*")
     if added_tasks_from_assignments:
         action_notes.append(
             f"— *Created {added_tasks_from_assignments} dashboard task(s) from assignment(s).*"
@@ -2116,6 +2717,12 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
         more = " ..." if len(added_assignment_artifacts) > 3 else ""
         action_notes.append(
             f"— *Added artifacts to {len(added_assignment_artifacts)} assignment(s): {preview}{more}.*"
+        )
+    if task_update_failures:
+        preview = "; ".join(task_update_failures[:3])
+        more = " ..." if len(task_update_failures) > 3 else ""
+        action_notes.append(
+            f"— *Some task updates failed ({len(task_update_failures)}): {preview}{more}*"
         )
     if assignment_failures:
         action_notes.append(

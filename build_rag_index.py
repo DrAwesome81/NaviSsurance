@@ -15,7 +15,12 @@ logger = logging.getLogger(__name__)
 
 # Load credentials from rag_config.json
 try:
-    with open("rag_config.json", "r") as f:
+    cfg_path = "rag_config.json"
+    if not os.path.exists(cfg_path):
+        raise FileNotFoundError(
+            "Missing rag_config.json. Create it by copying rag_config.example.json and filling in the fields."
+        )
+    with open(cfg_path, "r", encoding="utf-8") as f:
         config = json.load(f)
 except Exception as e:
     logger.error(f"Failed to load rag_config.json: {e}")
@@ -131,7 +136,11 @@ def load_local_files(path):
 def load_dropbox_files(path, token):
     """Load and hash Dropbox files."""
     if not path or not token:
-        logger.warning(f"Dropbox path or token missing: {path}, {token}")
+        logger.warning(
+            "Dropbox configuration missing (path=%r, token=%s)",
+            path,
+            "set" if bool(token) else "missing",
+        )
         return []
     try:
         loader = DropboxLoader(dropbox_access_token=token, folder_path=path)

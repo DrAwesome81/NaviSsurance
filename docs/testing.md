@@ -144,6 +144,42 @@ Last revised: 2026-02-23
 - Expected:
   - Invalid dates are rejected; existing data remains unchanged.
 
+#### TC-COS-015: AM Sweep reuse / persistence
+- Steps:
+  1. Open `Chief of Staff` and run `AM Sweep`.
+  2. Restart the app.
+  3. Return to `Chief of Staff` and run `AM Sweep` again.
+- Expected:
+  - The existing `AM Sweep YYYY-MM-DD` chat is reopened/reused for the day instead of crashing or silently creating duplicates.
+
+#### TC-COS-016: AM Sweep rerun
+- Steps:
+  1. After an AM Sweep already exists for today, open `Chief of Staff`.
+  2. Use `AM Sweep (Run again)`.
+- Expected:
+  - A fresh rerun is appended for today and produces a new assistant output.
+
+#### TC-COS-017: Assignment status lifecycle from board
+- Steps:
+  1. Select one assignment in the board.
+  2. Click `Start`, then `Awaiting Review`, `Block`, `Done`, and `Reopen`.
+- Expected:
+  - The status changes persist, the list refreshes, and assignment events show the status transitions.
+
+#### TC-COS-018: Task refresh after CoS / assignment actions
+- Steps:
+  1. Create tasks via CoS actions and/or assignment task-bridge actions.
+  2. Check both `Dashboard` and `Tasks`.
+- Expected:
+  - New tasks appear without requiring manual refresh in the covered paths.
+
+#### TC-COS-019: CoS timing logs
+- Steps:
+  1. Run at least one normal CoS request and one AM Sweep.
+  2. Inspect `logs/app.log`.
+- Expected:
+  - Timing entries for CoS / AM Sweep are written with elapsed milliseconds.
+
 #### TC-DR-001: Deep Research — web research run
 - Steps:
   1. Open `Deep Research` tab.
@@ -222,14 +258,14 @@ Status: Pending
 
 TC-002: Dashboard Task Completion
 
-Description: Verify double-clicking tasks marks them as complete.
+Description: Verify marking dashboard tasks complete from the task list.
 Steps:
 Open NaviSsurance (interface.py).
 Navigate to Dashboard Tab.
-Double-click on a task in the task list.
+Use the task completion checkbox for a task in the task list.
 Check if task status updates.
 
-Expected Result: Task is marked complete and removed from active list.
+Expected Result: Task is marked complete and removed from the active list (or shown only when completed items are enabled).
 Actual Result: [Pending: Test not run], 2025-08-11.
 Status: Pending
 
@@ -349,43 +385,45 @@ Status: Pending
 
 TC-010: Note Formatting
 
-Description: Verify AI properly formats user notes for clarity and professionalism.
+Description: Verify a raw observation is merged into the active context document as cleaned, coherent notes.
 Steps:
 Open NaviSsurance (interface.py).
 Navigate to Note-Taking System.
+Set a context first.
 Enter a raw note (e.g., "need to check section 5").
 Press Enter to process.
 
-Expected Result: Note is formatted professionally and displayed in notes pane.
+Expected Result: The active context document updates with a clearer, more professional bullet/section entry reflecting the raw note.
 Actual Result: [Pending: Test not run], 2025-08-11.
 Status: Pending
 
 TC-011: Dynamic Categorization
 
-Description: Verify notes are automatically categorized when 2 or more notes exist.
+Description: Verify the context document reorganizes itself into themes/sections as multiple related notes are added.
 Steps:
 Open NaviSsurance (interface.py).
 Navigate to Note-Taking System.
+Set a context first.
 Add first note (e.g., "Review ISO 13485 requirements").
 Add second note (e.g., "Check FDA guidance documents").
 
-Expected Result: Notes are categorized into logical groups and displayed under category headings.
+Expected Result: The same context document is reorganized into logical section headings with grouped bullet points; no loose per-note list is shown.
 Actual Result: [Pending: Test not run], 2025-08-11.
 Status: Pending
 
 TC-012: Export Functionality
 
-Description: Verify notes can be exported to DOCX format with Save As dialog.
+Description: Verify the active context document can be exported with Save As dialog.
 Steps:
 Open NaviSsurance (interface.py).
 Navigate to Note-Taking System.
-Add several notes with context.
-Click "Export Notes" button.
-Verify Save As dialog opens with default filename "notes_export.docx".
+Set a context and add several notes.
+Click "Export…" button.
+Verify Save As dialog opens with a filename based on the active context.
 Choose location and filename (or use default).
 Check generated DOCX file.
 
-Expected Result: Save As dialog opens, DOCX file is created with context and notes as bullet points, success message displays file path.
+Expected Result: Save As dialog opens, a document file is created with the context title and the compiled notes document, and a success message displays the file path.
 Actual Result: [Pending: Test not run], 2025-08-11.
 Status: Pending
 
@@ -398,7 +436,7 @@ Navigate to Note-Taking System.
 Add a note that triggers AI response with formatting issues (extra text, trailing commas, etc.).
 Verify note is still processed correctly.
 
-Expected Result: System uses robust JSON parsing with multiple fallback strategies, note is formatted and displayed correctly.
+Expected Result: System uses robust JSON parsing with multiple fallback strategies, and the context document still updates correctly or fails gracefully with the raw observation preserved in hidden history.
 Actual Result: [Pending: Test not run], 2025-08-11.
 Status: Pending
 
@@ -411,7 +449,7 @@ Navigate to Note-Taking System.
 Rapidly add multiple notes.
 Verify UI updates correctly without crashes or race conditions.
 
-Expected Result: All notes are displayed correctly, no UI freezing or crashes, thread-safe updates via QTimer.
+Expected Result: The active context document updates correctly, no UI freezing or crashes occur, and background-thread completions update the UI safely via QTimer.
 Actual Result: [Pending: Test not run], 2025-08-11.
 Status: Pending
 
@@ -424,7 +462,7 @@ Navigate to Note-Taking System.
 Add a note that might trigger task detection (e.g., contains "task" keyword).
 Verify note is processed as a note, not routed to task handler.
 
-Expected Result: Note is formatted and added to notes list, not processed as a task.
+Expected Result: Note is merged into the current context document, not processed as a task or other routed command.
 Actual Result: [Pending: Test not run], 2025-08-11.
 Status: Pending
 
@@ -722,11 +760,12 @@ Description: Verify CoS preferences are saved and used as context.
 Steps:
 Open Chief of Staff tab.
 Open Options → Preferences.
-Set deep work hours and add a constraint (e.g., “No meetings before 10am; family time 5–8pm”).
+Set deep work hours and add a clear constraint / preference.
 Save.
 Ask CoS for a plan for today.
 
 Expected Result: Response references the saved constraints (without taking autonomous actions).
+Note: This flow should eventually use structured controls rather than raw JSON entry, and the preference persistence / prompt-injection path should be primarily validated with automated tests.
 Actual Result: [Pending: Test not run], 2026-02-22.
 Status: Pending
 
@@ -778,41 +817,41 @@ Actual Result: [Pending: Test not run], 2026-02-22.
 Status: Pending
 
 Document Generation Tab Tests
-TC-032: Document Generation Tab Document Upload/URL Addition
+TC-032: Workspace Tab Document/File Addition
 
-Description: Verify uploading a document or adding a URL.
+Description: Verify adding files for workspace drafting.
 Steps:
 Open NaviSsurance (interface.py).
-Navigate to Document Generation Tab.
-Upload a PDF or enter a URL (e.g., "https://www.fda.gov").
+Navigate to Workspace Tab.
+Use `Select File/Folder`, `Add Folder...`, or drag/drop a supported file.
 
-Expected Result: Document/URL is added to the tab.
+Expected Result: The added file appears in the Workspace file list.
 Actual Result: [Pending: Feature in development], 2025-06-03.
 Status: Pending
 
-TC-033: Document Generation Tab Document Removal/Deletion
+TC-033: Workspace Tab File Removal/Deletion
 
-Description: Verify removing a document or URL.
+Description: Verify removing a previously added workspace file.
 Steps:
 Open NaviSsurance (interface.py).
-Navigate to Document Generation Tab.
-Upload a PDF or add a URL.
-Click "Remove" or "Delete" button.
+Navigate to Workspace Tab.
+Add a file to the Workspace file list.
+Attempt to remove that file from the list.
 
-Expected Result: Document/URL is removed from the tab.
+Expected Result: The file can be removed from the Workspace file list without restarting the app.
 Actual Result: [Pending: Feature in development], 2025-06-03.
 Status: Pending
 
-TC-034: Document Generation Tab Document Output
+TC-034: Workspace Tab Document Output
 
 Description: Verify generating a document output.
 Steps:
 Open NaviSsurance (interface.py).
-Navigate to Document Generation Tab.
-Upload a PDF or add a URL.
-Click "Generate Output".
+Navigate to Workspace Tab.
+Add one or more files, or proceed with no files if testing prompt-only generation.
+Click `Generate Draft`.
 
-Expected Result: Grok generates a PDF/JSON report based on input.
+Expected Result: A markdown draft is generated in the preview pane, and save/export actions become available.
 Actual Result: [Pending: Feature in development], 2025-06-03.
 Status: Pending
 
@@ -837,7 +876,7 @@ Open NaviSsurance (interface.py).
 Navigate to Meetings Tab.
 Start recording, then click "Stop Recording".
 
-Expected Result: Recording stops, file saved locally.
+Expected Result: Recording stops, the audio file is saved locally, and the app automatically starts the transcription flow for recorded audio.
 Actual Result: [Pending: Test not run], 2025-06-03.
 Status: Pending
 
@@ -847,10 +886,9 @@ Description: Verify generating a meeting transcript.
 Steps:
 Open NaviSsurance (interface.py).
 Navigate to Meetings Tab.
-Record a short meeting or upload audio.
-Click "Generate Transcript".
+Record a short meeting and let the automatic transcription run complete, or upload audio and click "Generate Transcript".
 
-Expected Result: AssemblyAI generates speaker-separated transcript.
+Expected Result: AssemblyAI generates a transcript and it appears in the transcript pane.
 Actual Result: [Pending: Test not run], 2025-06-03.
 Status: Pending
 
@@ -927,7 +965,7 @@ Navigate to Compliance Tab.
 Run a compliance check.
 Click "Save Report".
 
-Expected Result: Report saved as PDF/JSON to database.
+Expected Result: Report saves successfully to a readable file format such as `.txt` or `.docx`.
 Actual Result: [Pending: Feature in development], 2025-06-03.
 Status: Pending
 

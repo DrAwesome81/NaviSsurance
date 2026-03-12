@@ -1,22 +1,92 @@
 # NaviSsurance Remaining To-Do
 
-## Remaining Work
+## High Priority
 
-- [ ] Add pointer to `user_manual.md` in `docs/overview.md`
-- [ ] Apply deterministic count/verification pattern to:
-  - `BULK_UPDATE_ASSIGNMENT_PRIORITY`
-  - `BULK_UPDATE_ASSIGNMENT_DUE`
-  - `BULK_REASSIGN_ASSIGNMENTS`
-- [ ] Persist daily briefing state across restart/session (show existing briefing for the day)
-- [ ] Assignment tab bulk due date: switch to date picker UI (keep optional manual ISO fallback)
-- [ ] Broader UI sizing pass (increase control heights/widths where clipping still occurs)
-- [ ] Auto-refresh task list after manual task creation in any remaining non-covered paths
+- [ ] Billing template quality:
+  - create a default invoice template that is actually human-readable
+  - ensure rendered invoice drafts have clean layout and usable formatting
+  - make template output suitable for real client-facing review without manual reconstruction
+- [ ] Research/document export formats:
+  - add the ability to export generated research / briefing documents as PDF
+  - add the ability to export generated research / briefing documents as DOCX
+- [ ] Meeting transcript export formats:
+  - allow saving meeting transcripts as Word (`.docx`) files in addition to plain text
+  - keep the existing `.txt` save flow available for lightweight export
+- [ ] Automatic task generation from meeting transcriptions:
+  - extract actionable tasks from recorded meeting transcripts automatically
+  - create draft dashboard tasks with reviewable details instead of requiring full manual entry
+- [ ] Persistent Navi memory system:
+  - add explicit `Teach Navi:` command
+  - create a global `user_memory` store for durable facts/preferences/aliases
+  - inject relevant durable memory into main Navi prompts, not just CoS
+- [ ] Chief of Staff preferences UX:
+  - replace raw JSON entry in preferences with structured controls
+  - use checkboxes, date/time pickers, and normal text fields instead of JSON blobs
+  - make blocked times and behavior preferences understandable without technical knowledge
+  - cover the preferences UI and prompt-injection behavior with automated tests
+- [ ] CoS task capture priority behavior:
+  - do not default unspecified task priority to `P0`
+  - infer an appropriate priority from context when possible
+  - if priority is ambiguous, prompt the user instead of silently choosing `P0`
+- [ ] Chief of Staff sizing polish:
+  - verify assignment-subtab buttons are readable at runtime across DPI/font scaling
+  - fix assignment-subtab button overlap / spacing in the CoS sidebar layout
+  - verify chat entry fields are tall enough to avoid clipping top/bottom of text
+  - standardize control sizing based on actual font metrics instead of one-off constants
+- [ ] Chief of Staff chat scroll behavior:
+  - preserve scroll position / stay pinned to the latest message after responses
+  - prevent chat refresh from jumping back to the top of the conversation
+- [ ] Date picker consistency:
+  - any date entry field in the app should offer a calendar picker
+  - keep optional manual ISO/text fallback only where it is truly needed
+- [ ] CoS calendar context accuracy:
+  - build "today" / "this week" calendar windows from local midnight, not UTC midnight
+  - prevent late-night events from being misclassified as tonight/today incorrectly
+  - ensure all same-day local calendar blocks are included in AM Sweep / CoS planning context
+- [ ] Individual assignment status update (set to queued):
+  - add a way to set a single assignment back to queued (currently only bulk status update supports it)
+
+## Memory / Learning
+
+- [ ] Passive learning from conversation:
+  - auto-extract stable preferences/facts/aliases from chat
+  - store low-risk items as unconfirmed memory
+  - add confirmation / approval flow so memory can be accepted, edited, or rejected
+- [ ] Terminology / alias memory:
+  - support client aliases, shorthand, and glossary terms
+  - make retrieval and prompt grounding use these aliases consistently
+- [ ] Long-term learning / reflection:
+  - add daily or weekly "what Navi learned" reflection summaries
+  - let approved learnings persist into durable memory
+- [ ] Better long-term chat retrieval:
+  - improve chat-history-as-memory beyond raw FTS
+  - use summarized/structured retrieval for older conversations
+
+## Performance / Efficiency
+
 - [ ] Optional performance pass:
+  - reduce CoS task-capture latency (observed ~20-30s for a single task)
   - reduce duplicate LLM calls
   - add context windowing/summarization
   - tune token caps
-  - add per-request timing logs
+
+## Docs / Closeout
+
 - [ ] Final closeout artifact: "done vs intentionally manual" matrix in docs
+
+## Completed Recently
+
+- [x] Added pointer to `user_manual.md` in `docs/overview.md`
+- [x] Applied deterministic count/verification pattern to:
+  - `BULK_UPDATE_ASSIGNMENT_PRIORITY`
+  - `BULK_UPDATE_ASSIGNMENT_DUE`
+  - `BULK_REASSIGN_ASSIGNMENTS`
+- [x] Persisted daily briefing state across restart/session
+- [x] Persisted AM Sweep by reusing the per-day sweep chat and added explicit rerun action
+- [x] Switched assignment bulk due date to a date-picker UI with manual ISO fallback
+- [x] Completed broader UI sizing pass for key controls
+- [x] Auto-refreshed task list/views after manual task creation in covered paths
+- [x] Added per-request timing logs for CoS requests / AM Sweep
 
 ## Intentionally Manual / Not Targeted for Deterministic Automation
 

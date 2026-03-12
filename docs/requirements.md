@@ -24,15 +24,15 @@ Download and manage files with status feedback.
 
 Note-Taking System (IMPLEMENTED)
 
-User Story: As a consultant, I want to take AI-powered notes with context-aware formatting and dynamic categorization, so I can efficiently organize my thoughts and work.
+User Story: As a consultant, I want to build a living document for each work context while I review material, so my notes are continuously cleaned up and organized instead of accumulating as loose entries.
 Acceptance Criteria:
-Set context for note-taking sessions to provide AI with relevant background information.
-Take notes that are automatically formatted for clarity and professionalism by the AI.
-Have notes automatically categorized into logical groups when 2 or more notes are present.
-Export notes in multiple formats (TXT, DOCX, PDF) with context included.
+Set context for note-taking sessions to choose the active document.
+Add raw observations that are automatically merged into the active document for clarity and professionalism.
+Have the active document reorganized into logical sections and themes as notes are added.
+Export the active context document in multiple formats (Markdown, DOCX, PDF).
 Upload exported files to Dropbox for cloud storage and sharing.
 Handle AI response errors gracefully with fallback mechanisms and user feedback.
-Support dynamic re-categorization as new notes are added to existing categories.
+Support document re-organization as new notes are added to the same context.
 
 Compliance Tab (IMPLEMENTED)
 

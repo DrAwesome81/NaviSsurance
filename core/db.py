@@ -11,7 +11,7 @@ from config import DATABASE_PATH, ARTIFACTS_DIR
 class DatabaseManager:
     def __init__(self, db_name: str | None = None):
         self.db_name = str(db_name or DATABASE_PATH)
-        self.current_schema_version = 13  # Increment this when making schema changes
+        self.current_schema_version = 18  # Increment this when making schema changes
         self.setup_db()
         self.create_indexes()
         # Additive tables for newer features (safe for legacy DBs)
@@ -341,21 +341,7 @@ class DatabaseManager:
                 pass
 
             # Backfill/extend notes table schema for legacy DBs
-            try:
-                cursor = conn.execute("PRAGMA table_info(notes)")
-                cols = {row[1] for row in cursor.fetchall()}
-                if "raw_note" not in cols:
-                    conn.execute("ALTER TABLE notes ADD COLUMN raw_note TEXT")
-                if "state" not in cols:
-                    conn.execute("ALTER TABLE notes ADD COLUMN state TEXT NOT NULL DEFAULT 'ready'")
-                if "error_text" not in cols:
-                    conn.execute("ALTER TABLE notes ADD COLUMN error_text TEXT")
-                if "pinned" not in cols:
-                    conn.execute("ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
-                if "updated_at" not in cols:
-                    conn.execute("ALTER TABLE notes ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP")
-            except Exception:
-                pass
+            self._ensure_notes_schema(conn)
 
             # FTS for notes (best-effort). If FTS5 isn't available, search falls back to LIKE.
             try:
@@ -400,17 +386,172 @@ class DatabaseManager:
                 )
             except Exception:
                 pass
-            
-            # Organized notes table
-            conn.execute('''CREATE TABLE IF NOT EXISTS organized_notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                category TEXT NOT NULL,
-                notes_json TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )''')
-            
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notes_documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    context TEXT NOT NULL UNIQUE,
+                    title TEXT,
+                    document_text TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL DEFAULT 'ready',
+                    error_text TEXT,
+                    source_note_count INTEGER NOT NULL DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            self._ensure_notes_documents_schema(conn)
+
+            # Keep legacy organized notes storage available during the transition.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS organized_notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    category TEXT NOT NULL,
+                    notes_json TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            self._backfill_notes_documents_from_legacy_notes(conn)
             conn.commit()
-        
+
+    def _ensure_notes_schema(self, conn) -> None:
+        """Best-effort notes-table backfill for legacy databases."""
+        try:
+            cursor = conn.execute("PRAGMA table_info(notes)")
+            cols = {row[1] for row in cursor.fetchall()}
+            if not cols:
+                return
+            if "raw_note" not in cols:
+                conn.execute("ALTER TABLE notes ADD COLUMN raw_note TEXT")
+            if "state" not in cols:
+                conn.execute("ALTER TABLE notes ADD COLUMN state TEXT NOT NULL DEFAULT 'ready'")
+            if "error_text" not in cols:
+                conn.execute("ALTER TABLE notes ADD COLUMN error_text TEXT")
+            if "pinned" not in cols:
+                conn.execute("ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            if "updated_at" not in cols:
+                conn.execute("ALTER TABLE notes ADD COLUMN updated_at DATETIME")
+                conn.execute("UPDATE notes SET updated_at = COALESCE(updated_at, created_at, datetime('now'))")
+        except Exception:
+            pass
+
+    def _ensure_notes_documents_schema(self, conn) -> None:
+        """Best-effort notes-documents backfill for legacy databases."""
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notes_documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    context TEXT NOT NULL UNIQUE,
+                    title TEXT,
+                    document_text TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL DEFAULT 'ready',
+                    error_text TEXT,
+                    source_note_count INTEGER NOT NULL DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor = conn.execute("PRAGMA table_info(notes_documents)")
+            cols = {row[1] for row in cursor.fetchall()}
+            if not cols:
+                return
+            if "title" not in cols:
+                conn.execute("ALTER TABLE notes_documents ADD COLUMN title TEXT")
+            if "document_text" not in cols:
+                conn.execute("ALTER TABLE notes_documents ADD COLUMN document_text TEXT NOT NULL DEFAULT ''")
+            if "state" not in cols:
+                conn.execute("ALTER TABLE notes_documents ADD COLUMN state TEXT NOT NULL DEFAULT 'ready'")
+            if "error_text" not in cols:
+                conn.execute("ALTER TABLE notes_documents ADD COLUMN error_text TEXT")
+            if "source_note_count" not in cols:
+                conn.execute("ALTER TABLE notes_documents ADD COLUMN source_note_count INTEGER NOT NULL DEFAULT 0")
+            if "updated_at" not in cols:
+                conn.execute("ALTER TABLE notes_documents ADD COLUMN updated_at DATETIME")
+                conn.execute(
+                    "UPDATE notes_documents SET updated_at = COALESCE(updated_at, created_at, datetime('now'))"
+                )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _normalize_notes_context(context: str | None) -> str:
+        value = (context or "").strip()
+        return value or "General Notes"
+
+    def _build_legacy_notes_document(self, context: str, rows: list[dict]) -> str:
+        groups: dict[str, list[str]] = {}
+        for row in rows:
+            category = (row.get("category") or "Notes").strip() or "Notes"
+            text = (row.get("formatted_note") or row.get("raw_note") or "").strip()
+            if not text:
+                continue
+            groups.setdefault(category, []).append(text)
+
+        lines: list[str] = []
+        for category in sorted(groups.keys(), key=lambda s: s.lower()):
+            lines.append(f"## {category}")
+            seen: set[str] = set()
+            for text in groups[category]:
+                norm = text.strip().lower()
+                if not norm or norm in seen:
+                    continue
+                seen.add(norm)
+                lines.append(f"- {text}")
+            lines.append("")
+        return "\n".join(lines).strip()
+
+    def _backfill_notes_documents_from_legacy_notes(self, conn) -> None:
+        """Seed one starter document per context from existing ready note rows."""
+        try:
+            self._ensure_notes_schema(conn)
+            self._ensure_notes_documents_schema(conn)
+            existing = {
+                (row[0] or "").strip()
+                for row in conn.execute("SELECT context FROM notes_documents").fetchall()
+                if (row[0] or "").strip()
+            }
+            rows = conn.execute(
+                """
+                SELECT formatted_note, raw_note, category, context
+                FROM notes
+                WHERE state = 'ready'
+                ORDER BY created_at ASC, id ASC
+                """
+            ).fetchall()
+            grouped: dict[str, list[dict]] = {}
+            for formatted_note, raw_note, category, context in rows:
+                normalized = self._normalize_notes_context(context)
+                if normalized in existing:
+                    continue
+                grouped.setdefault(normalized, []).append(
+                    {
+                        "formatted_note": formatted_note or "",
+                        "raw_note": raw_note or "",
+                        "category": category or "Notes",
+                    }
+                )
+
+            for context, items in grouped.items():
+                document_text = self._build_legacy_notes_document(context, items)
+                conn.execute(
+                    """
+                    INSERT INTO notes_documents (
+                        context, title, document_text, state, error_text, source_note_count, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, 'ready', NULL, ?, datetime('now'), datetime('now'))
+                    ON CONFLICT(context) DO NOTHING
+                    """,
+                    (context, context, document_text, len(items)),
+                )
+        except Exception:
+            pass
+
         # Multi-agent tables are created in migration 2 -> 3 (see _migrate_schema)
 
         # Best-effort: backfill dedup keys for existing news items
@@ -650,6 +791,10 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_daily_plans_date ON cos_daily_plans(date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_chats_updated_at ON cos_chats(updated_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_memory_chat_kind ON cos_memory(chat_id, kind)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_kind ON user_memory(kind)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_source ON user_memory(source)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_created_at ON user_memory(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_confidence ON user_memory(confidence)")
 
             # Delegation / agent workflow tables
             conn.execute(
@@ -729,6 +874,52 @@ class DatabaseManager:
             query += ' ORDER BY timestamp DESC'
             
             cursor = conn.execute(query, params)
+            return cursor.fetchall()
+
+    def search_chat_history(self, session_id, search_terms, limit=8):
+        """
+        Search messages within a single chat session.
+
+        Args:
+            session_id (str): Conversation session id to scope results to
+            search_terms (str): Search phrase or keywords
+            limit (int): Maximum number of rows to return
+
+        Returns:
+            list: List of tuples (role, content, timestamp) ordered newest-first
+        """
+        session = str(session_id or "").strip()
+        query = str(search_terms or "").strip()
+        max_rows = max(1, min(int(limit or 8), 20))
+        if not session:
+            return []
+        with sqlite3.connect(self.db_name) as conn:
+            if query:
+                like = f"%{'%'.join(query.split())}%"
+                cursor = conn.execute(
+                    """
+                    SELECT role, content, timestamp
+                    FROM conversation
+                    WHERE session_id = ?
+                      AND content LIKE ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                    """,
+                    (session, like, max_rows),
+                )
+                rows = cursor.fetchall()
+                if rows:
+                    return rows
+            cursor = conn.execute(
+                """
+                SELECT role, content, timestamp
+                FROM conversation
+                WHERE session_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (session, max_rows),
+            )
             return cursor.fetchall()
 
     def add_task(
@@ -863,6 +1054,34 @@ class DatabaseManager:
                 tuple(params + [int(task_id)]),
             )
             conn.commit()
+
+    def get_task_by_id(self, task_id: int) -> dict | None:
+        """Return a single task row as a dict (best-effort)."""
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    """
+                    SELECT
+                        id, session_id, task_text, due_date, start_date, category, recurrence, completed,
+                        COALESCE(priority, 0) AS priority,
+                        COALESCE(tags_json, '[]') AS tags_json,
+                        next_action_date,
+                        snoozed_until,
+                        created_at,
+                        updated_at,
+                        cos_project_id,
+                        COALESCE(estimate_minutes, 0) AS estimate_minutes,
+                        COALESCE(blockers, '') AS blockers,
+                        COALESCE(depends_on_json, '[]') AS depends_on_json
+                    FROM tasks
+                    WHERE id = ?
+                    """,
+                    (int(task_id),),
+                ).fetchone()
+                return dict(row) if row else None
+        except Exception:
+            return None
 
     def list_tasks_rich(
         self,
@@ -1420,6 +1639,7 @@ class DatabaseManager:
         if not rn:
             return 0
         with sqlite3.connect(self.db_name) as conn:
+            self._ensure_notes_schema(conn)
             cur = conn.execute(
                 """
                 INSERT INTO notes (formatted_note, category, context, raw_note, state, error_text, pinned, timestamp, created_at, updated_at)
@@ -1474,6 +1694,7 @@ class DatabaseManager:
         fields.append("updated_at = datetime('now')")
         params.append(int(note_id))
         with sqlite3.connect(self.db_name) as conn:
+            self._ensure_notes_schema(conn)
             conn.execute(f"UPDATE notes SET {', '.join(fields)} WHERE id = ?", params)
             conn.commit()
 
@@ -1490,6 +1711,7 @@ class DatabaseManager:
         limit: int = 200,
     ) -> list[dict]:
         with sqlite3.connect(self.db_name) as conn:
+            self._ensure_notes_schema(conn)
             where = "1=1"
             params: list = []
             if context is not None:
@@ -1550,6 +1772,7 @@ class DatabaseManager:
         if not q:
             return self.list_notes(context=context, limit=limit)
         with sqlite3.connect(self.db_name) as conn:
+            self._ensure_notes_schema(conn)
             # Prefer FTS if available.
             try:
                 where = "notes_fts MATCH ?"
@@ -1623,6 +1846,7 @@ class DatabaseManager:
     def save_note(self, formatted_note, timestamp, context=None):
         """Save a formatted note to the database. Returns note id."""
         with sqlite3.connect(self.db_name) as conn:
+            self._ensure_notes_schema(conn)
             cur = conn.execute(
                 """
                 INSERT INTO notes (formatted_note, category, context, raw_note, state, error_text, pinned, timestamp, created_at, updated_at)
@@ -1666,6 +1890,173 @@ class DatabaseManager:
         with sqlite3.connect(self.db_name) as conn:
             conn.execute('DELETE FROM organized_notes')
             conn.commit()
+
+    def list_note_documents(
+        self,
+        *,
+        query: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            self._ensure_notes_documents_schema(conn)
+            self._backfill_notes_documents_from_legacy_notes(conn)
+            where = "1=1"
+            params: list = []
+            q = (query or "").strip()
+            if q:
+                like = f"%{q}%"
+                where += " AND (context LIKE ? OR title LIKE ? OR document_text LIKE ?)"
+                params.extend([like, like, like])
+            params.append(int(limit))
+            rows = conn.execute(
+                f"""
+                SELECT id, context, title, document_text, state, error_text, source_note_count, created_at, updated_at
+                FROM notes_documents
+                WHERE {where}
+                ORDER BY updated_at DESC, context ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        out = []
+        for row in rows:
+            (
+                doc_id,
+                context,
+                title,
+                document_text,
+                state,
+                error_text,
+                source_note_count,
+                created_at,
+                updated_at,
+            ) = row
+            out.append(
+                {
+                    "id": int(doc_id),
+                    "context": context or "",
+                    "title": title or context or "",
+                    "document_text": document_text or "",
+                    "state": state or "ready",
+                    "error_text": error_text,
+                    "source_note_count": int(source_note_count or 0),
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                }
+            )
+        return out
+
+    def get_note_document(self, context: str | None, *, create: bool = False) -> dict | None:
+        normalized = self._normalize_notes_context(context)
+        with sqlite3.connect(self.db_name) as conn:
+            self._ensure_notes_documents_schema(conn)
+            self._backfill_notes_documents_from_legacy_notes(conn)
+            row = conn.execute(
+                """
+                SELECT id, context, title, document_text, state, error_text, source_note_count, created_at, updated_at
+                FROM notes_documents
+                WHERE context = ?
+                """,
+                (normalized,),
+            ).fetchone()
+            if row is None and create:
+                conn.execute(
+                    """
+                    INSERT INTO notes_documents (
+                        context, title, document_text, state, error_text, source_note_count, created_at, updated_at
+                    )
+                    VALUES (?, ?, '', 'ready', NULL, 0, datetime('now'), datetime('now'))
+                    """,
+                    (normalized, normalized),
+                )
+                conn.commit()
+                row = conn.execute(
+                    """
+                    SELECT id, context, title, document_text, state, error_text, source_note_count, created_at, updated_at
+                    FROM notes_documents
+                    WHERE context = ?
+                    """,
+                    (normalized,),
+                ).fetchone()
+        if row is None:
+            return None
+        (
+            doc_id,
+            row_context,
+            title,
+            document_text,
+            state,
+            error_text,
+            source_note_count,
+            created_at,
+            updated_at,
+        ) = row
+        return {
+            "id": int(doc_id),
+            "context": row_context or "",
+            "title": title or row_context or "",
+            "document_text": document_text or "",
+            "state": state or "ready",
+            "error_text": error_text,
+            "source_note_count": int(source_note_count or 0),
+            "created_at": created_at,
+            "updated_at": updated_at,
+        }
+
+    def save_note_document(
+        self,
+        context: str | None,
+        *,
+        document_text: str,
+        title: str | None = None,
+        state: str = "ready",
+        error_text: str | None = None,
+        source_note_count: int | None = None,
+    ) -> None:
+        normalized = self._normalize_notes_context(context)
+        final_title = (title or normalized).strip() or normalized
+        with sqlite3.connect(self.db_name) as conn:
+            self._ensure_notes_documents_schema(conn)
+            if source_note_count is None:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM notes WHERE context = ? AND state = 'ready'",
+                    (normalized,),
+                ).fetchone()
+                source_note_count = int((row or [0])[0] or 0)
+            conn.execute(
+                """
+                INSERT INTO notes_documents (
+                    context, title, document_text, state, error_text, source_note_count, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                ON CONFLICT(context) DO UPDATE SET
+                    title = excluded.title,
+                    document_text = excluded.document_text,
+                    state = excluded.state,
+                    error_text = excluded.error_text,
+                    source_note_count = excluded.source_note_count,
+                    updated_at = datetime('now')
+                """,
+                (
+                    normalized,
+                    final_title,
+                    document_text or "",
+                    state or "ready",
+                    error_text,
+                    int(source_note_count or 0),
+                ),
+            )
+            conn.commit()
+
+    def count_ready_notes_for_context(self, context: str | None) -> int:
+        normalized = self._normalize_notes_context(context)
+        with sqlite3.connect(self.db_name) as conn:
+            self._ensure_notes_schema(conn)
+            row = conn.execute(
+                "SELECT COUNT(*) FROM notes WHERE context = ? AND state = 'ready'",
+                (normalized,),
+            ).fetchone()
+            return int((row or [0])[0] or 0)
 
     # News methods for dashboard news feed
     def store_news_item(self, title, content, url=None, source=None, published_date=None):
@@ -2416,6 +2807,7 @@ class DatabaseManager:
                     CREATE TABLE IF NOT EXISTS billing_clients (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         name TEXT NOT NULL,
+                        billing_contact_name TEXT,
                         billing_email TEXT,
                         default_rate REAL,
                         currency TEXT NOT NULL DEFAULT 'USD',
@@ -2433,7 +2825,11 @@ class DatabaseManager:
                         start_ts TEXT NOT NULL,
                         end_ts TEXT NOT NULL,
                         minutes INTEGER NOT NULL,
+                        deliverable_label TEXT NOT NULL DEFAULT '',
+                        work_performed TEXT NOT NULL DEFAULT '',
                         description TEXT NOT NULL DEFAULT '',
+                        percent_of_total REAL,
+                        rate_override REAL,
                         is_billable INTEGER NOT NULL DEFAULT 1,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -2460,11 +2856,14 @@ class DatabaseManager:
                         client_id INTEGER NOT NULL,
                         period_start TEXT NOT NULL,
                         period_end TEXT NOT NULL,
+                        invoice_number TEXT,
+                        due_date TEXT,
                         generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         status TEXT NOT NULL DEFAULT 'draft',
                         totals_json TEXT NOT NULL DEFAULT '{}',
                         rendered_body_md TEXT NOT NULL DEFAULT '',
                         file_path TEXT,
+                        pdf_file_path TEXT,
                         FOREIGN KEY (client_id) REFERENCES billing_clients(id)
                     )
                     """
@@ -2497,7 +2896,123 @@ class DatabaseManager:
                     print("    - agent_assignments priority values inverted (1<->5, 2<->4, 3 unchanged)")
             except Exception as e:
                 print(f"    - Error normalizing agent_assignments priority: {e}")
+
+        # Version 13 to 14: Billing time entry fields for invoice calculation
+        # Add work_performed, percent_of_total (fixed-fee allocation), and per-entry rate override.
+        if from_version < 14 and to_version >= 14:
+            print("  - Adding billing calculation columns to time_entries")
+            try:
+                cursor = conn.execute("PRAGMA table_info(time_entries)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                if "work_performed" not in columns:
+                    conn.execute("ALTER TABLE time_entries ADD COLUMN work_performed TEXT NOT NULL DEFAULT ''")
+                    print("    - Added 'work_performed' column to time_entries")
+                if "percent_of_total" not in columns:
+                    conn.execute("ALTER TABLE time_entries ADD COLUMN percent_of_total REAL")
+                    print("    - Added 'percent_of_total' column to time_entries")
+                if "rate_override" not in columns:
+                    conn.execute("ALTER TABLE time_entries ADD COLUMN rate_override REAL")
+                    print("    - Added 'rate_override' column to time_entries")
+
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error adding billing calculation columns: {e}")
         
+        # Version 14 to 15: add explicit deliverable/category label for grouped invoice output.
+        if from_version < 15 and to_version >= 15:
+            print("  - Adding deliverable/category labels to time_entries")
+            try:
+                cursor = conn.execute("PRAGMA table_info(time_entries)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                if "deliverable_label" not in columns:
+                    conn.execute("ALTER TABLE time_entries ADD COLUMN deliverable_label TEXT NOT NULL DEFAULT ''")
+                    print("    - Added 'deliverable_label' column to time_entries")
+
+                conn.execute(
+                    """
+                    UPDATE time_entries
+                    SET deliverable_label = COALESCE(NULLIF(deliverable_label, ''), work_performed, '')
+                    WHERE COALESCE(deliverable_label, '') = ''
+                    """
+                )
+                print("    - Backfilled deliverable labels from work_performed")
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error adding deliverable/category labels: {e}")
+
+        # Version 15 to 16: invoice draft PDF export tracking.
+        if from_version < 16 and to_version >= 16:
+            print("  - Adding PDF export tracking to invoice_drafts")
+            try:
+                cursor = conn.execute("PRAGMA table_info(invoice_drafts)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if "pdf_file_path" not in columns:
+                    conn.execute("ALTER TABLE invoice_drafts ADD COLUMN pdf_file_path TEXT")
+                    print("    - Added 'pdf_file_path' column to invoice_drafts")
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error adding invoice draft PDF tracking: {e}")
+
+        # Version 16 to 17: billing contact and per-draft invoice metadata.
+        if from_version < 17 and to_version >= 17:
+            print("  - Adding billing contact and invoice metadata fields")
+            try:
+                cursor = conn.execute("PRAGMA table_info(billing_clients)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if "billing_contact_name" not in columns:
+                    conn.execute("ALTER TABLE billing_clients ADD COLUMN billing_contact_name TEXT")
+                    print("    - Added 'billing_contact_name' column to billing_clients")
+
+                cursor = conn.execute("PRAGMA table_info(invoice_drafts)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if "invoice_number" not in columns:
+                    conn.execute("ALTER TABLE invoice_drafts ADD COLUMN invoice_number TEXT")
+                    print("    - Added 'invoice_number' column to invoice_drafts")
+                if "due_date" not in columns:
+                    conn.execute("ALTER TABLE invoice_drafts ADD COLUMN due_date TEXT")
+                    print("    - Added 'due_date' column to invoice_drafts")
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error adding billing contact and invoice metadata fields: {e}")
+
+        # Version 17 to 18: global durable user memory tables.
+        if from_version < 18 and to_version >= 18:
+            print("  - Creating global user memory tables: user_memory, user_memory_fts")
+            try:
+                conn.execute(
+                    '''CREATE TABLE IF NOT EXISTS user_memory (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        kind TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        source TEXT NOT NULL DEFAULT 'unknown',
+                        confidence REAL NOT NULL DEFAULT 1.0,
+                        json_data TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )'''
+                )
+                conn.execute(
+                    '''CREATE VIRTUAL TABLE IF NOT EXISTS user_memory_fts
+                        USING fts5 (
+                            mem_id UNINDEXED,
+                            kind UNINDEXED,
+                            content,
+                            source UNINDEXED,
+                            created_at UNINDEXED,
+                            tokenize='porter'
+                        )'''
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_kind ON user_memory(kind)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_source ON user_memory(source)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_created_at ON user_memory(created_at)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_confidence ON user_memory(confidence)")
+                conn.commit()
+                print("    - user_memory tables created")
+            except Exception as e:
+                print(f"    - Error creating global user memory tables: {e}")
+
         print(f"Schema migration from version {from_version} to {to_version} completed.")
 
     # -------------------------------------------------------------------------
@@ -2508,6 +3023,7 @@ class DatabaseManager:
         self,
         *,
         name: str,
+        billing_contact_name: str | None = None,
         billing_email: str | None = None,
         default_rate: float | None = None,
         currency: str = "USD",
@@ -2517,11 +3033,12 @@ class DatabaseManager:
         with sqlite3.connect(self.db_name) as conn:
             cur = conn.execute(
                 """
-                INSERT INTO billing_clients (name, billing_email, default_rate, currency, is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO billing_clients (name, billing_contact_name, billing_email, default_rate, currency, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(name).strip(),
+                    (str(billing_contact_name).strip() if billing_contact_name else None),
                     (str(billing_email).strip() if billing_email else None),
                     float(default_rate) if default_rate is not None else None,
                     str(currency or "USD").strip() or "USD",
@@ -2551,7 +3068,7 @@ class DatabaseManager:
             return dict(row) if row else None
 
     def billing_client_update(self, client_id: int, **kwargs) -> bool:
-        allowed = {"name", "billing_email", "default_rate", "currency", "is_active"}
+        allowed = {"name", "billing_contact_name", "billing_email", "default_rate", "currency", "is_active"}
         updates = []
         values = []
         for k, v in kwargs.items():
@@ -2576,22 +3093,43 @@ class DatabaseManager:
         start_ts: str,
         end_ts: str,
         minutes: int,
+        deliverable_label: str = "",
+        work_performed: str = "",
         description: str = "",
+        percent_of_total: float | None = None,
+        rate_override: float | None = None,
         is_billable: int = 1,
     ) -> int:
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with sqlite3.connect(self.db_name) as conn:
             cur = conn.execute(
                 """
-                INSERT INTO time_entries (client_id, start_ts, end_ts, minutes, description, is_billable, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO time_entries (
+                    client_id,
+                    start_ts,
+                    end_ts,
+                    minutes,
+                    deliverable_label,
+                    work_performed,
+                    description,
+                    percent_of_total,
+                    rate_override,
+                    is_billable,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(client_id),
                     str(start_ts),
                     str(end_ts),
                     int(minutes),
+                    str(deliverable_label or work_performed or ""),
+                    str(work_performed or ""),
                     str(description or ""),
+                    (float(percent_of_total) if percent_of_total is not None else None),
+                    (float(rate_override) if rate_override is not None else None),
                     int(is_billable),
                     now,
                     now,
@@ -2599,6 +3137,19 @@ class DatabaseManager:
             )
             conn.commit()
             return int(cur.lastrowid)
+
+    @staticmethod
+    def _normalize_time_entry_row(row: dict) -> dict:
+        out = dict(row or {})
+        deliverable = str(out.get("deliverable_label") or "").strip()
+        work = str(out.get("work_performed") or "").strip()
+        if not deliverable and work:
+            deliverable = work
+        out["deliverable_label"] = deliverable
+        # Preserve legacy access for older callers/templates during migration.
+        if not work and deliverable:
+            out["work_performed"] = deliverable
+        return out
 
     def time_entries_list(
         self,
@@ -2621,7 +3172,51 @@ class DatabaseManager:
             q += " ORDER BY start_ts DESC LIMIT ?"
             params.append(int(limit))
             rows = conn.execute(q, tuple(params)).fetchall()
-            return [dict(r) for r in rows]
+            return [self._normalize_time_entry_row(dict(r)) for r in rows]
+
+    def time_entry_get(self, entry_id: int) -> dict | None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM time_entries WHERE id = ?", (int(entry_id),)).fetchone()
+            return self._normalize_time_entry_row(dict(row)) if row else None
+
+    def time_entry_update(self, entry_id: int, **kwargs) -> bool:
+        allowed = {
+            "deliverable_label",
+            "work_performed",
+            "description",
+            "percent_of_total",
+            "rate_override",
+            "is_billable",
+        }
+        updates: list[str] = []
+        values: list[object] = []
+        deliverable_supplied = False
+        work_supplied = False
+        for k, v in kwargs.items():
+            if k not in allowed:
+                continue
+            if k == "deliverable_label":
+                deliverable_supplied = True
+            if k == "work_performed":
+                work_supplied = True
+            updates.append(f"{k} = ?")
+            values.append(v)
+        if deliverable_supplied and not work_supplied:
+            updates.append("work_performed = ?")
+            values.append(kwargs.get("deliverable_label"))
+        if work_supplied and not deliverable_supplied:
+            updates.append("deliverable_label = ?")
+            values.append(kwargs.get("work_performed"))
+        if not updates:
+            return False
+        updates.append("updated_at = ?")
+        values.append(datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        values.append(int(entry_id))
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(f"UPDATE time_entries SET {', '.join(updates)} WHERE id = ?", values)
+            conn.commit()
+            return int(cur.rowcount) > 0
 
     def time_entry_delete(self, entry_id: int) -> bool:
         with sqlite3.connect(self.db_name) as conn:
@@ -2679,25 +3274,31 @@ class DatabaseManager:
         client_id: int,
         period_start: str,
         period_end: str,
+        invoice_number: str | None = None,
+        due_date: str | None = None,
         totals_json: str,
         rendered_body_md: str,
         file_path: str | None = None,
+        pdf_file_path: str | None = None,
         status: str = "draft",
     ) -> int:
         with sqlite3.connect(self.db_name) as conn:
             cur = conn.execute(
                 """
-                INSERT INTO invoice_drafts (client_id, period_start, period_end, status, totals_json, rendered_body_md, file_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO invoice_drafts (client_id, period_start, period_end, invoice_number, due_date, status, totals_json, rendered_body_md, file_path, pdf_file_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(client_id),
                     str(period_start),
                     str(period_end),
+                    str(invoice_number).strip() if invoice_number else None,
+                    str(due_date).strip() if due_date else None,
                     str(status or "draft"),
                     str(totals_json or "{}"),
                     str(rendered_body_md or ""),
                     str(file_path) if file_path else None,
+                    str(pdf_file_path) if pdf_file_path else None,
                 ),
             )
             conn.commit()
@@ -2729,6 +3330,44 @@ class DatabaseManager:
             cur = conn.execute(
                 "UPDATE invoice_drafts SET status = ? WHERE id = ?",
                 (str(status or "draft"), int(draft_id)),
+            )
+            conn.commit()
+            return int(cur.rowcount) > 0
+
+    def invoice_draft_update_artifacts(
+        self,
+        draft_id: int,
+        *,
+        rendered_body_md: str | None = None,
+        totals_json: str | None = None,
+        file_path: str | None = None,
+        pdf_file_path: str | None = None,
+        status: str | None = None,
+    ) -> bool:
+        updates: list[str] = []
+        values: list[object] = []
+        if rendered_body_md is not None:
+            updates.append("rendered_body_md = ?")
+            values.append(str(rendered_body_md))
+        if totals_json is not None:
+            updates.append("totals_json = ?")
+            values.append(str(totals_json))
+        if file_path is not None:
+            updates.append("file_path = ?")
+            values.append(str(file_path) if file_path else None)
+        if pdf_file_path is not None:
+            updates.append("pdf_file_path = ?")
+            values.append(str(pdf_file_path) if pdf_file_path else None)
+        if status is not None:
+            updates.append("status = ?")
+            values.append(str(status or "draft"))
+        if not updates:
+            return False
+        values.append(int(draft_id))
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                f"UPDATE invoice_drafts SET {', '.join(updates)} WHERE id = ?",
+                values,
             )
             conn.commit()
             return int(cur.rowcount) > 0
@@ -3494,7 +4133,8 @@ class DatabaseManager:
 
     def cos_create_chat(self, title: str = "New chat", project: str = None) -> int:
         """Create a new CoS chat. Returns chat id. Use session_id = 'cos_' + str(id) for save_message/get_chat_history."""
-        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Include sub-second precision so rapid create/update calls preserve ordering.
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         with sqlite3.connect(self.db_name) as conn:
             cursor = conn.execute(
                 "INSERT INTO cos_chats (title, project, created_at, updated_at) VALUES (?, ?, ?, ?)",
@@ -3525,9 +4165,41 @@ class DatabaseManager:
                 "SELECT id, title, project, created_at, updated_at FROM cos_chats WHERE id = ?", (chat_id,)
             ).fetchone()
 
+    def cos_find_chat_by_title(self, title: str) -> int | None:
+        """Return the most recently updated chat id with an exact title match, else None."""
+        t = (title or "").strip()
+        if not t:
+            return None
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                row = conn.execute(
+                    "SELECT id FROM cos_chats WHERE title = ? ORDER BY updated_at DESC LIMIT 1",
+                    (t,),
+                ).fetchone()
+                return int(row[0]) if row and row[0] is not None else None
+        except Exception:
+            return None
+
+    def cos_find_latest_chat_by_title_prefix(self, prefix: str) -> int | None:
+        """Return the most recently updated chat id where title starts with prefix, else None."""
+        p = (prefix or "").strip()
+        if not p:
+            return None
+        try:
+            like = p + "%"
+            with sqlite3.connect(self.db_name) as conn:
+                row = conn.execute(
+                    "SELECT id FROM cos_chats WHERE title LIKE ? ORDER BY updated_at DESC LIMIT 1",
+                    (like,),
+                ).fetchone()
+                return int(row[0]) if row and row[0] is not None else None
+        except Exception:
+            return None
+
     def cos_update_chat(self, chat_id: int, title: str = None, project: str = None):
         """Update a CoS chat's title and/or project. updated_at is set to now."""
-        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Include sub-second precision so rapid updates preserve ordering.
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         with sqlite3.connect(self.db_name) as conn:
             if title is not None and project is not None:
                 conn.execute("UPDATE cos_chats SET title = ?, project = ?, updated_at = ? WHERE id = ?", (title, project, now, chat_id))
@@ -3650,6 +4322,203 @@ class DatabaseManager:
                 base += " ORDER BY created_at DESC LIMIT ?"
                 params.append(int(limit))
                 return conn.execute(base, params).fetchall()
+
+    def user_memory_add(
+        self,
+        *,
+        kind: str,
+        content: str,
+        source: str = "unknown",
+        confidence: float = 1.0,
+        json_data: str | dict | list | None = None,
+    ) -> int:
+        """Insert one durable user-memory item and index it in FTS."""
+        text = str(content or "").strip()
+        if not text:
+            return 0
+        payload = json_data
+        if isinstance(payload, (dict, list)):
+            payload = json.dumps(payload, ensure_ascii=False)
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO user_memory (kind, content, source, confidence, json_data, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                """,
+                (
+                    str(kind or "note").strip() or "note",
+                    text,
+                    str(source or "unknown").strip() or "unknown",
+                    float(confidence),
+                    payload,
+                ),
+            )
+            mem_id = int(cur.lastrowid)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO user_memory_fts (mem_id, kind, content, source, created_at)
+                    VALUES (?, ?, ?, ?, datetime('now'))
+                    """,
+                    (
+                        mem_id,
+                        str(kind or "note").strip() or "note",
+                        text,
+                        str(source or "unknown").strip() or "unknown",
+                    ),
+                )
+            except Exception:
+                pass
+            conn.commit()
+            return mem_id
+
+    def user_memory_add_many(self, *, items: list[dict]) -> int:
+        """Insert many durable user-memory items. Returns count inserted."""
+        if not items:
+            return 0
+        added = 0
+        for it in items:
+            try:
+                self.user_memory_add(
+                    kind=(it.get("kind") or "note"),
+                    content=(it.get("content") or ""),
+                    source=(it.get("source") or "unknown"),
+                    confidence=float(it.get("confidence", 1.0)),
+                    json_data=it.get("json_data"),
+                )
+                added += 1
+            except Exception:
+                continue
+        return added
+
+    def user_memory_recent(self, *, kind: str | None = None, limit: int = 20) -> list[tuple]:
+        """
+        Return recent user_memory rows:
+        (id, kind, content, source, confidence, json_data, created_at, updated_at)
+        """
+        with sqlite3.connect(self.db_name) as conn:
+            if kind is None:
+                return conn.execute(
+                    """
+                    SELECT id, kind, content, source, confidence, json_data, created_at, updated_at
+                    FROM user_memory
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (int(limit),),
+                ).fetchall()
+            return conn.execute(
+                """
+                SELECT id, kind, content, source, confidence, json_data, created_at, updated_at
+                FROM user_memory
+                WHERE kind = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (str(kind), int(limit)),
+            ).fetchall()
+
+    def user_memory_search(self, *, query: str, kind: str | None = None, limit: int = 10) -> list[tuple]:
+        """
+        Full-text search over user_memory_fts. Returns rows:
+        (id, kind, content, source, confidence, json_data, created_at, updated_at)
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
+
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                where = "user_memory_fts MATCH ?"
+                params = [q]
+                if kind is not None:
+                    where += " AND kind = ?"
+                    params.append(str(kind))
+                params.append(int(limit))
+                return conn.execute(
+                    f"""
+                    SELECT m.id, m.kind, m.content, m.source, m.confidence, m.json_data, m.created_at, m.updated_at
+                    FROM user_memory_fts f
+                    JOIN user_memory m ON m.id = f.mem_id
+                    WHERE {where}
+                    ORDER BY bm25(user_memory_fts), m.confidence DESC, m.created_at DESC
+                    LIMIT ?
+                    """,
+                    params,
+                ).fetchall()
+        except Exception:
+            like = f"%{q}%"
+            with sqlite3.connect(self.db_name) as conn:
+                base = """
+                    SELECT id, kind, content, source, confidence, json_data, created_at, updated_at
+                    FROM user_memory
+                    WHERE (content LIKE ? OR source LIKE ?)
+                """
+                params = [like, like]
+                if kind is not None:
+                    base += " AND kind = ?"
+                    params.append(str(kind))
+                base += " ORDER BY confidence DESC, created_at DESC, id DESC LIMIT ?"
+                params.append(int(limit))
+                return conn.execute(base, params).fetchall()
+
+    def user_memory_delete(self, memory_id: int) -> bool:
+        """Delete one durable user-memory row and its FTS entry."""
+        with sqlite3.connect(self.db_name) as conn:
+            try:
+                conn.execute("DELETE FROM user_memory_fts WHERE mem_id = ?", (int(memory_id),))
+            except Exception:
+                pass
+            cur = conn.execute("DELETE FROM user_memory WHERE id = ?", (int(memory_id),))
+            conn.commit()
+            return int(cur.rowcount or 0) > 0
+
+    def user_memory_update(
+        self,
+        memory_id: int,
+        *,
+        kind: str,
+        content: str,
+        source: str,
+        confidence: float,
+        json_data: str | dict | list | None = None,
+    ) -> bool:
+        """Update one durable user-memory row and refresh its FTS entry."""
+        text = str(content or "").strip()
+        if not text:
+            return False
+        payload = json_data
+        if isinstance(payload, (dict, list)):
+            payload = json.dumps(payload, ensure_ascii=False)
+        kind_s = str(kind or "note").strip() or "note"
+        source_s = str(source or "unknown").strip() or "unknown"
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                UPDATE user_memory
+                SET kind = ?, content = ?, source = ?, confidence = ?, json_data = ?, updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (kind_s, text, source_s, float(confidence), payload, int(memory_id)),
+            )
+            if int(cur.rowcount or 0) <= 0:
+                conn.commit()
+                return False
+            try:
+                conn.execute("DELETE FROM user_memory_fts WHERE mem_id = ?", (int(memory_id),))
+                conn.execute(
+                    """
+                    INSERT INTO user_memory_fts (mem_id, kind, content, source, created_at)
+                    SELECT id, kind, content, source, created_at
+                    FROM user_memory
+                    WHERE id = ?
+                    """,
+                    (int(memory_id),),
+                )
+            except Exception:
+                pass
+            conn.commit()
+            return True
 
     # -------------------------------------------------------------------------
     # Agent directory + delegation workflow methods

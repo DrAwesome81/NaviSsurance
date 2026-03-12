@@ -15,6 +15,7 @@ from PyQt6.QtCore import Qt, QSettings, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -33,6 +34,8 @@ from PyQt6.QtWidgets import (
 from core.db import DatabaseManager
 from core.workflow_engine import STATUS_AWAITING_RESEARCH_REVIEW, WorkflowEngine
 from gui.agent_console import AgentConsole
+from gui.document_export import export_markdownish_document
+from gui.notifications import notify_background_complete
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +253,13 @@ class DeepResearchTab(QWidget):
         self.brief_browser = QTextBrowser()
         self.brief_browser.setOpenExternalLinks(True)
         brief_layout.addWidget(self.brief_browser)
+        brief_actions = QHBoxLayout()
+        self.export_brief_btn = QPushButton("Export brief...")
+        self.export_brief_btn.setEnabled(False)
+        self.export_brief_btn.clicked.connect(self.export_brief)
+        brief_actions.addWidget(self.export_brief_btn)
+        brief_actions.addStretch(1)
+        brief_layout.addLayout(brief_actions)
         splitter.addWidget(brief_group)
 
         splitter.setStretchFactor(0, 1)
@@ -357,6 +367,13 @@ class DeepResearchTab(QWidget):
 
         self.refresh_artifact_display(project_id)
 
+        if status == STATUS_AWAITING_RESEARCH_REVIEW and not self.auto_generate_checkbox.isChecked():
+            notify_background_complete(
+                self,
+                "Deep Research Ready",
+                f"Research run {project_id} is ready for review.",
+            )
+
         # Fully automatic mode: immediately generate the final brief.
         if status == STATUS_AWAITING_RESEARCH_REVIEW and self.auto_generate_checkbox.isChecked():
             self.on_generate_brief()
@@ -393,6 +410,10 @@ class DeepResearchTab(QWidget):
 
         if brief_text:
             self.brief_browser.setPlainText(brief_text)
+            self.export_brief_btn.setEnabled(True)
+        else:
+            self.brief_browser.clear()
+            self.export_brief_btn.setEnabled(False)
 
     def on_generate_brief(self):
         if self._current_project_id is None:
@@ -430,6 +451,11 @@ class DeepResearchTab(QWidget):
         self.continue_btn.setEnabled(False)
         self.status_label.setText(f"Deep research status: Done (run {project_id}).")
         self.refresh_artifact_display(project_id)
+        notify_background_complete(
+            self,
+            "Deep Research Complete",
+            f"Research brief for run {project_id} is ready.",
+        )
 
     def on_brief_error(self, err: str):
         self._brief_worker = None
@@ -437,6 +463,36 @@ class DeepResearchTab(QWidget):
         self.continue_btn.setEnabled(True)
         self.status_label.setText("Deep research status: Brief generation failed.")
         QMessageBox.critical(self, "Research brief error", err)
+
+    def export_brief(self):
+        brief_text = (self.brief_browser.toPlainText() or "").strip()
+        if not brief_text:
+            QMessageBox.information(self, "Export brief", "No final research brief is available to export.")
+            return
+
+        base_name = self.name_edit.text().strip() or f"research_brief_{self._current_project_id or 'latest'}"
+        default_name = base_name.replace("/", "-").replace("\\", "-")
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Research Brief",
+            default_name,
+            "Word Document (*.docx);;PDF (*.pdf);;Markdown Files (*.md);;Text Files (*.txt)",
+        )
+        if not file_path:
+            return
+
+        try:
+            exported_path = export_markdownish_document(
+                title=base_name,
+                text=brief_text,
+                file_path=file_path,
+                selected_filter=selected_filter,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Export brief", f"Could not export research brief:\n{e}")
+            return
+
+        QMessageBox.information(self, "Export brief", f"Research brief exported:\n{exported_path}")
 
 
 # Backward-compatible aliases (older code/tests refer to ProjectsTab).

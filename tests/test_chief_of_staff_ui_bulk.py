@@ -138,7 +138,6 @@ def test_bulk_set_filtered_due_rejects_invalid_calendar_date(qapp, cos_db, monke
     )
     tab = ChiefOfStaffTab(cos_db)
     monkeypatch.setattr(tab, "_filtered_assignment_rows", lambda: [{"id": int(aid)}])
-    monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("2026-02-30", True))
 
     called = {"warn": False}
 
@@ -147,6 +146,21 @@ def test_bulk_set_filtered_due_rejects_invalid_calendar_date(qapp, cos_db, monke
         return QMessageBox.StandardButton.Ok
 
     monkeypatch.setattr(QMessageBox, "warning", _warn)
+
+    class _Dlg:
+        """Simulate invalid manual input: dialog warns and does not accept."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            QMessageBox.warning(None, "Assignments", "Due date must be YYYY-MM-DD or none.")
+            return 0  # Rejected
+
+        def due_date(self):
+            return None
+
+    monkeypatch.setattr("gui.chief_of_staff_tab.BulkDueDateDialog", _Dlg)
     tab._bulk_set_filtered_due()
     assert called["warn"] is True
     assert (cos_db.agent_get_assignment(int(aid)) or {}).get("due_date") == "2026-03-10"

@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 
 from core.agent_chat_service import agent_chat_response
 from core.db import DatabaseManager
+from gui.notifications import notify_chat_response
 
 logger = logging.getLogger(__name__)
 
@@ -612,6 +613,7 @@ class AgentConsole(QWidget):
             self._refresh_inbox()
             self._refresh_assignment_label()
             self._load_current_history()
+            notify_chat_response(self, str(self.agent.get("display_name") or self.agent_code or "Agent"))
 
     def _on_ask_error(self, err: str):
         self._worker = None

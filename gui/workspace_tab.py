@@ -39,6 +39,7 @@ from core.file_handler import extract_text_from_file
 from core.task_extract import parse_suggested_tasks
 from gui.task_import_dialog import TaskImportDialog
 from gui.agent_console import AgentConsole
+from gui.document_export import export_markdownish_document
 
 logger = logging.getLogger(__name__)
 
@@ -1216,14 +1217,18 @@ class WorkspaceTab(QWidget):
             self,
             "Export Document",
             f"workspace_document_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-            "Markdown Files (*.md);;Text Files (*.txt);;All Files (*)"
+            "Word Document (*.docx);;PDF (*.pdf);;Markdown Files (*.md);;Text Files (*.txt);;All Files (*)"
         )
         
         if file_path:
             try:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(self._current_markdown)
-                self.status_label.setText(f"Document exported to {os.path.basename(file_path)}")
+                exported_path = export_markdownish_document(
+                    title="Workspace Document",
+                    text=self._current_markdown,
+                    file_path=file_path,
+                    selected_filter=selected_filter,
+                )
+                self.status_label.setText(f"Document exported to {os.path.basename(exported_path)}")
             except Exception as e:
                 logger.error(f"Error exporting markdown: {e}")
                 self.status_label.setText(f"Error exporting file: {str(e)}")

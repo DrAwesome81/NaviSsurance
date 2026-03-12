@@ -133,6 +133,27 @@ def test_delete_lead_by_id_respects_confirmation(monkeypatch, leads_tab):
     assert leads_tab.db.deleted_ids == [1]
 
 
+def test_show_message_dialog_copy_sets_clipboard_text(monkeypatch, leads_tab):
+    copied = {"text": None}
+
+    class _Clipboard:
+        def setText(self, text):
+            copied["text"] = text
+
+    def _exec(self):
+        for button in self.buttons():
+            if self.buttonRole(button) == QMessageBox.ButtonRole.ActionRole:
+                button.click()
+                break
+        return 0
+
+    monkeypatch.setattr("gui.leads_tab.QApplication.clipboard", lambda: _Clipboard())
+    monkeypatch.setattr(QMessageBox, "exec", _exec)
+
+    leads_tab.show_message_dialog("Hello there")
+    assert copied["text"] == "Hello there"
+
+
 def test_create_followup_task_adds_task_and_updates_next_action_date(monkeypatch, leads_tab):
     monkeypatch.setattr(leads_tab, "refresh_leads", lambda: None)
     lead = {

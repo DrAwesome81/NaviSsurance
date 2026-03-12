@@ -2,6 +2,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 import os
 import requests
+from dateutil.tz import tzlocal
 
 # Centralized path configuration
 # Get the absolute path to the project root (parent directory of this config.py file)
@@ -12,6 +13,19 @@ DATABASE_PATH = os.path.join(PROJECT_ROOT, "naviSsurance_index.db")
 ARTIFACTS_DIR = os.path.join(PROJECT_ROOT, "data", "artifacts")
 CHROMA_PATH = os.path.join(PROJECT_ROOT, "chroma_index")
 ENV_FILE = os.path.join(CONFIG_DIR, ".env")
+LOCAL_LLM_RUNTIME_DIR = os.path.join(PROJECT_ROOT, "models", "llama_cpp_b8190", "runtime")
+LOCAL_LLM_CLI_PATH = os.path.join(LOCAL_LLM_RUNTIME_DIR, "llama-cli.exe")
+LOCAL_LLM_MODEL_PATH = os.path.join(
+    PROJECT_ROOT,
+    "models",
+    "local_validation",
+    "qwen3_14b_q5km",
+    "Qwen3-14B-Q5_K_M.gguf",
+)
+LOCAL_LLM_CHAT_TEMPLATE = "chatml"
+LOCAL_LLM_GPU_LAYERS = int(os.getenv("LOCAL_LLM_GPU_LAYERS", "33"))
+LOCAL_LLM_CTX_SIZE = int(os.getenv("LOCAL_LLM_CTX_SIZE", "8192"))
+LOCAL_LLM_TIMEOUT_S = int(os.getenv("LOCAL_LLM_TIMEOUT_S", "180"))
 
 # Load environment variables from config folder
 load_dotenv(ENV_FILE)
@@ -45,13 +59,14 @@ headers = {
     "Content-Type": "application/json"
 }
 
-def get_system_prompt(today=None):
+def get_system_prompt(today=None, memory_context: str | None = None):
     """
     Generate the system prompt with dynamic date.
     
     Args:
         today: datetime object for the date (defaults to current date)
                Useful for testing with mock dates
+        memory_context: optional durable-memory context to append
     
     Returns:
         dict: System message with role and content
@@ -63,8 +78,7 @@ def get_system_prompt(today=None):
     if getattr(today, "tzinfo", None):
         local_now = today.astimezone()
     else:
-        local_tz = datetime.now().astimezone().tzinfo
-        local_now = today.replace(tzinfo=local_tz)
+        local_now = today.replace(tzinfo=tzlocal())
     current_date = local_now.strftime("%B %d, %Y")
     current_time = local_now.strftime("%I:%M %p").lstrip("0")
     tz_name = local_now.tzname() or "local time"
@@ -74,8 +88,14 @@ def get_system_prompt(today=None):
 You have access to full conversation history through the !search command (e.g., '!search Genesys press release'). For regular chat, you can see any chat messages from the current session.
 
 **Task Management:**
-- If you are asked to add a task or a reminder, return exactly 'ADD_TASK:<task description>|<due date>', without any other details or explanation.
-- For multiple tasks in one request, or for a single task to be performed multiple times, return multiple 'ADD_TASK:<task description>|<due date>' phrases separated by a space, one for each task (e.g. 'ADD_TASK:task1|date1 ADD_TASK:task2|date2').
+- If you are asked to add a task or a reminder, return ONLY task command lines in the exact format below (no extra text, no bullets, no explanations):
+  ADD_TASK: <task description> | <due date> | <Business|Personal> [| <priority P0-P5 or 0-5 or none>] [| <next action MM-DD-YYYY or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]
+- Due date and next action date must be either MM-DD-YYYY, YYYY-MM-DD, or the literal 'none' (meaning no date).
+- For multiple tasks, return one ADD_TASK line per task (one per line).
+- Task description must be plain text and must NOT contain the '|' character.
+Examples:
+ADD_TASK: Send Acme the signed SOW | 03-10-2026 | Business | P4 | 03-08-2026 | none | None
+ADD_TASK: Book dentist appointment | none | Personal
 
 **Search Commands:**
 - If you determine that a web search is needed, return exactly 'WEB_SEARCH:<search query>'.
@@ -87,6 +107,10 @@ You have access to full conversation history through the !search command (e.g., 
 - For all other chat messages, respond normally.
 - Treat all scheduling/time references as local time unless explicitly told otherwise.
 - Use <think> tags for reasoning if needed, but keep responses clean."""
+
+    memory_text = str(memory_context or "").strip()
+    if memory_text:
+        content += f"\n\n**Durable User Memory:**\n{memory_text}"
 
     return {
         "role": "system",

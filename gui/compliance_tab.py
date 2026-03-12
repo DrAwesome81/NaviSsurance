@@ -6,6 +6,7 @@ import json
 from PyQt6.QtCore import QDate
 from PyQt6.QtWidgets import QSplitter
 from gui.agent_console import AgentConsole
+from docx import Document
 
 class ComplianceThread(QThread):
     result_signal = pyqtSignal(dict)
@@ -21,7 +22,8 @@ class ComplianceThread(QThread):
     def run(self):
         try:
             result = self.checker.check_compliance(self.ref_items, self.assess_items, self.session_id, self.conversation_history)
-            self.result_signal.emit({"success": True, "data": result})
+            # The checker already returns the final result envelope.
+            self.result_signal.emit(result)
         except Exception as e:
             self.result_signal.emit({"success": False, "error": str(e)})
 
@@ -260,6 +262,7 @@ class ComplianceTab(QWidget):
         self.progress_bar.hide()
         if result["success"]:
             data = result["data"]
+            raw_response = str(result.get("raw_response") or "").strip()
             formatted_results = []
             
             if 'overview' in data and data['overview'].strip():
@@ -288,7 +291,14 @@ class ComplianceTab(QWidget):
             if formatted_results:
                 self.results_text.setHtml("".join(formatted_results))
             else:
-                self.results_text.setText("No results found.")
+                if raw_response:
+                    self.results_text.setPlainText(
+                        "Compliance check returned no structured sections.\n\n"
+                        "Raw response:\n"
+                        f"{raw_response}"
+                    )
+                else:
+                    self.results_text.setText("No results found.")
         else:
             self.results_text.setText(f"Error: {result['error']}")
 
@@ -297,19 +307,29 @@ class ComplianceTab(QWidget):
             self.results_text.setText("No results to save.")
             return
         timestamp = QDate.currentDate().toString("yyyyMMdd")
-        default_filename = f"compliance_report_{timestamp}.json"
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Compliance Report", default_filename, "JSON Files (*.json);;All Files (*)"
+        default_filename = f"compliance_report_{timestamp}.txt"
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save Compliance Report",
+            default_filename,
+            "Text Files (*.txt);;Word Documents (*.docx);;All Files (*)"
         )
         if file_path:
-            results = []
-            for i in range(self.results_text.document().blockCount()):
-                block = self.results_text.document().findBlockByNumber(i).text()
-                if block:
-                    results.append(block)
             try:
-                with open(file_path, "w") as f:
-                    json.dump(results, f, indent=2)
+                plain_text = self.results_text.toPlainText()
+                is_docx = file_path.lower().endswith(".docx") or "docx" in (selected_filter or "").lower()
+                if is_docx:
+                    if not file_path.lower().endswith(".docx"):
+                        file_path += ".docx"
+                    doc = Document()
+                    for block in plain_text.splitlines():
+                        doc.add_paragraph(block)
+                    doc.save(file_path)
+                else:
+                    if not os.path.splitext(file_path)[1]:
+                        file_path += ".txt"
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(plain_text)
                 self.results_text.append(f"Saved to {file_path}")
             except Exception as e:
                 self.results_text.setText(f"Error saving report: {str(e)}")

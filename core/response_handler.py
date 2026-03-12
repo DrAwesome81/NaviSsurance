@@ -3,17 +3,26 @@ import subprocess
 import json
 import logging
 import threading
+import sys
 from datetime import datetime
 import requests
 import re
 from dateutil import parser
 os.environ["TORCH_DYNAMO_DISABLE"] = "1"
-from config import base_system_message
+from config import PROJECT_ROOT
 # Dropbox indexing removed - using RAG index instead
+from core.local_llm import session_profile
+from core.task_command_contract import AddTaskCommand, normalize_mmddyyyy, parse_actions
+from core.user_memory import auto_store_user_memory, build_user_memory_context, store_teach_navi_memory
 
 logger = logging.getLogger(__name__)
 
 class ResponseHandler:
+    _ADD_TASK_CMD_RE = re.compile(
+        r"ADD_TASK:\s*(?P<desc>.*?)\s*\|\s*(?P<due>.*?)(?=(?:\s+ADD_TASK:)|\Z)",
+        re.IGNORECASE | re.DOTALL,
+    )
+
     def __init__(self, chat_handler, chat_window=None):
         self.chat_handler = chat_handler
         self.chat_window = chat_window  # Reference to ChatWindow for accessing tasks_tab
@@ -22,11 +31,16 @@ class ResponseHandler:
         # Ensure only one thread talks to the worker at a time
         self.worker_lock = threading.Lock()
 
-        # Start the worker process with conda env Python
+        self._start_worker()
+
+    def _start_worker(self):
+        self.process = None
+        self.model_loaded = False
         try:
             logger.info("Starting llama_worker.py subprocess...")
+            worker_path = os.path.join(PROJECT_ROOT, "core", "llama_worker.py")
             self.process = subprocess.Popen(
-                ["c:/Users/adamo/Dropbox/_Consulting/NaviSsurance/cuda_env/Scripts/python.exe", "-u", "core/llama_worker.py"],
+                [sys.executable, "-u", worker_path],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -36,7 +50,6 @@ class ResponseHandler:
                 creationflags=0x08000000  # CREATE_NO_WINDOW to prevent console popup
             )
             logger.info(f"Subprocess started with PID: {self.process.pid}")
-            # Wait for load confirmation
             start = datetime.now()
             while (datetime.now() - start).total_seconds() < 60:
                 line = self.process.stderr.readline().strip()
@@ -46,10 +59,9 @@ class ResponseHandler:
                     self.model_loaded = True
                     logger.info("Model loaded successfully in worker.")
                     break
-                elif line.startswith("LOAD_ERROR:"):
+                if line.startswith("LOAD_ERROR:"):
                     raise Exception(line[len("LOAD_ERROR:"):])
             if not self.model_loaded:
-                # Check if process is still running
                 if self.process.poll() is not None:
                     logger.error(f"Subprocess exited with code: {self.process.returncode}")
                     stderr_output = self.process.stderr.read()
@@ -60,56 +72,82 @@ class ResponseHandler:
         except Exception as e:
             logger.error(f"Failed to start worker: {e}")
             self.process = None
+            self.model_loaded = False
+
+    def _stop_worker(self):
+        if not self.process:
+            return
+        try:
+            self.process.terminate()
+            self.process.wait(timeout=5)
+        except Exception:
+            try:
+                self.process.kill()
+            except Exception:
+                pass
+        finally:
+            self.process = None
+            self.model_loaded = False
+
+    def _restart_worker(self):
+        logger.warning("Restarting llama worker after communication failure.")
+        self._stop_worker()
+        self._start_worker()
 
     def __del__(self):
-        if self.process:
-            self.process.terminate()
-            self.process.wait()
+        self._stop_worker()
 
     def chat_with_llama(self, messages, session_id):
         """Send a single request to the llama worker in a thread-safe, robust way."""
         if not self.process or not self.model_loaded:
             return "Model not loaded."
+        profile = session_profile(session_id)
+        logger.info(
+            "Routing local request via llama worker: session_id=%s class=%s max_tokens=%s",
+            session_id,
+            profile.get("class"),
+            profile.get("max_tokens"),
+        )
 
         # Only one thread at a time can talk to the worker subprocess
         with self.worker_lock:
-            try:
-                payload = json.dumps({"messages": messages, "session_id": session_id})
+            for attempt in range(3):
+                try:
+                    if not self.process or not self.model_loaded or self.process.poll() is not None:
+                        raise RuntimeError("Worker process is unavailable.")
 
-                # Send input to worker
-                self.process.stdin.write(payload + "\n")
-                self.process.stdin.flush()
+                    payload = json.dumps({"messages": messages, "session_id": session_id})
+                    self.process.stdin.write(payload + "\n")
+                    self.process.stdin.flush()
 
-                # Read lines until we get a valid JSON object
-                while True:
-                    line = self.process.stdout.readline()
-                    if not line:
-                        # EOF or no response
-                        raise Exception("No response from worker (empty stdout line).")
+                    while True:
+                        line = self.process.stdout.readline()
+                        if not line:
+                            raise Exception("No response from worker (empty stdout line).")
 
-                    line = line.strip()
-                    if not line:
-                        # Skip blank lines
+                        line = line.strip()
+                        if not line:
+                            continue
+
+                        try:
+                            response = json.loads(line)
+                            break
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Invalid JSON from worker: {e}; line (truncated): {line[:200]}")
+                            continue
+
+                    if "error" in response:
+                        logger.error(f"Worker error: {response['error']}")
+                        return f"Error: {response['error']}"
+
+                    return response.get("response", "")
+
+                except Exception as e:
+                    logger.error(f"Worker communication error: {e}")
+                    if attempt < 2:
+                        self._restart_worker()
                         continue
-
-                    try:
-                        response = json.loads(line)
-                        break
-                    except json.JSONDecodeError as e:
-                        # Log and keep reading – in case some stray output or partial line slipped through
-                        logger.error(f"Invalid JSON from worker: {e}; line (truncated): {line[:200]}")
-                        continue
-
-                if "error" in response:
-                    logger.error(f"Worker error: {response['error']}")
-                    return f"Error: {response['error']}"
-
-                # Normal success path
-                return response.get("response", "")
-
-            except Exception as e:
-                logger.error(f"Worker communication error: {e}")
-                return "Local AI's acting up—try again."
+                    return "Local AI's acting up—try again."
 
     def perform_grok_search(self, query):
         """Perform a web search using Grok via xAI SDK (web_search tool)."""
@@ -144,6 +182,10 @@ class ResponseHandler:
         print(f"DEBUG: ResponseHandler.get_response called with message: {message[:50]}..., session_id: {session_id}")
         conversation_history.append({"role": "user", "content": message})
         try:
+            teach_response = store_teach_navi_memory(self.chat_handler.db, message)
+            if teach_response:
+                return teach_response
+
             # Special-case: Notes tab should bypass task/news/!search routing
             if session_id == "notes_session" or str(session_id).startswith("notes_"):
                 # For Notes, we just want a plain LLM response with no extra routing logic
@@ -254,29 +296,120 @@ class ResponseHandler:
                     return "Unable to fetch current news. Please try again."
             # Give Navi visibility into tasks and projects for planning/priorities (same as Mason)
             navi_context = self._get_navi_tasks_projects_context()
-            messages_for_llm = (
-                [{"role": "system", "content": "Current tasks and projects (use for planning and priorities when the user asks):\n" + navi_context}]
-                + list(conversation_history)
-            ) if navi_context else conversation_history
+            user_memory_context = build_user_memory_context(self.chat_handler.db, message, limit=5, recent_limit=2)
+            system_messages = []
+            if navi_context:
+                system_messages.append(
+                    {
+                        "role": "system",
+                        "content": "Current tasks and projects (use for planning and priorities when the user asks):\n" + navi_context,
+                    }
+                )
+            if user_memory_context:
+                system_messages.append({"role": "system", "content": user_memory_context})
+            messages_for_llm = system_messages + list(conversation_history) if system_messages else conversation_history
             grok_response = self.hybrid_wrapper(messages_for_llm, session_id)
             print(f"DEBUG: hybrid_wrapper returned: {grok_response[:200] if grok_response else 'None'}...")
-            task_segments = [seg for seg in grok_response.split("ADD_TASK:") if seg.strip()]
-            print(f"DEBUG: task_segments count: {len(task_segments)}, has ADD_TASK: {'ADD_TASK:' in grok_response}")
             added_tasks = []
-            if task_segments and "ADD_TASK:" in grok_response:
-                # Local tasks only (Vikunja integration removed).
-                for segment in task_segments:
-                    task_info = segment.split("|", 1)
-                    if len(task_info) != 2:
+            extracted = []
+            if isinstance(grok_response, str) and grok_response.strip():
+                extracted = list(self._ADD_TASK_CMD_RE.finditer(grok_response))
+            print(
+                f"DEBUG: ADD_TASK matches: {len(extracted)}, has ADD_TASK: {('ADD_TASK:' in (grok_response or ''))}"
+            )
+            # 1) Preferred: parse canonical action lines (same contract as CoS/Mason Tasks tab).
+            created: list[tuple[str, str | None, str]] = []  # (desc, due, category)
+            seen_keys: set[tuple[str, str | None, str]] = set()
+            if isinstance(grok_response, str) and grok_response.strip():
+                for cmd in parse_actions(grok_response):
+                    if not isinstance(cmd, AddTaskCommand):
                         continue
-                    task_description = task_info[0].strip()
+                    key = (cmd.description.casefold(), cmd.due_date, cmd.category)
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
                     try:
-                        from datetime import datetime
-                        due_date_obj = parser.parse(task_info[1].strip(), default=datetime.now())
-                        due_date = due_date_obj.strftime("%m-%d-%Y")
-                    except ValueError:
-                        due_date = "unknown"
-                    added_tasks.append(f"'{task_description}' due on {due_date}")
+                        task_id = self.chat_handler.db.add_task(
+                            "chat_task_capture",
+                            cmd.description,
+                            cmd.due_date,
+                            category=cmd.category,
+                            recurrence=cmd.recurrence,
+                            completed=0,
+                            cos_project_id=cmd.project_id,
+                        )
+                        if cmd.priority is not None or cmd.next_action_date is not None:
+                            try:
+                                self.chat_handler.db.update_task_by_id(
+                                    int(task_id),
+                                    priority=cmd.priority
+                                    if cmd.priority is not None
+                                    else self.chat_handler.db._UNSET,  # type: ignore[attr-defined]
+                                    next_action_date=cmd.next_action_date
+                                    if cmd.next_action_date is not None
+                                    else self.chat_handler.db._UNSET,  # type: ignore[attr-defined]
+                                )
+                            except Exception:
+                                pass
+                        created.append((cmd.description, cmd.due_date, cmd.category))
+                    except Exception as e:
+                        logger.warning("ResponseHandler ADD_TASK apply failed: %s", e)
+
+            # 2) Backward-compatible: parse legacy simple ADD_TASK:<desc>|<due> commands (no category).
+            if extracted:
+                from datetime import datetime
+
+                for m in extracted:
+                    task_description = (m.group("desc") or "").strip()
+                    due_raw = (m.group("due") or "").strip()
+                    if not task_description:
+                        continue
+                    if "|" in task_description:
+                        task_description = task_description.split("|", 1)[0].strip()
+                    if not task_description:
+                        continue
+
+                    due_date: str | None
+                    if due_raw.lower() in {"none", "null", "n/a", "na", "unknown", ""}:
+                        due_date = None
+                    else:
+                        ok_due, norm = normalize_mmddyyyy(due_raw)
+                        if ok_due:
+                            due_date = norm
+                        else:
+                            try:
+                                due_date_obj = parser.parse(due_raw, default=datetime.now())
+                                due_date = due_date_obj.strftime("%m-%d-%Y")
+                            except Exception:
+                                due_date = None
+
+                    key = (task_description.casefold(), due_date, "Business")
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    try:
+                        self.chat_handler.db.add_task(
+                            "chat_task_capture",
+                            task_description,
+                            due_date,
+                            category="Business",
+                            recurrence="None",
+                            completed=0,
+                        )
+                        created.append((task_description, due_date, "Business"))
+                    except Exception as e:
+                        logger.warning("ResponseHandler legacy ADD_TASK apply failed: %s", e)
+
+            for desc, due, cat in created:
+                due_s = due or "none"
+                added_tasks.append(f"'{desc}' ({cat}) due {due_s}")
+            if isinstance(grok_response, str) and grok_response.strip():
+                auto_store_user_memory(
+                    self.chat_handler.db,
+                    user_message=message,
+                    assistant_message=grok_response,
+                    llm_callable=self.chat_with_llama,
+                )
             # Return the processed response, not the raw grok_response
             if added_tasks:
                 print(f"DEBUG: Returning processed tasks: {added_tasks}")
@@ -284,7 +417,7 @@ class ResponseHandler:
             else:
                 # If no tasks were added but ADD_TASK was in response, we need to handle it
                 # Don't return raw ADD_TASK: string - ChatThread will try to parse it for old system
-                if "ADD_TASK:" in grok_response:
+                if "ADD_TASK:" in (grok_response or ""):
                     print("DEBUG: ADD_TASK found but no tasks parsed - likely parse error")
                     logger.warning("ADD_TASK: found in response but no tasks were parsed")
                     # Return a message instead of raw ADD_TASK to prevent ChatThread from parsing it
@@ -302,21 +435,36 @@ class ResponseHandler:
         return None
 
     def _is_task_query(self, message):
-        """Use LLM to intelligently detect if the message is asking about tasks."""
-        try:
-            # Use the local LLM to determine if this is a task-related query
-            detection_prompt = [
-                {"role": "system", "content": "You are a task detection assistant. Determine if the user's message is asking about their task list, todos, deadlines, or assignments. Respond with only 'YES' if it's task-related, or 'NO' if it's not."},
-                {"role": "user", "content": f"Is this message asking about tasks, todos, deadlines, or assignments? Message: '{message}'"}
-            ]
-            
-            response = self.chat_with_llama(detection_prompt, "task_detection")
-            return response.strip().upper() == "YES"
-        except Exception as e:
-            print(f"Error in task detection: {e}")
-            # Fallback to simple keyword detection
-            task_keywords = ['task', 'todo', 'due', 'deadline', 'assignment']
-            return any(keyword in message.lower() for keyword in task_keywords)
+        """Fast deterministic detection for task-list questions."""
+        text = str(message or "").strip().lower()
+        if not text:
+            return False
+        direct_terms = (
+            "task",
+            "tasks",
+            "todo",
+            "to-do",
+            "deadline",
+            "deadlines",
+            "assignment",
+            "assignments",
+            "overdue",
+            "next action",
+        )
+        if any(term in text for term in direct_terms):
+            return True
+        question_starts = (
+            "what is due",
+            "what's due",
+            "what do i have due",
+            "what do i need to do",
+            "what is on my plate",
+            "what's on my plate",
+            "what should i work on",
+            "what should i focus on",
+            "what do i have this week",
+        )
+        return any(text.startswith(prefix) for prefix in question_starts)
 
     def _handle_task_query(self, message):
         """Use LLM to intelligently handle task queries with natural responses."""

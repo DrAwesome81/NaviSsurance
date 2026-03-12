@@ -114,6 +114,24 @@ class TestCosDatabaseChats:
         assert row[1] == "New title"
         assert row[2] == "Work"
 
+    def test_cos_find_chat_by_title_returns_latest(self, cos_db):
+        """cos_find_chat_by_title returns most recently updated chat with exact title."""
+        title = "AM Sweep 2099-01-01"
+        cid_old = cos_db.cos_create_chat(title=title, project=None)
+        cid_new = cos_db.cos_create_chat(title=title, project=None)
+        # Touch old so it becomes "latest"
+        cos_db.cos_update_chat(int(cid_old))
+        found = cos_db.cos_find_chat_by_title(title)
+        assert int(found or 0) == int(cid_old)
+
+    def test_cos_find_latest_chat_by_title_prefix_returns_latest(self, cos_db):
+        """cos_find_latest_chat_by_title_prefix returns most recently updated chat with prefix."""
+        cid_a = cos_db.cos_create_chat(title="AM Sweep 2099-01-02", project=None)
+        cid_b = cos_db.cos_create_chat(title="AM Sweep 2099-01-03", project=None)
+        cos_db.cos_update_chat(int(cid_a))
+        found = cos_db.cos_find_latest_chat_by_title_prefix("AM Sweep ")
+        assert int(found or 0) == int(cid_a)
+
 
 class TestCosDatabasePreferences:
     """Test cos_preferences (single row id=1)."""
@@ -363,6 +381,16 @@ class TestChiefOfStaffService:
         from core.chief_of_staff_service import cos_response
         result = cos_response(cos_db, "Help")
         assert "Error" in result
+
+
+def test_local_time_context_preserves_supplied_naive_datetime():
+    from core.chief_of_staff_service import _local_time_context
+
+    result = _local_time_context(datetime(2026, 3, 7, 21, 15, 0))
+
+    assert "2026-03-07" in result
+    assert "9:15 PM" in result
+    assert "UTC" in result
 
     def test_cos_response_injects_dashboard_tasks_into_prompt(self, mock_grok, cos_db):
         """Dashboard tasks are included in the prompt sent to Grok."""
@@ -758,6 +786,7 @@ class TestChiefOfStaffService:
         assert atlas_row is not None and int(atlas_row.get("priority") or 0) == 1
         assert quill_row is not None and int(quill_row.get("priority") or 0) == 4
         assert "Bulk-updated priority for 1 scope(s)" in result
+        assert "changed=1" in result
         assert "BULK_UPDATE_ASSIGNMENT_PRIORITY:" not in result
 
     def test_cos_response_bulk_updates_assignment_priority_open_mode(self, mock_grok, cos_db):
@@ -789,6 +818,7 @@ class TestChiefOfStaffService:
         assert open_row is not None and int(open_row.get("priority") or 0) == 1
         assert done_row is not None and int(done_row.get("priority") or 0) == 4
         assert "skipped closed" in result
+        assert "changed=1" in result
         assert "BULK_UPDATE_ASSIGNMENT_PRIORITY:" not in result
 
     def test_cos_response_bulk_updates_assignment_due_all(self, mock_grok, cos_db):
@@ -817,6 +847,7 @@ class TestChiefOfStaffService:
         assert one is not None and str(one.get("due_date") or "") == "2026-04-01"
         assert two is not None and str(two.get("due_date") or "") == "2026-04-01"
         assert "Bulk-updated due date for 1 scope(s)" in result
+        assert "changed=2" in result
         assert "BULK_UPDATE_ASSIGNMENT_DUE:" not in result
 
     def test_cos_response_bulk_updates_assignment_due_open_mode(self, mock_grok, cos_db):
@@ -850,6 +881,7 @@ class TestChiefOfStaffService:
         assert open_row is not None and str(open_row.get("due_date") or "") == "2026-05-15"
         assert done_row is not None and str(done_row.get("due_date") or "") == "2026-03-10"
         assert "skipped closed" in result
+        assert "changed=1" in result
         assert "BULK_UPDATE_ASSIGNMENT_DUE:" not in result
 
     def test_cos_response_bulk_reassigns_assignments_scoped(self, mock_grok, cos_db):
@@ -890,6 +922,7 @@ class TestChiefOfStaffService:
         assert thread is not None
         assert str(thread[1]).lower() == "quill"
         assert "Bulk-reassigned 1 scope(s)" in result
+        assert "changed=2" in result
         assert "BULK_REASSIGN_ASSIGNMENTS:" not in result
 
     def test_cos_response_bulk_reassigns_assignments_open_mode(self, mock_grok, cos_db):
@@ -921,6 +954,7 @@ class TestChiefOfStaffService:
         assert open_row is not None and str(open_row.get("assignee_code") or "") == "quill"
         assert done_row is not None and str(done_row.get("assignee_code") or "") == "atlas"
         assert "skipped closed" in result
+        assert "changed=1" in result
         assert "BULK_REASSIGN_ASSIGNMENTS:" not in result
 
     def test_cos_response_reassigns_assignment(self, mock_grok, cos_db):
@@ -1229,6 +1263,65 @@ def test_cos_response_with_history_uses_multi_turn(mock_grok_messages, cos_db):
     assert any(m.get("role") == "assistant" and "Focus 90" in (m.get("content") or "") for m in call_messages)
 
 
+@patch("core.chief_of_staff_service._extract_and_store_memory")
+@patch("core.chief_of_staff_service.grok_completion_messages")
+def test_cos_response_can_pull_older_chat_history_on_demand(mock_grok_messages, _mock_extract_memory, cos_db):
+    from core.chief_of_staff_service import cos_response
+
+    cos_db.save_message("cos_42", "user", "Let's discuss Jeff Cunningham and the quote timeline.")
+    cos_db.save_message("cos_42", "assistant", "We agreed to send Jeff the quote tomorrow morning.")
+    mock_grok_messages.side_effect = [
+        "CHAT_HISTORY_SEARCH: Jeff Cunningham quote timeline",
+        "We said we'd send Jeff the quote tomorrow morning.",
+    ]
+
+    result = cos_response(
+        cos_db,
+        "What did we decide about Jeff?",
+        conversation_history=[
+            ("user", "Unrelated recent turn 1"),
+            ("assistant", "Unrelated recent turn 2"),
+            ("user", "Unrelated recent turn 3"),
+            ("assistant", "Unrelated recent turn 4"),
+            ("user", "Unrelated recent turn 5"),
+            ("assistant", "Unrelated recent turn 6"),
+            ("user", "What did we decide about Jeff?"),
+        ],
+        chat_id=42,
+    )
+
+    assert "tomorrow morning" in result
+    assert mock_grok_messages.call_count == 2
+    second_call_messages = mock_grok_messages.call_args_list[1][0][0]
+    assert any(
+        m.get("role") == "user" and "CHAT_HISTORY_RESULTS" in (m.get("content") or "")
+        for m in second_call_messages
+    )
+
+
+@patch("core.chief_of_staff_service._extract_and_store_memory")
+@patch("core.chief_of_staff_service.grok_completion_messages")
+def test_cos_am_sweep_with_history_uses_multi_turn(mock_grok_messages, _mock_extract_memory, cos_db):
+    """AM Sweep with conversation history should use shared multi-turn tool loop without crashing."""
+    mock_grok_messages.return_value = (
+        "- Summary item\n\n"
+        "## Dispatch\n- Nothing urgent\n\n"
+        "## Prep\n- Prep item\n\n"
+        "## Yours\n- Yours item\n\n"
+        "## Skip\n- Skip item\n\n"
+        "## Actions (machine)\n"
+    )
+    from core.chief_of_staff_service import cos_am_sweep
+
+    result = cos_am_sweep(
+        cos_db,
+        conversation_history=[("user", "AM Sweep")],
+        chat_id=1,
+    )
+    assert "Dispatch" in result
+    assert mock_grok_messages.call_count >= 1
+
+
 # -----------------------------------------------------------------------------
 # UI smoke test (Chief of Staff tab builds; requires Qt)
 # -----------------------------------------------------------------------------
@@ -1255,6 +1348,94 @@ def test_chief_of_staff_tab_creates(qapp, cos_db):
     assert hasattr(tab, "chat_list")
     assert hasattr(tab, "ask_input")
     assert hasattr(tab, "ask_btn")
+    assert hasattr(tab, "assignment_scope_filter")
+
+
+@pytest.mark.qt
+def test_global_memory_dialog_lists_and_deletes_entries(qapp, cos_db):
+    from PyQt6.QtWidgets import QMessageBox
+    from gui.chief_of_staff_tab import GlobalMemoryDialog
+
+    mid = cos_db.user_memory_add(
+        kind="preference",
+        content="Prefer concise bullets.",
+        source="teach_navi",
+        confidence=1.0,
+    )
+    assert mid
+
+    dialog = GlobalMemoryDialog(cos_db)
+    assert dialog.memory_list.count() == 1
+    assert "concise bullets" in dialog.memory_list.item(0).text().lower()
+
+    dialog.memory_list.setCurrentRow(0)
+    with patch("gui.chief_of_staff_tab.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+        dialog._delete_selected()
+
+    assert dialog.memory_list.count() == 0
+    assert cos_db.user_memory_recent(limit=10) == []
+
+
+@pytest.mark.qt
+def test_global_memory_dialog_can_add_and_edit_entries(qapp, cos_db):
+    from PyQt6.QtWidgets import QDialog
+    from gui.chief_of_staff_tab import GlobalMemoryDialog
+
+    add_values = {
+        "id": None,
+        "kind": "fact",
+        "source": "manual",
+        "confidence": 0.9,
+        "content": "Adam prefers concise bullets.",
+        "json_data": '{"manual": true}',
+    }
+    edit_values = {
+        "id": 1,
+        "kind": "preference",
+        "source": "manual_edit",
+        "confidence": 0.75,
+        "content": "Adam prefers short bullets.",
+        "json_data": '{"edited": true}',
+    }
+
+    class _FakeAddDialog:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def values(self):
+            return dict(add_values)
+
+    class _FakeEditDialog:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def values(self):
+            return dict(edit_values)
+
+    dialog = GlobalMemoryDialog(cos_db)
+    with patch.object(GlobalMemoryDialog, "EditDialog", _FakeAddDialog):
+        dialog._add_memory()
+
+    rows = cos_db.user_memory_recent(limit=10)
+    assert len(rows) == 1
+    assert rows[0][1] == "fact"
+    assert "concise bullets" in rows[0][2].lower()
+
+    dialog._reload()
+    dialog.memory_list.setCurrentRow(0)
+    with patch.object(GlobalMemoryDialog, "EditDialog", _FakeEditDialog):
+        dialog._edit_selected()
+
+    updated = cos_db.user_memory_recent(limit=10)[0]
+    assert updated[1] == "preference"
+    assert "short bullets" in updated[2].lower()
+    assert updated[3] == "manual_edit"
 
 
 @pytest.mark.qt
@@ -1307,6 +1488,41 @@ def test_chief_of_staff_health_filter_overdue(qapp, cos_db):
     assert int(overdue_open) in row_ids
     assert int(fresh_open) not in row_ids
     assert int(overdue_closed) not in row_ids
+
+
+@pytest.mark.qt
+def test_chief_of_staff_assignment_scope_filter_can_show_closed(qapp, cos_db):
+    from gui.chief_of_staff_tab import ChiefOfStaffTab
+
+    open_aid = cos_db.agent_create_assignment(
+        title="Open assignment",
+        brief_md="Still active",
+        requester_code="navi",
+        assignee_code="atlas",
+        priority=2,
+        status="queued",
+    )
+    closed_aid = cos_db.agent_create_assignment(
+        title="Closed assignment",
+        brief_md="Already done",
+        requester_code="navi",
+        assignee_code="atlas",
+        priority=2,
+        status="done",
+    )
+    assert open_aid and closed_aid
+
+    tab = ChiefOfStaffTab(cos_db)
+    default_rows = tab._filtered_assignment_rows()
+    default_ids = {int(r.get("id") or 0) for r in default_rows}
+    assert int(open_aid) in default_ids
+    assert int(closed_aid) not in default_ids
+
+    tab.assignment_scope_filter.setCurrentIndex(1)
+    all_rows = tab._filtered_assignment_rows()
+    all_ids = {int(r.get("id") or 0) for r in all_rows}
+    assert int(open_aid) in all_ids
+    assert int(closed_aid) in all_ids
 
 
 @pytest.mark.qt
