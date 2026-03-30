@@ -15,12 +15,13 @@
 
 ## Chief of Staff + Executive Team Manual Regression (Current)
 
-Last revised: 2026-02-23
+Last revised: 2026-03-30
 
 ### Prerequisites
 
 - Grok/xAI access:
   - Set `XAI_API_KEY` or `GROK_API_KEY` and ensure `xai-sdk` is available.
+  - Current default app model is `grok-4.20-multi-agent-beta-0309`.
 - Daily briefing toggle:
   - Set `BRIEFING_AND_EMAIL_DISABLED=0` (or unset) in `config/.env`.
 - Google Calendar:
@@ -72,6 +73,34 @@ Last revised: 2026-02-23
   2. Click “Open Assignee Chat”.
 - Expected:
   - App routes to the correct tab/console and focuses assignment context.
+
+#### TC-COS-004A: Assignment handoff shows latest agent follow-up
+- Steps:
+  1. Create an assignment from CoS chat or the CoS board.
+  2. Wait for the assignee thread to receive its initial intake reply.
+  3. Select the assignment in the board.
+- Expected:
+  - The detail pane shows `Agent follow-up`, a `Needs input: yes/no` line, and the latest agent update text.
+  - If the agent asked for files or clarification, the assignment row shows `NEEDS_INPUT`.
+
+#### TC-COS-004C: Delegation board table sorting and follow-up filter
+- Steps:
+  1. Open the `Assignments` board.
+  2. Click at least two different column headers such as `Priority` and `Due`.
+  3. Set `Follow-up` filter to `Needs Input`.
+- Expected:
+  - The board behaves like a sortable table rather than a single text list.
+  - Sorting changes row order without breaking row selection.
+  - The `Needs Input` filter keeps only assignments currently waiting on user input.
+
+#### TC-COS-004B: Upload requested files to assignee
+- Steps:
+  1. Open an assignment in the assignee chat.
+  2. Click `Upload Artifact` and attach one or more files.
+  3. Return to the CoS assignment board and reopen the assignment details.
+- Expected:
+  - The files are stored as assignment artifacts.
+  - The CoS detail pane shows the uploaded filenames under `Uploaded files`.
 
 #### TC-COS-005: Create assignment manually from board
 - Steps:

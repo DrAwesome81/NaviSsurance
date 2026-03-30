@@ -27,6 +27,8 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QLineEdit,
     QComboBox,
+    QDateEdit,
+    QCheckBox,
     QFormLayout,
     QSplitter,
     QFrame,
@@ -59,6 +61,7 @@ def _row_to_dict(row: tuple) -> dict[str, Any]:
         "last_touched": row[_COS_LAST_TOUCHED] or "",
         "created_at": row[_COS_CREATED_AT] or "",
         "updated_at": row[_COS_UPDATED_AT] or "",
+        "client_id": row[-1] if len(row) >= 23 else None,
     }
 
 
@@ -407,42 +410,82 @@ class TaskGanttChartWidget(QWidget):
 class ProjectEditDialog(QDialog):
     """Simple add/edit project dialog (name, client, status, deadline)."""
 
-    def __init__(self, parent=None, project: dict | None = None):
+    def __init__(self, parent=None, project: dict | None = None, db: DatabaseManager | None = None):
         super().__init__(parent)
         self.setWindowTitle("Edit project" if project else "Add project")
         self._project = project or {}
+        self._db = db
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("Project name")
         self.name_edit.setText(self._project.get("name") or "")
         form.addRow("Name:", self.name_edit)
+        self.client_combo = QComboBox()
+        self.client_combo.addItem("Unlinked", None)
+        try:
+            clients = self._db.clients_list(active_only=True) if self._db is not None else []
+        except Exception:
+            clients = []
+        current_client_id = self._project.get("client_id")
+        for client in clients:
+            try:
+                cid = int(client.get("id"))
+                cname = str(client.get("name") or "").strip()
+            except Exception:
+                continue
+            self.client_combo.addItem(cname or f"Client {cid}", cid)
+            if current_client_id is not None and cid == int(current_client_id):
+                self.client_combo.setCurrentIndex(self.client_combo.count() - 1)
+        form.addRow("Linked client:", self.client_combo)
         self.client_edit = QLineEdit()
         self.client_edit.setPlaceholderText("Client (optional)")
         self.client_edit.setText(self._project.get("client") or "")
+        self.client_combo.currentIndexChanged.connect(self._sync_client_text_from_combo)
         form.addRow("Client:", self.client_edit)
         self.status_combo = QComboBox()
         self.status_combo.addItems(["Active", "Waiting", "On Hold", "Done", "Cancelled"])
         self.status_combo.setCurrentText(self._project.get("status") or "Active")
         form.addRow("Status:", self.status_combo)
-        self.deadline_edit = QLineEdit()
-        self.deadline_edit.setPlaceholderText("YYYY-MM-DD or leave blank")
+        deadline_row = QHBoxLayout()
+        self.deadline_enabled = QCheckBox("Set deadline")
+        deadline_row.addWidget(self.deadline_enabled)
+        self.deadline_edit = QDateEdit()
+        self.deadline_edit.setCalendarPopup(True)
+        self.deadline_edit.setDisplayFormat("yyyy-MM-dd")
+        self.deadline_edit.setDate(QDate.currentDate())
+        deadline_row.addWidget(self.deadline_edit)
+        deadline_row.addStretch(1)
         dl = self._project.get("deadline") or ""
         if dl and len(dl) >= 10:
-            self.deadline_edit.setText(dl[:10])
-        form.addRow("Deadline:", self.deadline_edit)
+            try:
+                dt = datetime.strptime(dl[:10], "%Y-%m-%d")
+                self.deadline_edit.setDate(QDate(dt.year, dt.month, dt.day))
+                self.deadline_enabled.setChecked(True)
+            except Exception:
+                self.deadline_enabled.setChecked(False)
+        else:
+            self.deadline_enabled.setChecked(False)
+        self.deadline_edit.setEnabled(bool(self.deadline_enabled.isChecked()))
+        self.deadline_enabled.toggled.connect(lambda checked: self.deadline_edit.setEnabled(bool(checked)))
+        form.addRow("Deadline:", deadline_row)
         layout.addLayout(form)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         layout.addWidget(bb)
 
+    def _sync_client_text_from_combo(self):
+        current_text = self.client_combo.currentText() or ""
+        if current_text and current_text != "Unlinked" and not (self.client_edit.text() or "").strip():
+            self.client_edit.setText(current_text)
+
     def values(self) -> dict:
-        raw = (self.deadline_edit.text() or "").strip()
-        deadline = raw if raw and len(raw) >= 10 else None
+        deadline = self.deadline_edit.date().toString("yyyy-MM-dd") if self.deadline_enabled.isChecked() else None
         return {
             "name": (self.name_edit.text() or "").strip(),
             "client": (self.client_edit.text() or "").strip(),
+            "client_id": self.client_combo.currentData(),
             "status": self.status_combo.currentText() or "Active",
             "deadline": deadline,
         }
@@ -749,7 +792,7 @@ class ProjectManagementPanel(QWidget):
             QMessageBox.warning(self, "Projects", f"Could not load projects:\n{e}")
 
     def _add_project(self):
-        dlg = ProjectEditDialog(self, project=None)
+        dlg = ProjectEditDialog(self, project=None, db=self.db)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         vals = dlg.values()
@@ -783,7 +826,7 @@ class ProjectManagementPanel(QWidget):
             return
         d = _row_to_dict(raw)
         d["deadline"] = (d.get("deadline") or "")[:10] if d.get("deadline") else ""
-        dlg = ProjectEditDialog(self, project=d)
+        dlg = ProjectEditDialog(self, project=d, db=self.db)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         vals = dlg.values()

@@ -47,7 +47,7 @@ Lead Generation (IMPLEMENTED)
 
 User Story: As a consultant, I want to generate leads for AI SaMD, IVD, or non-AI MedTech companies, so I can initiate outreach via LinkedIn or other methods.
 Acceptance Criteria:
-Grok 4 API outputs JSON ({name, company, title, LinkedIn_url, rationale}) in Leads Tab.
+xAI Grok outputs JSON ({name, company, title, LinkedIn_url, rationale}) in Leads Tab.
 Display leads with copy/paste personalized LinkedIn messages.
 Allow marking leads as contacted, saving status to database.
 Send LinkedIn messages directly from the UI, or schedule them to be sent for later.
@@ -103,6 +103,18 @@ Acceptance Criteria:
 - Mark tasks complete/incomplete and delete tasks.
 
 Status: Implemented (no Vikunja required).
+
+Chief of Staff Delegation Workflow (IMPLEMENTED WITH AGENT FOLLOW-UP VISIBILITY)
+
+User Story: As a consultant, I want Chief of Staff assignments to turn into real agent-specific handoffs and show me when an agent needs answers or uploaded documents, so I can manage delegated work without guessing where it is blocked.
+
+Acceptance Criteria:
+- Creating an assignment from Chief of Staff creates an assignment record and a linked assignee-owned thread.
+- The assignee thread is primed with an initial intake-style agent response.
+- Reassigning an assignment relinks it to the new assignee's thread.
+- The Chief of Staff assignment board shows when the latest agent reply needs user input.
+- The assignment detail pane surfaces the latest agent update plus extracted request lines.
+- Users can upload requested files from the agent console and those files persist as assignment artifacts.
 
 Deep Research (WEB-FIRST - IMPLEMENTED)
 

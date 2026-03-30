@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sys
 import tempfile
 from unittest.mock import patch
@@ -9,8 +10,8 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtWidgets import QApplication, QListWidgetItem, QMessageBox
+from PyQt6.QtCore import Qt, QUrl, QDate, QTimer
+from PyQt6.QtWidgets import QApplication, QListWidgetItem, QMessageBox, QGridLayout, QSizePolicy, QWidget, QHBoxLayout, QTabWidget, QTableWidget
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -217,6 +218,57 @@ def test_on_ask_error_resets_controls_and_appends_error(qapp, cos_db):
     assert "network timeout" in tab.chat_display.toHtml()
 
 
+def test_restore_chat_scroll_state_preserves_manual_position(qapp, cos_db, monkeypatch):
+    from gui.chief_of_staff_tab import ChiefOfStaffTab
+
+    class _FakeScrollBar:
+        def __init__(self):
+            self._maximum = 120
+            self.saved = None
+
+        def maximum(self):
+            return self._maximum
+
+        def setValue(self, value):
+            self.saved = value
+
+    tab = ChiefOfStaffTab(cos_db)
+    fake_scrollbar = _FakeScrollBar()
+    monkeypatch.setattr(tab.chat_display, "verticalScrollBar", lambda: fake_scrollbar)
+    monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: fn())
+
+    tab._restore_chat_scroll_state({"value": 37, "maximum": 90, "at_bottom": False})
+    assert fake_scrollbar.saved == 37
+
+
+def test_render_chat_history_preserves_scroll_state_on_refresh(qapp, cos_db, monkeypatch):
+    from gui.chief_of_staff_tab import ChiefOfStaffTab
+
+    cid = cos_db.cos_create_chat(title="Scroll test")
+    cos_db.save_message(f"cos_{int(cid)}", "user", "first")
+    cos_db.save_message(f"cos_{int(cid)}", "assistant", "reply")
+
+    tab = ChiefOfStaffTab(cos_db)
+    tab._current_chat_id = int(cid)
+    captured = {}
+
+    monkeypatch.setattr(
+        tab,
+        "_capture_chat_scroll_state",
+        lambda: {"value": 18, "maximum": 100, "at_bottom": False},
+    )
+
+    def _restore(state, *, force_bottom=False):
+        captured["state"] = state
+        captured["force_bottom"] = force_bottom
+
+    monkeypatch.setattr(tab, "_restore_chat_scroll_state", _restore)
+    tab._render_chat_history(preserve_scroll=True)
+
+    assert captured["state"]["value"] == 18
+    assert captured["force_bottom"] is False
+
+
 def test_chat_assignment_link_not_found_shows_message(qapp, cos_db, monkeypatch):
     from gui.chief_of_staff_tab import ChiefOfStaffTab
 
@@ -300,7 +352,6 @@ def test_bulk_due_date_dialog_date_picker_returns_iso(qapp, cos_db):
 def test_cos_tab_refresh_task_views_best_effort_calls_dashboard_and_tasks(qapp, cos_db, monkeypatch):
     from gui.chief_of_staff_tab import ChiefOfStaffTab
     from PyQt6.QtWidgets import QWidget
-    from PyQt6.QtCore import QTimer
 
     calls = {"dash": 0, "tasks": 0}
 
@@ -326,3 +377,153 @@ def test_cos_tab_refresh_task_views_best_effort_calls_dashboard_and_tasks(qapp, 
     tab._refresh_task_views()
     assert calls["dash"] == 1
     assert calls["tasks"] == 1
+
+
+def test_project_edit_dialog_uses_optional_deadline_picker(qapp):
+    from gui.project_management_panel import ProjectEditDialog
+
+    dialog = ProjectEditDialog(project={"name": "Alpha", "deadline": "2026-05-20"})
+    assert dialog.deadline_enabled.isChecked() is True
+    assert dialog.deadline_edit.date().toString("yyyy-MM-dd") == "2026-05-20"
+
+    dialog.deadline_enabled.setChecked(False)
+    values = dialog.values()
+    assert values["deadline"] is None
+
+    dialog.deadline_enabled.setChecked(True)
+    dialog.deadline_edit.setDate(QDate(2026, 6, 15))
+    values = dialog.values()
+    assert values["deadline"] == "2026-06-15"
+
+
+def test_cos_tab_uses_font_aware_input_and_button_sizing(qapp, cos_db):
+    from gui.chief_of_staff_tab import ChiefOfStaffTab
+
+    tab = ChiefOfStaffTab(cos_db)
+
+    assert tab.ask_input.minimumHeight() == tab._chat_entry_min_height(lines=2)
+    assert tab.ask_btn.minimumHeight() == tab._control_min_height()
+    assert tab.asg_start_btn.minimumHeight() == tab._control_min_height()
+    assert tab.asg_open_chat_btn.minimumHeight() == tab._control_min_height()
+
+
+def test_cos_assignment_sidebar_uses_grid_layouts_for_dense_actions(qapp, cos_db):
+    from gui.chief_of_staff_tab import ChiefOfStaffTab
+
+    tab = ChiefOfStaffTab(cos_db)
+    asg_layout = tab.sidebar_tabs.widget(1).layout()
+
+    assert isinstance(asg_layout.itemAt(1).layout(), QGridLayout)
+    assert isinstance(asg_layout.itemAt(6).layout(), QGridLayout)
+    assert isinstance(asg_layout.itemAt(7).layout(), QGridLayout)
+    assert isinstance(asg_layout.itemAt(8).layout(), QGridLayout)
+
+    assert tab.asg_start_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert tab.asg_bulk_create_tasks_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+
+
+def test_cos_assignment_filters_use_grid_layout_and_scaled_search_height(qapp, cos_db):
+    from gui.chief_of_staff_tab import ChiefOfStaffTab
+
+    tab = ChiefOfStaffTab(cos_db)
+    asg_layout = tab.sidebar_tabs.widget(1).layout()
+    filters_layout = asg_layout.itemAt(2).layout()
+
+    assert isinstance(filters_layout, QGridLayout)
+    assert filters_layout.itemAtPosition(0, 0).widget() is tab.assignment_scope_filter
+    assert filters_layout.itemAtPosition(0, 1).widget() is tab.assignment_status_filter
+    assert filters_layout.itemAtPosition(1, 0).widget() is tab.assignment_health_filter
+    assert filters_layout.itemAtPosition(1, 1).widget() is tab.assignment_assignee_filter
+    assert filters_layout.itemAtPosition(2, 0).widget() is tab.assignment_followup_filter
+    assert filters_layout.itemAtPosition(3, 0).widget() is tab.assignment_search_input
+    assert tab.assignment_search_input.minimumHeight() == tab._control_min_height(extra_padding=10)
+    assert isinstance(tab.assignment_list, QTableWidget)
+
+
+def test_cos_assignment_table_restores_saved_sort_and_column_widths(qapp, cos_db):
+    from gui.chief_of_staff_tab import ChiefOfStaffTab
+
+    cos_db.set_setting(
+        "chief_of_staff.assignment_table_state",
+        json.dumps(
+            {
+                "sort_column": 3,
+                "sort_order": int(Qt.SortOrder.DescendingOrder.value),
+                "column_widths": [120, 110, 105, 130, 140, 125, 150, 260],
+            }
+        ),
+    )
+
+    tab = ChiefOfStaffTab(cos_db)
+    header = tab.assignment_list.horizontalHeader()
+
+    assert header.sortIndicatorSection() == 3
+    assert header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
+    assert tab.assignment_list.columnWidth(0) == 120
+    assert tab.assignment_list.columnWidth(7) == 260
+
+
+def test_cos_assignment_filters_restore_saved_state(qapp, cos_db):
+    from gui.chief_of_staff_tab import ChiefOfStaffTab
+
+    atlas_index = 0
+    for a in cos_db.agents_list_active():
+        code = str(a.get("code") or "").strip().lower()
+        if code == "atlas":
+            atlas_index = code
+            break
+
+    cos_db.set_setting(
+        "chief_of_staff.assignment_filter_state",
+        json.dumps(
+            {
+                "scope": "all",
+                "status": "blocked",
+                "health": "stale_blocked",
+                "followup": "needs_input",
+                "assignee": atlas_index,
+                "search": "pccp",
+            }
+        ),
+    )
+
+    tab = ChiefOfStaffTab(cos_db)
+
+    assert str(tab.assignment_scope_filter.currentData() or "") == "all"
+    assert (tab.assignment_status_filter.currentText() or "").strip().lower() == "blocked"
+    assert str(tab.assignment_health_filter.currentData() or "") == "stale_blocked"
+    assert str(tab.assignment_followup_filter.currentData() or "") == "needs_input"
+    assert str(tab.assignment_assignee_filter.currentData() or "") == "atlas"
+    assert tab.assignment_search_input.text() == "pccp"
+
+
+def test_chat_window_host_shell_mode_rebalances_for_chief_of_staff(qapp):
+    from gui.interface import ChatWindow
+
+    class _ShellHarness(QWidget):
+        def __init__(self):
+            super().__init__()
+            self._main_layout_default_spacing = 6
+            self.main_layout = QHBoxLayout(self)
+            self.main_layout.setSpacing(self._main_layout_default_spacing)
+            self.chat_panel = QWidget(self)
+            self.tab_widget = QTabWidget(self)
+            self.tab_widget.addTab(QWidget(), "Dashboard")
+            self.tab_widget.addTab(QWidget(), "Chief of Staff")
+            self.main_layout.addWidget(self.chat_panel, 1)
+            self.main_layout.addWidget(self.tab_widget, 3)
+            self._apply_host_shell_mode = lambda active: ChatWindow._apply_host_shell_mode(self, active)
+
+    host = _ShellHarness()
+
+    ChatWindow._on_tab_changed(host, 1)
+    assert host.chat_panel.isHidden() is True
+    assert host.main_layout.spacing() == 0
+    assert host.main_layout.stretch(0) == 0
+    assert host.main_layout.stretch(1) == 1
+
+    ChatWindow._on_tab_changed(host, 0)
+    assert host.chat_panel.isHidden() is False
+    assert host.main_layout.spacing() == host._main_layout_default_spacing
+    assert host.main_layout.stretch(0) == 1
+    assert host.main_layout.stretch(1) == 3

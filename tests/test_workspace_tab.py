@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import QApplication, QCheckBox, QInputDialog, QWidget
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from core.workspace_templates import TemplateFillTarget, WorkspaceTemplateSpec
 from gui.workspace_tab import WorkspaceTab
 
 
@@ -52,10 +53,12 @@ def workspace_tab(monkeypatch, qapp):
     return tab
 
 
-def test_workspace_file_rows_are_clickable_and_markable(workspace_tab):
+def test_workspace_file_rows_are_clickable_and_markable(workspace_tab, tmp_path):
+    sample = tmp_path / "sample.txt"
+    sample.write_text("sample", encoding="utf-8")
     file_info = {
         "name": "sample.txt",
-        "path": "C:/tmp/sample.txt",
+        "path": str(sample),
         "is_folder": False,
         "size": 10,
         "modified": "2026-02-19 10:00:00",
@@ -136,6 +139,53 @@ def test_workspace_export_markdown_without_document_sets_status(workspace_tab):
     workspace_tab._current_markdown = None
     workspace_tab.export_markdown()
     assert "No document to export" in workspace_tab.status_label.text()
+
+
+def test_workspace_template_export_blocks_invalid_payload(monkeypatch, workspace_tab, tmp_path):
+    out_path = tmp_path / "workspace_template.docx"
+    workspace_tab._current_markdown = "# Draft\n\nBody"
+    workspace_tab._last_generated_template_spec = WorkspaceTemplateSpec(
+        key="external:test",
+        display_name="Test Template",
+        title="Test Template",
+        source="external",
+        machine_path="machine.docx",
+        human_path="human.docx",
+        sections=[],
+        instructions=[],
+        fields=["scope"],
+        values=["scope"],
+        fill_targets=[
+            TemplateFillTarget(
+                key="value::scope",
+                token_kind="VALUE",
+                token_name="scope",
+                label="Scope",
+                order=0,
+            )
+        ],
+    )
+    workspace_tab._current_template_blocks = {"value::scope": "Applies to the pilot release."}
+    workspace_tab._current_document_metadata = {}
+
+    warning_calls = []
+    monkeypatch.setattr(
+        "gui.workspace_tab.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (str(out_path), "Word Document (*.docx)"),
+    )
+    monkeypatch.setattr(
+        "gui.workspace_tab.QMessageBox.warning",
+        lambda *args, **kwargs: warning_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        "gui.workspace_tab.render_workspace_template_to_docx",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("render should not run")),
+    )
+
+    workspace_tab.export_markdown()
+
+    assert warning_calls
+    assert "Template validation failed before export" in workspace_tab.status_label.text()
 
 
 def test_workspace_collaboration_error_handler_updates_all_panes(workspace_tab):
@@ -244,3 +294,111 @@ def test_workspace_collaboration_setup_error_is_surfaceable(monkeypatch, workspa
 
     assert "Error during setup" in workspace_tab.status_label.text()
     assert "spec boom" in workspace_tab.preview_text.toPlainText()
+
+
+def test_workspace_save_and_load_round_trip(monkeypatch, workspace_tab, tmp_path):
+    sample = tmp_path / "alpha.txt"
+    sample.write_text("alpha", encoding="utf-8")
+
+    class _Db:
+        def __init__(self):
+            self.states = {}
+            self.next_id = 1
+            self.last_used = None
+            self.session_payload = {}
+
+        def workspace_state_upsert(self, *, name, state):
+            existing = next((sid for sid, row in self.states.items() if row["name"] == name), None)
+            workspace_id = existing or self.next_id
+            self.states[workspace_id] = {
+                "id": workspace_id,
+                "name": name,
+                "state_json": __import__("json").dumps(state),
+            }
+            if existing is None:
+                self.next_id += 1
+            return workspace_id
+
+        def workspace_state_list(self):
+            return [{"id": sid, "name": row["name"]} for sid, row in sorted(self.states.items())]
+
+        def workspace_state_get(self, workspace_id):
+            return self.states.get(int(workspace_id))
+
+        def workspace_state_set_last_used(self, workspace_id):
+            self.last_used = workspace_id
+
+        def workspace_session_save(self, state):
+            self.session_payload = dict(state)
+
+        def workspace_session_load(self):
+            return dict(self.session_payload)
+
+    workspace_tab.db = _Db()
+    file_info = {
+        "name": "alpha.txt",
+        "path": str(sample),
+        "is_folder": False,
+        "size": sample.stat().st_size,
+        "modified": "2026-03-19 12:00:00",
+        "marked": True,
+    }
+    workspace_tab.add_file_to_list(file_info)
+    monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("Alpha Workspace", True))
+
+    workspace_tab.save_workspace_as()
+    assert workspace_tab.file_list.count() == 1
+    assert "Workspace saved" in workspace_tab.status_label.text()
+
+    workspace_tab.clear_workspace()
+    idx = workspace_tab.saved_workspace_combo.findData(1)
+    workspace_tab.saved_workspace_combo.setCurrentIndex(idx)
+    workspace_tab.load_selected_workspace()
+
+    assert workspace_tab.file_list.count() == 1
+    assert workspace_tab.selected_files[0]["path"] == str(sample)
+    assert workspace_tab.selected_files[0]["marked"] is True
+
+
+def test_workspace_restores_last_session_on_startup(monkeypatch, qapp, tmp_path):
+    sample = tmp_path / "restored.txt"
+    sample.write_text("restored", encoding="utf-8")
+
+    class _StubAgentConsole(QWidget):
+        def __init__(self, db, agent_code="quill", parent=None, context_provider=None):
+            super().__init__(parent)
+
+    class _Db:
+        def workspace_state_list(self):
+            return []
+
+        def workspace_state_get_last_used(self):
+            return None
+
+        def workspace_session_load(self):
+            return {
+                "files": [
+                    {
+                        "name": "restored.txt",
+                        "path": str(sample),
+                        "is_folder": False,
+                        "size": sample.stat().st_size,
+                        "modified": "2026-03-19 12:00:00",
+                        "marked": True,
+                    }
+                ],
+                "prompt_template_key": "custom",
+                "document_template_key": "",
+                "max_rounds": 3,
+                "include_task_suggestions": True,
+            }
+
+        def workspace_session_save(self, state):
+            self.state = state
+
+    monkeypatch.setattr("gui.workspace_tab.AgentConsole", _StubAgentConsole)
+    tab = WorkspaceTab(db=_Db(), chat_handler=Mock())
+
+    assert tab.file_list.count() == 1
+    assert tab.selected_files[0]["path"] == str(sample)
+    assert tab.selected_files[0]["marked"] is True

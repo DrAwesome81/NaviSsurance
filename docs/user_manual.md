@@ -1,330 +1,676 @@
 # NaviSsurance User Manual
 
-Last updated: 2026-02-25
+Last updated: 2026-03-30
 
-## 1) What This App Is
+## 1. What This App Is
 
-NaviSsurance is a desktop app for day-to-day consulting operations: planning, tasks, AI assistant workflows, document work, compliance review, lead generation, and notes.
+NaviSsurance is a desktop operating system for consulting work. It combines daily planning, task/project tracking, AI-assisted drafting, meeting transcription, lead generation, compliance review, billing, and long-running working documents in one local app.
 
-This manual is written as a practical reference so you can quickly find how to do a specific action.
+Use this manual as the practical "how do I do this?" guide. It focuses on the workflows you see in the UI rather than internal implementation details.
 
-## 2) Getting Started
+## 2. Getting Started
 
 ### Open the app
 - Launch NaviSsurance.
-- Wait for the main window and tab bar to load.
+- Wait for the main window and tabs to finish loading.
 
 ### Main navigation
-- You will see top-level tabs such as:
-  - `Dashboard`
-  - `Tasks`
-  - `Workspace`
-  - `Deep Research`
-  - `Compliance`
-  - `Meetings`
-  - `Leads`
-  - `Billing`
-  - `Library`
-  - `Intel`
-  - `Security`
-  - `Team`
-  - `Notes`
-  - `Chief of Staff`
+You will see top-level tabs for:
+- `Dashboard`
+- `Tasks`
+- `Workspace`
+- `Deep Research`
+- `Compliance`
+- `Meetings`
+- `Leads`
+- `Billing`
+- `Library`
+- `Intel`
+- `Security`
+- `Team`
+- `Notes`
+- `Chief of Staff`
 
-### Where to start each day
-1. Open `Dashboard` for current tasks/schedule/news.
-2. Open `Chief of Staff` for planning, delegation, assignment control, and AM Sweep triage.
-3. Open `Tasks` to batch-clean task list if needed.
+### Navi chat vs Chief of Staff chat
+- On most tabs, the app shows a persistent left-side `Navi Chat` panel.
+- The `Chief of Staff` tab has its own dedicated chat workspace, so the global left-side chat panel is hidden there.
+- Tasks created from chat should still flow into the same shared task database used by `Dashboard` and `Tasks`.
 
-## 3) Dashboard
+### Best way to start each day
+1. Open `Dashboard` to review your briefing, schedule, tasks, email queue, and news.
+2. Open `Chief of Staff` to plan the day, delegate work, or run `AM Sweep`.
+3. Open `Tasks` if you need to clean up the backlog in bulk.
 
-Use this as your daily command center. It gives you one place to triage work, review what is time-sensitive, and decide where to execute next.
+## 3. Dashboard
 
-### What the Dashboard does
-- Shows a `Daily Briefing` (top panel) with a concise summary and suggested next actions.
-- Shows `Today's Schedule` from calendar events.
-- Embeds your task manager (`Task List`) so task actions stay consistent with the `Tasks` tab.
-- Shows `Unreplied Emails` to surface messages needing follow-up.
-- Shows a `News Feed` focused on MedTech/AI/regulatory relevance with cached storage and repeat suppression.
+Use `Dashboard` as your daily command center.
 
-### Dashboard layout (at a glance)
-- **Top:** `Daily Briefing` with a `Refresh` button.
-- **Left column:** `Today's Schedule` and `Task List`.
-- **Right column:** `Unreplied Emails` and `News Feed`.
-- **Bottom-right action:** `Refresh News`.
+### What is on the page
+- `Daily Briefing` for a quick planning summary.
+- `Today's Schedule` from your calendar.
+- `Task List` for the same local tasks used elsewhere in the app.
+- `Unreplied Emails` for follow-up triage.
+- `News Feed` for MedTech, AI, and regulatory updates.
 
-### How to use the Task List (fast path)
-1. Scan highlighted due items first (overdue/due-today stand out visually).
-2. Use filters to narrow by category/date and include completed or snoozed items when needed.
-3. Add quick tasks directly from the row at the bottom (`task`, `due date`, `category`, `recurrence`, then `Add`).
-4. Use row actions (for example edit/snooze/delete where shown) to clean and reprioritize quickly.
-5. Archive completed tasks when you want to reduce noise.
-
-### How to use Daily Briefing
-- On load, briefing auto-runs (unless briefing/email is disabled in config).
-- Use `Refresh` to force a newly generated briefing.
-- Treat this section as your “what needs attention now” summary before diving into deep work.
-
-### How to use Today's Schedule
-- Review today’s event list and timing blocks at startup and after major plan changes.
-- The schedule auto-refreshes periodically, so you can leave Dashboard open during the day.
-- If no events appear, the panel explicitly says no events are scheduled.
-
-### How to use Unreplied Emails
-- Use this queue to catch pending conversations quickly.
-- Keep `Only clients/leads` enabled for business-priority focus, or disable it for a broader view.
-- Use `Mark replied` after you respond so the queue stays accurate.
-- Use `Email rules…` to adjust classification behavior.
-
-### How to use News Feed
-- Use `Refresh News` for an immediate update, or let it refresh automatically.
-- Tune duplicates with `Hide repeats` (1/2/3/7 days).
-- Tune density with `Max items` (5/8/10).
-- Open article links directly from the feed for full context.
-- If live fetch is unavailable, cached news is still used when possible.
-
-### Recommended dashboard routine (3–5 minutes)
+### Typical dashboard routine
 1. Read `Daily Briefing`.
-2. Check `Today's Schedule` for hard time constraints.
-3. Triage `Task List` (overdue, then due today, then upcoming).
-4. Clear or flag `Unreplied Emails`.
-5. Scan `News Feed` for changes that affect client or regulatory decisions.
+2. Check `Today's Schedule` for hard constraints.
+3. Review the task list, starting with overdue and due-today work.
+4. Clear `Unreplied Emails`.
+5. Scan `News Feed` for anything that may affect clients or priorities.
 
-## 4) Tasks Tab
+### Task list fast path
+- Use filters to narrow by category and date.
+- Add a quick task from the inline add row.
+- Use row actions to edit, snooze, complete, or delete.
+- Archive completed tasks when you want to reduce noise.
 
-Use this for direct task management in local SQLite storage.
+### Notes
+- `Refresh` forces a new briefing.
+- `Refresh News` forces a news refresh.
+- If calendar or email access is missing, these panels should degrade gracefully instead of crashing.
 
-### Common actions
-- Add a task quickly.
-- Filter tasks by status/date/category.
-- Search by text.
-- Mark complete/incomplete.
-- Delete tasks.
+## 4. Tasks And Projects
+
+Use `Tasks` for direct task management and project tracking.
+
+### Task list
+The main task page supports:
+- search,
+- category filtering,
+- date filtering (`All`, `Today`, `Overdue`, `No Date`, `Specific Date`),
+- project filtering,
+- sort options,
+- toggles for completed and snoozed tasks.
+
+### Quick add
+- Enter the task title.
+- Choose `Business` or `Personal`.
+- Enter a due date manually in `MM-DD-YYYY` format, or use the `Date` picker button.
+- Click `Add`.
+
+### Task fields you will see
+- priority,
+- tags,
+- next action date,
+- due date,
+- category,
+- linked project,
+- completion state.
+
+### Common task actions
+- mark complete or undo completion,
+- edit task details,
+- snooze a task,
+- delete a task,
+- refresh the filtered list.
+
+### Projects subtab
+The full `Tasks` page also includes a `Projects` subtab.
+
+Use it to:
+- create and edit projects,
+- set project deadlines,
+- update project status,
+- connect tasks to projects,
+- review project timelines and Gantt-style views.
 
 ### Tip
-- If you created a task from CoS actions, it should appear here as well since it is the same task store.
+If a task was created from `Chief of Staff`, `Workspace`, `Meetings`, or `Leads`, it should also appear here because those workflows share the same underlying task store.
 
-## 5) Chief of Staff (CoS)
+## 5. Chief Of Staff
 
-This is the main AI planning/delegation interface.
+`Chief of Staff` is the main planning, delegation, and executive-control interface.
 
-### What it does
-- Conversational planning and prioritization.
-- Create/update assignments for specialist agents.
-- Bulk assignment actions.
-- Convert assignments into dashboard tasks.
-- Optional calendar block creation commands.
-- AM Sweep: morning triage loop that classifies work into Dispatch/Prep/Yours/Skip and can emit machine actions.
+### What it is best for
+- plan-of-day conversations,
+- prioritization,
+- task capture,
+- assignment management,
+- specialist-agent delegation,
+- calendar-aware planning,
+- memory-aware planning,
+- AM Sweep morning triage.
+
+### Layout
+The tab has two main sidebar areas:
+- `Chats` for separate CoS conversations.
+- `Assignments` for the delegation board.
 
 ### Everyday use pattern
-1. Ask for plan-of-day.
-1. (Optional) Run AM Sweep when you want a structured morning triage output.
-2. Delegate work (single or bulk).
-3. Review assignment board.
-4. Open assignee chat from assignment when needed.
-5. Track results and convert key assignments to dashboard tasks.
+1. Start or open a CoS chat.
+2. Ask for planning help, prioritization, or delegation.
+3. Review assignments in the board.
+4. Check the assignment row and detail pane for `NEEDS_INPUT`, the latest agent update, and any requested files or answers.
+5. Open assignee chats when needed.
+6. Upload requested files from the agent console if the assignee asks for documents.
+7. Convert key assignments into dashboard tasks.
 
-### Assignment board basics
-- Filter by status, assignee, and search text.
-- Click an assignment to see details/timeline.
-- Use board actions for status/priority/due/reassign updates.
+### Options menu
+The `Options` menu includes:
+- `AM Sweep`
+- `AM Sweep (Run again)`
+- `Preferences…`
+- `Review Pending Memory…`
+- `Global Memory…`
+- `Action Commands…`
 
-### Open assignee chat from board
-- Select an assignment.
-- Use the action to open assignee console.
-- The app will switch tabs and focus that assignment in the agent console if available.
+### Preferences
+Use `Preferences…` to store planning constraints and behavior preferences such as:
+- blocked time windows,
+- scheduling constraints,
+- other durable CoS planning rules.
 
-## 6) CoS Command Cheatsheet
+These preferences are meant to influence CoS responses without requiring you to repeat them every time.
 
-Use exact formats when entering explicit action commands.
+### AM Sweep
+`AM Sweep` is a morning triage workflow that collects context and organizes work into four buckets:
+- `Dispatch`
+- `Prep`
+- `Yours`
+- `Skip`
 
-### Priority scale
-- Dashboard tasks: `P0` (lowest urgency) … `P5` (highest urgency).
-- Delegation assignments: `P1` (lowest urgency) … `P5` (highest urgency).
+Use it when you want a more structured start-of-day pass than normal chat.
 
-### Task and calendar
-- `ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal>`
-- `TASK_SET_TAGS: <task_id> | <json array of tags>` (example: `TASK_SET_TAGS: 123 | ["triage:dispatch","source:am_sweep"]`)
-- `TASK_SET_ESTIMATE: <task_id> | <minutes>` (0-600, example: `TASK_SET_ESTIMATE: 123 | 45`)
-- `ADD_CAL_BLOCK: <title> | <start datetime> | <end datetime> | <calendar id or primary>`
+### Action command cheatsheet
+Most users can stay in natural language, but the app also supports explicit action formats. The built-in `Action Commands…` reference is the best place to copy exact syntax if you need deterministic behavior.
 
-### Assignment create/update
-- `ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>`
-- `UPDATE_ASSIGNMENT_STATUS: <A-0007 or 7> | <queued|in_progress|awaiting_review|blocked|done|cancelled> | <optional note>`
-- `UPDATE_ASSIGNMENT_PRIORITY: <A-0007 or 7> | <P1-P5> | <optional note>`
-- `UPDATE_ASSIGNMENT_DUE: <A-0007 or 7> | <YYYY-MM-DD or none> | <optional note>`
-- `REASSIGN: <A-0007 or 7> | <AgentName> | <optional note>`
+Common examples:
+- `ADD_TASK`
+- `ADD_CAL_BLOCK`
+- `ASSIGN`
+- assignment update commands for status, priority, due date, title, brief, and summary
+- bulk assignment commands
+- assignment-to-task commands
 
-### Bulk assignment commands
-- `BULK_UPDATE_ASSIGNMENT_STATUS: <status> | <AgentName or all> | <open or all (optional)> | <optional note>`
-- `BULK_UPDATE_ASSIGNMENT_PRIORITY: <P1-P5> | <AgentName or all> | <open or all (optional)> | <optional note>`
-- `BULK_UPDATE_ASSIGNMENT_DUE: <YYYY-MM-DD or none> | <AgentName or all> | <open or all (optional)> | <optional note>`
-- `BULK_REASSIGN_ASSIGNMENTS: <AgentName or all> | <AgentName target> | <open or all (optional)> | <optional note>`
+### Assignment board
+The `Assignments` tab is the delegation board.
 
-### Assignment/task conversion
-- `ADD_TASK_FROM_ASSIGNMENT: <A-0007 or 7> | <MM-DD-YYYY or none> | <Business or Personal>`
-- `BULK_ADD_TASKS_FROM_ASSIGNMENTS: <AgentName or all> | <Business or Personal> | <open or all (optional)>`
+It supports:
+- creating assignments manually with `New`,
+- opening an assignee chat,
+- reassigning work,
+- bulk status, priority, due-date, and reassignment changes,
+- exporting the board,
+- filtering by `Open only` or `All`,
+- filtering by status, health, follow-up state, assignee, and search text.
+- surfacing `NEEDS_INPUT` when the latest agent reply is asking you for answers or uploads.
+- a sortable table layout so you can sort by assignment id, status, needs input, priority, assignee, due date, health, or title.
 
-### How to read bulk status results
-Bulk status command notes now report deterministic counts:
-- `matched`: rows in scope
-- `eligible`: rows considered after mode filter
-- `changed`: rows actually persisted to target value
-- `unchanged`: rows already at target value
-- `skipped closed`: rows skipped because `open` mode excludes done/cancelled
-- `failed`: attempted rows that did not persist
+### Assignment detail actions
+After selecting an assignment, you can:
+- `Start`
+- set priority
+- set due date
+- mark `Awaiting Review`
+- `Block`
+- mark `Done`
+- `Cancel`
+- `Reopen`
+- edit the title
+- edit the brief
+- edit the summary
+- `Create Task`
+- `Bulk Create Tasks`
+- `View Artifact`
+- `Open Assignee Chat`
 
-If `changed=0`, no status mutation happened.
+### Reading agent follow-up from the board
+When an assignee has already replied in their linked thread, the assignment detail pane now shows:
+- `Needs input: yes/no`
+- `Latest agent update`
+- `Requested from you` lines when the agent asks questions or requests files
+- `Uploaded files` already attached to that assignment
 
-## 7) Team Tab
+Use this before opening the assignee tab if you just want to know whether the agent is blocked on you.
 
-Use this to inspect agent metadata and navigate to an agent workspace.
+### Sorting and filtering the board
+- Click a column header to sort the delegation board.
+- Use `Follow-up: Needs Input` when you want to see only assignments currently waiting on you.
+- Use `Follow-up: No Input Needed` when you want to see work that is not blocked on your reply or uploads.
+- The board now remembers your current sort, column widths, and active filters between sessions.
 
-### Common actions
-- Select an agent to view aliases/capabilities/open assignments.
-- Open agent workspace.
-- Open next assignment for selected agent.
+### Supplying documents to an agent
+If the assignee asks for source material:
+1. Select the assignment.
+2. Click `Open Assignee Chat`.
+3. In the agent console, click `Upload Artifact`.
+4. Choose one or more files.
 
-## 8) Workspace
+The uploaded files are attached to the assignment, stored as artifacts, and shown back on the CoS assignment detail pane.
 
-Use this for document-centered drafting with one primary action: `Generate Draft`.
+### Bulk result counters
+When CoS or the board reports bulk changes, pay attention to counts such as:
+- `matched`
+- `eligible`
+- `changed`
+- `unchanged`
+- `skipped closed`
+- `failed`
 
-### What Workspace does
-- Lets you add and preview source files (including adding an entire folder of documents).
-- Lets you mark exactly which files are in scope for the draft.
-- Runs an AI collaboration workflow to produce a Markdown draft from your prompt.
-- Optionally extracts a **reviewable task list** from the generated markdown and lets you import accepted tasks into the app.
+If `changed=0`, nothing was actually updated.
+
+## 6. Global Memory And Teach Navi
+
+Navi now has durable user memory that can influence future prompts.
+
+### What counts as memory
+The app can store:
+- durable facts,
+- preferences,
+- aliases and glossary terms,
+- other stable reference information that should survive beyond one chat.
+
+### Explicit memory capture
+Use `Teach Navi:` in chat when you want to save something intentionally.
+
+Examples:
+- `Teach Navi: I prefer deep work before noon.`
+- `Teach Navi: PMCF means post-market clinical follow-up.`
+
+Alias or glossary entries are stored in a more structured way when Navi can detect the term and meaning clearly.
+
+### Reviewing memory
+Open `Global Memory…` from `Chief of Staff` to:
+- search entries,
+- filter by status,
+- add memory manually,
+- edit selected memory,
+- approve pending memory,
+- reject memory,
+- delete memory.
+
+### Pending memory review
+- Auto-learned memory may enter a `pending` review state before it starts influencing prompts.
+- If pending items exist, you will see a review prompt in the CoS UI such as `Review pending memory`.
+
+### Practical guidance
+- Use `Teach Navi:` for anything you definitely want remembered.
+- Review pending memory regularly so weak or noisy auto-learned entries do not accumulate.
+
+## 7. Workspace
+
+Use `Workspace` for collaborative drafting from source files.
+
+### What it does
+- lets you add individual files or folders,
+- supports drag-and-drop,
+- lets you mark which files are in scope,
+- previews source content,
+- runs a collaborative drafting workflow,
+- gives you an editable markdown draft,
+- can extract suggested tasks from the draft for review before import.
 
 ### Typical workflow
-1. Open the `Workspace` tab.
-2. Click `Select File/Folder`, `Add Folder…` (recursive), or drag/drop files/folders into the file list.
-3. Mark files to include using the checkbox next to each file.
-4. Optionally click a file to preview extracted content.
-5. Set `Max Rounds` (how many review/refinement cycles to allow).
-6. Click `Generate Draft`.
-7. Enter your instruction prompt when asked (what to draft, format, tone, constraints).
-8. Review:
-   - `Grok (API)` pane for research/drafting output,
-   - `ChatGPT (API)` pane for review/edit feedback,
-   - `Markdown Document` pane for the current draft.
-   - Status line for a context coverage note (how many selected files were fully/partially included).
-9. Edit the markdown manually if needed.
-10. Save using `Save Markdown` or `Export as...`.
-11. (Optional) Click `Extract Suggested Tasks…` to review/edit/accept tasks and import them into `Tasks`.
+1. Open `Workspace`.
+2. Add material with `Select File/Folder`, `Add Folder…`, or drag and drop.
+3. Mark the files you want included.
+4. Preview files if needed.
+5. Click `Generate Draft`.
+6. Enter the instruction prompt.
+7. Review the three panes:
+   - `Grok (API)`
+   - `ChatGPT (API)`
+   - `Markdown Document`
+8. Edit the markdown manually if needed.
+9. Use `Save Markdown` to save the `.md` draft.
+10. Use `Export as...` to export the draft in another format.
+11. Optionally click `Extract Suggested Tasks…` to review and import tasks from the draft.
 
-### Prompting tips
-- Be specific about audience, structure, and desired output length.
-- Ask for explicit sections (for example: summary, risks, recommendations, next steps).
-- If no files are marked, Workspace can still generate a research-only draft from your prompt.
+### When to use Workspace vs Deep Research
+- Use `Workspace` when your main inputs are files and folders you already have.
+- Use `Deep Research` when your main input is a web research question and you want an external research brief.
 
-### Suggested Tasks (importable) format
-If `Include “Suggested Tasks (importable)” section` is enabled, the draft is expected to include:
-- `## Suggested Tasks (importable)`
-- One task per line in the exact format:
-  - `- [ ] <task title> | due: <MM-DD-YYYY or none> | category: <Business or Personal>`
+## 8. Deep Research
 
-## 9) Compliance
+Use `Deep Research` for web-first research runs that produce a final brief.
 
-Use to analyze documents/URLs against compliance standards.
+### What you can do here
+- name a research run,
+- enter a research objective or question,
+- let the app gather research artifacts,
+- review intermediate outputs,
+- provide optional focus notes,
+- generate a final brief,
+- export the final brief.
 
-### Common actions
-- Upload or provide source content.
-- Run compliance analysis.
-- Review structured issues/fixes output.
+### Main workflow
+1. Enter a `Research name`.
+2. Enter the `Research objective / question`.
+3. Decide whether `Auto-generate final research brief when research completes` should stay enabled.
+4. Click `Start deep research`.
+5. Wait for the pipeline to finish and review:
+   - `Web brief`
+   - `Grok synthesis`
+   - `ChatGPT synthesis`
+6. Add optional focus or constraints.
+7. Click `Generate final research brief` if auto-generation did not already run.
+8. Review the `Final research brief (markdown)`.
+9. Use `Export brief...` if you want a file version.
 
-## 10) Leads
+### Notes
+- The status line and progress bar show research progress while the run is active.
+- The tab also includes an optional direct chat area for `Atlas (Deep Researcher)`.
+- Web research requires `OPENAI_API_KEY` to be configured.
 
-Use for discover/verify lead workflows and follow-up tasking.
+## 9. Meetings
 
-### Common actions
-- Generate/refine lead lists.
-- Review evidence/scoring.
-- Create follow-up tasks.
+Use `Meetings` to record, transcribe, save, and mine meetings for follow-up tasks.
 
-## 11) Billing
+### Main controls
+- `Start Recording`
+- `Stop Recording`
+- `Generate Transcript`
+- `Load File`
+- `Save Transcript`
+- `Draft Tasks`
 
-Use this to log hours and generate invoice drafts for review.
+### Recording workflow
+1. Click `Start Recording`.
+2. Click `Stop Recording` when finished.
+3. The app saves the audio file locally and starts the transcription flow.
+4. Enter meeting metadata when prompted:
+   - meeting date,
+   - meeting with,
+   - notes.
 
-### What Billing does
-- Manual time entry against a client (timer-based + quick manual add).
-- Invoice template editor (safe placeholders like `{{client_name}}`, `{{line_items_md}}`, `{{total_hours}}`).
-- Draft generation for previous month or a custom period.
-- Draft review + export (no auto-send).
-- Monthly auto-draft runs (in-app) on a chosen day of month, then prompts you to review.
+### File-based workflow
+Use `Load File` if you want to transcribe an existing audio or video file instead of recording live.
+
+### Transcript workflow
+- Use `Generate Transcript` when a file is loaded and ready.
+- Review the transcript in the transcript pane.
+- Use `Save Transcript` when you want a portable copy.
+
+### Saving transcripts
+`Save Transcript` supports:
+- plain text (`.txt`)
+- Word (`.docx`)
+
+### Drafting tasks from a meeting
+Use `Draft Tasks` to turn the transcript into proposed tasks.
+
+This is a review-first flow:
+- suggested tasks are drafted first,
+- you review and edit them,
+- only accepted tasks are imported into the task database.
+
+### Recording note
+If live recording is unavailable, the tab should explain that the `sounddevice` package is missing. In that case, you can still use `Load File`.
+
+## 10. Compliance
+
+Use `Compliance` to compare documents or URLs against compliance expectations and generate a structured report.
 
 ### Typical workflow
-1. Open `Billing`.
-2. Create/select a client.
-3. Log time using `Start` → `Stop & Save` (or `Manual add…`).
-4. Create/select an invoice template and click `Set default`.
-5. Generate drafts (`Generate previous month` or choose a period).
-6. Review drafts in the preview pane and use `Save As…` / `Open file…` as needed.
+1. Add source material such as a document or URL.
+2. Run the compliance check.
+3. Review the structured output.
+4. Save the report if needed.
 
-### Where drafts are saved
-- Draft markdown is stored in SQLite and also written to:
-  - `data/artifacts/invoice_drafts/<draft_id>/invoice_<client>_<yyyymm>.md`
+### What to expect
+- This tab is best for document review and issue identification.
+- Saved reports are intended to be human-readable.
 
-## 11) Notes
+### Current caveat
+`Link to CRM` should not be treated as a working end-to-end integration yet. If you need CRM linkage, verify it manually in your current environment.
 
-Use for AI-assisted notes and export.
+## 11. Leads
 
-### Common actions
-- Capture notes during work.
-- Organize with AI formatting/categorization.
-- Export (for example to DOCX/TXT/PDF where available).
+Use `Leads` for evidence-first lead discovery and outreach tracking.
 
-## 12) Deep Research / Specialist Tabs
+### What it does
+- finds candidate leads,
+- stores only leads with evidence,
+- shows scores so you can prioritize,
+- gives you a personalized outreach draft,
+- supports follow-up task creation.
 
-Tabs such as `Deep Research`, `Billing`, `Library`, `Intel`, and `Security` host specialist agent consoles or workflows.
+### Main workflow
+1. Run a lead search.
+2. Review stored leads in the table.
+3. Use filters for status, score, and hide-contacted behavior.
+4. Open `Sources` to inspect evidence and signals.
+5. Open the message viewer if you want a suggested outreach draft.
+6. Edit status, next action date, and notes as needed.
+7. Use `Create Task` to schedule outreach follow-up.
 
-Use them when:
-- CoS routes you to a specific assignee console.
-- You want to work directly in that domain area.
+### Important note
+Lead storage is intentionally strict: no evidence means no saved lead.
 
-### Deep Research (what it’s for)
-- Web-first deep research (iterative searching + synthesis) to produce a reusable research brief.
-- Not intended for internal database/document scouring (use `Workspace` / `Library` for internal doc workflows).
+### Outreach note
+The app supports manual outreach support and follow-up scheduling. It is not the place to assume direct LinkedIn message sending is automated.
 
-### Deep Research (how it runs)
-- **Iterative research loop**: The web research stage runs up to **8 rounds** and is **timeboxed to 30 minutes**.
-- **Visible working indicator**: While research runs, the status line updates with round/elapsed/source-count messages and the progress bar stays active.
-- **Auto-generate final brief**: If `Auto-generate final research brief when research completes` is enabled, the app will generate the final brief immediately after research is ready (no extra click).
-- **File output**: The final markdown is stored in SQLite and also written to `data/artifacts/<run_id>/research_brief.md`.
-- **Prereq**: Web research requires `OPENAI_API_KEY` set (see `config/.env`).
+## 12. Billing
 
-## 13) Troubleshooting
+Use `Billing` to track time, manage invoice templates, and generate invoice drafts for review.
 
-### Assignment command says updated but nothing changed
-- Check command note counters (`changed`, `failed`, `unchanged`).
-- `changed=0` means no mutation occurred.
-- Verify assignment ID/scope/mode and retry.
+### What the tab includes
+- client selection and client records,
+- timer-based and manual time entry,
+- invoice template management,
+- DOCX editing support,
+- grouped invoice draft generation,
+- Word-first review and PDF export,
+- monthly in-app auto-draft prompts.
 
-### Cannot open assignee chat from assignment
-- Select assignment first.
-- Ensure assignee has a routed console tab.
-- Retry from `Chief of Staff` assignment board.
+### Template workflow
+You can:
+- create a new template,
+- import a template,
+- edit a DOCX template with `Edit DOCX…`,
+- save template changes,
+- `Auto-wire` common placeholders,
+- mark a template as default with `Set default`.
 
-### Task not visible after creating from CoS
-- Open `Tasks` tab and clear filters/search.
-- Confirm category/date filters are not excluding it.
+### Draft generation workflow
+1. Select a client.
+2. Log or review billable time entries.
+3. Choose the billing mode:
+   - `Hourly (rate × hours)`
+   - `Fixed fee (% of total)`
+4. Set the invoice period with `Generate previous month` or the custom date range.
+5. Optionally enable `Set due date`. If you leave this off, the draft uses `Due upon receipt`.
+6. Generate the draft.
+7. Review the draft in the preview panel.
 
-### Due date errors
-- Use exact expected format:
-  - Assignment due: `YYYY-MM-DD`
-  - Dashboard task due: `MM-DD-YYYY`
+### Draft review actions
+For a selected draft, you can:
+- `Edit draft…`
+- `Export PDF…`
+- `Refresh preview`
+- `Open file…`
+- `Save As…`
+- `Mark reviewed`
 
-## 14) Recommended Daily Routine
+### What billing fields are supported
+Current invoice data supports:
+- incrementing invoice numbers in the `PM####` format,
+- billing contact name,
+- billing email,
+- optional due date,
+- grouped line items by deliverable or category,
+- hourly billing,
+- fixed-fee billing,
+- fixed-fee allocation by percentage across grouped work.
 
-1. `Dashboard`: triage tasks and schedule.
-2. `Chief of Staff`: generate plan and delegate.
-3. Specialist tabs: execute deep work or review assignee outputs.
-4. `Tasks`: close loop on outstanding work.
-5. `Notes`: capture outcomes and export if needed.
+### Important review-first note
+Treat invoice drafts as editable drafts, not send-ready invoices. The intended flow is:
+1. generate the draft,
+2. open it in Word,
+3. review formatting and content,
+4. export PDF only after the draft looks right.
 
-## 15) Related Technical Docs
+Depending on the template, final cleanup may still be required before sending.
 
-If you need implementation details or test specs, see:
+### Monthly auto-draft
+The tab includes `Monthly auto-draft (in-app)` settings:
+- enable or disable it,
+- choose the day of the month,
+- review the prompt when the app generates drafts.
+
+## 13. Team
+
+Use `Team` to inspect the AI team directory and jump into agent-specific work.
+
+### Common uses
+- review an agent's capabilities,
+- inspect aliases and open assignments,
+- open the agent workspace,
+- jump to the next assignment for that agent.
+
+## 14. Notes
+
+The `Notes` tab is now a live document builder, not a loose-note inbox.
+
+### Core idea
+Each work context becomes one living document. As you add raw observations, Navi merges them into the active context document and keeps reorganizing the content into something more coherent.
+
+### Typical workflow
+1. Create or select a context in the left sidebar.
+2. Use the capture box to enter a raw observation.
+3. Press `Enter` to merge it into the active document.
+4. Use `Shift+Enter` if you need a newline in the capture box.
+5. Review the updated document in the main editor.
+6. Use `Save Document` when you manually edit the document.
+7. Use `Re-organize` when you want Navi to clean up the current document without adding a new observation.
+8. Use `Export…` to create an external file.
+
+### What exports do here
+Exports operate on the active compiled context document, not on a list of raw note rows.
+
+### Supported export formats
+- Word (`.docx`)
+- Markdown (`.md`)
+- PDF (`.pdf`)
+
+## 15. Library, Intel, And Security
+
+These tabs are lighter-weight specialist workspaces.
+
+### `Library`
+Use this as an archive and retrieval workspace for institutional knowledge and previously gathered material.
+
+### `Intel`
+Use this for market intelligence and competitor signal tracking.
+
+### `Security`
+Use this for security and privacy risk triage.
+
+### Practical guidance
+- These tabs are useful when `Chief of Staff` routes work to a specialist domain.
+- They may be more useful as focused workspaces than as full end-user workflows with long step-by-step procedures.
+
+## 16. Exports
+
+Several parts of the app can export user-facing artifacts.
+
+### Notes
+- `DOCX`
+- `Markdown`
+- `PDF`
+
+### Workspace
+- `DOCX`
+- `PDF`
+- `Markdown`
+- `TXT`
+
+### Deep Research
+- `DOCX`
+- `PDF`
+- `Markdown`
+- `TXT`
+
+### Meetings
+- transcript save supports `TXT`
+- transcript save supports `DOCX`
+
+### Billing
+- invoice drafts are edited and saved as document files,
+- you can export a selected draft to `PDF`.
+
+### Export guidance
+- Prefer `DOCX` when you expect to keep editing in Word.
+- Prefer `PDF` for a fixed-share version after review.
+- Prefer `Markdown` when you want an editable text-based draft.
+- Prefer `TXT` for simple transcript or plain-text sharing.
+
+## 17. Dates And Formats
+
+Dates matter across `Dashboard`, `Tasks`, `Projects`, `Billing`, `Meetings`, and `Chief of Staff`.
+
+### Where calendar pickers exist
+Calendar-popup date pickers are used in many major places, including:
+- dashboard date filtering and quick task dates,
+- task editing and project deadlines,
+- billing entry ranges, invoice periods, and invoice due dates,
+- meeting metadata,
+- assignment due-date pickers in CoS dialogs.
+
+### Manual date formats to remember
+- dashboard or task due dates often use `MM-DD-YYYY`
+- assignment due dates use `YYYY-MM-DD`
+
+If a date is rejected, double-check which workflow you are in before retrying.
+
+## 18. Troubleshooting
+
+### A task created from CoS is not visible
+- Open `Tasks` and clear filters and search text.
+- Check whether category, project, completed, or snoozed filters are hiding it.
+
+### An assignment command says it changed something, but nothing moved
+- Review the returned counters such as `changed`, `unchanged`, and `failed`.
+- If `changed=0`, no actual update happened.
+
+### I cannot open the assignee chat from an assignment
+- Select the assignment first.
+- Retry from the `Chief of Staff` assignment board.
+- If needed, verify that the assignee has a routed specialist workspace in the current build.
+
+### The agent says it needs documents or answers
+- Select the assignment and read the `Agent follow-up` section in the detail pane.
+- If the board shows `NEEDS_INPUT`, open the assignee chat and use `Upload Artifact` for files.
+- Reply in the agent console thread if the agent asked clarification questions.
+
+### Date entry keeps failing
+- Assignment due dates must be `YYYY-MM-DD`.
+- Task due dates commonly expect `MM-DD-YYYY`.
+- Use the calendar picker when available instead of typing the date manually.
+
+### Calendar-aware planning is not working
+- Verify your calendar token is available in the app environment.
+- If it is missing, CoS should fall back gracefully, but it will not have live schedule context.
+
+### Live meeting recording is unavailable
+- Install `sounddevice`, or use `Load File` to transcribe an existing recording instead.
+
+### Deep Research will not start web research
+- Check that `OPENAI_API_KEY` is configured.
+
+### Billing draft output does not look ready to send
+- Use `Edit draft…` to open the invoice in Word.
+- Review formatting, branding, line items, and totals before exporting PDF.
+- Treat draft generation as a starting point, not a final send action.
+
+### Compliance CRM linking did not happen
+- Treat `Link to CRM` as incomplete unless you have separately verified it in your current environment.
+
+## 19. Recommended Daily Routine
+
+1. `Dashboard`: read briefing, schedule, tasks, email queue, and news.
+2. `Chief of Staff`: plan the day, delegate work, and run `AM Sweep` if needed.
+3. `Tasks`: clean and reorder the backlog.
+4. `Workspace`, `Deep Research`, `Meetings`, or another specialist tab: do focused execution.
+5. `Notes`: capture conclusions into living context documents.
+6. `Billing`: keep time entries current so invoice generation stays clean later.
+
+## 20. Related Docs
+
+If you want a deeper companion reference, use:
 - `docs/overview.md`
 - `docs/chief_of_staff.md`
+- `docs/note_taking_system.md`
+- `docs/lead_generation.md`
 - `docs/testing.md`
-- `docs/requirements.md`

@@ -152,7 +152,7 @@ class ResponseHandler:
     def perform_grok_search(self, query):
         """Perform a web search using Grok via xAI SDK (web_search tool)."""
         try:
-            from core.grok_client import grok_web_search
+            from core.grok_client import MODEL_FAST, grok_web_search
             from datetime import datetime, timedelta
             current_date = datetime.now()
             week_ago = current_date - timedelta(days=7)
@@ -163,7 +163,7 @@ class ResponseHandler:
                 f"Prefer articles from {week_ago_str} to {current_date_str}. "
                 "For each article, provide the exact URL to the full article, not just the website homepage."
             )
-            result = grok_web_search(user_prompt, model="grok-4-1-fast")
+            result = grok_web_search(user_prompt, model=MODEL_FAST)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("Grok live search query: %s; result length: %s", query, len(result or ""))
             return result or None

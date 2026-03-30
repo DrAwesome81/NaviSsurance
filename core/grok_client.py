@@ -12,11 +12,12 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Default models (align with previous usage)
-MODEL_CHAT = "grok-4-1-fast-reasoning-latest"
-MODEL_FAST = "grok-4-1-fast"
-MODEL_WEB = "grok-4-latest"
-MODEL_COS = "grok-4-latest"  # Chief of Staff: flagship model, no forced output structure
+# Default model (single shared xAI model across app call sites)
+MODEL_MULTI_AGENT = "grok-4.20-multi-agent-beta-0309"
+MODEL_CHAT = MODEL_MULTI_AGENT
+MODEL_FAST = MODEL_MULTI_AGENT
+MODEL_WEB = MODEL_MULTI_AGENT
+MODEL_COS = MODEL_MULTI_AGENT
 
 
 def _get_api_key() -> Optional[str]:

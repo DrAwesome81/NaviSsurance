@@ -79,6 +79,8 @@ def _coerce_history(
         elif isinstance(item, (tuple, list)) and len(item) >= 2:
             role = str(item[0] or "").strip().lower()
             content = str(item[1] or "").strip()
+        if role in {"navi", "manager"}:
+            role = "user"
         if role in ("user", "assistant") and content:
             out.append({"role": role, "content": content})
     return out
@@ -114,8 +116,12 @@ def _format_assignment_context(db: DatabaseManager, assignment_id: int) -> str:
             snippet = str(a.get("content_md") or "").strip()
             if not snippet:
                 snippet = str(a.get("content_json") or "").strip()
-            if len(snippet) > 280:
-                snippet = snippet[:277] + "..."
+            if not snippet:
+                fp = str(a.get("file_path") or "").strip()
+                snippet = f"file_path: {fp}" if fp else "(no inline content)"
+            snippet_limit = 1200 if art_type in {"uploaded_file", "reference_file"} else 280
+            if len(snippet) > snippet_limit:
+                snippet = snippet[: max(0, snippet_limit - 3)] + "..."
             lines.append(f"- [{art_type}] {title}: {snippet}")
 
     return "\n".join(lines).strip()
@@ -141,6 +147,118 @@ def _format_thread_context(db: DatabaseManager, thread_id: int) -> str:
     if not body:
         return ""
     return "Thread context:\n" + body
+
+
+def _thread_session_id(db: DatabaseManager, thread_id: int) -> str:
+    row = db.agent_get_thread(int(thread_id))
+    if not row:
+        return ""
+    return str(row[3] or "").strip()
+
+
+def _assignment_kickoff_message(row: dict, *, display_name: str) -> str:
+    aid = int(row.get("id") or 0)
+    title = str(row.get("title") or "Untitled assignment").strip()
+    priority = int(row.get("priority") or 3)
+    due_date = str(row.get("due_date") or "").strip() or "none"
+    brief = str(row.get("brief_md") or "").strip()
+    return (
+        f"Assignment kickoff from Navi for {display_name}.\n\n"
+        f"Assignment: A-{aid:04d} — {title}\n"
+        f"Priority: P{priority}\n"
+        f"Due date: {due_date}\n\n"
+        f"Brief:\n{brief}\n\n"
+        "Please review the assignment and respond with:\n"
+        "1. A short acknowledgement.\n"
+        "2. Your first steps.\n"
+        "3. Any questions you need answered.\n"
+        "4. Any documents, references, or files you need uploaded.\n"
+        "5. Whether you can proceed now or are blocked."
+    )
+
+
+def create_assignment_thread(
+    db: DatabaseManager,
+    *,
+    assignment_id: int,
+    assignee_code: str,
+    reason: str,
+    actor_code: str = "navi",
+    context_json: dict | None = None,
+) -> int | None:
+    """Create and link an assignee-owned thread for an assignment."""
+    row = db.agent_get_assignment(int(assignment_id))
+    if not row:
+        return None
+    assignee = str(assignee_code or row.get("assignee_code") or "").strip().lower()
+    if not assignee:
+        return None
+    title = str(row.get("title") or f"A-{int(assignment_id):04d}").strip()
+    ctx = dict(context_json or {})
+    ctx.setdefault("source", reason)
+    ctx["assignment_id"] = int(assignment_id)
+    tid = db.agent_create_thread(
+        agent_code=assignee,
+        title=f"A-{int(assignment_id):04d}: {title}"[:100],
+        context_json=ctx,
+    )
+    if not tid:
+        return None
+    db.agent_link_assignment_thread(
+        assignment_id=int(assignment_id),
+        thread_id=int(tid),
+        actor_code=actor_code,
+        note=f"Linked to {assignee} thread after {reason.replace('_', ' ')}",
+    )
+    return int(tid)
+
+
+def prime_assignment_handoff(
+    db: DatabaseManager,
+    *,
+    assignment_id: int,
+    thread_id: int,
+    force: bool = False,
+) -> str:
+    """
+    Seed a newly linked assignment thread with an initial agent intake response.
+    This gives the user something actionable to inspect when they open the agent tab.
+    """
+    row = db.agent_get_assignment(int(assignment_id))
+    if not row:
+        return ""
+    assignee_code = str(row.get("assignee_code") or "").strip().lower()
+    agent = db.agent_get(assignee_code) or db.agent_resolve_by_name(assignee_code) or {}
+    display_name = str(agent.get("display_name") or assignee_code or "Agent").strip() or "Agent"
+    session_id = _thread_session_id(db, int(thread_id))
+    if not session_id:
+        return ""
+    if (not force) and db.get_chat_history(session_id, limit=1):
+        return ""
+
+    kickoff = _assignment_kickoff_message(row, display_name=display_name)
+    db.save_message(session_id, "navi", kickoff)
+    history = db.get_chat_history(session_id, limit=80)
+    reply = agent_chat_response(
+        db,
+        agent_code=assignee_code,
+        user_message="",
+        conversation_history=history,
+        thread_id=int(thread_id),
+        assignment_id=int(assignment_id),
+    )
+    reply = (reply or "").strip()
+    if not reply:
+        reply = (
+            f"{display_name} received the assignment. Use this thread for follow-up questions "
+            "or to upload requested documents."
+        )
+    db.save_message(session_id, "assistant", reply)
+    try:
+        db.agent_touch_thread(int(thread_id), bump_last_message=True)
+    except Exception:
+        pass
+    return reply
 
 
 def _system_prompt_for(agent_code: str, *, display_name: str, role_title: str) -> str:

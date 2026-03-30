@@ -30,6 +30,7 @@ from core.cos_calendar import (
 )
 from core.cos_doc_search import doc_search, format_hits
 from core.user_memory import build_user_memory_context
+from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ RICH_PIPE_TASK_PATTERN = re.compile(
     r"(?:^|[\r\n]|(?:\s[-*•]\s))(?P<task>[^|\r\n]+?)\s*\|\s*(?P<due>\d{2}-\d{2}-\d{4}|none)\s*\|\s*(?P<category>Business|Personal)\b",
     re.IGNORECASE,
 )
+PRIORITY_SECTION_PATTERN = re.compile(r"(high|medium|low)\s+priority", re.IGNORECASE)
 # Pattern for CoS to schedule a calendar block:
 # ADD_CAL_BLOCK: title | start_datetime | end_datetime | optional_calendar_id
 ADD_CAL_BLOCK_PATTERN = re.compile(
@@ -389,7 +391,37 @@ def _preferences_context(prefs_row) -> str:
     if blocked_times_json:
         try:
             blocks = json.loads(blocked_times_json)
-            parts.append("Blocked times (recurring): " + json.dumps(blocks))
+            if isinstance(blocks, list) and blocks:
+                block_lines = []
+                for raw in blocks:
+                    if not isinstance(raw, dict):
+                        continue
+                    day = str(raw.get("day") or "").strip()
+                    start = str(raw.get("start") or "").strip()
+                    end = str(raw.get("end") or "").strip()
+                    label = str(raw.get("label") or raw.get("title") or "").strip()
+                    if not day or not start or not end:
+                        continue
+                    day_label = {
+                        "daily": "Every day",
+                        "weekday": "Weekdays",
+                        "weekend": "Weekends",
+                        "monday": "Monday",
+                        "tuesday": "Tuesday",
+                        "wednesday": "Wednesday",
+                        "thursday": "Thursday",
+                        "friday": "Friday",
+                        "saturday": "Saturday",
+                        "sunday": "Sunday",
+                    }.get(day.lower(), day)
+                    line = f"- {day_label}: {start}-{end}"
+                    if label:
+                        line += f" ({label})"
+                    block_lines.append(line)
+                if block_lines:
+                    parts.append("Blocked times (recurring):\n" + "\n".join(block_lines))
+                else:
+                    parts.append("Blocked times (recurring): " + json.dumps(blocks))
         except Exception:
             parts.append("Blocked times: " + blocked_times_json)
     if deep_work_hours is not None:
@@ -397,7 +429,47 @@ def _preferences_context(prefs_row) -> str:
     if behavior_prefs_json:
         try:
             prefs = json.loads(behavior_prefs_json)
-            parts.append("Behavior prefs: " + json.dumps(prefs))
+            if isinstance(prefs, dict) and prefs:
+                behavior_lines = []
+                tone = str(prefs.get("tone") or "").strip()
+                if tone:
+                    behavior_lines.append(f"- Preferred tone: {tone}")
+                planning_detail = str(prefs.get("planning_detail") or "").strip()
+                if planning_detail:
+                    behavior_lines.append(f"- Planning detail: {planning_detail}")
+                scheduling_autonomy = str(prefs.get("scheduling_autonomy") or "").strip()
+                if scheduling_autonomy:
+                    scheduling_label = {
+                        "ask_first": "Always ask before scheduling.",
+                        "draft_first": "Draft first, then confirm.",
+                        "can_schedule_when_clear": "Go ahead and schedule when the request is clear.",
+                    }.get(scheduling_autonomy, scheduling_autonomy)
+                    behavior_lines.append(f"- Scheduling autonomy: {scheduling_label}")
+                if bool(prefs.get("protect_evenings")):
+                    behavior_lines.append("- Protect evenings from optional work.")
+                if bool(prefs.get("protect_weekends")):
+                    behavior_lines.append("- Protect weekends from optional work.")
+                if bool(prefs.get("confirm_ambiguous_tasks")):
+                    behavior_lines.append("- Ask before creating tasks when intent is ambiguous.")
+                remaining = {
+                    key: value
+                    for key, value in prefs.items()
+                    if key
+                    not in {
+                        "tone",
+                        "planning_detail",
+                        "scheduling_autonomy",
+                        "protect_evenings",
+                        "protect_weekends",
+                        "confirm_ambiguous_tasks",
+                    }
+                }
+                if remaining:
+                    behavior_lines.append("- Additional behavior prefs: " + json.dumps(remaining))
+                if behavior_lines:
+                    parts.append("Behavior prefs:\n" + "\n".join(behavior_lines))
+                else:
+                    parts.append("Behavior prefs: " + json.dumps(prefs))
         except Exception:
             parts.append("Behavior prefs: " + behavior_prefs_json)
     return "\n\n".join(parts) if parts else ""
@@ -411,15 +483,7 @@ def _calendar_context() -> str:
     if not ok:
         return "**Calendar:** (unavailable) " + msg
 
-    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
-    now = datetime.now(timezone.utc)
-    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    tomorrow = today + timedelta(days=1)
-    week_end = today + timedelta(days=7)
-    time_min_today = today.strftime("%Y-%m-%dT%H:%M:%SZ")
-    time_max_today = tomorrow.strftime("%Y-%m-%dT%H:%M:%SZ")
-    time_min_week = today.strftime("%Y-%m-%dT%H:%M:%SZ")
-    time_max_week = week_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    local_tz, time_min_today, time_max_today, time_min_week, time_max_week = _calendar_query_windows()
     try:
         todays = get_calendar_events(time_min=time_min_today, time_max=time_max_today)
         upcoming = get_calendar_events(time_min=time_min_week, time_max=time_max_week)
@@ -433,16 +497,40 @@ def _calendar_context() -> str:
         return "**Calendar:** (error loading) " + str(e)
 
 
+def _calendar_query_windows(now: Optional[datetime] = None) -> tuple[object, str, str, str, str]:
+    """Return local tz plus UTC query windows anchored to local midnight."""
+    base = now or datetime.now().astimezone()
+    if getattr(base, "tzinfo", None):
+        local_dt = base.astimezone(base.tzinfo)
+    else:
+        local_dt = base.replace(tzinfo=tzlocal())
+    local_tz = local_dt.tzinfo or timezone.utc
+    local_day_start = local_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    local_day_end = local_day_start + timedelta(days=1)
+    local_week_end = local_day_start + timedelta(days=7)
+
+    def _to_utc_z(value: datetime) -> str:
+        return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    return (
+        local_tz,
+        _to_utc_z(local_day_start),
+        _to_utc_z(local_day_end),
+        _to_utc_z(local_day_start),
+        _to_utc_z(local_week_end),
+    )
+
+
 def _emails_context(db: DatabaseManager) -> str:
-    """Format unreplied emails (best-effort) for AM Sweep context."""
+    """Format important emails (best-effort) for AM Sweep context."""
     try:
-        rows = db.list_unreplied_emails(limit=25, days=14, only_clients_or_potentials=True)
+        rows = db.list_important_emails(limit=25, days=14, include_triaged=False)
     except Exception as e:
-        logger.warning("Could not load unreplied emails for CoS context: %s", e)
-        return "**Unreplied emails:** (unable to load)"
+        logger.warning("Could not load important emails for CoS context: %s", e)
+        return "**Important emails:** (unable to load)"
 
     if not rows:
-        return "**Unreplied emails (last 14 days):** (none)"
+        return "**Important emails (last 14 days):** (none)"
 
     from datetime import datetime, UTC
 
@@ -468,10 +556,10 @@ def _emails_context(db: DatabaseManager) -> str:
             age = ""
 
         flags: list[str] = []
-        if int(r.get("is_client") or 0) == 1:
-            flags.append("CLIENT")
-        if int(r.get("is_potential") or 0) == 1:
-            flags.append("POTENTIAL")
+        if str(r.get("client_name") or "").strip():
+            flags.append(f"CLIENT:{r.get('client_name')}")
+        if str(r.get("project_name") or "").strip():
+            flags.append(f"PROJECT:{r.get('project_name')}")
         flag_str = f" [{'|'.join(flags)}]" if flags else ""
 
         folder = str(r.get("folder") or "").strip()
@@ -483,7 +571,7 @@ def _emails_context(db: DatabaseManager) -> str:
         # Keep line compact; avoid dumping full email bodies into prompt.
         lines.append(f"- {sender}: {subject}{age}{flag_str}{meta_str}")
 
-    return "**Unreplied emails (unanswered, last 14 days):**\n" + "\n".join(lines)
+    return "**Important emails (needs attention, last 14 days):**\n" + "\n".join(lines)
 
 
 def cos_am_sweep(
@@ -526,7 +614,7 @@ Calendar scheduling is currently unavailable ({reason}). Do not output ADD_CAL_B
 
     system = f"""You are an AI Chief of Staff running Adam's AM Sweep.
 
-Purpose: take the current operational state (tasks, calendar, unreplied emails, delegated assignments) and produce an action-ready plan for TODAY.
+Purpose: take the current operational state (tasks, calendar, important emails, delegated assignments) and produce an action-ready plan for TODAY.
 
 Priority semantics (critical—many systems use P0 for "highest"; we do not):
 - Dashboard tasks: P0 = lowest urgency (background), P5 = highest urgency (urgent).
@@ -580,6 +668,8 @@ Action commands you may output:
 - TASK_SET_ESTIMATE: <task_id> | <minutes>           (0-600, example: TASK_SET_ESTIMATE: 123 | 45)
 - ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>
 {calendar_instructions}
+
+Do not use P0 as a placeholder for "unspecified." Include a real best-effort priority whenever you can infer it from urgency, due date, or surrounding High/Medium/Low context.
 
 When generating ASSIGN briefs, be specific about expected output and include any needed context from the inputs below.
 Always interpret and communicate schedule/time references in Adam's local timezone; include timezone offsets when scheduling.
@@ -869,6 +959,85 @@ def _parse_task_priority_value(value: str) -> Optional[int]:
     return p
 
 
+def _section_priority_value(label: str) -> Optional[int]:
+    normalized = str(label or "").strip().lower()
+    return {
+        "high": 4,
+        "medium": 2,
+        "low": 1,
+    }.get(normalized)
+
+
+def _infer_priority_section_label(text: str) -> Optional[str]:
+    hits = PRIORITY_SECTION_PATTERN.findall(str(text or ""))
+    if not hits:
+        return None
+    return str(hits[-1] or "").strip().lower() or None
+
+
+def _infer_task_priority(
+    task_text: str,
+    *,
+    due_date: Optional[str] = None,
+    section_label: Optional[str] = None,
+    raw_context: Optional[str] = None,
+) -> Optional[int]:
+    """Infer dashboard task priority from explicit context before falling back to clarification."""
+    sec = _section_priority_value(section_label or _infer_priority_section_label(raw_context or ""))
+    if sec is not None:
+        return sec
+
+    hay = f"{task_text} {raw_context or ''}".strip().lower()
+    if any(
+        term in hay
+        for term in (
+            "critical",
+            "urgent",
+            "asap",
+            "as soon as possible",
+            "immediately",
+            "right away",
+            "blocker",
+            "unblock",
+            "today",
+            "tonight",
+        )
+    ):
+        return 4
+    if any(
+        term in hay
+        for term in (
+            "low priority",
+            "background",
+            "backlog",
+            "someday",
+            "when you can",
+            "non-urgent",
+        )
+    ):
+        return 1
+
+    due_norm = None
+    if due_date:
+        ok_due, due_norm = _normalize_dashboard_mmddyyyy(due_date)
+        if not ok_due:
+            due_norm = None
+    if due_norm:
+        try:
+            due_dt = datetime.strptime(due_norm, "%m-%d-%Y").date()
+            today = datetime.now().date()
+            delta = (due_dt - today).days
+            if delta <= 0:
+                return 4
+            if delta <= 2:
+                return 3
+            if delta <= 7:
+                return 2
+        except Exception:
+            pass
+    return None
+
+
 def _resolve_bulk_scope(db: DatabaseManager, scope_raw: str) -> tuple[bool, Optional[str], str]:
     """
     Resolve a bulk-update scope value into (ok, assignee_code_or_none, display_label).
@@ -1106,8 +1275,9 @@ Priority scale is numeric and consistent:
 You can see his current dashboard task list and may add tasks to it. To add a task, write one or more lines in this exact format (one task per line):
 ADD_TASK: <task description> | <due date as MM-DD-YYYY or "none"> | <Business or Personal> [| <priority P0-P5 or 0-5 or none>] [| <next action date MM-DD-YYYY or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]
 Examples:
-- ADD_TASK: Send follow-up to client | 02-25-2026 | Business
+- ADD_TASK: Send follow-up to client | 02-25-2026 | Business | P3
 - ADD_TASK: Draft DHF gap memo | 03-05-2026 | Business | P1 | 03-03-2026 | 12 | Weekly
+When adding a task, include priority whenever you can infer it from urgency, timing, or the surrounding plan context. Do not use P0 as a placeholder for "unspecified." If the user asked you to add a task and priority is genuinely unclear, ask a short follow-up question instead of outputting an ADD_TASK line with no priority.
 Omit ADD_TASK lines if you are not adding any tasks.
 {calendar_instructions}
 
@@ -1394,6 +1564,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     added_assignment_artifacts: list[str] = []
     bulk_created_tasks_from_assignments: list[str] = []
     skipped_existing_assignment_tasks: list[str] = []
+    ambiguous_task_priorities: list[str] = []
     assignment_failures: list[str] = []
     block_failures = 0
     block_failure_reasons: list[str] = []
@@ -1432,18 +1603,19 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 if src and str(src[1] or "").strip().lower() == assignee_code:
                     relink = False
             if relink:
-                title = str(row.get("title") or f"A-{int(assignment_id):04d}")
-                tid = db.agent_create_thread(
-                    agent_code=assignee_code,
-                    title=title,
-                    context_json={"source": reason, "assignment_id": int(assignment_id)},
+                tid = create_assignment_thread(
+                    db,
+                    assignment_id=int(assignment_id),
+                    assignee_code=assignee_code,
+                    reason=reason,
+                    actor_code="navi",
+                    context_json={"source": reason},
                 )
                 if tid:
-                    db.agent_link_assignment_thread(
+                    prime_assignment_handoff(
+                        db,
                         assignment_id=int(assignment_id),
                         thread_id=int(tid),
-                        actor_code="navi",
-                        note=f"Thread relinked after {reason.replace('_', ' ')}",
                     )
         except Exception:
             return
@@ -1580,6 +1752,12 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 continue
 
             priority = _parse_task_priority_value(parts[3] if len(parts) > 3 else "")
+            if priority is None:
+                priority = _infer_task_priority(task_text, due_date=due_norm, raw_context=stripped)
+            if priority is None:
+                ambiguous_task_priorities.append(task_text)
+                logger.info("CoS ADD_TASK deferred pending priority clarification: %r", task_text)
+                continue
             next_action_ok, next_action = _normalize_dashboard_mmddyyyy(parts[4] if len(parts) > 4 else "")
             if not next_action_ok:
                 logger.warning("CoS ADD_TASK rejected due to invalid next-action date: %r", parts[4] if len(parts) > 4 else "")
@@ -1858,15 +2036,6 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
             if chat_id is not None:
                 context_obj["cos_chat_id"] = int(chat_id)
             assignee_code = str(agent.get("code") or "").strip().lower()
-            source_thread_id = None
-            try:
-                source_thread_id = db.agent_create_thread(
-                    agent_code=assignee_code,
-                    title=title,
-                    context_json=context_obj,
-                )
-            except Exception:
-                source_thread_id = None
             try:
                 assignment_id = db.agent_create_assignment(
                     title=title,
@@ -1876,7 +2045,6 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     priority=priority,
                     due_date=due_date,
                     status="queued",
-                    source_thread_id=(int(source_thread_id) if source_thread_id else None),
                     context_json=context_obj,
                 )
             except Exception as e:
@@ -1884,6 +2052,23 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 logger.warning("CoS ASSIGN create failed: %s", e)
 
             if assignment_id:
+                try:
+                    source_thread_id = create_assignment_thread(
+                        db,
+                        assignment_id=int(assignment_id),
+                        assignee_code=assignee_code,
+                        reason="chief_of_staff_assign",
+                        actor_code="navi",
+                        context_json=context_obj,
+                    )
+                    if source_thread_id:
+                        prime_assignment_handoff(
+                            db,
+                            assignment_id=int(assignment_id),
+                            thread_id=int(source_thread_id),
+                        )
+                except Exception as e:
+                    logger.warning("CoS ASSIGN thread prime failed for A-%04d: %s", int(assignment_id), e)
                 disp = str(agent.get("display_name") or agent.get("code") or assignee_name).strip()
                 created_assignments.append(f"{disp} (A-{int(assignment_id):04d})")
             else:
@@ -2539,7 +2724,11 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     if added_tasks == 0 and not explicit_add_task_seen:
         try:
             seen_in_response: set[tuple[str, str, str]] = set()
+            current_section_label: Optional[str] = None
             for line in response.splitlines():
+                section_match = PRIORITY_SECTION_PATTERN.search((line or "").strip())
+                if section_match:
+                    current_section_label = str(section_match.group(1) or "").strip().lower() or None
                 m_rich = RICH_TASK_LINE_PATTERN.match((line or "").strip())
                 if not m_rich:
                     continue
@@ -2556,7 +2745,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     continue
                 seen_in_response.add(dedupe_key)
                 try:
-                    db.add_task(
+                    task_id = db.add_task(
                         session_id=session_id,
                         task_text=task_text,
                         due_date=due_date,
@@ -2564,14 +2753,22 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                         recurrence="None",
                         completed=0,
                     )
+                    inferred_priority = _infer_task_priority(
+                        task_text,
+                        due_date=due_date,
+                        section_label=current_section_label,
+                        raw_context=line,
+                    )
+                    if inferred_priority is not None:
+                        db.update_task_by_id(int(task_id), priority=int(inferred_priority))
                     added_tasks += 1
                 except Exception as e:
                     logger.warning("CoS rich-task fallback add_task failed: %s", e)
 
             # Also parse compact "task | due | category" triplets from prose/bullets.
             for m_pipe in RICH_PIPE_TASK_PATTERN.finditer(response):
-                task_text = (m_pipe.group("task") or "").strip()
-                task_text = task_text.strip(" -*•\t\r\n")
+                raw_task_text = (m_pipe.group("task") or "").strip()
+                task_text = raw_task_text.strip(" -*•\t\r\n")
                 # Strip common section labels that may precede inline bullets.
                 task_text = re.sub(
                     r"^(?:#{1,6}\s*)?(?:high|medium|low)\s+priority(?:\s*\([^)]+\))?\s*[-:]\s*",
@@ -2595,7 +2792,9 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     continue
                 seen_in_response.add(dedupe_key)
                 try:
-                    db.add_task(
+                    prefix_text = response[: m_pipe.start()]
+                    section_label = _infer_priority_section_label(prefix_text) or _infer_priority_section_label(raw_task_text)
+                    task_id = db.add_task(
                         session_id=session_id,
                         task_text=task_text,
                         due_date=due_date,
@@ -2603,6 +2802,14 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                         recurrence="None",
                         completed=0,
                     )
+                    inferred_priority = _infer_task_priority(
+                        task_text,
+                        due_date=due_date,
+                        section_label=section_label,
+                        raw_context=raw_task_text,
+                    )
+                    if inferred_priority is not None:
+                        db.update_task_by_id(int(task_id), priority=int(inferred_priority))
                     added_tasks += 1
                 except Exception as e:
                     logger.warning("CoS rich-pipe fallback add_task failed: %s", e)
@@ -2613,6 +2820,12 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     action_notes = []
     if added_tasks:
         action_notes.append(f"— *Added {added_tasks} task(s) to your dashboard.*")
+    if ambiguous_task_priorities:
+        preview = ", ".join(ambiguous_task_priorities[:3])
+        more = " ..." if len(ambiguous_task_priorities) > 3 else ""
+        action_notes.append(
+            f"— *Priority clarification needed before adding {len(ambiguous_task_priorities)} task(s): {preview}{more}. Reply with P0-P5 for each task or restate the urgency.*"
+        )
     if updated_task_tags:
         action_notes.append(f"— *Updated tags on {updated_task_tags} task(s).*")
     if updated_task_estimates:

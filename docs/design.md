@@ -15,6 +15,7 @@ See `docs/diagrams/architecture.png` for a visual representation.
 - **Billing Tab** (`gui/billing_tab.py`): Manual time entry + invoice draft generation. Uses SQLite tables for clients/time entries/templates/drafts. Drafts are generated from a user-defined template and written to `data/artifacts/invoice_drafts/<draft_id>/…` for review/export. Monthly auto-draft runs happen in-app (while the app is open) and prompt the user to review drafts.
 - **Note-Taking System** (`gui/interface.py`): AI-powered note-taking with context setting, automatic formatting, dynamic categorization, and export capabilities. Uses local Llama model for processing with robust JSON response handling.
 - **Tasks Tab** (`gui/tasks_tab.py`): Local (SQLite-backed) task manager. Uses the same task store as the Dashboard + CoS task capture. Supports search, filters, quick add, completion toggling, and deletion.
+- **Chief of Staff Tab** (`gui/chief_of_staff_tab.py`, `core/chief_of_staff_service.py`): Planning and delegation workspace with CoS chat threads, assignment board controls, specialist-agent routing, automatic assignment handoff into assignee-owned threads, board-level `NEEDS_INPUT` visibility based on the latest agent reply, and assignment artifact uploads through agent consoles.
 - **Compliance Tab** (`interface.py`): Three-column UI for uploading SOPs/URLs, analyzing with Grok, and displaying JSON results (`[{section, issue, fix, reference}]`).
 - **Leads Tab** (`gui/leads_tab.py`): DB-backed lead generation with evidence-first web research, openFDA 510(k) enrichment, scoring/filters, and follow-up task creation (see `docs/lead_generation.md`).
 - **Email Fetching** (`core/fetch_all_emails.py`): Fetches Gmail, MSN/Outlook, IMAP emails; planned folder access for DistilBERT filtering.
@@ -29,8 +30,8 @@ See `docs/diagrams/architecture.png` for a visual representation.
 - **Error Handling**: Robust JSON parsing with fallback mechanisms for truncated responses
 
 ## API Integrations
-- **xAI Grok**: Compliance analysis, document generation; endpoints: `https://api.x.ai/grok` (`core/chat.py`).
-- **xAI Grok**: Lead generation; endpoints: `https://api.x.ai` (`interface.py`).
+- **xAI Grok**: Compliance analysis, document generation, dashboard/news search, and other shared app features use the centralized xAI SDK client in `core/grok_client.py`.
+- **xAI Grok default model**: `grok-4.20-multi-agent-beta-0309`, exposed through the shared model constants in `core/grok_client.py`.
 - **LinkedIn (Share, Sign In, Community Management)**: Posts content, authenticates users; endpoints: `https://api.linkedin.com/v2` (`interface.py`).
 - **AssemblyAI**: Meeting transcription; endpoints: `https://api.assemblyai.com` (`interface.py`).
 - **Task storage (SQLite)**: Tasks are persisted in `core/db.py` (`tasks` table) and surfaced in Dashboard + Tasks tab. The Chief of Staff can create tasks via `ADD_TASK`.

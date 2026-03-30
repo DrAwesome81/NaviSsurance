@@ -13,6 +13,7 @@ import hashlib
 
 # Load environment variables
 from config import CONFIG_DIR
+from core.workspace_templates import WorkspaceTemplateSpec, build_template_contract, validate_template_payload
 load_dotenv(os.path.join(CONFIG_DIR, ".env"))
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,14 @@ def _parse_round_result(text: str) -> dict:
       {"explanation": str, "markdown": str, "feedback": str, "is_complete": bool}
     Returns a dict with all keys present (safe defaults).
     """
-    base = {"explanation": "", "markdown": "", "feedback": "", "is_complete": False}
+    base = {
+        "explanation": "",
+        "markdown": "",
+        "feedback": "",
+        "is_complete": False,
+        "template_blocks": {},
+        "document_metadata": {},
+    }
     raw = (text or "").strip()
     if not raw:
         return base
@@ -56,6 +64,20 @@ def _parse_round_result(text: str) -> dict:
             out["markdown"] = str(obj.get("markdown") or "").strip()
             out["feedback"] = str(obj.get("feedback") or "").strip()
             out["is_complete"] = bool(obj.get("is_complete") is True)
+            blocks = obj.get("template_blocks")
+            if isinstance(blocks, dict):
+                out["template_blocks"] = {
+                    str(k): str(v or "").strip()
+                    for k, v in blocks.items()
+                    if str(k or "").strip()
+                }
+            metadata = obj.get("document_metadata")
+            if isinstance(metadata, dict):
+                out["document_metadata"] = {
+                    str(k): str(v or "").strip()
+                    for k, v in metadata.items()
+                    if str(k or "").strip()
+                }
             return out
     except Exception:
         pass
@@ -284,6 +306,52 @@ def format_reference_pack_summary(stats: dict | None) -> str:
     )
 
 
+def _merge_string_map(current: dict[str, str], incoming: dict | None) -> dict[str, str]:
+    if not isinstance(incoming, dict) or not incoming:
+        return current
+    return {
+        **current,
+        **{str(k): str(v or "").strip() for k, v in incoming.items()},
+    }
+
+
+def _build_template_validation_feedback(
+    task_spec: "WorkspaceTaskSpec",
+    *,
+    template_blocks: dict[str, str],
+    document_metadata: dict[str, str],
+) -> tuple[bool, list[str], str]:
+    template_spec = WorkspaceTemplateSpec.from_payload(task_spec.document_template)
+    if not template_spec:
+        return True, [], ""
+    validation = validate_template_payload(
+        template_spec,
+        template_blocks=template_blocks,
+        document_metadata=document_metadata,
+    )
+    issues = validation.issues()
+    if validation.is_valid:
+        return True, [], ""
+    feedback = (
+        "Structured template payload is still invalid. Revise template_blocks/document_metadata to satisfy "
+        "the template contract exactly.\n- "
+        + "\n- ".join(issues)
+    )
+    return False, issues, feedback
+
+
+def _combine_feedback(*parts: str | None) -> str:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        text = str(part or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        cleaned.append(text)
+    return "\n\n".join(cleaned)
+
+
 @dataclass
 class WorkspaceFile:
     """
@@ -310,6 +378,7 @@ class WorkspaceTaskSpec:
     max_rounds: int = 3              # how many Grok <-> ChatGPT cycles to allow
     style: Optional[str] = None      # e.g., "regulatory", "clinical", "marketing"
     audience: Optional[str] = None   # e.g., "FDA reviewer", "internal team"
+    document_template: Dict[str, Any] | None = None
 
 
 class DualLLMOrchestrator:
@@ -386,6 +455,8 @@ class DualLLMOrchestrator:
         max_rounds = task_spec.max_rounds or 3
         collaboration_history = []
         current_markdown = ""
+        current_template_blocks: dict[str, str] = {}
+        current_document_metadata: dict[str, str] = {}
         chatgpt_feedback = None
         round_num = 0
         grok_output = ""
@@ -401,11 +472,20 @@ class DualLLMOrchestrator:
             grok_markdown = grok_result.get("markdown", current_markdown)
             grok_feedback = grok_result.get("feedback", "")
             grok_is_complete = grok_result.get("is_complete", False)
+            grok_template_blocks = grok_result.get("template_blocks") or {}
+            grok_document_metadata = grok_result.get("document_metadata") or {}
             
             # Use Grok's markdown if provided, otherwise keep current
             if grok_markdown and grok_markdown != current_markdown:
                 current_markdown = grok_markdown
                 self.logger(f"DualLLMOrchestrator: Grok updated markdown in round {round_num}")
+            current_template_blocks = _merge_string_map(current_template_blocks, grok_template_blocks)
+            current_document_metadata = _merge_string_map(current_document_metadata, grok_document_metadata)
+            grok_template_valid, grok_template_issues, grok_template_feedback = _build_template_validation_feedback(
+                task_spec,
+                template_blocks=current_template_blocks,
+                document_metadata=current_document_metadata,
+            )
             
             # Check if Grok indicates completion
             if grok_is_complete:
@@ -415,21 +495,33 @@ class DualLLMOrchestrator:
                 chatgpt_output = chatgpt_result.get("explanation", "")
                 chatgpt_markdown = chatgpt_result.get("markdown", current_markdown)
                 chatgpt_is_complete = chatgpt_result.get("is_complete", False)
+                chatgpt_template_blocks = chatgpt_result.get("template_blocks") or {}
+                chatgpt_document_metadata = chatgpt_result.get("document_metadata") or {}
                 
                 # Use ChatGPT's markdown if provided
                 if chatgpt_markdown and chatgpt_markdown != current_markdown:
                     current_markdown = chatgpt_markdown
                     self.logger(f"DualLLMOrchestrator: ChatGPT updated markdown in round {round_num}")
+                current_template_blocks = _merge_string_map(current_template_blocks, chatgpt_template_blocks)
+                current_document_metadata = _merge_string_map(current_document_metadata, chatgpt_document_metadata)
+                chatgpt_template_valid, chatgpt_template_issues, chatgpt_template_feedback = _build_template_validation_feedback(
+                    task_spec,
+                    template_blocks=current_template_blocks,
+                    document_metadata=current_document_metadata,
+                )
                 
                 # If both agree, we're done
-                if chatgpt_is_complete or not chatgpt_result.get("feedback"):
+                if (chatgpt_is_complete or not chatgpt_result.get("feedback")) and chatgpt_template_valid:
                     round_data = {
                         "round": round_num,
                         "grok_output": grok_output,
                         "chatgpt_output": chatgpt_output,
                         "markdown": current_markdown,
                         "feedback": chatgpt_result.get("feedback", ""),
-                        "is_complete": True
+                        "is_complete": True,
+                        "template_blocks": current_template_blocks,
+                        "document_metadata": current_document_metadata,
+                        "template_validation_issues": [],
                     }
                     collaboration_history.append(round_data)
                     if self._progress_callback:
@@ -443,8 +535,37 @@ class DualLLMOrchestrator:
                         "markdown": current_markdown,
                         "collaboration_history": collaboration_history,
                         "rounds": round_num,
-                        "status": "completed"
+                        "status": "completed",
+                        "template_blocks": current_template_blocks,
+                        "document_metadata": current_document_metadata,
                     }
+                chatgpt_feedback = _combine_feedback(chatgpt_result.get("feedback"), chatgpt_template_feedback)
+                round_data = {
+                    "round": round_num,
+                    "grok_output": grok_output,
+                    "chatgpt_output": chatgpt_output,
+                    "markdown": current_markdown,
+                    "feedback": chatgpt_feedback,
+                    "is_complete": False,
+                    "template_blocks": current_template_blocks,
+                    "document_metadata": current_document_metadata,
+                    "template_validation_issues": chatgpt_template_issues,
+                    "reference_pack_stats": (
+                        chatgpt_result.get("reference_pack_stats")
+                        or grok_result.get("reference_pack_stats")
+                        or {}
+                    ),
+                }
+                collaboration_history.append(round_data)
+                if self._progress_callback:
+                    try:
+                        self._progress_callback(round_data)
+                    except Exception as e:
+                        self.logger(f"Error in progress callback: {e}")
+                self.logger(
+                    f"DualLLMOrchestrator: Grok completion round {round_num} still needs another iteration"
+                )
+                continue
             
             # 2) ChatGPT reviews and edits markdown
             chatgpt_result = self._call_chatgpt(task_spec, grok_result, file_contents, round_num)
@@ -452,11 +573,21 @@ class DualLLMOrchestrator:
             chatgpt_markdown = chatgpt_result.get("markdown", current_markdown)
             chatgpt_feedback = chatgpt_result.get("feedback", "")
             chatgpt_is_complete = chatgpt_result.get("is_complete", False)
+            chatgpt_template_blocks = chatgpt_result.get("template_blocks") or {}
+            chatgpt_document_metadata = chatgpt_result.get("document_metadata") or {}
             
             # Use ChatGPT's markdown if provided (this is the key change - ChatGPT can now edit)
             if chatgpt_markdown and chatgpt_markdown != current_markdown:
                 current_markdown = chatgpt_markdown
                 self.logger(f"DualLLMOrchestrator: ChatGPT updated markdown in round {round_num}")
+            current_template_blocks = _merge_string_map(current_template_blocks, chatgpt_template_blocks)
+            current_document_metadata = _merge_string_map(current_document_metadata, chatgpt_document_metadata)
+            chatgpt_template_valid, chatgpt_template_issues, chatgpt_template_feedback = _build_template_validation_feedback(
+                task_spec,
+                template_blocks=current_template_blocks,
+                document_metadata=current_document_metadata,
+            )
+            combined_feedback = _combine_feedback(chatgpt_feedback, grok_feedback, grok_template_feedback, chatgpt_template_feedback)
             
             # Store this round's collaboration
             round_data = {
@@ -464,8 +595,11 @@ class DualLLMOrchestrator:
                 "grok_output": grok_output,
                 "chatgpt_output": chatgpt_output,
                 "markdown": current_markdown,
-                "feedback": chatgpt_feedback or grok_feedback,  # Use feedback from either model
-                "is_complete": chatgpt_is_complete or grok_is_complete,  # Complete if either agrees
+                "feedback": combined_feedback,
+                "is_complete": (chatgpt_is_complete or grok_is_complete) and chatgpt_template_valid,
+                "template_blocks": current_template_blocks,
+                "document_metadata": current_document_metadata,
+                "template_validation_issues": chatgpt_template_issues,
                 "reference_pack_stats": (
                     chatgpt_result.get("reference_pack_stats")
                     or grok_result.get("reference_pack_stats")
@@ -482,7 +616,7 @@ class DualLLMOrchestrator:
                     self.logger(f"Error in progress callback: {e}")
             
             # 3) Check if ChatGPT indicates completion
-            if chatgpt_is_complete:
+            if chatgpt_is_complete and chatgpt_template_valid:
                 self.logger(f"DualLLMOrchestrator: ChatGPT indicated completion at round {round_num}")
                 # Let Grok have one more chance to review ChatGPT's version
                 if round_num < max_rounds:
@@ -496,9 +630,22 @@ class DualLLMOrchestrator:
                     # Use Grok's final markdown if provided
                     if grok_review_markdown and grok_review_markdown != current_markdown:
                         current_markdown = grok_review_markdown
+                    current_template_blocks = _merge_string_map(
+                        current_template_blocks,
+                        grok_review_result.get("template_blocks") or {},
+                    )
+                    current_document_metadata = _merge_string_map(
+                        current_document_metadata,
+                        grok_review_result.get("document_metadata") or {},
+                    )
+                    grok_review_template_valid, grok_review_template_issues, grok_review_template_feedback = _build_template_validation_feedback(
+                        task_spec,
+                        template_blocks=current_template_blocks,
+                        document_metadata=current_document_metadata,
+                    )
                     
                     # If Grok also agrees, we're done
-                    if grok_review_complete or not grok_review_result.get("feedback"):
+                    if (grok_review_complete or not grok_review_result.get("feedback")) and grok_review_template_valid:
                         final_round_data = {
                             "round": round_num,
                             "grok_output": grok_review_output,
@@ -506,6 +653,9 @@ class DualLLMOrchestrator:
                             "markdown": current_markdown,
                             "feedback": "",
                             "is_complete": True,
+                            "template_blocks": current_template_blocks,
+                            "document_metadata": current_document_metadata,
+                            "template_validation_issues": [],
                             "reference_pack_stats": grok_review_result.get("reference_pack_stats") or {},
                         }
                         collaboration_history.append(final_round_data)
@@ -520,17 +670,21 @@ class DualLLMOrchestrator:
                             "markdown": current_markdown,
                             "collaboration_history": collaboration_history,
                             "rounds": round_num,
-                            "status": "completed"
+                            "status": "completed",
+                            "template_blocks": current_template_blocks,
+                            "document_metadata": current_document_metadata,
                         }
                     else:
                         # Grok wants more changes, continue
-                        chatgpt_feedback = grok_review_result.get("feedback", "")
+                        chatgpt_feedback = _combine_feedback(
+                            grok_review_result.get("feedback", ""),
+                            grok_review_template_feedback,
+                        )
                         current_markdown = grok_review_markdown if grok_review_markdown else current_markdown
                         continue
             
             # If not complete and we have feedback, continue to next round
             # grok_feedback is already defined earlier in the round
-            combined_feedback = chatgpt_feedback or grok_feedback
             if combined_feedback:
                 self.logger(f"DualLLMOrchestrator: Round {round_num} feedback received, continuing collaboration")
                 chatgpt_feedback = combined_feedback  # Pass combined feedback to next round
@@ -544,7 +698,9 @@ class DualLLMOrchestrator:
                     "markdown": current_markdown,
                     "collaboration_history": collaboration_history,
                     "rounds": round_num,
-                    "status": "completed"
+                    "status": "completed",
+                    "template_blocks": current_template_blocks,
+                    "document_metadata": current_document_metadata,
                 }
         
         # Max rounds reached
@@ -555,7 +711,9 @@ class DualLLMOrchestrator:
             "markdown": current_markdown,
             "collaboration_history": collaboration_history,
             "rounds": round_num,
-            "status": "max_rounds_reached"
+            "status": "max_rounds_reached",
+            "template_blocks": current_template_blocks,
+            "document_metadata": current_document_metadata,
         }
 
     # ------------------------------------------------------------------
@@ -679,7 +837,7 @@ def call_grok_api(task_spec: WorkspaceTaskSpec, file_contents: Dict[str, str],
         Dict with "explanation" and "markdown" keys
     """
     try:
-        from core.grok_client import grok_completion
+        from core.grok_client import MODEL_CHAT, grok_completion
 
         # Get current date for context
         current_date = datetime.now().strftime("%B %d, %Y")
@@ -700,6 +858,8 @@ def call_grok_api(task_spec: WorkspaceTaskSpec, file_contents: Dict[str, str],
         ref_pack_text, ref_pack_stats = ref_pack
         has_files = bool(task_spec.files)
         has_files_content = bool(ref_pack_text and "### File:" in ref_pack_text)
+        template_spec = WorkspaceTemplateSpec.from_payload(task_spec.document_template)
+        template_contract = build_template_contract(template_spec) if template_spec else ""
         
         # Warn if files were expected but none were found
         if task_spec.files and not has_files_content:
@@ -713,6 +873,12 @@ CRITICAL:
 - markdown must be a finished standalone document (no conversational text, no questions, no placeholders).
 - If the document is ready, set is_complete=true and feedback="".
 - If revisions are needed, set is_complete=false and put specific, actionable instructions in feedback.
+"""
+        if template_spec:
+            system_message += """
+- Include template_blocks as an object whose keys exactly match the requested template block keys.
+- Include document_metadata as an object with the requested metadata keys.
+- template_blocks values must be plain strings and must not contain unresolved placeholders.
 """
 
         user_message = f"""Goal: {task_spec.goal}
@@ -729,17 +895,22 @@ Current Markdown (may be empty on round 1):
 Reviewer Feedback (if any):
 {feedback or ""}
 
+Template Contract (if any):
+{template_contract or "(no template selected)"}
+
 Return STRICT JSON only with:
 {{
   "explanation": "...",
   "markdown": "# ... finished markdown ...",
   "feedback": "",
-  "is_complete": true
+  "is_complete": true{',' if template_spec else ''}
+{"  \"template_blocks\": {\"value::example\": \"...\"}," if template_spec else ""}
+{"  \"document_metadata\": {\"document_title\": \"...\", \"subtitle\": \"\", \"document_id\": \"DRAFT\", \"version\": \"0.1\", \"effective_date\": \"2026-03-19\", \"prepared_by\": \"NaviSsurance\"}" if template_spec else ""}
 }}
 """
 
         logger.debug("Grok API request via xAI SDK (grok_completion)")
-        raw = grok_completion(system_message, user_message, model="grok-4-1-fast-reasoning-latest")
+        raw = grok_completion(system_message, user_message, model=MODEL_CHAT)
         parsed = _parse_round_result(raw)
         if not parsed.get("markdown") and previous_markdown:
             parsed["markdown"] = previous_markdown
@@ -784,6 +955,8 @@ def call_chatgpt_api(task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str],
         
         grok_markdown = grok_result.get("markdown", "")
         grok_explanation = grok_result.get("explanation", "")
+        template_spec = WorkspaceTemplateSpec.from_payload(task_spec.document_template)
+        template_contract = build_template_contract(template_spec) if template_spec else ""
         
         ref_pack_text, ref_pack_stats = build_reference_pack(
             task_spec=task_spec,
@@ -807,6 +980,12 @@ CRITICAL:
 - If the document is ready, set is_complete=true and feedback="".
 - If revisions are needed, set is_complete=false and put specific, actionable instructions in feedback.
 """
+        if template_spec:
+            system_message += """
+- Include template_blocks as an object whose keys exactly match the requested template block keys.
+- Include document_metadata as an object with the requested metadata keys.
+- Keep template_blocks aligned with the reviewed markdown.
+"""
         
         # Get current date for context
         current_date = datetime.now().strftime("%B %d, %Y")
@@ -825,12 +1004,17 @@ Reference Pack:
 Draft Markdown Document:
 {grok_markdown}
 
+Template Contract (if any):
+{template_contract or "(no template selected)"}
+
 Return STRICT JSON only with:
 {{
   "explanation": "...",
   "markdown": "# ... finished markdown ...",
   "feedback": "",
-  "is_complete": true
+  "is_complete": true{',' if template_spec else ''}
+{"  \"template_blocks\": {\"value::example\": \"...\"}," if template_spec else ""}
+{"  \"document_metadata\": {\"document_title\": \"...\", \"subtitle\": \"\", \"document_id\": \"DRAFT\", \"version\": \"0.1\", \"effective_date\": \"2026-03-19\", \"prepared_by\": \"NaviSsurance\"}" if template_spec else ""}
 }}
 """
         
@@ -949,9 +1133,11 @@ def call_grok_review(task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str],
     Fallback: Use Grok for review if OpenAI not available. Uses xAI SDK.
     """
     try:
-        from core.grok_client import grok_completion
+        from core.grok_client import MODEL_CHAT, grok_completion
 
         grok_markdown = grok_result.get("markdown", "")
+        template_spec = WorkspaceTemplateSpec.from_payload(task_spec.document_template)
+        template_contract = build_template_contract(template_spec) if template_spec else ""
 
         ref_pack_text, ref_pack_stats = build_reference_pack(
             task_spec=task_spec,
@@ -973,6 +1159,11 @@ CRITICAL:
 - The JSON must have keys: explanation (string), markdown (string), feedback (string), is_complete (boolean).
 - markdown must be a finished standalone document (no conversational text, no questions, no placeholders).
 """
+        if template_spec:
+            system_message += """
+- Include template_blocks as an object whose keys exactly match the requested template block keys.
+- Include document_metadata as an object with the requested metadata keys.
+"""
 
         # Get current date for context
         current_date = datetime.now().strftime("%B %d, %Y")
@@ -986,6 +1177,9 @@ Reference Pack:
 Draft Markdown Document:
 {grok_markdown}
 
+Template Contract (if any):
+{template_contract or "(no template selected)"}
+
 Please review and refine this document. Make improvements for clarity, structure, and completeness. If original source files are provided above, verify the draft against them for accuracy. Remember: The current date is {current_date}. Use this as a reference for any time-sensitive information.
 
 Return STRICT JSON only with:
@@ -993,11 +1187,13 @@ Return STRICT JSON only with:
   "explanation": "...",
   "markdown": "# ... finished markdown ...",
   "feedback": "",
-  "is_complete": true
+  "is_complete": true{',' if template_spec else ''}
+{"  \"template_blocks\": {\"value::example\": \"...\"}," if template_spec else ""}
+{"  \"document_metadata\": {\"document_title\": \"...\", \"subtitle\": \"\", \"document_id\": \"DRAFT\", \"version\": \"0.1\", \"effective_date\": \"2026-03-19\", \"prepared_by\": \"NaviSsurance\"}" if template_spec else ""}
 }}
 """
 
-        raw = grok_completion(system_message, user_message, model="grok-4-1-fast-reasoning-latest")
+        raw = grok_completion(system_message, user_message, model=MODEL_CHAT)
         parsed = _parse_round_result(raw)
         if not parsed.get("markdown"):
             parsed["markdown"] = grok_markdown

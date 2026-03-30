@@ -8,15 +8,21 @@ import os
 # Import centralized database path and artifact store
 from config import DATABASE_PATH, ARTIFACTS_DIR
 
+_UNSET = object()
+
 class DatabaseManager:
     def __init__(self, db_name: str | None = None):
         self.db_name = str(db_name or DATABASE_PATH)
-        self.current_schema_version = 18  # Increment this when making schema changes
+        self.current_schema_version = 20  # Increment this when making schema changes
         self.setup_db()
         self.create_indexes()
         # Additive tables for newer features (safe for legacy DBs)
         try:
             self.init_workspace_collab_tables()
+        except Exception:
+            pass
+        try:
+            self.init_workspace_state_tables()
         except Exception:
             pass
         try:
@@ -647,6 +653,137 @@ class DatabaseManager:
         }
         self.set_setting("email_rules_json", json.dumps(payload, ensure_ascii=False))
 
+    def list_important_emails(
+        self,
+        *,
+        limit: int = 50,
+        days: int = 30,
+        include_triaged: bool = False,
+    ) -> list[dict]:
+        """Return important emails for dashboard triage."""
+        from datetime import timedelta
+
+        cutoff = int((datetime.now(UTC) - timedelta(days=int(days))).timestamp())
+        where = ["e.timestamp >= ?"]
+        params: list[object] = [cutoff]
+        if not include_triaged:
+            where.append("COALESCE(e.needs_attention, 0) = 1")
+            where.append("COALESCE(e.triage_status, 'new') IN ('new', 'important')")
+        query = f"""
+            SELECT
+                e.id,
+                e.sender,
+                e.subject,
+                e.timestamp,
+                e.content,
+                e.replied,
+                e.is_client,
+                e.is_potential,
+                e.source,
+                e.folder,
+                e.account,
+                e.triage_status,
+                e.importance_score,
+                e.needs_attention,
+                e.importance_reason_json,
+                e.triaged_at,
+                e.triage_source,
+                e.client_id,
+                e.cos_project_id,
+                c.name AS client_name,
+                p.name AS project_name
+            FROM emails e
+            LEFT JOIN clients c ON c.id = e.client_id
+            LEFT JOIN cos_projects p ON p.id = e.cos_project_id
+            WHERE {' AND '.join(where)}
+            ORDER BY COALESCE(e.importance_score, 0) DESC, e.timestamp DESC
+            LIMIT ?
+        """
+        params.append(int(limit))
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+        for row in rows:
+            raw_reasons = row.get("importance_reason_json")
+            try:
+                row["importance_reasons"] = json.loads(raw_reasons) if raw_reasons else []
+            except Exception:
+                row["importance_reasons"] = []
+        return rows
+
+    def update_email_triage(
+        self,
+        email_id: str,
+        *,
+        triage_status=_UNSET,
+        importance_score=_UNSET,
+        needs_attention=_UNSET,
+        importance_reason_json=_UNSET,
+        triage_source=_UNSET,
+        client_id=_UNSET,
+        cos_project_id=_UNSET,
+    ) -> bool:
+        updates = []
+        values: list[object] = []
+
+        if triage_status is not _UNSET:
+            status_value = str(triage_status or "new").strip() or "new"
+            updates.append("triage_status = ?")
+            values.append(status_value)
+            updates.append("triaged_at = ?")
+            values.append(datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+            if needs_attention is _UNSET:
+                if status_value in {"archived", "unimportant", "junk"}:
+                    needs_attention = 0
+                elif status_value == "important":
+                    needs_attention = 1
+
+        if importance_score is not _UNSET:
+            updates.append("importance_score = ?")
+            values.append(int(importance_score or 0))
+        if needs_attention is not _UNSET:
+            updates.append("needs_attention = ?")
+            values.append(int(bool(needs_attention)))
+        if importance_reason_json is not _UNSET:
+            payload = importance_reason_json
+            if isinstance(payload, (list, dict)):
+                payload = json.dumps(payload, ensure_ascii=False)
+            payload = str(payload or "[]")
+            updates.append("importance_reason_json = ?")
+            values.append(payload)
+        if triage_source is not _UNSET:
+            updates.append("triage_source = ?")
+            values.append(str(triage_source) if triage_source else None)
+        if client_id is not _UNSET:
+            updates.append("client_id = ?")
+            values.append(int(client_id) if client_id is not None else None)
+        if cos_project_id is not _UNSET:
+            updates.append("cos_project_id = ?")
+            values.append(int(cos_project_id) if cos_project_id is not None else None)
+
+        if not updates:
+            return False
+
+        values.append(str(email_id))
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(f"UPDATE emails SET {', '.join(updates)} WHERE id = ?", values)
+            conn.commit()
+        return True
+
+    def link_email_to_client(self, email_id: str, client_id: int | None) -> None:
+        self.update_email_triage(
+            email_id,
+            client_id=client_id,
+            triage_source="manual",
+        )
+
+    def link_email_to_project(self, email_id: str, cos_project_id: int | None) -> None:
+        self.update_email_triage(
+            email_id,
+            cos_project_id=cos_project_id,
+            triage_source="manual",
+        )
+
     def list_unreplied_emails(
         self,
         *,
@@ -787,6 +924,7 @@ class DatabaseManager:
             # Chief of Staff tables
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_projects_status ON cos_projects(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_projects_client ON cos_projects(client)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_projects_client_id ON cos_projects(client_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_weekly_plans_week_start ON cos_weekly_plans(week_start)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_daily_plans_date ON cos_daily_plans(date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_chats_updated_at ON cos_chats(updated_at)")
@@ -795,6 +933,7 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_source ON user_memory(source)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_created_at ON user_memory(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_confidence ON user_memory(confidence)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_approval_status ON user_memory(approval_status)")
 
             # Delegation / agent workflow tables
             conn.execute(
@@ -831,6 +970,10 @@ class DatabaseManager:
                 "CREATE INDEX IF NOT EXISTS idx_billing_clients_active "
                 "ON billing_clients(is_active, name)"
             )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_active ON clients(is_active, name)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_client_contacts_client_id ON client_contacts(client_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_client_contacts_email ON client_contacts(email)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_client_contacts_domain ON client_contacts(domain)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_time_entries_client_start "
                 "ON time_entries(client_id, start_ts)"
@@ -1324,10 +1467,30 @@ class DatabaseManager:
                     conn.execute("ALTER TABLE emails ADD COLUMN rfc822_references TEXT")
                 if "thread_id" not in cols:
                     conn.execute("ALTER TABLE emails ADD COLUMN thread_id TEXT")
+                if "triage_status" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN triage_status TEXT NOT NULL DEFAULT 'new'")
+                if "importance_score" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN importance_score INTEGER NOT NULL DEFAULT 0")
+                if "needs_attention" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN needs_attention INTEGER NOT NULL DEFAULT 0")
+                if "importance_reason_json" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN importance_reason_json TEXT NOT NULL DEFAULT '[]'")
+                if "triaged_at" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN triaged_at TEXT")
+                if "triage_source" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN triage_source TEXT")
+                if "client_id" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN client_id INTEGER")
+                if "cos_project_id" not in cols:
+                    conn.execute("ALTER TABLE emails ADD COLUMN cos_project_id INTEGER")
                 # Helpful indexes (best-effort)
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_timestamp ON emails(timestamp)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_replied ON emails(replied)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_rfc822_message_id ON emails(rfc822_message_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_triage_status ON emails(triage_status)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_needs_attention ON emails(needs_attention)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_client_id ON emails(client_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_cos_project_id ON emails(cos_project_id)")
             except Exception:
                 pass
             conn.execute("""
@@ -1383,6 +1546,17 @@ class DatabaseManager:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_meeting_records_date ON meeting_records(meeting_date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_meeting_records_status ON meeting_records(status)")
+            try:
+                cursor = conn.execute("PRAGMA table_info(meeting_records)")
+                cols = {row[1] for row in cursor.fetchall()}
+                if "client_id" not in cols:
+                    conn.execute("ALTER TABLE meeting_records ADD COLUMN client_id INTEGER")
+                if "cos_project_id" not in cols:
+                    conn.execute("ALTER TABLE meeting_records ADD COLUMN cos_project_id INTEGER")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_meeting_records_client_id ON meeting_records(client_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_meeting_records_cos_project_id ON meeting_records(cos_project_id)")
+            except Exception:
+                pass
             conn.commit()
 
     def create_meeting_record(
@@ -1395,14 +1569,16 @@ class DatabaseManager:
         audio_file_path: str | None = None,
         transcription_provider: str | None = None,
         status: str = "pending",
+        client_id: int | None = None,
+        cos_project_id: int | None = None,
     ) -> int:
         with sqlite3.connect(self.db_name) as conn:
             cur = conn.execute(
                 """
                 INSERT INTO meeting_records
-                    (meeting_date, meeting_with, notes, source, audio_file_path, transcription_provider, status, created_at, updated_at)
+                    (meeting_date, meeting_with, notes, source, audio_file_path, transcription_provider, status, client_id, cos_project_id, created_at, updated_at)
                 VALUES
-                    (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 """,
                 (
                     str(meeting_date),
@@ -1412,6 +1588,8 @@ class DatabaseManager:
                     str(audio_file_path) if audio_file_path else None,
                     (transcription_provider or "").strip() or None,
                     (status or "pending").strip(),
+                    int(client_id) if client_id is not None else None,
+                    int(cos_project_id) if cos_project_id is not None else None,
                 ),
             )
             conn.commit()
@@ -1428,6 +1606,8 @@ class DatabaseManager:
         transcript_text: str | None = None,
         transcript_file_path: str | None = None,
         error_message: str | None = None,
+        client_id = _UNSET,
+        cos_project_id = _UNSET,
     ) -> None:
         fields = []
         params: list[object] = []
@@ -1452,6 +1632,12 @@ class DatabaseManager:
         if error_message is not None:
             fields.append("error_message = ?")
             params.append(str(error_message) if error_message else None)
+        if client_id is not _UNSET:
+            fields.append("client_id = ?")
+            params.append(int(client_id) if client_id is not None else None)
+        if cos_project_id is not _UNSET:
+            fields.append("cos_project_id = ?")
+            params.append(int(cos_project_id) if cos_project_id is not None else None)
         if not fields:
             return
         fields.append("updated_at = datetime('now')")
@@ -1544,6 +1730,27 @@ class DatabaseManager:
             )
             conn.commit()
 
+    def init_workspace_state_tables(self):
+        """
+        Persist named Workspace tab state separately from collaboration run history.
+        """
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workspace_saved_states (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    state_json TEXT NOT NULL DEFAULT '{}',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_workspace_saved_states_name ON workspace_saved_states(name)"
+            )
+            conn.commit()
+
     def workspace_collab_insert_run(
         self,
         *,
@@ -1586,6 +1793,92 @@ class DatabaseManager:
             )
             conn.commit()
             return int(cur.lastrowid)
+
+    def workspace_state_upsert(self, *, name: str, state: dict | None) -> int:
+        workspace_name = str(name or "").strip()
+        if not workspace_name:
+            raise ValueError("Workspace name is required")
+        payload = json.dumps(state or {}, ensure_ascii=False)
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                """
+                INSERT INTO workspace_saved_states (name, state_json, updated_at)
+                VALUES (?, ?, datetime('now'))
+                ON CONFLICT(name) DO UPDATE SET
+                    state_json=excluded.state_json,
+                    updated_at=excluded.updated_at
+                """,
+                (workspace_name, payload),
+            )
+            row = conn.execute(
+                "SELECT id FROM workspace_saved_states WHERE name = ?",
+                (workspace_name,),
+            ).fetchone()
+            conn.commit()
+            return int(row[0]) if row else 0
+
+    def workspace_state_list(self) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT id, name, created_at, updated_at
+                FROM workspace_saved_states
+                ORDER BY lower(name) ASC, id ASC
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def workspace_state_get(self, workspace_id: int) -> dict | None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM workspace_saved_states WHERE id = ?",
+                (int(workspace_id),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def workspace_state_get_by_name(self, name: str) -> dict | None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM workspace_saved_states WHERE name = ?",
+                (str(name or "").strip(),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def workspace_state_delete(self, workspace_id: int) -> None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                "DELETE FROM workspace_saved_states WHERE id = ?",
+                (int(workspace_id),),
+            )
+            conn.commit()
+
+    def workspace_state_set_last_used(self, workspace_id: int | None) -> None:
+        self.set_setting("workspace.last_used_id", "" if workspace_id is None else str(int(workspace_id)))
+
+    def workspace_state_get_last_used(self) -> dict | None:
+        raw = str(self.get_setting("workspace.last_used_id", "") or "").strip()
+        if not raw:
+            return None
+        try:
+            return self.workspace_state_get(int(raw))
+        except Exception:
+            return None
+
+    def workspace_session_save(self, state: dict | None) -> None:
+        self.set_setting("workspace.last_session_json", json.dumps(state or {}, ensure_ascii=False))
+
+    def workspace_session_load(self) -> dict:
+        raw = str(self.get_setting("workspace.last_session_json", "") or "").strip()
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
 
     def workspace_collab_list_runs(self, *, limit: int = 50) -> list[dict]:
         with sqlite3.connect(self.db_name) as conn:
@@ -2988,6 +3281,7 @@ class DatabaseManager:
                         content TEXT NOT NULL,
                         source TEXT NOT NULL DEFAULT 'unknown',
                         confidence REAL NOT NULL DEFAULT 1.0,
+                        approval_status TEXT NOT NULL DEFAULT 'approved',
                         json_data TEXT,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -3008,12 +3302,325 @@ class DatabaseManager:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_source ON user_memory(source)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_created_at ON user_memory(created_at)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_confidence ON user_memory(confidence)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_approval_status ON user_memory(approval_status)")
                 conn.commit()
                 print("    - user_memory tables created")
             except Exception as e:
                 print(f"    - Error creating global user memory tables: {e}")
 
+        # Version 18 to 19: approval state for global user memory.
+        if from_version < 19 and to_version >= 19:
+            print("  - Adding approval state to global user memory")
+            try:
+                cursor = conn.execute("PRAGMA table_info(user_memory)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if "approval_status" not in columns:
+                    conn.execute("ALTER TABLE user_memory ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'")
+                    print("    - Added 'approval_status' column to user_memory")
+                conn.execute(
+                    """
+                    UPDATE user_memory
+                    SET approval_status = CASE
+                        WHEN COALESCE(source, '') = 'auto_chat' AND COALESCE(approval_status, '') = 'approved' THEN 'pending'
+                        WHEN COALESCE(approval_status, '') = '' THEN 'approved'
+                        ELSE approval_status
+                    END
+                    """
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_approval_status ON user_memory(approval_status)")
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error adding approval state to user_memory: {e}")
+
+        # Version 19 to 20: important email triage + normalized clients.
+        if from_version < 20 and to_version >= 20:
+            print("  - Creating normalized client tables and important-email triage fields")
+            try:
+                table_names = {
+                    str(row[0])
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                }
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS clients (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL UNIQUE,
+                        aliases_json TEXT NOT NULL DEFAULT '[]',
+                        domain_rules_json TEXT NOT NULL DEFAULT '[]',
+                        notes TEXT,
+                        is_active INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS client_contacts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        client_id INTEGER NOT NULL,
+                        name TEXT,
+                        email TEXT,
+                        domain TEXT,
+                        role TEXT,
+                        notes TEXT,
+                        created_at TEXT,
+                        updated_at TEXT,
+                        FOREIGN KEY (client_id) REFERENCES clients(id)
+                    )
+                    """
+                )
+
+                if "emails" in table_names:
+                    cursor = conn.execute("PRAGMA table_info(emails)")
+                    email_columns = {col[1] for col in cursor.fetchall()}
+                    for col_name, col_type in [
+                        ("triage_status", "TEXT NOT NULL DEFAULT 'new'"),
+                        ("importance_score", "INTEGER NOT NULL DEFAULT 0"),
+                        ("needs_attention", "INTEGER NOT NULL DEFAULT 0"),
+                        ("importance_reason_json", "TEXT NOT NULL DEFAULT '[]'"),
+                        ("triaged_at", "TEXT"),
+                        ("triage_source", "TEXT"),
+                        ("client_id", "INTEGER"),
+                        ("cos_project_id", "INTEGER"),
+                    ]:
+                        if col_name not in email_columns:
+                            conn.execute(f"ALTER TABLE emails ADD COLUMN {col_name} {col_type}")
+                            print(f"    - Added '{col_name}' column to emails")
+
+                if "meeting_records" in table_names:
+                    cursor = conn.execute("PRAGMA table_info(meeting_records)")
+                    meeting_columns = {col[1] for col in cursor.fetchall()}
+                    for col_name in ("client_id", "cos_project_id"):
+                        if col_name not in meeting_columns:
+                            conn.execute(f"ALTER TABLE meeting_records ADD COLUMN {col_name} INTEGER")
+                            print(f"    - Added '{col_name}' column to meeting_records")
+
+                if "cos_projects" in table_names:
+                    cursor = conn.execute("PRAGMA table_info(cos_projects)")
+                    project_columns = {col[1] for col in cursor.fetchall()}
+                    if "client_id" not in project_columns:
+                        conn.execute("ALTER TABLE cos_projects ADD COLUMN client_id INTEGER")
+                        print("    - Added 'client_id' column to cos_projects")
+
+                now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                if "billing_clients" in table_names:
+                    billing_rows = conn.execute(
+                        "SELECT name, billing_email FROM billing_clients WHERE COALESCE(name, '') <> ''"
+                    ).fetchall()
+                    for client_name, billing_email in billing_rows:
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO clients (name, aliases_json, domain_rules_json, notes, is_active, created_at, updated_at)
+                            VALUES (?, '[]', '[]', '', 1, ?, ?)
+                            """,
+                            (str(client_name).strip(), now, now),
+                        )
+                        if billing_email:
+                            client_row = conn.execute(
+                                "SELECT id FROM clients WHERE name = ?",
+                                (str(client_name).strip(),),
+                            ).fetchone()
+                            if client_row:
+                                domain = ""
+                                try:
+                                    domain = str(billing_email).split("@", 1)[1].strip().lower()
+                                except Exception:
+                                    domain = ""
+                                conn.execute(
+                                    """
+                                    INSERT INTO client_contacts (client_id, name, email, domain, role, notes, created_at, updated_at)
+                                    SELECT ?, ?, ?, ?, '', '', ?, ?
+                                    WHERE NOT EXISTS (
+                                        SELECT 1 FROM client_contacts
+                                        WHERE client_id = ? AND LOWER(COALESCE(email, '')) = LOWER(?)
+                                    )
+                                    """,
+                                    (
+                                        int(client_row[0]),
+                                        str(client_name).strip(),
+                                        str(billing_email).strip(),
+                                        domain,
+                                        now,
+                                        now,
+                                        int(client_row[0]),
+                                        str(billing_email).strip(),
+                                    ),
+                                )
+
+                if "cos_projects" in table_names:
+                    project_rows = conn.execute(
+                        "SELECT id, client FROM cos_projects WHERE COALESCE(client, '') <> ''"
+                    ).fetchall()
+                    for project_id, client_name in project_rows:
+                        clean_name = str(client_name).strip()
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO clients (name, aliases_json, domain_rules_json, notes, is_active, created_at, updated_at)
+                            VALUES (?, '[]', '[]', '', 1, ?, ?)
+                            """,
+                            (clean_name, now, now),
+                        )
+                        client_row = conn.execute(
+                            "SELECT id FROM clients WHERE name = ?",
+                            (clean_name,),
+                        ).fetchone()
+                        if client_row:
+                            conn.execute(
+                                "UPDATE cos_projects SET client_id = COALESCE(client_id, ?) WHERE id = ?",
+                                (int(client_row[0]), int(project_id)),
+                            )
+
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_active ON clients(is_active, name)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_client_contacts_client_id ON client_contacts(client_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_client_contacts_email ON client_contacts(email)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_client_contacts_domain ON client_contacts(domain)")
+                if "emails" in table_names:
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_triage_status ON emails(triage_status)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_needs_attention ON emails(needs_attention)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_client_id ON emails(client_id)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_cos_project_id ON emails(cos_project_id)")
+                if "meeting_records" in table_names:
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_meeting_records_client_id ON meeting_records(client_id)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_meeting_records_cos_project_id ON meeting_records(cos_project_id)")
+                if "cos_projects" in table_names:
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_cos_projects_client_id ON cos_projects(client_id)")
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error creating important-email triage schema: {e}")
+
         print(f"Schema migration from version {from_version} to {to_version} completed.")
+
+    # -------------------------------------------------------------------------
+    # General dossier clients / contacts
+    # -------------------------------------------------------------------------
+
+    def client_create(
+        self,
+        *,
+        name: str,
+        aliases: list[str] | None = None,
+        domains: list[str] | None = None,
+        notes: str | None = None,
+        is_active: int = 1,
+    ) -> int:
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO clients (name, aliases_json, domain_rules_json, notes, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(name).strip(),
+                    json.dumps([str(v).strip() for v in (aliases or []) if str(v).strip()], ensure_ascii=False),
+                    json.dumps([str(v).strip().lower() for v in (domains or []) if str(v).strip()], ensure_ascii=False),
+                    str(notes or "").strip(),
+                    int(is_active),
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def clients_list(self, *, active_only: bool = True) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            query = "SELECT * FROM clients"
+            if active_only:
+                query += " WHERE is_active = 1"
+            query += " ORDER BY name"
+            rows = [dict(r) for r in conn.execute(query).fetchall()]
+        for row in rows:
+            for key in ("aliases_json", "domain_rules_json"):
+                try:
+                    row[key] = json.loads(row.get(key) or "[]")
+                except Exception:
+                    row[key] = []
+        return rows
+
+    def client_get(self, client_id: int) -> dict | None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM clients WHERE id = ?", (int(client_id),)).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        for key in ("aliases_json", "domain_rules_json"):
+            try:
+                data[key] = json.loads(data.get(key) or "[]")
+            except Exception:
+                data[key] = []
+        return data
+
+    def client_update(self, client_id: int, **kwargs) -> bool:
+        allowed = {"name", "aliases_json", "domain_rules_json", "notes", "is_active"}
+        updates = []
+        values = []
+        for k, v in kwargs.items():
+            if k not in allowed:
+                continue
+            if k in {"aliases_json", "domain_rules_json"} and isinstance(v, (list, dict)):
+                v = json.dumps(v, ensure_ascii=False)
+            updates.append(f"{k} = ?")
+            values.append(v)
+        if not updates:
+            return False
+        updates.append("updated_at = ?")
+        values.append(datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        values.append(int(client_id))
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(f"UPDATE clients SET {', '.join(updates)} WHERE id = ?", values)
+            conn.commit()
+        return True
+
+    def client_contact_create(
+        self,
+        *,
+        client_id: int,
+        name: str | None = None,
+        email: str | None = None,
+        domain: str | None = None,
+        role: str | None = None,
+        notes: str | None = None,
+    ) -> int:
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        email_value = str(email).strip() if email else None
+        domain_value = str(domain).strip().lower() if domain else None
+        if not domain_value and email_value and "@" in email_value:
+            domain_value = email_value.split("@", 1)[1].strip().lower()
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO client_contacts (client_id, name, email, domain, role, notes, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(client_id),
+                    str(name or "").strip() or None,
+                    email_value,
+                    domain_value,
+                    str(role or "").strip() or None,
+                    str(notes or "").strip() or None,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def client_contacts_list(self, *, client_id: int | None = None) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            if client_id is None:
+                rows = conn.execute("SELECT * FROM client_contacts ORDER BY client_id, name, email").fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM client_contacts WHERE client_id = ? ORDER BY name, email",
+                    (int(client_id),),
+                ).fetchall()
+            return [dict(r) for r in rows]
 
     # -------------------------------------------------------------------------
     # Billing methods (clients, time entries, templates, invoice drafts)
@@ -3899,14 +4506,14 @@ class DatabaseManager:
     def cos_insert_project(self, name: str, client: str = None, description: str = None,
                            status: str = "Active", priority: int = None, deadline: str = None,
                            next_action: str = None, blockers: str = None, tags: str = None,
-                           notes: str = None) -> int:
+                           notes: str = None, client_id: int | None = None) -> int:
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with sqlite3.connect(self.db_name) as conn:
             cursor = conn.execute(
                 """INSERT INTO cos_projects
-                   (name, client, description, status, priority, deadline, next_action, blockers, tags, last_touched, created_at, updated_at, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (name, client or "", description or "", status, priority, deadline, next_action or "", blockers or "", tags or "", now, now, now, notes or "")
+                   (name, client, description, status, priority, deadline, next_action, blockers, tags, last_touched, created_at, updated_at, notes, client_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (name, client or "", description or "", status, priority, deadline, next_action or "", blockers or "", tags or "", now, now, now, notes or "", int(client_id) if client_id is not None else None)
             )
             conn.commit()
             return cursor.lastrowid
@@ -3916,7 +4523,7 @@ class DatabaseManager:
                    "next_action", "blockers", "blockers_json", "tags", "last_touched",
                    "notes", "priority_tier",
                    "suggested_next_action", "suggested_blockers_json", "suggested_priority_tier", "suggested_why", "suggested_at",
-                   "accepted_at")
+                   "accepted_at", "client_id")
         updates = []
         values = []
         for k, v in kwargs.items():
@@ -3943,19 +4550,19 @@ class DatabaseManager:
                           next_action, blockers, tags, last_touched, created_at, updated_at,
                           notes, blockers_json, priority_tier,
                           suggested_next_action, suggested_blockers_json, suggested_priority_tier, suggested_why, suggested_at,
-                          accepted_at
+                          accepted_at, client_id
                    FROM cos_projects WHERE id = ?""",
                 (project_id,)
             )
             return cursor.fetchone()
 
-    def cos_get_projects(self, status: str = None, client: str = None):
+    def cos_get_projects(self, status: str = None, client: str = None, client_id: int | None = None):
         with sqlite3.connect(self.db_name) as conn:
             query = """SELECT id, name, client, description, status, priority, deadline,
                           next_action, blockers, tags, last_touched, created_at, updated_at,
                           notes, blockers_json, priority_tier,
                           suggested_next_action, suggested_blockers_json, suggested_priority_tier, suggested_why, suggested_at,
-                          accepted_at
+                          accepted_at, client_id
                    FROM cos_projects WHERE 1=1"""
             params = []
             if status:
@@ -3964,6 +4571,9 @@ class DatabaseManager:
             if client:
                 query += " AND client = ?"
                 params.append(client)
+            if client_id is not None:
+                query += " AND client_id = ?"
+                params.append(int(client_id))
             query += " ORDER BY last_touched DESC, created_at DESC"
             cursor = conn.execute(query, params)
             return cursor.fetchall()
@@ -4330,6 +4940,7 @@ class DatabaseManager:
         content: str,
         source: str = "unknown",
         confidence: float = 1.0,
+        approval_status: str = "approved",
         json_data: str | dict | list | None = None,
     ) -> int:
         """Insert one durable user-memory item and index it in FTS."""
@@ -4342,14 +4953,15 @@ class DatabaseManager:
         with sqlite3.connect(self.db_name) as conn:
             cur = conn.execute(
                 """
-                INSERT INTO user_memory (kind, content, source, confidence, json_data, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                INSERT INTO user_memory (kind, content, source, confidence, approval_status, json_data, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 """,
                 (
                     str(kind or "note").strip() or "note",
                     text,
                     str(source or "unknown").strip() or "unknown",
                     float(confidence),
+                    str(approval_status or "approved").strip() or "approved",
                     payload,
                 ),
             )
@@ -4384,6 +4996,7 @@ class DatabaseManager:
                     content=(it.get("content") or ""),
                     source=(it.get("source") or "unknown"),
                     confidence=float(it.get("confidence", 1.0)),
+                    approval_status=(it.get("approval_status") or "approved"),
                     json_data=it.get("json_data"),
                 )
                 added += 1
@@ -4391,37 +5004,55 @@ class DatabaseManager:
                 continue
         return added
 
-    def user_memory_recent(self, *, kind: str | None = None, limit: int = 20) -> list[tuple]:
+    def user_memory_recent(
+        self,
+        *,
+        kind: str | None = None,
+        approval_status: str | None = None,
+        limit: int = 20,
+    ) -> list[tuple]:
         """
         Return recent user_memory rows:
-        (id, kind, content, source, confidence, json_data, created_at, updated_at)
+        (id, kind, content, source, confidence, approval_status, json_data, created_at, updated_at)
         """
         with sqlite3.connect(self.db_name) as conn:
-            if kind is None:
+            if kind is None and approval_status is None:
                 return conn.execute(
                     """
-                    SELECT id, kind, content, source, confidence, json_data, created_at, updated_at
+                    SELECT id, kind, content, source, confidence, approval_status, json_data, created_at, updated_at
                     FROM user_memory
                     ORDER BY created_at DESC, id DESC
                     LIMIT ?
                     """,
                     (int(limit),),
                 ).fetchall()
-            return conn.execute(
-                """
-                SELECT id, kind, content, source, confidence, json_data, created_at, updated_at
+            base = """
+                SELECT id, kind, content, source, confidence, approval_status, json_data, created_at, updated_at
                 FROM user_memory
-                WHERE kind = ?
-                ORDER BY created_at DESC, id DESC
-                LIMIT ?
-                """,
-                (str(kind), int(limit)),
-            ).fetchall()
+                WHERE 1=1
+            """
+            params: list[object] = []
+            if kind is not None:
+                base += " AND kind = ?"
+                params.append(str(kind))
+            if approval_status is not None:
+                base += " AND approval_status = ?"
+                params.append(str(approval_status))
+            base += " ORDER BY created_at DESC, id DESC LIMIT ?"
+            params.append(int(limit))
+            return conn.execute(base, params).fetchall()
 
-    def user_memory_search(self, *, query: str, kind: str | None = None, limit: int = 10) -> list[tuple]:
+    def user_memory_search(
+        self,
+        *,
+        query: str,
+        kind: str | None = None,
+        approval_status: str | None = None,
+        limit: int = 10,
+    ) -> list[tuple]:
         """
         Full-text search over user_memory_fts. Returns rows:
-        (id, kind, content, source, confidence, json_data, created_at, updated_at)
+        (id, kind, content, source, confidence, approval_status, json_data, created_at, updated_at)
         """
         q = (query or "").strip()
         if not q:
@@ -4434,10 +5065,13 @@ class DatabaseManager:
                 if kind is not None:
                     where += " AND kind = ?"
                     params.append(str(kind))
+                if approval_status is not None:
+                    where += " AND m.approval_status = ?"
+                    params.append(str(approval_status))
                 params.append(int(limit))
                 return conn.execute(
                     f"""
-                    SELECT m.id, m.kind, m.content, m.source, m.confidence, m.json_data, m.created_at, m.updated_at
+                    SELECT m.id, m.kind, m.content, m.source, m.confidence, m.approval_status, m.json_data, m.created_at, m.updated_at
                     FROM user_memory_fts f
                     JOIN user_memory m ON m.id = f.mem_id
                     WHERE {where}
@@ -4450,7 +5084,7 @@ class DatabaseManager:
             like = f"%{q}%"
             with sqlite3.connect(self.db_name) as conn:
                 base = """
-                    SELECT id, kind, content, source, confidence, json_data, created_at, updated_at
+                    SELECT id, kind, content, source, confidence, approval_status, json_data, created_at, updated_at
                     FROM user_memory
                     WHERE (content LIKE ? OR source LIKE ?)
                 """
@@ -4458,9 +5092,61 @@ class DatabaseManager:
                 if kind is not None:
                     base += " AND kind = ?"
                     params.append(str(kind))
+                if approval_status is not None:
+                    base += " AND approval_status = ?"
+                    params.append(str(approval_status))
                 base += " ORDER BY confidence DESC, created_at DESC, id DESC LIMIT ?"
                 params.append(int(limit))
                 return conn.execute(base, params).fetchall()
+
+    def user_memory_alias_recent(
+        self,
+        *,
+        approval_status: str | None = None,
+        limit: int = 20,
+    ) -> list[tuple]:
+        """Return recent alias user-memory rows."""
+        return self.user_memory_recent(kind="alias", approval_status=approval_status, limit=limit)
+
+    def user_memory_alias_search(
+        self,
+        *,
+        query: str,
+        approval_status: str | None = None,
+        limit: int = 10,
+    ) -> list[tuple]:
+        """Search alias memory rows, including structured json payloads when needed."""
+        q = str(query or "").strip()
+        if not q:
+            return []
+        rows = self.user_memory_search(query=q, kind="alias", approval_status=approval_status, limit=limit)
+        seen_ids = {int(row[0]) for row in rows}
+        if len(rows) >= int(limit):
+            return rows[: int(limit)]
+        like = f"%{q}%"
+        with sqlite3.connect(self.db_name) as conn:
+            base = """
+                SELECT id, kind, content, source, confidence, approval_status, json_data, created_at, updated_at
+                FROM user_memory
+                WHERE kind = 'alias'
+                  AND (content LIKE ? OR source LIKE ? OR COALESCE(json_data, '') LIKE ?)
+            """
+            params: list[object] = [like, like, like]
+            if approval_status is not None:
+                base += " AND approval_status = ?"
+                params.append(str(approval_status))
+            base += " ORDER BY confidence DESC, created_at DESC, id DESC LIMIT ?"
+            params.append(int(limit))
+            extra = conn.execute(base, params).fetchall()
+        for row in extra:
+            row_id = int(row[0])
+            if row_id in seen_ids:
+                continue
+            seen_ids.add(row_id)
+            rows.append(row)
+            if len(rows) >= int(limit):
+                break
+        return rows
 
     def user_memory_delete(self, memory_id: int) -> bool:
         """Delete one durable user-memory row and its FTS entry."""
@@ -4481,6 +5167,7 @@ class DatabaseManager:
         content: str,
         source: str,
         confidence: float,
+        approval_status: str,
         json_data: str | dict | list | None = None,
     ) -> bool:
         """Update one durable user-memory row and refresh its FTS entry."""
@@ -4496,10 +5183,18 @@ class DatabaseManager:
             cur = conn.execute(
                 """
                 UPDATE user_memory
-                SET kind = ?, content = ?, source = ?, confidence = ?, json_data = ?, updated_at = datetime('now')
+                SET kind = ?, content = ?, source = ?, confidence = ?, approval_status = ?, json_data = ?, updated_at = datetime('now')
                 WHERE id = ?
                 """,
-                (kind_s, text, source_s, float(confidence), payload, int(memory_id)),
+                (
+                    kind_s,
+                    text,
+                    source_s,
+                    float(confidence),
+                    str(approval_status or "approved").strip() or "approved",
+                    payload,
+                    int(memory_id),
+                ),
             )
             if int(cur.rowcount or 0) <= 0:
                 conn.commit()
@@ -4519,6 +5214,30 @@ class DatabaseManager:
                 pass
             conn.commit()
             return True
+
+    def user_memory_set_approval_status(self, memory_id: int, approval_status: str) -> bool:
+        """Set approval state for one durable user-memory row."""
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                "UPDATE user_memory SET approval_status = ?, updated_at = datetime('now') WHERE id = ?",
+                (str(approval_status or "approved").strip() or "approved", int(memory_id)),
+            )
+            conn.commit()
+            return int(cur.rowcount or 0) > 0
+
+    def user_memory_count(self, *, kind: str | None = None, approval_status: str | None = None) -> int:
+        """Count durable user-memory rows with optional filters."""
+        with sqlite3.connect(self.db_name) as conn:
+            base = "SELECT COUNT(*) FROM user_memory WHERE 1=1"
+            params: list[object] = []
+            if kind is not None:
+                base += " AND kind = ?"
+                params.append(str(kind))
+            if approval_status is not None:
+                base += " AND approval_status = ?"
+                params.append(str(approval_status))
+            row = conn.execute(base, params).fetchone()
+            return int(row[0] or 0) if row else 0
 
     # -------------------------------------------------------------------------
     # Agent directory + delegation workflow methods

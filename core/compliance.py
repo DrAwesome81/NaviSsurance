@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from core.file_handler import extract_text_from_file
-from core.grok_client import grok_available, grok_completion
+from core.grok_client import MODEL_CHAT, grok_available, grok_completion
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +181,7 @@ class ComplianceChecker:
                         "overview, key_alignments, improvements, recommendations."
                     ),
                     user=prompt,
-                    model="grok-4-1-fast-reasoning-latest",
+                    model=MODEL_CHAT,
                 )
                 if response and not _looks_like_worker_failure(response):
                     return response

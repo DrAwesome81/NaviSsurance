@@ -25,10 +25,13 @@ This document tracks implementation status and remaining roadmap work.
 - **Assignment system**
   - assignment table + event timeline + linked artifacts
   - source-thread linkage and reassignment thread relinking
+  - automatic assignee-thread handoff with an initial intake reply
 - **Delegation board**
   - filter/search, assignment detail timeline, artifact viewing, export to markdown
   - bulk board actions with optional audit notes
   - health view: overdue / blocked 3d+ / awaiting_review 3d+
+  - latest agent follow-up summary plus `NEEDS_INPUT` visibility on assignments
+  - sortable table-style board columns for faster triage
 - **Date safety**
   - strict calendar validation for due dates in parser and CoS board UI
 - **Testing**
@@ -54,6 +57,31 @@ AM Sweep is a **user-initiated morning triage loop** that gathers context (open 
 - Memory retrieval is lexical/structured, not embeddings-backed by default.
 - Delegation currently uses command parsing; no generalized background job runner yet.
 - Calendar write operations are available via explicit command, but broader scheduling optimization remains limited.
+
+## Current Delegation UX
+
+### What happens when CoS assigns work
+- A delegation assignment is created.
+- A linked assignee-owned thread is created automatically.
+- The assigned agent gets an initial kickoff prompt and posts an intake-style first reply into that thread.
+- The CoS assignment board can then show whether the assignee is waiting on you for answers or files.
+
+### What to look for on the board
+- Assignment rows can show `NEEDS_INPUT` when the latest agent reply contains questions, missing-input requests, or document requests.
+- The delegation board can be sorted by column header to group by status, assignee, priority, due date, or follow-up state.
+- The delegation board also restores your last filter state and column layout on reopen.
+- The assignment detail pane shows:
+  - the latest agent update,
+  - whether input is currently needed,
+  - extracted request lines,
+  - and any uploaded files already attached to the assignment.
+
+### How to respond when an agent needs something
+1. Select the assignment in the CoS board.
+2. Read the `Agent follow-up` section.
+3. Click `Open Assignee Chat`.
+4. Reply in the agent thread and/or use `Upload Artifact` to attach requested files.
+5. Return to the CoS board to confirm the assignment no longer needs input.
 
 ## Current CoS Action Command Reference
 

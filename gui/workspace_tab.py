@@ -17,12 +17,14 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QMessageBox,
     QComboBox,
+    QMenu,
 )
 from PyQt6.QtCore import Qt, QMimeData, QThread, pyqtSignal, QTimer, QSize
 from PyQt6.QtGui import QDropEvent, QDragEnterEvent, QPainter, QColor
 # from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 import json
 import os
+import tempfile
 from datetime import datetime
 import logging
 
@@ -37,6 +39,16 @@ from core.workspace_orchestrator import (
 )
 from core.file_handler import extract_text_from_file
 from core.task_extract import parse_suggested_tasks
+from core.billing.word_integration import export_docx_to_pdf
+from core.workspace_templates import (
+    WorkspaceTemplateSpec,
+    build_template_preview_markdown,
+    discover_workspace_templates,
+    get_workspace_template_by_key,
+    import_workspace_template_pair,
+    render_workspace_template_to_docx,
+    validate_template_payload,
+)
 from gui.task_import_dialog import TaskImportDialog
 from gui.agent_console import AgentConsole
 from gui.document_export import export_markdownish_document
@@ -148,8 +160,20 @@ class WorkspaceTab(QWidget):
         # For persistence of the last run
         self._last_task_spec = None
         self._last_workspace_files = []
+        self._saved_workspaces: list[dict] = []
+        self._template_specs: dict[str, WorkspaceTemplateSpec] = {}
+        self._current_workspace_id: int | None = None
+        self._current_workspace_name = ""
+        self._restoring_workspace_state = False
+        self._current_template_blocks: dict[str, str] = {}
+        self._current_document_metadata: dict[str, str] = {}
+        self._last_generated_template_spec: WorkspaceTemplateSpec | None = None
+        self._current_template_validation_issues: list[str] = []
         
         self.setup_ui()
+        self._refresh_document_templates()
+        self._refresh_saved_workspaces()
+        self._restore_workspace_on_startup()
 
     def _prompt_templates(self) -> dict[str, dict[str, str]]:
         """
@@ -276,6 +300,35 @@ class WorkspaceTab(QWidget):
         status_layout.addStretch()
         file_layout.addLayout(status_layout)
         
+        workspace_row = QHBoxLayout()
+        workspace_label = QLabel("Workspace:")
+        workspace_label.setStyleSheet("color: #e8eaed; padding: 4px; font-size: 13px;")
+        workspace_row.addWidget(workspace_label)
+        self.saved_workspace_combo = QComboBox()
+        self.saved_workspace_combo.setStyleSheet(
+            "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
+            "border-radius: 6px; padding: 8px;"
+        )
+        self.saved_workspace_combo.setMinimumHeight(36)
+        workspace_row.addWidget(self.saved_workspace_combo, 1)
+        save_workspace_btn = QPushButton("Save")
+        save_workspace_btn.setMinimumHeight(36)
+        save_workspace_btn.clicked.connect(self.save_workspace)
+        workspace_row.addWidget(save_workspace_btn)
+        save_as_workspace_btn = QPushButton("Save As…")
+        save_as_workspace_btn.setMinimumHeight(36)
+        save_as_workspace_btn.clicked.connect(self.save_workspace_as)
+        workspace_row.addWidget(save_as_workspace_btn)
+        load_workspace_btn = QPushButton("Load")
+        load_workspace_btn.setMinimumHeight(36)
+        load_workspace_btn.clicked.connect(self.load_selected_workspace)
+        workspace_row.addWidget(load_workspace_btn)
+        clear_workspace_btn = QPushButton("Clear")
+        clear_workspace_btn.setMinimumHeight(36)
+        clear_workspace_btn.clicked.connect(self.clear_workspace)
+        workspace_row.addWidget(clear_workspace_btn)
+        file_layout.addLayout(workspace_row)
+
         # Max rounds control
         rounds_layout = QHBoxLayout()
         rounds_label = QLabel("Max Rounds:")
@@ -297,7 +350,7 @@ class WorkspaceTab(QWidget):
 
         # Prompt template picker (keeps outputs consistent and importable)
         template_row = QHBoxLayout()
-        template_label = QLabel("Template:")
+        template_label = QLabel("Prompt Template:")
         template_label.setStyleSheet("color: #e8eaed; padding: 4px; font-size: 13px;")
         template_row.addWidget(template_label)
 
@@ -317,6 +370,29 @@ class WorkspaceTab(QWidget):
         template_row.addStretch()
         file_layout.addLayout(template_row)
 
+        doc_template_row = QHBoxLayout()
+        doc_template_label = QLabel("Document Template:")
+        doc_template_label.setStyleSheet("color: #e8eaed; padding: 4px; font-size: 13px;")
+        doc_template_row.addWidget(doc_template_label)
+        self.document_template_combo = QComboBox()
+        self.document_template_combo.setStyleSheet(
+            "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
+            "border-radius: 6px; padding: 8px;"
+        )
+        self.document_template_combo.setMinimumHeight(36)
+        self.document_template_combo.addItem("None (markdown only)", "")
+        self.document_template_combo.currentIndexChanged.connect(self._on_workspace_state_changed)
+        doc_template_row.addWidget(self.document_template_combo, 1)
+        refresh_templates_btn = QPushButton("Refresh")
+        refresh_templates_btn.setMinimumHeight(36)
+        refresh_templates_btn.clicked.connect(self._refresh_document_templates)
+        doc_template_row.addWidget(refresh_templates_btn)
+        import_template_btn = QPushButton("Import Pair…")
+        import_template_btn.setMinimumHeight(36)
+        import_template_btn.clicked.connect(self.import_template_pair)
+        doc_template_row.addWidget(import_template_btn)
+        file_layout.addLayout(doc_template_row)
+
         # Suggested tasks contract toggle
         self.include_task_suggestions_checkbox = QCheckBox("Include “Suggested Tasks (importable)” section")
         self.include_task_suggestions_checkbox.setChecked(True)
@@ -324,7 +400,10 @@ class WorkspaceTab(QWidget):
         self.include_task_suggestions_checkbox.setToolTip(
             "When enabled, the generated markdown should include a parseable task list we can extract into reviewable Tasks."
         )
+        self.include_task_suggestions_checkbox.toggled.connect(self._on_workspace_state_changed)
         file_layout.addWidget(self.include_task_suggestions_checkbox)
+        self.max_rounds_spinbox.valueChanged.connect(self._on_workspace_state_changed)
+        self.prompt_template_combo.currentIndexChanged.connect(self._on_workspace_state_changed)
         
         # Select and Generate Draft buttons
         btn_layout = QHBoxLayout()
@@ -356,6 +435,8 @@ class WorkspaceTab(QWidget):
         self.file_list.setSpacing(6)
         self.file_list.setToolTip("Drag and drop files here or mark RAG results")
         self.file_list.itemClicked.connect(self.on_file_selected)
+        self.file_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.file_list.customContextMenuRequested.connect(self.show_file_context_menu)
         file_layout.addWidget(self.file_list)
         
         file_widget.dragEnterEvent = self.dragEnterEvent
@@ -500,6 +581,341 @@ class WorkspaceTab(QWidget):
         inner_splitter.setStretchFactor(1, 4)  # Markdown document
 
         parent_splitter.addWidget(preview_widget)
+
+    def _refresh_document_templates(self):
+        current_key = ""
+        if hasattr(self, "document_template_combo") and self.document_template_combo is not None:
+            current_key = str(self.document_template_combo.currentData() or "")
+        specs = discover_workspace_templates()
+        self._template_specs = {spec.key: spec for spec in specs}
+        if not hasattr(self, "document_template_combo") or self.document_template_combo is None:
+            return
+        self.document_template_combo.blockSignals(True)
+        self.document_template_combo.clear()
+        self.document_template_combo.addItem("None (markdown only)", "")
+        for spec in specs:
+            suffix = " (Imported)" if spec.source == "imported" else ""
+            self.document_template_combo.addItem(f"{spec.display_name}{suffix}", spec.key)
+        idx = self.document_template_combo.findData(current_key)
+        if idx >= 0:
+            self.document_template_combo.setCurrentIndex(idx)
+        self.document_template_combo.blockSignals(False)
+
+    def _selected_document_template_spec(self) -> WorkspaceTemplateSpec | None:
+        key = ""
+        if getattr(self, "document_template_combo", None) is not None:
+            key = str(self.document_template_combo.currentData() or "")
+        if not key:
+            return None
+        return self._template_specs.get(key) or get_workspace_template_by_key(key)
+
+    def _workspace_state_payload(self) -> dict:
+        files = []
+        for file_info in self.selected_files:
+            files.append(
+                {
+                    "name": str(file_info.get("name") or ""),
+                    "path": str(file_info.get("path") or ""),
+                    "is_folder": False,
+                    "size": int(file_info.get("size") or 0),
+                    "modified": file_info.get("modified"),
+                    "marked": bool(file_info.get("marked")),
+                }
+            )
+        return {
+            "name": self._current_workspace_name,
+            "files": files,
+            "max_rounds": self.max_rounds_spinbox.value() if hasattr(self, "max_rounds_spinbox") else 3,
+            "prompt_template_key": str(self.prompt_template_combo.currentData() or "custom")
+            if getattr(self, "prompt_template_combo", None) is not None
+            else "custom",
+            "document_template_key": str(self.document_template_combo.currentData() or "")
+            if getattr(self, "document_template_combo", None) is not None
+            else "",
+            "include_task_suggestions": bool(
+                self.include_task_suggestions_checkbox.isChecked()
+                if getattr(self, "include_task_suggestions_checkbox", None) is not None
+                else True
+            ),
+            "saved_at": datetime.now().isoformat(),
+        }
+
+    def _on_workspace_state_changed(self, *_args):
+        if self._restoring_workspace_state:
+            return
+        try:
+            if hasattr(self.db, "workspace_session_save"):
+                self.db.workspace_session_save(self._workspace_state_payload())
+        except Exception as e:
+            logger.debug(f"Could not persist workspace session state: {e}")
+        if self._current_workspace_name and hasattr(self.db, "workspace_state_upsert"):
+            try:
+                workspace_id = self.db.workspace_state_upsert(
+                    name=self._current_workspace_name,
+                    state=self._workspace_state_payload(),
+                )
+                self._current_workspace_id = int(workspace_id or 0) or None
+                if hasattr(self.db, "workspace_state_set_last_used"):
+                    self.db.workspace_state_set_last_used(self._current_workspace_id)
+            except Exception as e:
+                logger.debug(f"Could not autosave named workspace state: {e}")
+
+    def _refresh_saved_workspaces(self):
+        current_id = self._current_workspace_id
+        items = []
+        workspace_state_list = getattr(self.db, "workspace_state_list", None)
+        if callable(workspace_state_list):
+            try:
+                items = workspace_state_list()
+            except Exception:
+                items = []
+        if not isinstance(items, list):
+            items = []
+        self._saved_workspaces = items
+        if not hasattr(self, "saved_workspace_combo") or self.saved_workspace_combo is None:
+            return
+        self.saved_workspace_combo.blockSignals(True)
+        self.saved_workspace_combo.clear()
+        self.saved_workspace_combo.addItem("Unsaved session", None)
+        for item in items:
+            self.saved_workspace_combo.addItem(str(item.get("name") or ""), int(item.get("id") or 0))
+        if current_id is not None:
+            idx = self.saved_workspace_combo.findData(int(current_id))
+            if idx >= 0:
+                self.saved_workspace_combo.setCurrentIndex(idx)
+        self.saved_workspace_combo.blockSignals(False)
+
+    def _restore_workspace_on_startup(self):
+        restored = False
+        workspace_state_get_last_used = getattr(self.db, "workspace_state_get_last_used", None)
+        if callable(workspace_state_get_last_used):
+            try:
+                last_used = workspace_state_get_last_used()
+                if last_used:
+                    restored = self._load_workspace_record(last_used, status_prefix="Restored last workspace")
+            except Exception as e:
+                logger.debug(f"Could not restore last used workspace: {e}")
+        if restored:
+            return
+        workspace_session_load = getattr(self.db, "workspace_session_load", None)
+        if callable(workspace_session_load):
+            try:
+                payload = workspace_session_load()
+            except Exception:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            if payload:
+                loaded = self._apply_workspace_state(payload, workspace_id=None, workspace_name="")
+                if loaded or payload.get("files"):
+                    self.status_label.setText(f"Restored last session ({loaded} files)")
+
+    def _load_workspace_record(self, record: dict, *, status_prefix: str = "Loaded workspace") -> bool:
+        if not isinstance(record, dict):
+            return False
+        try:
+            payload = json.loads(record.get("state_json") or "{}")
+        except Exception:
+            payload = {}
+        loaded = self._apply_workspace_state(
+            payload,
+            workspace_id=int(record.get("id") or 0) or None,
+            workspace_name=str(record.get("name") or ""),
+        )
+        self._refresh_saved_workspaces()
+        if loaded or payload.get("files"):
+            self.status_label.setText(f"{status_prefix}: {record.get('name', 'workspace')} ({loaded} files)")
+            return True
+        return False
+
+    def _apply_workspace_state(self, payload: dict, *, workspace_id: int | None, workspace_name: str) -> int:
+        self._restoring_workspace_state = True
+        try:
+            self._clear_workspace_files(reset_saved_workspace=False)
+            loaded = 0
+            missing = 0
+            for file_info in payload.get("files") or []:
+                item = {
+                    "name": str(file_info.get("name") or os.path.basename(str(file_info.get("path") or ""))),
+                    "path": str(file_info.get("path") or ""),
+                    "is_folder": False,
+                    "size": int(file_info.get("size") or 0),
+                    "modified": file_info.get("modified"),
+                    "marked": bool(file_info.get("marked")),
+                }
+                if self.add_file_to_list(item):
+                    loaded += 1
+                else:
+                    missing += 1
+            prompt_key = str(payload.get("prompt_template_key") or "custom")
+            doc_template_key = str(payload.get("document_template_key") or "")
+            prompt_idx = self.prompt_template_combo.findData(prompt_key)
+            if prompt_idx >= 0:
+                self.prompt_template_combo.setCurrentIndex(prompt_idx)
+            doc_idx = self.document_template_combo.findData(doc_template_key)
+            if doc_idx >= 0:
+                self.document_template_combo.setCurrentIndex(doc_idx)
+            self.max_rounds_spinbox.setValue(int(payload.get("max_rounds") or 3))
+            self.include_task_suggestions_checkbox.setChecked(bool(payload.get("include_task_suggestions", True)))
+            self._current_workspace_id = workspace_id
+            self._current_workspace_name = str(workspace_name or payload.get("name") or "").strip()
+            if self._current_workspace_id is not None and hasattr(self.db, "workspace_state_set_last_used"):
+                self.db.workspace_state_set_last_used(self._current_workspace_id)
+            if missing:
+                self.status_label.setText(f"Loaded {loaded} files ({missing} missing)")
+            return loaded
+        finally:
+            self._restoring_workspace_state = False
+            self._on_workspace_state_changed()
+
+    def _clear_workspace_files(self, *, reset_saved_workspace: bool = True):
+        self.file_list.clear()
+        self.selected_files = []
+        self._seen_paths.clear()
+        self._current_file_contents = {}
+        self._current_markdown = ""
+        self._current_template_blocks = {}
+        self._current_document_metadata = {}
+        self._last_generated_template_spec = None
+        self._current_template_validation_issues = []
+        self.preview_text.clear()
+        self.grok_text.clear()
+        self.chatgpt_text.clear()
+        self.save_button.setEnabled(False)
+        self.export_button.setEnabled(False)
+        self.extract_tasks_button.setEnabled(False)
+        if reset_saved_workspace:
+            self._current_workspace_id = None
+            self._current_workspace_name = ""
+            if hasattr(self.db, "workspace_state_set_last_used"):
+                self.db.workspace_state_set_last_used(None)
+
+    def clear_workspace(self):
+        self._clear_workspace_files(reset_saved_workspace=True)
+        self._refresh_saved_workspaces()
+        self.status_label.setText("Workspace cleared")
+        self._on_workspace_state_changed()
+
+    def save_workspace(self):
+        if self._current_workspace_name:
+            self._save_workspace_with_name(self._current_workspace_name)
+            return
+        self.save_workspace_as()
+
+    def save_workspace_as(self):
+        name, ok = QInputDialog.getText(
+            self,
+            "Save Workspace",
+            "Workspace name:",
+            text=self._current_workspace_name or "",
+        )
+        if not ok or not str(name or "").strip():
+            self.status_label.setText("Workspace save cancelled")
+            return
+        self._save_workspace_with_name(str(name).strip())
+
+    def _save_workspace_with_name(self, name: str):
+        workspace_state_upsert = getattr(self.db, "workspace_state_upsert", None)
+        if not callable(workspace_state_upsert):
+            self.status_label.setText("Workspace persistence is unavailable")
+            return
+        self._current_workspace_name = str(name or "").strip()
+        payload = self._workspace_state_payload()
+        payload["name"] = self._current_workspace_name
+        try:
+            workspace_id = workspace_state_upsert(name=self._current_workspace_name, state=payload)
+            self._current_workspace_id = int(workspace_id or 0) or None
+        except Exception:
+            self.status_label.setText("Workspace persistence is unavailable")
+            return
+        workspace_state_set_last_used = getattr(self.db, "workspace_state_set_last_used", None)
+        if callable(workspace_state_set_last_used):
+            workspace_state_set_last_used(self._current_workspace_id)
+        self._refresh_saved_workspaces()
+        self.status_label.setText(f"Workspace saved: {self._current_workspace_name}")
+
+    def load_selected_workspace(self):
+        workspace_id = self.saved_workspace_combo.currentData() if getattr(self, "saved_workspace_combo", None) is not None else None
+        if workspace_id in (None, "", 0):
+            self.status_label.setText("Select a saved workspace to load")
+            return
+        workspace_state_get = getattr(self.db, "workspace_state_get", None)
+        if not callable(workspace_state_get):
+            self.status_label.setText("Workspace persistence is unavailable")
+            return
+        record = workspace_state_get(int(workspace_id))
+        if not record:
+            self.status_label.setText("Saved workspace not found")
+            return
+        self._load_workspace_record(record)
+
+    def import_template_pair(self):
+        machine_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select machine-readable template",
+            "",
+            "Word Documents (*.docx);;All Files (*)",
+        )
+        if not machine_path:
+            self.status_label.setText("Template import cancelled")
+            return
+        inferred_human = self._infer_human_template_pair(machine_path)
+        human_path = inferred_human
+        if not human_path:
+            human_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select matching human-readable template",
+                "",
+                "Word Templates (*.docx *.dotx);;All Files (*)",
+            )
+        if not human_path:
+            self.status_label.setText("Template import cancelled")
+            return
+        spec = import_workspace_template_pair(machine_path=machine_path, human_path=human_path)
+        self._refresh_document_templates()
+        idx = self.document_template_combo.findData(spec.key)
+        if idx >= 0:
+            self.document_template_combo.setCurrentIndex(idx)
+        self.status_label.setText(f"Imported template: {spec.display_name}")
+        self._on_workspace_state_changed()
+
+    def _infer_human_template_pair(self, machine_path: str) -> str:
+        directory = os.path.dirname(os.path.abspath(str(machine_path or "")))
+        filename = os.path.basename(str(machine_path or ""))
+        stem, _ext = os.path.splitext(filename)
+        normalized = stem
+        candidates = []
+        if normalized.endswith("_machine"):
+            base = normalized[: -len("_machine")]
+            candidates.extend([f"{base}_human.docx"])
+        if normalized.endswith(" - Machine Readable"):
+            base = normalized[: -len(" - Machine Readable")]
+            candidates.extend([f"{base} - Human Readable.docx", f"{base} - CF Template.dotx"])
+        for candidate in candidates:
+            full = os.path.join(directory, candidate)
+            if os.path.exists(full):
+                return full
+        return ""
+
+    def show_file_context_menu(self, position):
+        item = self.file_list.itemAt(position)
+        if item is None:
+            return
+        menu = QMenu()
+        remove_action = menu.addAction("Remove")
+        action = menu.exec(self.file_list.mapToGlobal(position))
+        if action != remove_action:
+            return
+        row = self.file_list.row(item)
+        file_info = item.data(Qt.ItemDataRole.UserRole) or {}
+        path = os.path.abspath(str(file_info.get("path") or ""))
+        removed = self.file_list.takeItem(row)
+        if removed is not None and 0 <= row < len(self.selected_files):
+            self.selected_files.pop(row)
+        if path:
+            self._seen_paths.discard(path)
+        self.status_label.setText(f"Removed {file_info.get('name', 'file')}")
+        self._on_workspace_state_changed()
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -665,10 +1081,12 @@ class WorkspaceTab(QWidget):
         self.file_list.addItem(item)
         self.file_list.setItemWidget(item, widget)
         self.selected_files.append(file_info)
+        self._on_workspace_state_changed()
         return True
 
     def toggle_mark(self, file_info, state):
         file_info['marked'] = state == Qt.CheckState.Checked.value
+        self._on_workspace_state_changed()
 
     def add_rag_results(self, results):
         # Placeholder for RAG search results
@@ -834,6 +1252,7 @@ class WorkspaceTab(QWidget):
         """
         try:
             marked_files = [f for f in self.selected_files if f.get("marked")]
+            selected_template_spec = self._selected_document_template_spec()
             
             # Ask the user what they want Grok + ChatGPT to do
             if marked_files:
@@ -920,6 +1339,7 @@ class WorkspaceTab(QWidget):
                 context=context,
                 files=workspace_files,
                 max_rounds=max_rounds,
+                document_template=selected_template_spec.to_payload() if selected_template_spec else None,
             )
 
             # Save context for persistence on completion
@@ -928,6 +1348,9 @@ class WorkspaceTab(QWidget):
                 {"path": wf.path, "display_name": wf.display_name, "file_type": wf.file_type}
                 for wf in workspace_files
             ]
+            self._last_generated_template_spec = selected_template_spec
+            self._current_template_blocks = {}
+            self._current_document_metadata = {}
 
             # Store file contents for use in API calls
             self._current_file_contents = file_contents
@@ -944,6 +1367,8 @@ class WorkspaceTab(QWidget):
             else:
                 self.status_label.setText("Starting AI collaboration (Research Mode)...")
                 self.progress_bar.setValue(20)
+            if selected_template_spec:
+                self.status_label.setText(f"Generating structured draft with template: {selected_template_spec.display_name}")
             QApplication.processEvents()
             
             # Clear previous outputs
@@ -1003,6 +1428,8 @@ class WorkspaceTab(QWidget):
         markdown = round_data.get("markdown", "")
         feedback = round_data.get("feedback", "")
         ref_pack_stats = round_data.get("reference_pack_stats")
+        template_blocks = round_data.get("template_blocks") or {}
+        document_metadata = round_data.get("document_metadata") or {}
         coverage_summary = format_reference_pack_summary(ref_pack_stats)
         
         # Update Grok pane with current round
@@ -1040,9 +1467,29 @@ class WorkspaceTab(QWidget):
                 self.chatgpt_text.setPlainText(f"--- Round {round_num} ---\n{chatgpt_output}{feedback_text}{context_text}")
         
         # Update markdown preview with current version
+        if isinstance(template_blocks, dict) and template_blocks:
+            self._current_template_blocks = {
+                **self._current_template_blocks,
+                **{str(k): str(v or "").strip() for k, v in template_blocks.items()},
+            }
+        if isinstance(document_metadata, dict) and document_metadata:
+            self._current_document_metadata = {
+                **self._current_document_metadata,
+                **{str(k): str(v or "").strip() for k, v in document_metadata.items()},
+            }
         if markdown and hasattr(self, 'preview_text'):
             self.preview_text.setPlainText(markdown)
             self._current_markdown = markdown
+        elif self._last_generated_template_spec and self._current_template_blocks:
+            preview = build_template_preview_markdown(
+                self._last_generated_template_spec,
+                template_blocks=self._current_template_blocks,
+                document_metadata=self._current_document_metadata,
+            )
+            self.preview_text.setPlainText(preview)
+            self._current_markdown = preview
+
+        self._update_template_validation_state()
         
         QApplication.processEvents()
     
@@ -1059,6 +1506,8 @@ class WorkspaceTab(QWidget):
         collaboration_history = result.get("collaboration_history", [])
         rounds = result.get("rounds", 0)
         status = result.get("status", "unknown")
+        template_blocks = result.get("template_blocks") or {}
+        document_metadata = result.get("document_metadata") or {}
         latest_coverage = ""
         if isinstance(collaboration_history, list) and collaboration_history:
             last_entry = collaboration_history[-1] or {}
@@ -1085,11 +1534,29 @@ class WorkspaceTab(QWidget):
             logger.warning(f"Could not persist workspace collaboration run: {e}")
         
         # Store markdown for saving
+        if isinstance(template_blocks, dict) and template_blocks:
+            self._current_template_blocks = {
+                **self._current_template_blocks,
+                **{str(k): str(v or "").strip() for k, v in template_blocks.items()},
+            }
+        if isinstance(document_metadata, dict) and document_metadata:
+            self._current_document_metadata = {
+                **self._current_document_metadata,
+                **{str(k): str(v or "").strip() for k, v in document_metadata.items()},
+            }
         self._current_markdown = markdown_doc
 
         # Show the final Markdown in the preview pane
         if markdown_doc:
             self.preview_text.setPlainText(markdown_doc)
+        elif self._last_generated_template_spec and self._current_template_blocks:
+            preview = build_template_preview_markdown(
+                self._last_generated_template_spec,
+                template_blocks=self._current_template_blocks,
+                document_metadata=self._current_document_metadata,
+            )
+            self._current_markdown = preview
+            self.preview_text.setPlainText(preview)
         else:
             # Fallback if orchestrator didn't return markdown
             self.preview_text.setPlainText(
@@ -1105,8 +1572,12 @@ class WorkspaceTab(QWidget):
             self.export_button.setEnabled(True)
         if hasattr(self, "extract_tasks_button"):
             self.extract_tasks_button.setEnabled(bool(self._current_markdown.strip()))
+        self._on_workspace_state_changed()
+        self._update_template_validation_state()
 
         status_text = f"AI collaboration complete ({status}, {rounds} round{'s' if rounds != 1 else ''})"
+        if self._current_template_validation_issues:
+            status_text = f"{status_text} | Template validation needed"
         if latest_coverage:
             status_text = f"{status_text} | {latest_coverage}"
         self.status_label.setText(status_text)
@@ -1222,14 +1693,73 @@ class WorkspaceTab(QWidget):
         
         if file_path:
             try:
-                exported_path = export_markdownish_document(
-                    title="Workspace Document",
-                    text=self._current_markdown,
-                    file_path=file_path,
-                    selected_filter=selected_filter,
-                )
+                selected = (selected_filter or "").lower()
+                ext = os.path.splitext(str(file_path or ""))[1].lower()
+                if (
+                    self._last_generated_template_spec
+                    and self._current_template_blocks
+                    and ("docx" in selected or "pdf" in selected or ext in {".docx", ".pdf"})
+                ):
+                    if not self._ensure_template_payload_valid_for_export():
+                        return
+                    target_docx = file_path
+                    if "pdf" in selected or ext == ".pdf":
+                        with tempfile.TemporaryDirectory(prefix="workspace_template_export_") as tmpdir:
+                            temp_docx = os.path.join(tmpdir, "workspace_template.docx")
+                            render_workspace_template_to_docx(
+                                spec=self._last_generated_template_spec,
+                                template_blocks=self._current_template_blocks,
+                                output_path=temp_docx,
+                                document_metadata=self._current_document_metadata,
+                            )
+                            exported_path = export_docx_to_pdf(temp_docx, file_path if ext == ".pdf" else f"{file_path}.pdf")
+                    else:
+                        if ext != ".docx":
+                            target_docx = f"{file_path}.docx"
+                        exported_path = render_workspace_template_to_docx(
+                            spec=self._last_generated_template_spec,
+                            template_blocks=self._current_template_blocks,
+                            output_path=target_docx,
+                            document_metadata=self._current_document_metadata,
+                        )
+                else:
+                    exported_path = export_markdownish_document(
+                        title="Workspace Document",
+                        text=self._current_markdown,
+                        file_path=file_path,
+                        selected_filter=selected_filter,
+                    )
                 self.status_label.setText(f"Document exported to {os.path.basename(exported_path)}")
             except Exception as e:
                 logger.error(f"Error exporting markdown: {e}")
                 self.status_label.setText(f"Error exporting file: {str(e)}")
+
+    def _update_template_validation_state(self):
+        self._current_template_validation_issues = []
+        spec = self._last_generated_template_spec
+        if not spec:
+            return
+        if not self._current_template_blocks and not self._current_document_metadata:
+            return
+        result = validate_template_payload(
+            spec,
+            template_blocks=self._current_template_blocks,
+            document_metadata=self._current_document_metadata,
+        )
+        self._current_template_validation_issues = result.issues()
+
+    def _ensure_template_payload_valid_for_export(self) -> bool:
+        self._update_template_validation_state()
+        if not self._current_template_validation_issues:
+            return True
+        details = "\n".join(self._current_template_validation_issues)
+        QMessageBox.warning(
+            self,
+            "Template Validation Failed",
+            "The generated template data is incomplete or malformed, so template-based export was blocked.\n\n"
+            f"{details}\n\n"
+            "Re-run Generate Draft or switch to a markdown/text export.",
+        )
+        self.status_label.setText("Template validation failed before export")
+        return False
 

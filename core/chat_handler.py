@@ -1,9 +1,11 @@
+import json
 from PyQt6.QtCore import QObject, pyqtSignal
 import sqlite3
 from datetime import datetime, timedelta, UTC
 from dateutil import parser
 from core.db import DatabaseManager
 from core.data_fetch import DataFetcher
+from core.email_importance import evaluate_email_importance
 from core.email_utils import classify_email, normalize_message_id
 
 class ChatHandler(QObject):
@@ -214,6 +216,7 @@ Return only the relevant emails, nothing else."""
         # ========== EMAILS ==========
         emails_str = ""
         urgent_emails_str = ""
+        important_emails_str = ""
         
         try:
             # Use the limited last_run (max 7 days) to fetch only recent emails
@@ -317,21 +320,41 @@ Return only the relevant emails, nothing else."""
                                 client_labels=client_labels,
                                 potential_labels=potential_labels,
                             )
+                            triage = evaluate_email_importance(
+                                db=self.db,
+                                sender=sender,
+                                subject=subject,
+                                content=snippet,
+                                folder=folder,
+                                account=account,
+                                source=source,
+                                is_client=is_client,
+                                is_potential=is_potential,
+                                replied=0,
+                            )
                             
                             email_data = {
+                                'id': str(msg.get("id") or ""),
                                 'sender': sender,
                                 'subject': subject,
                                 'snippet': snippet,
                                 'timestamp': timestamp,
                                 'source': source,
                                 'folder': folder or "",
+                                'triage_status': triage.get("triage_status") or "new",
+                                'importance_score': int(triage.get("score") or 0),
+                                'importance_reasons': triage.get("reasons") or [],
+                                'needs_attention': int(triage.get("needs_attention") or 0),
+                                'is_urgent': bool(triage.get("is_urgent")),
+                                'client_id': triage.get("matched_client_id"),
+                                'cos_project_id': triage.get("matched_project_id"),
                             }
                             all_email_data.append(email_data)
                             
                             # Store in database
                             conn.execute(
-                                "INSERT OR IGNORE INTO emails (id, sender, subject, timestamp, content, source, is_client, is_potential, folder, account, rfc822_message_id, rfc822_in_reply_to, rfc822_references, thread_id) "
-                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                "INSERT OR IGNORE INTO emails (id, sender, subject, timestamp, content, source, is_client, is_potential, folder, account, rfc822_message_id, rfc822_in_reply_to, rfc822_references, thread_id, triage_status, importance_score, needs_attention, importance_reason_json, triaged_at, triage_source, client_id, cos_project_id) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                 (
                                     str(msg.get("id") or ""),
                                     sender,
@@ -347,6 +370,40 @@ Return only the relevant emails, nothing else."""
                                     rfc822_irt or None,
                                     rfc822_refs,
                                     thread_id,
+                                    str(triage.get("triage_status") or "new"),
+                                    int(triage.get("score") or 0),
+                                    int(triage.get("needs_attention") or 0),
+                                    json.dumps(triage.get("reasons") or [], ensure_ascii=False),
+                                    datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                    str(triage.get("triage_source") or "rule"),
+                                    int(triage.get("matched_client_id")) if triage.get("matched_client_id") is not None else None,
+                                    int(triage.get("matched_project_id")) if triage.get("matched_project_id") is not None else None,
+                                ),
+                            )
+                            conn.execute(
+                                """
+                                UPDATE emails
+                                SET
+                                    triage_status = ?,
+                                    importance_score = ?,
+                                    needs_attention = ?,
+                                    importance_reason_json = ?,
+                                    triaged_at = ?,
+                                    triage_source = ?,
+                                    client_id = ?,
+                                    cos_project_id = ?
+                                WHERE id = ?
+                                """,
+                                (
+                                    str(triage.get("triage_status") or "new"),
+                                    int(triage.get("score") or 0),
+                                    int(triage.get("needs_attention") or 0),
+                                    json.dumps(triage.get("reasons") or [], ensure_ascii=False),
+                                    datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                    str(triage.get("triage_source") or "rule"),
+                                    int(triage.get("matched_client_id")) if triage.get("matched_client_id") is not None else None,
+                                    int(triage.get("matched_project_id")) if triage.get("matched_project_id") is not None else None,
+                                    str(msg.get("id") or ""),
                                 ),
                             )
                         except (KeyError, StopIteration) as e:
@@ -354,48 +411,33 @@ Return only the relevant emails, nothing else."""
                             continue
                     conn.commit()
                 
-                # LLM analysis of emails
                 if all_email_data:
-                    email_data_str = "\n".join([
-                        f"From: {email['sender']} | Subject: {email['subject']} | Content: {email['snippet'][:200]}"
-                        for email in all_email_data
-                    ])
-                    
-                    email_analysis_prompt = self.EMAIL_ANALYSIS_PROMPT_TEMPLATE.format(email_data=email_data_str)
-                    
-                    try:
-                        # Use Grok directly to avoid spawning llama_worker subprocess for a single call
-                        from core.grok_client import grok_available, grok_completion
-                        ok, _ = grok_available()
-                        if ok:
-                            email_analysis = grok_completion(
-                                system="You analyze emails for a MedTech consultant's daily briefing. Return RELEVANT_EMAILS: and URGENT_EMAILS: sections.",
-                                user=email_analysis_prompt,
-                                model="grok-4-1-fast"
+                    important_new = [
+                        email for email in all_email_data
+                        if int(email.get("needs_attention") or 0) == 1
+                    ]
+                    urgent_new = [
+                        email for email in important_new
+                        if bool(email.get("is_urgent"))
+                    ]
+
+                    if important_new:
+                        lines = []
+                        for email in important_new[:8]:
+                            reasons = email.get("importance_reasons") or []
+                            why = reasons[0] if reasons else "Flagged as important."
+                            lines.append(
+                                f"- {email['sender']} - {email['subject']} ({why})"
                             )
-                        else:
-                            email_analysis = None
+                        emails_str = "\n".join(lines)
+                    else:
+                        emails_str = f"Processed {len(all_email_data)} new emails; none met the importance threshold."
 
-                        if not email_analysis:
-                            raise ValueError("Grok unavailable for email analysis")
-
-                        # Extract relevant and urgent emails
-                        if "RELEVANT_EMAILS:" in email_analysis:
-                            relevant_section = email_analysis.split("RELEVANT_EMAILS:")[1]
-                            if "URGENT_EMAILS:" in relevant_section:
-                                emails_str = relevant_section.split("URGENT_EMAILS:")[0].strip()
-                                urgent_section = email_analysis.split("URGENT_EMAILS:")[1].strip()
-                                urgent_emails_str = urgent_section if urgent_section else ""
-                            else:
-                                emails_str = relevant_section.strip()
-                        else:
-                            emails_str = "No relevant emails identified."
-                    except Exception as e:
-                        print(f"Error in LLM email analysis: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        # Fallback: show count of new emails
-                        emails_str = f"Received {len(all_email_data)} new emails (AI analysis unavailable)."
+                    if urgent_new:
+                        urgent_lines = []
+                        for email in urgent_new[:5]:
+                            urgent_lines.append(f"- {email['sender']} - {email['subject']}")
+                        urgent_emails_str = "\n".join(urgent_lines)
             else:
                 emails_str = "No new emails since last briefing."
                 
@@ -408,43 +450,27 @@ Return only the relevant emails, nothing else."""
             traceback.print_exc()
             emails_str = f"Unable to process emails: {str(e)}"
 
-        # ========== UNREPLIED EMAILS ==========
+        # ========== IMPORTANT EMAILS ==========
         try:
-            # Only show unreplied emails from the last 30 days (to avoid showing year-old emails)
-            # But exclude emails from the last 48 hours (those are in "new emails")
-            max_unreplied_age = int((datetime.now(UTC) - timedelta(days=30)).timestamp())
-            min_unreplied_age = cutoff  # 48 hours ago - older than this but newer than 30 days
-            
-            with sqlite3.connect(self.db.db_name) as conn:
-                cursor = conn.execute("""
-                    SELECT sender, subject, timestamp 
-                    FROM emails 
-                    WHERE timestamp < ? 
-                    AND timestamp > ?
-                    AND replied = 0 
-                    AND (is_client = 1 OR is_potential = 1)
-                    ORDER BY timestamp DESC
-                    LIMIT 10
-                """, (min_unreplied_age, max_unreplied_age))
-                unreplied = cursor.fetchall()
-            
-            if unreplied:
-                unreplied_list = []
-                for u in unreplied:
-                    date_str = datetime.fromtimestamp(u[2]).strftime('%Y-%m-%d %H:%M')
-                    # Extract sender name (email addresses are often in "Name <email>" format)
-                    sender_name = u[0].split('<')[0].strip().strip('"').strip("'")
+            important_rows = self.db.list_important_emails(limit=10, days=30, include_triaged=False)
+            if important_rows:
+                important_list = []
+                for row in important_rows:
+                    date_str = datetime.fromtimestamp(int(row.get("timestamp") or 0), tz=UTC).strftime('%Y-%m-%d %H:%M')
+                    reasons = row.get("importance_reasons") or []
+                    why = reasons[0] if reasons else "Flagged as important."
+                    sender_name = str(row.get("sender") or "").split('<')[0].strip().strip('"').strip("'")
                     if not sender_name or '@' in sender_name:
-                        sender_name = u[0].split('<')[1].strip('>').split('@')[0] if '<' in u[0] else u[0].split('@')[0]
-                    unreplied_list.append(f"- {sender_name} - \"{u[1]}\" (sent {date_str})")
-                unreplied_str = "\n".join(unreplied_list)
+                        sender_name = str(row.get("sender") or "")
+                    important_list.append(f"- {sender_name} - \"{row.get('subject') or ''}\" (sent {date_str}; {why})")
+                important_emails_str = "\n".join(important_list)
             else:
-                unreplied_str = "No unreplied client emails from the last 30 days. Excellent!"
+                important_emails_str = "No important emails currently need attention."
         except Exception as e:
-            print(f"Error loading unreplied emails: {e}")
+            print(f"Error loading important emails: {e}")
             import traceback
             traceback.print_exc()
-            unreplied_str = "Unable to load unreplied emails."
+            important_emails_str = "Unable to load important emails."
 
         # ========== SCHEDULING SUGGESTIONS ==========
         try:
@@ -593,7 +619,7 @@ Return only the relevant emails, nothing else."""
         if urgent_emails_str:
             briefing += f"[SECTION:Urgent Emails]\n{urgent_emails_str}\n\n"
         
-        briefing += f"[SECTION:Unreplied Emails]\n{unreplied_str}\n\n" \
+        briefing += f"[SECTION:Important Emails]\n{important_emails_str}\n\n" \
                   f"[SECTION:Scheduling Suggestions]\n{scheduling_str}"
         
         try:

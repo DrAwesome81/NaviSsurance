@@ -51,14 +51,14 @@ class NewsWorker(QThread):
             
             # IMPORTANT: Do not route news through ChatManager.get_response (local llama worker).
             # Instead use Grok web_search + Grok structuring to preserve URLs.
-            from core.grok_client import grok_available, grok_web_search, grok_completion
+            from core.grok_client import MODEL_CHAT, MODEL_FAST, grok_available, grok_web_search, grok_completion
 
             ok, msg = grok_available()
             if not ok:
                 self.error_occurred.emit(f"News unavailable: {msg}")
                 return
 
-            results = grok_web_search(direct_search_query, model="grok-4-1-fast") or ""
+            results = grok_web_search(direct_search_query, model=MODEL_FAST) or ""
             if not results.strip():
                 self.error_occurred.emit("News unavailable: empty search results")
                 return
@@ -74,7 +74,7 @@ class NewsWorker(QThread):
                 "Limit to 8 items."
             )
             user = f"Extract up to 8 MedTech news items from these results:\n\n{results}"
-            payload = grok_completion(system=system, user=user, model="grok-4-1-fast-reasoning-latest") or ""
+            payload = grok_completion(system=system, user=user, model=MODEL_CHAT) or ""
             self.news_loaded.emit(payload.strip() or "[]")
                 
         except Exception as e:
@@ -351,7 +351,7 @@ class DashboardTab(QWidget):
         if not skip_news:
             self.load_news()
         try:
-            self.load_unreplied_emails()
+            self.load_important_emails()
         except Exception:
             pass
 
@@ -443,13 +443,13 @@ class DashboardTab(QWidget):
         # For splash preload, avoid ChatManager.get_response to prevent local worker dependency.
         self.db.update_last_news_update()
         try:
-            from core.grok_client import grok_available, grok_web_search, grok_completion
+            from core.grok_client import MODEL_CHAT, MODEL_FAST, grok_available, grok_web_search, grok_completion
 
             ok, msg = grok_available()
             if not ok:
                 raise RuntimeError(msg)
 
-            results = grok_web_search(direct_search_query, model="grok-4-1-fast") or ""
+            results = grok_web_search(direct_search_query, model=MODEL_FAST) or ""
             if not results.strip():
                 raise RuntimeError("empty search results")
 
@@ -464,7 +464,7 @@ class DashboardTab(QWidget):
                 "Limit to 8 items."
             )
             user = f"Extract up to 8 MedTech news items from these results:\n\n{results}"
-            payload = grok_completion(system=system, user=user, model="grok-4-1-fast-reasoning-latest") or "[]"
+            payload = grok_completion(system=system, user=user, model=MODEL_CHAT) or "[]"
             self.process_and_store_news(str(payload))
             self.display_stored_news()
         except Exception:
@@ -1046,7 +1046,7 @@ class DashboardTab(QWidget):
         right_layout.setSpacing(12)
         news_widget = self.create_news_widget()
         right_layout.addWidget(news_widget, 7)  # 70% of right column height
-        unreplied_widget = self.create_unreplied_emails_widget()
+        unreplied_widget = self.create_important_emails_widget()
         right_layout.addWidget(unreplied_widget, 3)  # 30% of right column height
         
         # Add columns to main layout
@@ -1625,14 +1625,14 @@ class DashboardTab(QWidget):
         
         return widget
 
-    def create_unreplied_emails_widget(self):
+    def create_important_emails_widget(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
         header_row = QHBoxLayout()
-        header = QLabel("Unreplied Emails")
+        header = QLabel("Important Emails")
         header.setStyleSheet("color: #e8eaed; font-weight: 600; padding: 3px; background-color: transparent; border: none; font-size: 13px;")
         header_row.addWidget(header)
         header_row.addStretch(1)
@@ -1643,7 +1643,7 @@ class DashboardTab(QWidget):
         header_row.addWidget(rules_btn)
 
         refresh_btn = QPushButton("Refresh")
-        refresh_btn.clicked.connect(self.load_unreplied_emails)
+        refresh_btn.clicked.connect(self.load_important_emails)
         header_row.addWidget(refresh_btn)
 
         layout.addLayout(header_row)
@@ -1652,29 +1652,33 @@ class DashboardTab(QWidget):
         controls.setContentsMargins(0, 0, 0, 0)
         controls.setSpacing(8)
 
-        self.unreplied_only_client = QCheckBox("Only clients/leads")
+        self.unreplied_only_client = QCheckBox("Only client-related")
         self.unreplied_only_client.setChecked(True)
-        self.unreplied_only_client.stateChanged.connect(self.load_unreplied_emails)
+        self.unreplied_only_client.stateChanged.connect(self.load_important_emails)
         controls.addWidget(self.unreplied_only_client)
 
         controls.addStretch(1)
         layout.addLayout(controls)
 
-        self.unreplied_table = QTableWidget(0, 6)
-        self.unreplied_table.setHorizontalHeaderLabels(["From", "Subject", "Age", "Folder", "Source", "Actions"])
+        self.unreplied_table = QTableWidget(0, 7)
+        self.unreplied_table.setHorizontalHeaderLabels(["From", "Subject", "Why Important", "Client", "Project", "Age", "Actions"])
         self.unreplied_table.verticalHeader().setVisible(False)
         self.unreplied_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.unreplied_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         hdr = self.unreplied_table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.unreplied_table, 1)
 
         return widget
+
+    def create_unreplied_emails_widget(self):
+        return self.create_important_emails_widget()
 
     def open_email_rules(self):
         try:
@@ -1690,29 +1694,36 @@ class DashboardTab(QWidget):
                     self.db.reclassify_emails(days=30)
             except Exception:
                 pass
-            self.load_unreplied_emails()
+            self.load_important_emails()
         except Exception as e:
             try:
                 QMessageBox.warning(self, "Email Rules", f"Could not open rules:\n\n{type(e).__name__}: {e}")
             except Exception:
                 pass
 
-    def load_unreplied_emails(self):
+    def load_important_emails(self):
         try:
             self.unreplied_table.setRowCount(1)
-            self.unreplied_table.setItem(0, 0, QTableWidgetItem("Refreshing latest unreplied emails..."))
+            self.unreplied_table.setItem(0, 0, QTableWidgetItem("Refreshing important emails..."))
             only_cp = True
             try:
                 only_cp = bool(self.unreplied_only_client.isChecked())
             except Exception:
                 only_cp = True
-            rows = self.db.list_unreplied_emails(limit=30, only_clients_or_potentials=only_cp, days=14)
+            rows = self.db.list_important_emails(limit=30, days=30, include_triaged=False)
+            if only_cp:
+                rows = [
+                    r for r in rows
+                    if int(r.get("client_id") or 0) > 0
+                    or int(r.get("is_client") or 0) == 1
+                    or int(r.get("is_potential") or 0) == 1
+                ]
 
             # Clear
             self.unreplied_table.setRowCount(0)
             if not rows:
                 self.unreplied_table.setRowCount(1)
-                self.unreplied_table.setItem(0, 0, QTableWidgetItem("No unreplied emails"))
+                self.unreplied_table.setItem(0, 0, QTableWidgetItem("No important emails"))
                 return
 
             from datetime import datetime, UTC
@@ -1722,8 +1733,10 @@ class DashboardTab(QWidget):
                 email_id = str(r.get("id") or "")
                 sender = str(r.get("sender") or "")
                 subject = str(r.get("subject") or "")
-                folder = str(r.get("folder") or "")
-                source = str(r.get("source") or "")
+                reasons = r.get("importance_reasons") or []
+                why = "; ".join(str(x) for x in reasons[:2]) if reasons else "Flagged as important."
+                client_name = str(r.get("client_name") or "")
+                project_name = str(r.get("project_name") or "")
                 ts = int(r.get("timestamp") or 0)
                 age_h = 0
                 try:
@@ -1737,18 +1750,47 @@ class DashboardTab(QWidget):
                 it_from.setData(Qt.ItemDataRole.UserRole, email_id)
                 self.unreplied_table.setItem(row, 0, it_from)
                 self.unreplied_table.setItem(row, 1, QTableWidgetItem(subject))
-                self.unreplied_table.setItem(row, 2, QTableWidgetItem(f"{age_h}h"))
-                self.unreplied_table.setItem(row, 3, QTableWidgetItem(folder))
-                self.unreplied_table.setItem(row, 4, QTableWidgetItem(source))
+                why_item = QTableWidgetItem(why)
+                why_item.setToolTip(why)
+                self.unreplied_table.setItem(row, 2, why_item)
+                self.unreplied_table.setItem(row, 3, QTableWidgetItem(client_name))
+                self.unreplied_table.setItem(row, 4, QTableWidgetItem(project_name))
+                self.unreplied_table.setItem(row, 5, QTableWidgetItem(f"{age_h}h"))
 
                 actions = QWidget()
-                al = QHBoxLayout(actions)
-                al.setContentsMargins(0, 0, 0, 0)
-                al.setSpacing(6)
-                btn = QPushButton("Mark replied")
-                btn.clicked.connect(lambda _=False, mid=email_id: self._mark_email_replied(mid))
-                al.addWidget(btn)
-                self.unreplied_table.setCellWidget(row, 5, actions)
+                outer = QVBoxLayout(actions)
+                outer.setContentsMargins(0, 0, 0, 0)
+                outer.setSpacing(4)
+                row_one = QHBoxLayout()
+                row_one.setContentsMargins(0, 0, 0, 0)
+                row_one.setSpacing(4)
+                row_two = QHBoxLayout()
+                row_two.setContentsMargins(0, 0, 0, 0)
+                row_two.setSpacing(4)
+
+                archive_btn = QPushButton("Archive")
+                archive_btn.clicked.connect(lambda _=False, mid=email_id: self._set_email_triage_status(mid, "archived"))
+                row_one.addWidget(archive_btn)
+
+                unimportant_btn = QPushButton("Unimportant")
+                unimportant_btn.clicked.connect(lambda _=False, mid=email_id: self._set_email_triage_status(mid, "unimportant"))
+                row_one.addWidget(unimportant_btn)
+
+                junk_btn = QPushButton("Junk")
+                junk_btn.clicked.connect(lambda _=False, mid=email_id: self._set_email_triage_status(mid, "junk"))
+                row_one.addWidget(junk_btn)
+
+                link_client_btn = QPushButton("Link Client")
+                link_client_btn.clicked.connect(lambda _=False, mid=email_id: self._link_email_client(mid))
+                row_two.addWidget(link_client_btn)
+
+                link_project_btn = QPushButton("Link Project")
+                link_project_btn.clicked.connect(lambda _=False, mid=email_id: self._link_email_project(mid))
+                row_two.addWidget(link_project_btn)
+
+                outer.addLayout(row_one)
+                outer.addLayout(row_two)
+                self.unreplied_table.setCellWidget(row, 6, actions)
 
             self.unreplied_table.resizeRowsToContents()
         except Exception as e:
@@ -1758,13 +1800,76 @@ class DashboardTab(QWidget):
             except Exception:
                 pass
 
-    def _mark_email_replied(self, email_id: str):
+    def load_unreplied_emails(self):
+        self.load_important_emails()
+
+    def _set_email_triage_status(self, email_id: str, status: str):
         try:
-            self.db.mark_email_replied(str(email_id), replied=1)
+            self.db.update_email_triage(
+                str(email_id),
+                triage_status=str(status),
+                triage_source="manual",
+            )
         except Exception as e:
-            QMessageBox.warning(self, "Emails", f"Could not mark replied:\n\n{type(e).__name__}: {e}")
+            QMessageBox.warning(self, "Emails", f"Could not update email triage:\n\n{type(e).__name__}: {e}")
             return
-        self.load_unreplied_emails()
+        self.load_important_emails()
+
+    def _link_email_client(self, email_id: str):
+        try:
+            clients = self.db.clients_list(active_only=True)
+        except Exception as e:
+            QMessageBox.warning(self, "Emails", f"Could not load clients:\n\n{type(e).__name__}: {e}")
+            return
+        if not clients:
+            QMessageBox.information(self, "Emails", "No clients are available to link yet.")
+            return
+        labels = [str(c.get("name") or "") for c in clients]
+        choice, ok = QInputDialog.getItem(self, "Link Email to Client", "Client", labels, 0, False)
+        if not ok or not choice:
+            return
+        chosen = next((c for c in clients if str(c.get("name") or "") == str(choice)), None)
+        if not chosen:
+            return
+        try:
+            self.db.link_email_to_client(str(email_id), int(chosen.get("id")))
+        except Exception as e:
+            QMessageBox.warning(self, "Emails", f"Could not link client:\n\n{type(e).__name__}: {e}")
+            return
+        self.load_important_emails()
+
+    def _link_email_project(self, email_id: str):
+        try:
+            projects = self.db.cos_get_projects()
+        except Exception as e:
+            QMessageBox.warning(self, "Emails", f"Could not load projects:\n\n{type(e).__name__}: {e}")
+            return
+        if not projects:
+            QMessageBox.information(self, "Emails", "No projects are available to link yet.")
+            return
+        project_choices = []
+        project_map = {}
+        for project in projects:
+            try:
+                pid = int(project[0])
+                name = str(project[1] or "").strip() or f"Project {pid}"
+            except Exception:
+                continue
+            label = f"{pid}: {name}"
+            project_choices.append(label)
+            project_map[label] = pid
+        choice, ok = QInputDialog.getItem(self, "Link Email to Project", "Project", project_choices, 0, False)
+        if not ok or not choice:
+            return
+        try:
+            self.db.link_email_to_project(str(email_id), int(project_map[choice]))
+        except Exception as e:
+            QMessageBox.warning(self, "Emails", f"Could not link project:\n\n{type(e).__name__}: {e}")
+            return
+        self.load_important_emails()
+
+    def _mark_email_replied(self, email_id: str):
+        self._set_email_triage_status(email_id, "archived")
 
     def load_tasks(self):
         if not getattr(self, "task_list", None):

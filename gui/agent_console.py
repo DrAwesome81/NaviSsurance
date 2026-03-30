@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Callable
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -21,10 +22,12 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
 )
 
 from core.agent_chat_service import agent_chat_response
 from core.db import DatabaseManager
+from core.file_handler import extract_text_from_file
 from gui.notifications import notify_chat_response
 
 logger = logging.getLogger(__name__)
@@ -146,6 +149,9 @@ class AgentConsole(QWidget):
         self.done_btn = QPushButton("Done")
         self.done_btn.clicked.connect(lambda: self._set_assignment_status("done"))
         action_row.addWidget(self.done_btn)
+        self.upload_artifact_btn = QPushButton("Upload Artifact")
+        self.upload_artifact_btn.clicked.connect(self._upload_assignment_artifacts)
+        action_row.addWidget(self.upload_artifact_btn)
         self.save_artifact_btn = QPushButton("Save Reply Artifact")
         self.save_artifact_btn.clicked.connect(self._save_latest_reply_artifact)
         action_row.addWidget(self.save_artifact_btn)
@@ -413,6 +419,74 @@ class AgentConsole(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Artifacts", f"Could not save artifact: {e}")
 
+    def _upload_assignment_artifacts(self):
+        if self._current_assignment_id is None:
+            QMessageBox.information(self, "Artifacts", "Select an assignment first.")
+            return
+        file_paths, _selected_filter = QFileDialog.getOpenFileNames(
+            self,
+            "Upload files for assignment",
+            "",
+            "Documents (*.pdf *.docx *.txt *.md);;All Files (*)",
+        )
+        if not file_paths:
+            return
+        aid = int(self._current_assignment_id)
+        tid = int(self._current_thread_id) if self._current_thread_id is not None else None
+        saved = 0
+        failed: list[str] = []
+        for raw_path in file_paths:
+            path = os.path.abspath(str(raw_path or ""))
+            if not path or not os.path.exists(path):
+                failed.append(os.path.basename(path) or str(raw_path or "(missing path)"))
+                continue
+            title = os.path.basename(path)
+            excerpt = ""
+            try:
+                excerpt = str(extract_text_from_file(path) or "").strip()
+            except Exception:
+                excerpt = ""
+            if not excerpt:
+                try:
+                    ext = os.path.splitext(path)[1].lower()
+                    if ext in {".txt", ".md", ".py", ".json", ".csv"}:
+                        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                            excerpt = f.read().strip()
+                except Exception:
+                    excerpt = ""
+            if excerpt:
+                excerpt = excerpt[:4000]
+            else:
+                excerpt = f"(No extractable inline text. See file_path: {path})"
+            try:
+                self.db.agent_add_artifact(
+                    artifact_type="uploaded_file",
+                    assignment_id=aid,
+                    thread_id=tid,
+                    title=title,
+                    content_md=excerpt,
+                    file_path=path,
+                )
+                if tid is not None:
+                    session_id = self._thread_session_id(int(tid))
+                    if session_id:
+                        self.db.save_message(session_id, "navi", f"Uploaded assignment file: {title}\npath: {path}")
+                saved += 1
+            except Exception:
+                failed.append(title)
+        if saved:
+            self.chat_display.append(
+                f"<p style='color:#9aa0a6;'><i>Uploaded {saved} file artifact(s) for A-{aid:04d}.</i></p>"
+            )
+        if failed:
+            QMessageBox.warning(
+                self,
+                "Artifacts",
+                "Some files could not be attached:\n\n" + "\n".join(failed[:10]),
+            )
+        self._refresh_assignment_label()
+        self._load_current_history()
+
     def _view_assignment_artifacts(self):
         if self._current_assignment_id is None:
             QMessageBox.information(self, "Artifacts", "Select an assignment first.")
@@ -514,6 +588,8 @@ class AgentConsole(QWidget):
             safe = (content or "").replace("<", "&lt;").replace(">", "&gt;")
             if role == "user":
                 html_parts.append(f"<p><b>You:</b></p><p>{safe}</p>")
+            elif role in {"navi", "manager"}:
+                html_parts.append(f"<p><b>Navi:</b></p><p>{safe}</p>")
             else:
                 html_parts.append(f"<p><b>{self.agent.get('display_name') or 'Agent'}:</b></p><p>{safe}</p>")
         self.chat_display.setHtml(

@@ -25,8 +25,9 @@ Notes: Local processing ensures data privacy; no API costs; requires GPU for opt
 API Details
 xAI Grok
 
-Purpose: Analyzes SOPs for compliance (ISO 13485, 21 CFR 820), generates study protocols, and provides lead generation, outputting JSON ([{section, issue, fix, reference}]) for compliance and structured data for leads.
-Endpoints: https://api.x.ai/grok (REST API).
+Purpose: Analyzes SOPs for compliance (ISO 13485, 21 CFR 820), generates study protocols, provides lead generation, and supports app-wide Grok completions/web search via the xAI SDK.
+Default model: `grok-4.20-multi-agent-beta-0309` (centralized in `core/grok_client.py`).
+Endpoints: https://api.x.ai/grok (xAI platform; app access is through the xAI SDK rather than the deprecated legacy REST chat-completions path).
 Authentication: API key (GROK_API_KEY) in .env.
 Setup:
 Register at https://x.ai/api.
@@ -38,7 +39,7 @@ Features:
 - Lead Generation: Company and contact research for MedTech companies
 - News Search: AI-powered query generation for MedTech industry news
 
-Code: core/chat.py (compliance, study design calls), gui/interface.py (lead generation, news search).
+Code: `core/grok_client.py` (shared xAI client/model selection), plus feature callers such as `core/compliance.py`, `core/workspace_orchestrator.py`, `core/response_handler.py`, `core/chat_handler.py`, and `gui/dashboard_tab.py`.
 Notes: Commercial use allowed per ToS; verify at https://x.ai/grok.
 
 OpenAI (ChatGPT) — Web Research (Deep Research Tab)

@@ -583,9 +583,16 @@ class ChatWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)  # Changed to horizontal layout
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setSpacing(6)
+        self.main_layout = main_layout
+        self._main_layout_default_spacing = 6
 
         # Left side - Chat Panel (hidden when Chief of Staff tab is active)
         self.chat_panel = QWidget()
+        self.chat_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        self.chat_panel.setMinimumWidth(300)
+        self.chat_panel.setMaximumWidth(560)
         chat_layout = QVBoxLayout(self.chat_panel)
         chat_layout.setContentsMargins(5, 5, 5, 5)
         chat_layout.setSpacing(0)
@@ -639,6 +646,10 @@ class ChatWindow(QMainWindow):
 
         # Right side - Tab Widget
         self.tab_widget = QTabWidget()
+        self.tab_widget.setDocumentMode(True)
+        self.tab_widget.setUsesScrollButtons(True)
+        self.tab_widget.tabBar().setExpanding(False)
+        self.tab_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         main_layout.addWidget(self.tab_widget, 3)  # Tabs get 3/4 of space
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
         
@@ -749,11 +760,20 @@ class ChatWindow(QMainWindow):
     def _on_tab_changed(self, index):
         """Hide Navi chat panel when Chief of Staff tab is active; show it for other tabs."""
         tab_name = self.tab_widget.tabText(index) if index >= 0 else ""
-        if tab_name == "Chief of Staff":
+        self._apply_host_shell_mode(tab_name == "Chief of Staff")
+
+    def _apply_host_shell_mode(self, chief_of_staff_active: bool) -> None:
+        if chief_of_staff_active:
             self.chat_panel.hide()
-            self.tab_widget.setStyleSheet("")  # ensure tab widget can expand
+            self.main_layout.setSpacing(0)
+            self.main_layout.setStretch(0, 0)
+            self.main_layout.setStretch(1, 1)
+            self.tab_widget.setStyleSheet("")
         else:
             self.chat_panel.show()
+            self.main_layout.setSpacing(self._main_layout_default_spacing)
+            self.main_layout.setStretch(0, 1)
+            self.main_layout.setStretch(1, 3)
 
     def _get_dashboard_cos_chat_id(self) -> int:
         """Return a stable cos_chat id used by the Dashboard chat panel."""

@@ -40,7 +40,15 @@ def _safe_filename_part(value: str, *, fallback: str = "unknown") -> str:
 
 
 class MeetingMetadataDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None, *, default_date: QDate | None = None):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        default_date: QDate | None = None,
+        db=None,
+        initial_client_id: int | None = None,
+        initial_cos_project_id: int | None = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Label meeting")
         self.setModal(True)
@@ -60,8 +68,43 @@ class MeetingMetadataDialog(QDialog):
         self.notes_edit.setPlaceholderText("Key decisions, action items, follow-ups…")
         self.notes_edit.setMinimumHeight(140)
 
+        self.client_combo = QComboBox(self)
+        self.client_combo.addItem("None", None)
+        self.project_combo = QComboBox(self)
+        self.project_combo.addItem("None", None)
+
+        try:
+            clients = db.clients_list(active_only=True) if db is not None and hasattr(db, "clients_list") else []
+        except Exception:
+            clients = []
+        for client in clients:
+            try:
+                client_id = int(client.get("id"))
+                client_name = str(client.get("name") or "").strip()
+            except Exception:
+                continue
+            self.client_combo.addItem(client_name or f"Client {client_id}", client_id)
+            if initial_client_id is not None and client_id == int(initial_client_id):
+                self.client_combo.setCurrentIndex(self.client_combo.count() - 1)
+
+        try:
+            projects = db.cos_get_projects() if db is not None and hasattr(db, "cos_get_projects") else []
+        except Exception:
+            projects = []
+        for project in projects:
+            try:
+                project_id = int(project[0])
+                project_name = str(project[1] or "").strip()
+            except Exception:
+                continue
+            self.project_combo.addItem(project_name or f"Project {project_id}", project_id)
+            if initial_cos_project_id is not None and project_id == int(initial_cos_project_id):
+                self.project_combo.setCurrentIndex(self.project_combo.count() - 1)
+
         form.addRow("Meeting date", self.date_edit)
         form.addRow("Meeting with", self.with_edit)
+        form.addRow("Client", self.client_combo)
+        form.addRow("Project", self.project_combo)
         form.addRow("Notes", self.notes_edit)
 
         layout.addLayout(form)
@@ -75,11 +118,13 @@ class MeetingMetadataDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def values(self) -> tuple[str, str, str]:
+    def values(self) -> tuple[str, str, str, int | None, int | None]:
         meeting_date = self.date_edit.date().toString("yyyy-MM-dd")
         meeting_with = (self.with_edit.text() or "").strip()
         notes = (self.notes_edit.toPlainText() or "").strip()
-        return meeting_date, meeting_with, notes
+        client_id = self.client_combo.currentData()
+        project_id = self.project_combo.currentData()
+        return meeting_date, meeting_with, notes, client_id, project_id
 
 
 class AssemblyAITranscriptionWorker(QThread):
@@ -255,6 +300,8 @@ class MeetingsTab(QWidget):
         self._current_meeting_date: str | None = None
         self._current_meeting_with: str | None = None
         self._current_meeting_notes: str | None = None
+        self._current_client_id: int | None = None
+        self._current_cos_project_id: int | None = None
         self._current_audio_path: str | None = None
         self._current_transcript_text: str | None = None
         self._task_extraction_worker: MeetingTaskExtractionWorker | None = None
@@ -448,10 +495,16 @@ class MeetingsTab(QWidget):
         meeting_date = None
         meeting_with = ""
         notes = ""
+        client_id = None
+        cos_project_id = None
         if prompt_for_metadata:
-            dlg = MeetingMetadataDialog(self, default_date=default_date)
+            dlg = MeetingMetadataDialog(
+                self,
+                default_date=default_date,
+                db=getattr(self.chat_handler, "db", None),
+            )
             if dlg.exec() == QDialog.DialogCode.Accepted:
-                meeting_date, meeting_with, notes = dlg.values()
+                meeting_date, meeting_with, notes, client_id, cos_project_id = dlg.values()
             else:
                 meeting_date = default_date.toString("yyyy-MM-dd")
         else:
@@ -460,6 +513,8 @@ class MeetingsTab(QWidget):
         self._current_meeting_date = meeting_date
         self._current_meeting_with = meeting_with
         self._current_meeting_notes = notes
+        self._current_client_id = int(client_id) if client_id is not None else None
+        self._current_cos_project_id = int(cos_project_id) if cos_project_id is not None else None
         self._current_audio_path = str(audio_path)
         self._current_transcript_text = None
 
@@ -474,6 +529,8 @@ class MeetingsTab(QWidget):
                     audio_file_path=str(audio_path),
                     transcription_provider="assemblyai",
                     status="uploading",
+                    client_id=self._current_client_id,
+                    cos_project_id=self._current_cos_project_id,
                 )
         except Exception:
             meeting_id = None
@@ -484,6 +541,10 @@ class MeetingsTab(QWidget):
             f"Meeting date: {meeting_date}",
             f"Meeting with: {meeting_with or '(unlabeled)'}",
         ]
+        if self._current_client_id is not None:
+            header_lines.append(f"Client ID: {self._current_client_id}")
+        if self._current_cos_project_id is not None:
+            header_lines.append(f"Project ID: {self._current_cos_project_id}")
         if notes:
             header_lines.append("Notes:\n" + notes)
         header_lines.append("\nTranscription started…\n")
@@ -546,6 +607,10 @@ class MeetingsTab(QWidget):
         if self._current_meeting_date:
             header.append(f"Meeting date: {self._current_meeting_date}")
         header.append(f"Meeting with: {self._current_meeting_with or '(unlabeled)'}")
+        if self._current_client_id is not None:
+            header.append(f"Client ID: {self._current_client_id}")
+        if self._current_cos_project_id is not None:
+            header.append(f"Project ID: {self._current_cos_project_id}")
         if self._current_meeting_notes:
             header.append("Notes:\n" + self._current_meeting_notes)
         header.append("\n--- Transcript ---\n")

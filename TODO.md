@@ -2,48 +2,48 @@
 
 ## High Priority
 
-- [ ] Billing template quality:
+- [x] Billing template quality:
   - create a default invoice template that is actually human-readable
   - ensure rendered invoice drafts have clean layout and usable formatting
   - make template output suitable for real client-facing review without manual reconstruction
-- [ ] Research/document export formats:
+- [x] Research/document export formats:
   - add the ability to export generated research / briefing documents as PDF
   - add the ability to export generated research / briefing documents as DOCX
-- [ ] Meeting transcript export formats:
+- [x] Meeting transcript export formats:
   - allow saving meeting transcripts as Word (`.docx`) files in addition to plain text
   - keep the existing `.txt` save flow available for lightweight export
-- [ ] Automatic task generation from meeting transcriptions:
+- [x] Automatic task generation from meeting transcriptions:
   - extract actionable tasks from recorded meeting transcripts automatically
   - create draft dashboard tasks with reviewable details instead of requiring full manual entry
-- [ ] Persistent Navi memory system:
+- [x] Persistent Navi memory system:
   - add explicit `Teach Navi:` command
   - create a global `user_memory` store for durable facts/preferences/aliases
   - inject relevant durable memory into main Navi prompts, not just CoS
-- [ ] Chief of Staff preferences UX:
+- [x] Chief of Staff preferences UX:
   - replace raw JSON entry in preferences with structured controls
   - use checkboxes, date/time pickers, and normal text fields instead of JSON blobs
   - make blocked times and behavior preferences understandable without technical knowledge
   - cover the preferences UI and prompt-injection behavior with automated tests
-- [ ] CoS task capture priority behavior:
+- [x] CoS task capture priority behavior:
   - do not default unspecified task priority to `P0`
   - infer an appropriate priority from context when possible
   - if priority is ambiguous, prompt the user instead of silently choosing `P0`
-- [ ] Chief of Staff sizing polish:
+- [x] Chief of Staff sizing polish:
   - verify assignment-subtab buttons are readable at runtime across DPI/font scaling
   - fix assignment-subtab button overlap / spacing in the CoS sidebar layout
   - verify chat entry fields are tall enough to avoid clipping top/bottom of text
   - standardize control sizing based on actual font metrics instead of one-off constants
-- [ ] Chief of Staff chat scroll behavior:
+- [x] Chief of Staff chat scroll behavior:
   - preserve scroll position / stay pinned to the latest message after responses
   - prevent chat refresh from jumping back to the top of the conversation
-- [ ] Date picker consistency:
+- [x] Date picker consistency:
   - any date entry field in the app should offer a calendar picker
   - keep optional manual ISO/text fallback only where it is truly needed
-- [ ] CoS calendar context accuracy:
+- [x] CoS calendar context accuracy:
   - build "today" / "this week" calendar windows from local midnight, not UTC midnight
   - prevent late-night events from being misclassified as tonight/today incorrectly
   - ensure all same-day local calendar blocks are included in AM Sweep / CoS planning context
-- [ ] Individual assignment status update (set to queued):
+- [x] Individual assignment status update (set to queued):
   - add a way to set a single assignment back to queued (currently only bulk status update supports it)
 
 ## Memory / Learning
@@ -87,6 +87,11 @@
 - [x] Completed broader UI sizing pass for key controls
 - [x] Auto-refreshed task list/views after manual task creation in covered paths
 - [x] Added per-request timing logs for CoS requests / AM Sweep
+- [x] Added DOCX/PDF export for research and briefing documents
+- [x] Added DOCX save support for meeting transcripts
+- [x] Added review-first task extraction from meeting transcripts
+- [x] Added persistent global Navi memory with approval workflow and management UI
+- [x] Completed Chief of Staff UX polish for preferences, priority handling, scroll behavior, sizing, and host-shell layout
 
 ## Intentionally Manual / Not Targeted for Deterministic Automation
 

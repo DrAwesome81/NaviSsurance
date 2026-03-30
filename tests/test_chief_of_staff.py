@@ -13,7 +13,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime, UTC, timedelta
+from datetime import datetime, UTC, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -47,6 +47,11 @@ def cos_db(temp_db_path):
         with patch.object(core_db, "DATABASE_PATH", temp_db_path):
             db = core_db.DatabaseManager()
             yield db
+
+
+@pytest.fixture(autouse=True)
+def _stub_auto_agent_handoff(monkeypatch):
+    monkeypatch.setattr("core.chief_of_staff_service.prime_assignment_handoff", lambda *args, **kwargs: "")
 
 
 class TestCosDatabaseProjects:
@@ -291,6 +296,85 @@ class TestChiefOfStaffUtilityHelpers:
         assert mode == "all"
         assert note is None
 
+    def test_preferences_context_formats_structured_preferences(self):
+        from core.chief_of_staff_service import _preferences_context
+
+        prefs_row = (
+            "# Priorities\nProtect focus time.",
+            '[{"day":"weekday","start":"11:00","end":"12:00","label":"Lunch"}]',
+            3,
+            json.dumps(
+                {
+                    "tone": "direct",
+                    "planning_detail": "concise",
+                    "scheduling_autonomy": "ask_first",
+                    "protect_evenings": True,
+                    "protect_weekends": False,
+                    "confirm_ambiguous_tasks": True,
+                    "legacy_key": "keep me",
+                }
+            ),
+            "now",
+        )
+
+        ctx = _preferences_context(prefs_row)
+
+        assert "Protect focus time." in ctx
+        assert "Weekdays: 11:00-12:00 (Lunch)" in ctx
+        assert "Preferred tone: direct" in ctx
+        assert "Planning detail: concise" in ctx
+        assert "Always ask before scheduling." in ctx
+        assert "Protect evenings from optional work." in ctx
+        assert "Ask before creating tasks when intent is ambiguous." in ctx
+        assert "legacy_key" in ctx
+
+    def test_calendar_query_windows_anchor_to_local_midnight(self):
+        from core.chief_of_staff_service import _calendar_query_windows
+
+        eastern = timezone(timedelta(hours=-5))
+        now = datetime(2026, 3, 7, 23, 30, tzinfo=eastern)
+
+        local_tz, time_min_today, time_max_today, time_min_week, time_max_week = _calendar_query_windows(now)
+
+        assert local_tz is not None
+        assert time_min_today == "2026-03-07T05:00:00Z"
+        assert time_max_today == "2026-03-08T05:00:00Z"
+        assert time_min_week == "2026-03-07T05:00:00Z"
+        assert time_max_week == "2026-03-14T05:00:00Z"
+
+    def test_calendar_context_uses_local_midnight_windows(self, monkeypatch):
+        from core.chief_of_staff_service import _calendar_context
+
+        calls = []
+
+        monkeypatch.setattr("core.chief_of_staff_service.calendar_available", lambda: (True, ""))
+        monkeypatch.setattr(
+            "core.chief_of_staff_service._calendar_query_windows",
+            lambda: (
+                timezone(timedelta(hours=-5)),
+                "2026-03-07T05:00:00Z",
+                "2026-03-08T05:00:00Z",
+                "2026-03-07T05:00:00Z",
+                "2026-03-14T05:00:00Z",
+            ),
+        )
+
+        def _fake_get_calendar_events(*, time_min, time_max):
+            calls.append((time_min, time_max))
+            return [{"summary": "Late-night event"}]
+
+        monkeypatch.setattr("core.chief_of_staff_service.get_calendar_events", _fake_get_calendar_events)
+        monkeypatch.setattr(
+            "core.chief_of_staff_service.format_events_brief",
+            lambda events, tz=None: f"{len(events)} item(s) tz={tz}",
+        )
+
+        out = _calendar_context()
+
+        assert calls[0] == ("2026-03-07T05:00:00Z", "2026-03-08T05:00:00Z")
+        assert calls[1] == ("2026-03-07T05:00:00Z", "2026-03-14T05:00:00Z")
+        assert "**Calendar (today):**" in out
+
 
 class TestChiefOfStaffUiHelperFunctions:
     """Unit tests for CoS board helper utilities."""
@@ -412,14 +496,17 @@ def test_local_time_context_preserves_supplied_naive_datetime():
 
     def test_cos_response_parses_single_add_task_and_adds_to_db(self, mock_grok, cos_db):
         """One ADD_TASK line in the reply is parsed, task inserted, line stripped from reply."""
-        mock_grok.return_value = "Here is my advice.\nADD_TASK: Send follow-up to client | 02-25-2026 | Business\nHope that helps."
+        mock_grok.return_value = "Here is my advice.\nADD_TASK: Urgent client follow-up ASAP | none | Business\nHope that helps."
         from core.chief_of_staff_service import cos_response
         result = cos_response(cos_db, "Add a follow-up task.")
         tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
         assert len(tasks) == 1
-        assert tasks[0][1] == "Send follow-up to client"
-        assert tasks[0][2] == "02-25-2026"
+        assert tasks[0][1] == "Urgent client follow-up ASAP"
+        assert tasks[0][2] in (None, "", "none")
         assert tasks[0][3] == "Business"
+        task_row = cos_db.get_task_by_id(int(tasks[0][0]))
+        assert task_row is not None
+        assert int(task_row.get("priority") or 0) == 4
         assert "Added 1 task(s)" in result
         assert "ADD_TASK:" not in result
 
@@ -440,16 +527,15 @@ def test_local_time_context_preserves_supplied_naive_datetime():
         assert "Review Q1 numbers" in texts
         assert "Added 2 task(s)" in result
 
-    def test_cos_response_add_task_with_none_date(self, mock_grok, cos_db):
-        """ADD_TASK with due date 'none' stores task with no date."""
+    def test_cos_response_add_task_without_priority_prompts_for_clarification(self, mock_grok, cos_db):
+        """Ambiguous ADD_TASK without a usable priority should ask for clarification instead of defaulting to P0."""
         mock_grok.return_value = "ADD_TASK: Call mom | none | Personal"
         from core.chief_of_staff_service import cos_response
-        cos_response(cos_db, "Add a personal task.")
+        result = cos_response(cos_db, "Add a personal task.")
         tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
-        assert len(tasks) == 1
-        assert tasks[0][1] == "Call mom"
-        assert tasks[0][2] in (None, "", "none")
-        assert tasks[0][3] == "Personal"
+        assert len(tasks) == 0
+        assert "Priority clarification needed" in result
+        assert "Call mom" in result
 
     def test_cos_response_parses_rich_prioritized_task_lines_without_add_task_commands(
         self, mock_grok, cos_db
@@ -468,6 +554,8 @@ def test_local_time_context_preserves_supplied_naive_datetime():
         texts = {t[1] for t in tasks}
         assert "CoDentist: Create shared folder, add current docs + draft hazard analysis" in texts
         assert "Call plumber" in texts
+        by_id = {int(t[0]): cos_db.get_task_by_id(int(t[0])) for t in tasks}
+        assert any(int((row or {}).get("priority") or 0) == 4 for row in by_id.values())
         assert "Added 2 task(s)" in result
 
     def test_cos_response_parses_pipe_tasks_from_inline_priority_text(self, mock_grok, cos_db):
@@ -1361,6 +1449,7 @@ def test_global_memory_dialog_lists_and_deletes_entries(qapp, cos_db):
         content="Prefer concise bullets.",
         source="teach_navi",
         confidence=1.0,
+        approval_status="approved",
     )
     assert mid
 
@@ -1377,6 +1466,63 @@ def test_global_memory_dialog_lists_and_deletes_entries(qapp, cos_db):
 
 
 @pytest.mark.qt
+def test_cos_preferences_dialog_loads_and_saves_structured_controls(qapp, cos_db):
+    from gui.chief_of_staff_tab import CosPreferencesDialog
+
+    cos_db.cos_set_preferences(
+        operating_system_md="# Priorities\nTime freedom first.",
+        blocked_times_json='[{"day":"weekday","start":"11:00","end":"12:00","label":"Lunch"}]',
+        deep_work_hours=3,
+        behavior_prefs_json=json.dumps(
+            {
+                "tone": "direct",
+                "planning_detail": "detailed",
+                "scheduling_autonomy": "ask_first",
+                "protect_evenings": True,
+                "confirm_ambiguous_tasks": True,
+                "legacy_key": "preserve",
+            }
+        ),
+    )
+
+    dialog = CosPreferencesDialog(cos_db)
+    assert "Time freedom" in dialog.prefs_os_edit.toPlainText()
+    assert dialog.prefs_blocked_list.count() == 1
+    assert "Weekdays 11:00-12:00 (Lunch)" == dialog.prefs_blocked_list.item(0).text()
+    assert dialog.behavior_tone_combo.currentData() == "direct"
+    assert dialog.behavior_planning_combo.currentData() == "detailed"
+    assert dialog.behavior_scheduling_combo.currentData() == "ask_first"
+    assert dialog.behavior_evenings_check.isChecked() is True
+    assert dialog.behavior_confirm_tasks_check.isChecked() is True
+
+    dialog.behavior_tone_combo.setCurrentIndex(max(0, dialog.behavior_tone_combo.findData("gentle")))
+    dialog.behavior_planning_combo.setCurrentIndex(max(0, dialog.behavior_planning_combo.findData("concise")))
+    dialog.behavior_scheduling_combo.setCurrentIndex(max(0, dialog.behavior_scheduling_combo.findData("draft_first")))
+    dialog.behavior_evenings_check.setChecked(False)
+    dialog.behavior_weekends_check.setChecked(True)
+    dialog._set_blocked_time_item({"day": "monday", "start": "08:30", "end": "09:15", "label": "School drop-off"})
+
+    with patch("gui.chief_of_staff_tab.QMessageBox.information"):
+        dialog._save()
+
+    row = cos_db.cos_get_preferences()
+    assert row is not None
+    assert "Time freedom" in (row[0] or "")
+    assert row[2] == 3
+    blocked = json.loads(row[1] or "[]")
+    assert len(blocked) == 2
+    assert any(b.get("day") == "monday" and b.get("label") == "School drop-off" for b in blocked)
+    behavior = json.loads(row[3] or "{}")
+    assert behavior["tone"] == "gentle"
+    assert behavior["planning_detail"] == "concise"
+    assert behavior["scheduling_autonomy"] == "draft_first"
+    assert behavior["protect_evenings"] is False
+    assert behavior["protect_weekends"] is True
+    assert behavior["confirm_ambiguous_tasks"] is True
+    assert behavior["legacy_key"] == "preserve"
+
+
+@pytest.mark.qt
 def test_global_memory_dialog_can_add_and_edit_entries(qapp, cos_db):
     from PyQt6.QtWidgets import QDialog
     from gui.chief_of_staff_tab import GlobalMemoryDialog
@@ -1386,6 +1532,7 @@ def test_global_memory_dialog_can_add_and_edit_entries(qapp, cos_db):
         "kind": "fact",
         "source": "manual",
         "confidence": 0.9,
+        "approval_status": "approved",
         "content": "Adam prefers concise bullets.",
         "json_data": '{"manual": true}',
     }
@@ -1394,6 +1541,7 @@ def test_global_memory_dialog_can_add_and_edit_entries(qapp, cos_db):
         "kind": "preference",
         "source": "manual_edit",
         "confidence": 0.75,
+        "approval_status": "approved",
         "content": "Adam prefers short bullets.",
         "json_data": '{"edited": true}',
     }
@@ -1436,6 +1584,107 @@ def test_global_memory_dialog_can_add_and_edit_entries(qapp, cos_db):
     assert updated[1] == "preference"
     assert "short bullets" in updated[2].lower()
     assert updated[3] == "manual_edit"
+
+
+@pytest.mark.qt
+def test_global_memory_dialog_can_approve_pending_entries(qapp, cos_db):
+    from gui.chief_of_staff_tab import GlobalMemoryDialog
+
+    mid = cos_db.user_memory_add(
+        kind="alias",
+        content="Q-sub means quality submission.",
+        source="auto_chat",
+        confidence=0.65,
+        approval_status="pending",
+    )
+    assert mid
+
+    dialog = GlobalMemoryDialog(cos_db)
+    dialog.status_filter.setCurrentIndex(max(0, dialog.status_filter.findData("pending")))
+    dialog._reload()
+    assert dialog.memory_list.count() == 1
+
+    dialog.memory_list.setCurrentRow(0)
+    dialog._set_selected_status("approved")
+
+    approved = cos_db.user_memory_recent(approval_status="approved", limit=10)
+    assert len(approved) == 1
+    assert approved[0][5] == "approved"
+
+
+@pytest.mark.qt
+def test_global_memory_dialog_renders_structured_alias_details(qapp, cos_db):
+    from gui.chief_of_staff_tab import GlobalMemoryDialog
+
+    mid = cos_db.user_memory_add(
+        kind="alias",
+        content="Q-sub means quality submission.",
+        source="teach_navi",
+        confidence=1.0,
+        approval_status="approved",
+        json_data={
+            "explicit": True,
+            "alias": {"term": "Q-sub", "canonical": "quality submission", "synonyms": ["quality sub"]},
+        },
+    )
+    assert mid
+
+    dialog = GlobalMemoryDialog(cos_db)
+    dialog.memory_list.setCurrentRow(0)
+
+    assert "q-sub -> quality submission" in dialog.memory_list.item(0).text().lower()
+    detail = dialog.detail_browser.toHtml().lower()
+    assert "alias fields" in detail
+    assert "q-sub" in detail
+    assert "quality submission" in detail
+    assert "quality sub" in detail
+
+
+@pytest.mark.qt
+def test_global_memory_pending_review_indicator_and_shortcut(qapp, cos_db):
+    from gui.chief_of_staff_tab import ChiefOfStaffTab
+
+    cos_db.user_memory_add(
+        kind="fact",
+        content="Adam prefers concise bullets.",
+        source="auto_chat",
+        confidence=0.65,
+        approval_status="pending",
+    )
+    cos_db.user_memory_add(
+        kind="alias",
+        content="Q-sub means quality submission.",
+        source="auto_chat",
+        confidence=0.6,
+        approval_status="pending",
+    )
+
+    tab = ChiefOfStaffTab(cos_db)
+    tab._refresh_pending_memory_indicator()
+
+    assert not tab.pending_memory_btn.isHidden()
+    assert "2 pending" in tab.pending_memory_btn.text().lower()
+    assert tab.pending_memory_action.isEnabled() is True
+    assert tab.pending_memory_action.text().endswith("(2)")
+    assert tab.memory_action.text().endswith("(2 pending)")
+
+    captured = {}
+
+    class _FakeDialog:
+        def __init__(self, db, parent=None, initial_status=None):
+            captured["db"] = db
+            captured["parent"] = parent
+            captured["initial_status"] = initial_status
+
+        def exec(self):
+            return 0
+
+    with patch("gui.chief_of_staff_tab.GlobalMemoryDialog", _FakeDialog):
+        tab._open_pending_memory_review()
+
+    assert captured["db"] is cos_db
+    assert captured["parent"] is tab
+    assert captured["initial_status"] == "pending"
 
 
 @pytest.mark.qt
@@ -1526,6 +1775,30 @@ def test_chief_of_staff_assignment_scope_filter_can_show_closed(qapp, cos_db):
 
 
 @pytest.mark.qt
+def test_chief_of_staff_can_set_single_assignment_back_to_queued(qapp, cos_db):
+    from gui.chief_of_staff_tab import ChiefOfStaffTab
+
+    aid = cos_db.agent_create_assignment(
+        title="Needs reopen",
+        brief_md="Was blocked, should be queued again",
+        requester_code="navi",
+        assignee_code="atlas",
+        priority=2,
+        status="blocked",
+    )
+    assert aid
+
+    tab = ChiefOfStaffTab(cos_db)
+    tab._refresh_assignment_list()
+    tab._current_assignment_id = int(aid)
+    tab._set_assignment_status("queued")
+
+    row = cos_db.agent_get_assignment(int(aid))
+    assert row is not None
+    assert str(row.get("status") or "") == "queued"
+
+
+@pytest.mark.qt
 def test_chief_of_staff_open_assignment_uses_ancestor_tab_host(qapp, cos_db):
     """Opening assignee chat should work when tab host is an ancestor, not direct parent."""
     from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QGroupBox
@@ -1570,3 +1843,72 @@ def test_chief_of_staff_open_assignment_uses_ancestor_tab_host(qapp, cos_db):
     assert host.deep_research_tab.atlas_console.focused == int(aid)
     assert not info_mock.called
     assert not warn_mock.called
+
+
+@pytest.mark.qt
+def test_chief_of_staff_assignment_details_show_agent_followup_and_needs_input(qapp, cos_db):
+    from gui.chief_of_staff_tab import ChiefOfStaffTab
+
+    aid = cos_db.agent_create_assignment(
+        title="Atlas follow-up target",
+        brief_md="Summarize the regulatory packet and identify missing inputs.",
+        requester_code="navi",
+        assignee_code="atlas",
+        priority=3,
+        status="queued",
+    )
+    assert aid
+
+    tid = cos_db.agent_create_thread(
+        agent_code="atlas",
+        title="Atlas follow-up target",
+        context_json={"source": "test", "assignment_id": int(aid)},
+    )
+    assert tid
+    assert cos_db.agent_link_assignment_thread(
+        assignment_id=int(aid),
+        thread_id=int(tid),
+        actor_code="navi",
+        note="Linked in test",
+    )
+
+    thread = cos_db.agent_get_thread(int(tid))
+    assert thread is not None
+    session_id = str(thread[3] or "")
+    cos_db.save_message(
+        session_id,
+        "assistant",
+        "I can start, but please upload the source packet and answer whether this is a 510(k) or de novo path.",
+    )
+    cos_db.agent_add_artifact(
+        artifact_type="uploaded_file",
+        assignment_id=int(aid),
+        thread_id=int(tid),
+        title="packet.pdf",
+        content_md="Packet excerpt",
+        file_path="C:/tmp/packet.pdf",
+    )
+
+    tab = ChiefOfStaffTab(cos_db)
+    tab._refresh_assignment_list()
+
+    rows = []
+    for row_idx in range(tab.assignment_list.rowCount()):
+        vals = []
+        for col_idx in range(tab.assignment_list.columnCount()):
+            item = tab.assignment_list.item(row_idx, col_idx)
+            vals.append(item.text() if item is not None else "")
+        rows.append(vals)
+    assert any(
+        row[0] == f"A-{int(aid):04d}" and row[2] == "Yes"
+        for row in rows
+    )
+
+    assert tab._focus_assignment_by_id(int(aid)) is True
+    details = tab.assignment_details.toPlainText()
+    assert "Agent follow-up:" in details
+    assert "Needs input: yes" in details
+    assert "Requested from you:" in details
+    assert "please upload the source packet" in details.lower()
+    assert "Uploaded files (1):" in details
+    assert "packet.pdf" in details

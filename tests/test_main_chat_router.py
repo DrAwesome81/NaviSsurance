@@ -25,8 +25,8 @@ class _FakeDB:
     def cos_update_chat(self, chat_id):
         self.updated_chat_ids.append(int(chat_id))
 
-    def user_memory_add(self, *, kind, content, source="unknown", confidence=1.0, json_data=None):
-        row = (len(self.user_memory_added) + 1, kind, content, source, confidence, json_data, "now", "now")
+    def user_memory_add(self, *, kind, content, source="unknown", confidence=1.0, approval_status="approved", json_data=None):
+        row = (len(self.user_memory_added) + 1, kind, content, source, confidence, approval_status, json_data, "now", "now")
         self.user_memory_added.append(row)
         self.user_memory_rows.insert(0, row)
         return row[0]
@@ -38,16 +38,20 @@ class _FakeDB:
             added += 1
         return added
 
-    def user_memory_search(self, *, query, kind=None, limit=10):
+    def user_memory_search(self, *, query, kind=None, approval_status=None, limit=10):
         matches = [row for row in self.user_memory_rows if query.lower() in str(row[2]).lower()]
         if kind is not None:
             matches = [row for row in matches if row[1] == kind]
+        if approval_status is not None:
+            matches = [row for row in matches if row[5] == approval_status]
         return matches[:limit]
 
-    def user_memory_recent(self, *, kind=None, limit=20):
+    def user_memory_recent(self, *, kind=None, approval_status=None, limit=20):
         rows = list(self.user_memory_rows)
         if kind is not None:
             rows = [row for row in rows if row[1] == kind]
+        if approval_status is not None:
+            rows = [row for row in rows if row[5] == approval_status]
         return rows[:limit]
 
 
@@ -332,6 +336,27 @@ def test_run_main_chat_turn_handles_teach_navi_without_model_calls(monkeypatch):
     assert handler.saved == [("main_session", "assistant", out)]
 
 
+def test_run_main_chat_turn_handles_teach_navi_alias_without_model_calls(monkeypatch):
+    db = _FakeDB(dashboard_chat_id=7)
+    handler = _FakeHandler(db)
+    monkeypatch.setattr(
+        "core.main_chat_router.run_local_completion",
+        lambda messages, session_id: (_ for _ in ()).throw(AssertionError("local should not run")),
+    )
+    monkeypatch.setattr(
+        "core.main_chat_router.cos_response",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("CoS should not run")),
+    )
+
+    out = run_main_chat_turn(handler, "Teach Navi: Q-sub means quality submission.", "main_session", [])
+
+    assert "I'll remember that alias" in out
+    assert db.user_memory_added[0][1] == "alias"
+    assert db.user_memory_added[0][2] == "Q-sub means quality submission."
+    assert "Q-sub" in str(db.user_memory_added[0][6])
+    assert handler.saved == [("main_session", "assistant", out)]
+
+
 def test_run_main_chat_turn_auto_stores_durable_memory(monkeypatch):
     db = _FakeDB(dashboard_chat_id=7)
     handler = _FakeHandler(db)
@@ -356,6 +381,21 @@ def test_run_main_chat_turn_auto_stores_durable_memory(monkeypatch):
 def test_run_main_chat_turn_injects_db_user_memory_into_local_prompt(monkeypatch):
     db = _FakeDB(dashboard_chat_id=7)
     db.user_memory_add(kind="preference", content="Prefer concise bullets.", source="teach_navi")
+    db.user_memory_add(
+        kind="alias",
+        content="Q-sub means quality submission.",
+        source="teach_navi",
+        confidence=1.0,
+        approval_status="approved",
+        json_data={"alias": {"term": "Q-sub", "canonical": "quality submission", "synonyms": []}},
+    )
+    db.user_memory_add(
+        kind="alias",
+        content="Q-sub means quality submission.",
+        source="auto_chat",
+        confidence=0.65,
+        approval_status="pending",
+    )
     handler = _FakeHandler(db)
     captured = []
     monkeypatch.setattr(
@@ -370,4 +410,7 @@ def test_run_main_chat_turn_injects_db_user_memory_into_local_prompt(monkeypatch
     run_main_chat_turn(handler, "Rewrite this email.", "main_session", [])
 
     assert captured
+    assert "Approved aliases / glossary" in captured[0][0]["content"]
+    assert "Q-sub means quality submission." in captured[0][0]["content"]
     assert "Prefer concise bullets." in captured[0][0]["content"]
+    assert captured[0][0]["content"].count("Q-sub means quality submission.") == 1

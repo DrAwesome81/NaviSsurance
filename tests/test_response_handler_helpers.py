@@ -78,8 +78,8 @@ def _rh_with_rich_db():
     rh.model_loaded = False
     memory_rows = []
 
-    def _user_memory_add(*, kind, content, source="unknown", confidence=1.0, json_data=None):
-        row = (len(memory_rows) + 1, kind, content, source, confidence, json_data, "now", "now")
+    def _user_memory_add(*, kind, content, source="unknown", confidence=1.0, approval_status="approved", json_data=None):
+        row = (len(memory_rows) + 1, kind, content, source, confidence, approval_status, json_data, "now", "now")
         memory_rows.insert(0, row)
         return row[0]
 
@@ -183,8 +183,25 @@ def test_get_response_injects_navi_context_when_nonempty(monkeypatch):
 
 def test_get_response_injects_user_memory_context(monkeypatch):
     rh = _rh_with_rich_db()
+    rh.chat_handler.db.user_memory_alias_search = lambda **kw: [
+        (
+            3,
+            "alias",
+            "Q-sub means quality submission.",
+            "teach_navi",
+            1.0,
+            "approved",
+            '{"alias":{"term":"Q-sub","canonical":"quality submission","synonyms":[]}}',
+            "now",
+            "now",
+        ),
+    ]
+    rh.chat_handler.db.user_memory_alias_recent = lambda **kw: []
     rh.chat_handler.db.user_memory_search = lambda **kw: [
-        (1, "preference", "Prefer concise bullets.", "teach_navi", 1.0, None, "now", "now"),
+        (1, "preference", "Prefer concise bullets.", "teach_navi", 1.0, "approved", None, "now", "now"),
+    ]
+    rh.chat_handler.db.user_memory_recent = lambda **kw: [] if kw.get("approval_status") == "approved" else [
+        (2, "alias", "Q-sub means quality submission.", "auto_chat", 0.65, "pending", None, "now", "now"),
     ]
     captured = []
 
@@ -199,7 +216,14 @@ def test_get_response_injects_user_memory_context(monkeypatch):
 
     msgs = captured[0]
     assert any(m["role"] == "system" and "Relevant durable user memory" in m["content"] for m in msgs)
+    assert any(m["role"] == "system" and "Approved aliases / glossary" in m["content"] for m in msgs)
+    assert any(m["role"] == "system" and "Q-sub means quality submission." in m["content"] for m in msgs)
     assert any(m["role"] == "system" and "Prefer concise bullets." in m["content"] for m in msgs)
+    assert all(
+        "auto_chat" not in m["content"] or "Q-sub means quality submission." not in m["content"]
+        for m in msgs
+        if m["role"] == "system"
+    )
 
 
 def test_get_response_no_injection_when_context_empty(monkeypatch):
@@ -238,6 +262,23 @@ def test_get_response_handles_teach_navi_deterministically(monkeypatch):
 
     assert "I'll remember that" in out
     assert any(row[1] == "taught" and "preferred format" in row[2] for row in rh.chat_handler.db._memory_rows)
+
+
+def test_get_response_handles_teach_navi_alias_deterministically(monkeypatch):
+    rh = _rh_with_rich_db()
+    monkeypatch.setattr(
+        rh,
+        "hybrid_wrapper",
+        lambda messages, session_id: (_ for _ in ()).throw(AssertionError("LLM should not run")),
+    )
+
+    out = rh.get_response("Teach Navi: Q-sub means quality submission.", "main_session", [])
+
+    assert "I'll remember that alias" in out
+    assert any(
+        row[1] == "alias" and row[2] == "Q-sub means quality submission."
+        for row in rh.chat_handler.db._memory_rows
+    )
 
 
 def test_get_response_auto_stores_user_memory(monkeypatch):
