@@ -72,7 +72,7 @@
 
 ## Docs / Closeout
 
-- [ ] Final closeout artifact: "done vs intentionally manual" matrix in docs
+- [x] Final closeout artifact: "done vs intentionally manual" matrix in docs
 
 ## Completed Recently
 

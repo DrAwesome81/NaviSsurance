@@ -671,6 +671,7 @@ If a date is rejected, double-check which workflow you are in before retrying.
 If you want a deeper companion reference, use:
 - `docs/overview.md`
 - `docs/chief_of_staff.md`
+- `docs/staff_replacement_matrix.md`
 - `docs/note_taking_system.md`
 - `docs/lead_generation.md`
 - `docs/testing.md`

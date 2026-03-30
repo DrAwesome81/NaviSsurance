@@ -30,3 +30,8 @@ NaviSsurance is an AI-powered medical device regulatory consulting platform, ser
 - **Operational with Improvements**: Task management is now functional with dashboard integration and interactive features; Email fetching is limited to inboxes, needing folder access.
 - **In Development**: Clinical study design optimizer, CRM integration, and DistilBERT email filtering.
 - **Next Steps**: Debug `fetch_all_emails.py` for folder access, launch clinical study design optimizer to expand client base (diagnostics, CROs), enhance CRM integration.
+
+## Related Docs
+- `docs/user_manual.md` for end-user workflows
+- `docs/chief_of_staff.md` for CoS behavior and roadmap
+- `docs/staff_replacement_matrix.md` for the role-replacement readiness matrix and phased autonomy roadmap
