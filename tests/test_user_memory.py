@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.user_memory import (
+    auto_store_user_memory,
     build_user_memory_context,
     extract_user_memory_items,
     parse_alias_memory,
@@ -270,12 +271,40 @@ def test_extract_user_memory_items_normalizes_alias_json():
         user_message="Around here, Q-sub means quality submission.",
         assistant_message="Understood.",
         llm_callable=lambda messages, session_id: '{"aliases":["Q-sub means quality submission."]}',
+        metadata={"source_session_id": "cos_7", "chat_id": 7, "route": "chief_of_staff_tab"},
     )
 
     assert len(items) == 1
     assert items[0]["kind"] == "alias"
     assert items[0]["content"] == "Q-sub means quality submission."
     assert items[0]["json_data"]["alias"]["term"] == "Q-sub"
+    assert items[0]["json_data"]["source_session_id"] == "cos_7"
+    assert items[0]["json_data"]["chat_id"] == 7
+    assert items[0]["json_data"]["route"] == "chief_of_staff_tab"
+
+
+def test_auto_store_user_memory_adds_provenance_to_pending_rows():
+    captured = []
+    db = SimpleNamespace(user_memory_add_many=lambda *, items: captured.extend(items) or len(items))
+
+    added = auto_store_user_memory(
+        db,
+        user_message="I prefer concise bullets in client updates.",
+        assistant_message="Understood.",
+        llm_callable=lambda messages, session_id: '{"preferences":["Prefer concise bullets in client updates."]}',
+        session_id="cos_7",
+        chat_id=7,
+        route="chief_of_staff_tab",
+    )
+
+    assert added == 1
+    assert captured[0]["approval_status"] == "pending"
+    assert captured[0]["source"] == "auto_chat"
+    assert captured[0]["json_data"]["source_session_id"] == "cos_7"
+    assert captured[0]["json_data"]["chat_id"] == 7
+    assert captured[0]["json_data"]["route"] == "chief_of_staff_tab"
+    assert captured[0]["json_data"]["extraction_version"] == "passive_memory_v2"
+    assert "concise bullets" in captured[0]["json_data"]["user_message_preview"].lower()
 
 
 def test_user_memory_alias_helpers_return_alias_rows():

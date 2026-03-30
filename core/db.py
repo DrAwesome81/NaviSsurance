@@ -5008,6 +5008,7 @@ class DatabaseManager:
         self,
         *,
         kind: str | None = None,
+        source: str | None = None,
         approval_status: str | None = None,
         limit: int = 20,
     ) -> list[tuple]:
@@ -5016,7 +5017,7 @@ class DatabaseManager:
         (id, kind, content, source, confidence, approval_status, json_data, created_at, updated_at)
         """
         with sqlite3.connect(self.db_name) as conn:
-            if kind is None and approval_status is None:
+            if kind is None and source is None and approval_status is None:
                 return conn.execute(
                     """
                     SELECT id, kind, content, source, confidence, approval_status, json_data, created_at, updated_at
@@ -5035,6 +5036,9 @@ class DatabaseManager:
             if kind is not None:
                 base += " AND kind = ?"
                 params.append(str(kind))
+            if source is not None:
+                base += " AND source = ?"
+                params.append(str(source))
             if approval_status is not None:
                 base += " AND approval_status = ?"
                 params.append(str(approval_status))
@@ -5047,6 +5051,7 @@ class DatabaseManager:
         *,
         query: str,
         kind: str | None = None,
+        source: str | None = None,
         approval_status: str | None = None,
         limit: int = 10,
     ) -> list[tuple]:
@@ -5065,6 +5070,9 @@ class DatabaseManager:
                 if kind is not None:
                     where += " AND kind = ?"
                     params.append(str(kind))
+                if source is not None:
+                    where += " AND m.source = ?"
+                    params.append(str(source))
                 if approval_status is not None:
                     where += " AND m.approval_status = ?"
                     params.append(str(approval_status))
@@ -5092,6 +5100,9 @@ class DatabaseManager:
                 if kind is not None:
                     base += " AND kind = ?"
                     params.append(str(kind))
+                if source is not None:
+                    base += " AND source = ?"
+                    params.append(str(source))
                 if approval_status is not None:
                     base += " AND approval_status = ?"
                     params.append(str(approval_status))
@@ -5225,7 +5236,13 @@ class DatabaseManager:
             conn.commit()
             return int(cur.rowcount or 0) > 0
 
-    def user_memory_count(self, *, kind: str | None = None, approval_status: str | None = None) -> int:
+    def user_memory_count(
+        self,
+        *,
+        kind: str | None = None,
+        source: str | None = None,
+        approval_status: str | None = None,
+    ) -> int:
         """Count durable user-memory rows with optional filters."""
         with sqlite3.connect(self.db_name) as conn:
             base = "SELECT COUNT(*) FROM user_memory WHERE 1=1"
@@ -5233,6 +5250,9 @@ class DatabaseManager:
             if kind is not None:
                 base += " AND kind = ?"
                 params.append(str(kind))
+            if source is not None:
+                base += " AND source = ?"
+                params.append(str(source))
             if approval_status is not None:
                 base += " AND approval_status = ?"
                 params.append(str(approval_status))

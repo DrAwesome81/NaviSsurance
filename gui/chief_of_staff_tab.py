@@ -36,6 +36,7 @@ class ChatEntryEdit(QTextEdit):
 
 from core.db import DatabaseManager
 from core.chief_of_staff_service import cos_response, cos_am_sweep
+from core.user_memory import auto_store_user_memory, default_user_memory_llm, store_teach_navi_memory
 from gui.agent_routing import route_for_agent
 from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
 from gui.notifications import notify_chat_response
@@ -313,10 +314,24 @@ class CosAskWorker(QThread):
 
     def run(self):
         try:
+            teach_response = store_teach_navi_memory(self.db, self.user_message)
+            if teach_response:
+                self.finished_signal.emit(teach_response)
+                return
             result = cos_response(self.db, self.user_message, self.conversation_history, chat_id=self.chat_id)
             if result.startswith("Error"):
                 self.error_signal.emit(result)
                 return
+            session_id = f"cos_{int(self.chat_id)}" if self.chat_id is not None else None
+            auto_store_user_memory(
+                self.db,
+                user_message=self.user_message,
+                assistant_message=result,
+                llm_callable=default_user_memory_llm,
+                session_id=session_id,
+                chat_id=self.chat_id,
+                route="chief_of_staff_tab",
+            )
             self.finished_signal.emit(result)
         except Exception as e:
             logger.exception("CoS Ask: %s", e)
@@ -746,8 +761,17 @@ class GlobalMemoryDialog(QDialog):
         self.kind_filter.addItem("Fact", "fact")
         self.kind_filter.addItem("Preference", "preference")
         self.kind_filter.addItem("Alias", "alias")
+        self.kind_filter.addItem("Note", "note")
         self.kind_filter.currentIndexChanged.connect(self._reload)
         controls.addWidget(self.kind_filter)
+        controls.addWidget(QLabel("Source:"))
+        self.source_filter = QComboBox()
+        self.source_filter.addItem("All", "")
+        self.source_filter.addItem("Auto chat", "auto_chat")
+        self.source_filter.addItem("Teach Navi", "teach_navi")
+        self.source_filter.addItem("Manual", "manual")
+        self.source_filter.currentIndexChanged.connect(self._reload)
+        controls.addWidget(self.source_filter)
         controls.addWidget(QLabel("Status:"))
         self.status_filter = QComboBox()
         self.status_filter.addItem("All", "")
@@ -763,6 +787,7 @@ class GlobalMemoryDialog(QDialog):
 
         body = QHBoxLayout()
         self.memory_list = QListWidget()
+        self.memory_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.memory_list.currentItemChanged.connect(self._update_detail)
         body.addWidget(self.memory_list, 2)
         self.detail_browser = QTextBrowser()
@@ -829,6 +854,42 @@ class GlobalMemoryDialog(QDialog):
                 }
         return None
 
+    @staticmethod
+    def _escape_html(text: object) -> str:
+        return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    @classmethod
+    def _provenance_html(cls, row: tuple) -> str:
+        payload = cls._json_payload(row[6] if len(row) > 6 else None)
+        if not payload:
+            return ""
+        provenance_bits: list[str] = []
+        for label, key in (
+            ("Session", "source_session_id"),
+            ("Chat id", "chat_id"),
+            ("Route", "route"),
+            ("Extractor", "extraction_version"),
+        ):
+            value = payload.get(key)
+            if value in (None, ""):
+                continue
+            provenance_bits.append(f"<b>{label}:</b> {cls._escape_html(value)}")
+        previews: list[str] = []
+        for label, key in (
+            ("User preview", "user_message_preview"),
+            ("Assistant preview", "assistant_message_preview"),
+        ):
+            value = str(payload.get(key) or "").strip()
+            if not value:
+                continue
+            previews.append(f"<b>{label}:</b><br><pre>{cls._escape_html(value)}</pre>")
+        if not provenance_bits and not previews:
+            return ""
+        html = "<p><b>Passive memory provenance</b><br>" + "<br>".join(provenance_bits) + "</p>"
+        if previews:
+            html += "".join(f"<p>{block}</p>" for block in previews)
+        return html
+
     def _row_label(self, row: tuple) -> str:
         _mem_id, kind, content, source, confidence, approval_status, _json_data, created_at, _updated_at = row
         alias_payload = self._alias_payload(row) if str(kind or "").strip() == "alias" else None
@@ -846,17 +907,19 @@ class GlobalMemoryDialog(QDialog):
     def _reload(self):
         query = (self.search_edit.text() or "").strip()
         kind = (self.kind_filter.currentData() or "").strip() or None
+        source = (self.source_filter.currentData() or "").strip() or None
         approval_status = (self.status_filter.currentData() or "").strip() or None
         try:
             if query:
                 rows = self.db.user_memory_search(
                     query=query,
                     kind=kind,
+                    source=source,
                     approval_status=approval_status,
                     limit=200,
                 )
             else:
-                rows = self.db.user_memory_recent(kind=kind, approval_status=approval_status, limit=200)
+                rows = self.db.user_memory_recent(kind=kind, source=source, approval_status=approval_status, limit=200)
         except Exception as e:
             QMessageBox.warning(self, "Global Memory", f"Could not load memory entries.\n\n{e}")
             return
@@ -884,7 +947,7 @@ class GlobalMemoryDialog(QDialog):
         if json_data:
             json_html = (
                 "<p><b>JSON data</b></p><pre>"
-                + str(json_data).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                + self._escape_html(json_data)
                 + "</pre>"
             )
         alias_html = ""
@@ -913,16 +976,29 @@ class GlobalMemoryDialog(QDialog):
             f"<b>Created:</b> {created_at}<br>"
             f"<b>Updated:</b> {updated_at}</p>"
             f"{alias_html}"
-            f"<p><b>Content</b></p><pre>{str(content or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')}</pre>"
+            f"{self._provenance_html(row)}"
+            f"<p><b>Content</b></p><pre>{self._escape_html(content)}</pre>"
             f"{json_html}"
         )
         self.detail_browser.setHtml(html)
 
-    def _selected_row(self) -> Optional[tuple]:
+    def _selected_rows(self) -> list[tuple]:
+        rows: list[tuple] = []
+        for item in self.memory_list.selectedItems():
+            row = item.data(Qt.ItemDataRole.UserRole)
+            if row:
+                rows.append(row)
+        if rows:
+            return rows
         item = self.memory_list.currentItem()
         if item is None:
-            return None
-        return item.data(Qt.ItemDataRole.UserRole)
+            return []
+        row = item.data(Qt.ItemDataRole.UserRole)
+        return [row] if row else []
+
+    def _selected_row(self) -> Optional[tuple]:
+        rows = self._selected_rows()
+        return rows[0] if rows else None
 
     def _add_memory(self):
         d = self.EditDialog(parent=self)
@@ -963,35 +1039,53 @@ class GlobalMemoryDialog(QDialog):
         self._reload()
 
     def _set_selected_status(self, approval_status: str):
-        row = self._selected_row()
-        if not row:
-            QMessageBox.information(self, "Global Memory", "Select a memory entry first.")
+        rows = self._selected_rows()
+        if not rows:
+            QMessageBox.information(self, "Global Memory", "Select one or more memory entries first.")
             return
-        if not self.db.user_memory_set_approval_status(int(row[0]), approval_status):
-            QMessageBox.warning(self, "Global Memory", "That memory entry could not be updated.")
-            return
+        failures = 0
+        for row in rows:
+            if not self.db.user_memory_set_approval_status(int(row[0]), approval_status):
+                failures += 1
         self._reload()
+        if failures:
+            QMessageBox.warning(
+                self,
+                "Global Memory",
+                f"{failures} selected entr{'y' if failures == 1 else 'ies'} could not be updated.",
+            )
 
     def _delete_selected(self):
-        row = self._selected_row()
-        if not row:
-            QMessageBox.information(self, "Global Memory", "Select a memory entry first.")
+        rows = self._selected_rows()
+        if not rows:
+            QMessageBox.information(self, "Global Memory", "Select one or more memory entries first.")
             return
+        row = rows[0]
         mem_id = int(row[0])
         kind = str(row[1] or "note")
         content = str(row[2] or "").strip()
         preview = content if len(content) <= 120 else content[:117] + "..."
+        message = f"Delete this {kind} memory?\n\n{preview}"
+        if len(rows) > 1:
+            message = f"Delete {len(rows)} selected memory entries?\n\nFirst entry preview:\n{preview}"
         reply = QMessageBox.question(
             self,
             "Delete Memory",
-            f"Delete this {kind} memory?\n\n{preview}",
+            message,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        if not self.db.user_memory_delete(mem_id):
-            QMessageBox.warning(self, "Global Memory", "That memory entry could not be deleted.")
-            return
+        failures = 0
+        for selected in rows:
+            if not self.db.user_memory_delete(int(selected[0])):
+                failures += 1
         self._reload()
+        if failures:
+            QMessageBox.warning(
+                self,
+                "Global Memory",
+                f"{failures} selected entr{'y' if failures == 1 else 'ies'} could not be deleted.",
+            )
 
 
 class BulkDueDateDialog(QDialog):

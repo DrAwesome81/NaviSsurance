@@ -1613,6 +1613,47 @@ def test_global_memory_dialog_can_approve_pending_entries(qapp, cos_db):
 
 
 @pytest.mark.qt
+def test_global_memory_dialog_can_filter_auto_chat_and_bulk_approve(qapp, cos_db):
+    from gui.chief_of_staff_tab import GlobalMemoryDialog
+
+    cos_db.user_memory_add(
+        kind="fact",
+        content="Adam prefers concise bullets.",
+        source="auto_chat",
+        confidence=0.65,
+        approval_status="pending",
+    )
+    cos_db.user_memory_add(
+        kind="alias",
+        content="Q-sub means quality submission.",
+        source="auto_chat",
+        confidence=0.6,
+        approval_status="pending",
+    )
+    cos_db.user_memory_add(
+        kind="preference",
+        content="Already approved memory.",
+        source="teach_navi",
+        confidence=1.0,
+        approval_status="approved",
+    )
+
+    dialog = GlobalMemoryDialog(cos_db)
+    dialog.source_filter.setCurrentIndex(max(0, dialog.source_filter.findData("auto_chat")))
+    dialog.status_filter.setCurrentIndex(max(0, dialog.status_filter.findData("pending")))
+    dialog._reload()
+    assert dialog.memory_list.count() == 2
+
+    for idx in range(dialog.memory_list.count()):
+        dialog.memory_list.item(idx).setSelected(True)
+    dialog.memory_list.setCurrentRow(0)
+    dialog._set_selected_status("approved")
+
+    approved_auto = cos_db.user_memory_recent(source="auto_chat", approval_status="approved", limit=10)
+    assert len(approved_auto) == 2
+
+
+@pytest.mark.qt
 def test_global_memory_dialog_renders_structured_alias_details(qapp, cos_db):
     from gui.chief_of_staff_tab import GlobalMemoryDialog
 
@@ -1638,6 +1679,37 @@ def test_global_memory_dialog_renders_structured_alias_details(qapp, cos_db):
     assert "q-sub" in detail
     assert "quality submission" in detail
     assert "quality sub" in detail
+
+
+@pytest.mark.qt
+def test_global_memory_dialog_renders_passive_memory_provenance(qapp, cos_db):
+    from gui.chief_of_staff_tab import GlobalMemoryDialog
+
+    cos_db.user_memory_add(
+        kind="preference",
+        content="Prefer concise bullets.",
+        source="auto_chat",
+        confidence=0.65,
+        approval_status="pending",
+        json_data={
+            "source_session_id": "cos_7",
+            "chat_id": 7,
+            "route": "chief_of_staff_tab",
+            "extraction_version": "passive_memory_v2",
+            "user_message_preview": "I prefer concise bullets.",
+            "assistant_message_preview": "Understood.",
+        },
+    )
+
+    dialog = GlobalMemoryDialog(cos_db)
+    dialog.memory_list.setCurrentRow(0)
+
+    detail = dialog.detail_browser.toHtml().lower()
+    assert "passive memory provenance" in detail
+    assert "cos_7" in detail
+    assert "chief_of_staff_tab" in detail
+    assert "prefer concise bullets" in detail
+    assert "understood" in detail
 
 
 @pytest.mark.qt
@@ -1685,6 +1757,27 @@ def test_global_memory_pending_review_indicator_and_shortcut(qapp, cos_db):
     assert captured["db"] is cos_db
     assert captured["parent"] is tab
     assert captured["initial_status"] == "pending"
+
+
+@pytest.mark.qt
+def test_cos_ask_worker_auto_stores_pending_global_memory(qapp, cos_db, monkeypatch):
+    from gui.chief_of_staff_tab import CosAskWorker
+
+    monkeypatch.setattr("gui.chief_of_staff_tab.cos_response", lambda db, message, conversation_history, chat_id=None: "Understood.")
+    monkeypatch.setattr(
+        "gui.chief_of_staff_tab.default_user_memory_llm",
+        lambda messages, session_id: '{"preferences":["Prefer concise bullets."]}',
+    )
+
+    worker = CosAskWorker(cos_db, "I prefer concise bullets.", [], chat_id=7)
+    worker.run()
+
+    rows = cos_db.user_memory_recent(source="auto_chat", approval_status="pending", limit=10)
+    assert len(rows) == 1
+    payload = json.loads(rows[0][6] or "{}")
+    assert payload["source_session_id"] == "cos_7"
+    assert payload["chat_id"] == 7
+    assert payload["route"] == "chief_of_staff_tab"
 
 
 @pytest.mark.qt

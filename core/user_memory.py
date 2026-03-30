@@ -3,6 +3,8 @@ import logging
 import re
 from collections.abc import Callable
 
+from core.local_llm import run_local_completion
+
 logger = logging.getLogger(__name__)
 
 _TEACH_NAVI_RE = re.compile(r"^\s*teach\s+navi\s*:\s*(?P<body>.+?)\s*$", re.IGNORECASE | re.DOTALL)
@@ -90,6 +92,37 @@ def _parse_json_payload(value) -> dict | None:
     except Exception:
         return None
     return data if isinstance(data, dict) else None
+
+
+def _preview_text(text: str, *, limit: int = 160) -> str:
+    value = " ".join(str(text or "").strip().split())
+    if len(value) <= int(limit):
+        return value
+    return value[: max(0, int(limit) - 3)].rstrip() + "..."
+
+
+def default_user_memory_llm(messages: list[dict], session_id: str) -> str:
+    """Default local extractor used when no response-handler helper is available."""
+    return run_local_completion(messages, session_id)
+
+
+def build_auto_memory_metadata(
+    *,
+    session_id: str | None = None,
+    chat_id: int | None = None,
+    route: str | None = None,
+    user_message: str = "",
+    assistant_message: str = "",
+) -> dict:
+    metadata: dict[str, object] = {
+        "extraction_version": "passive_memory_v2",
+        "source_session_id": str(session_id or "").strip() or None,
+        "chat_id": int(chat_id) if chat_id is not None else None,
+        "route": str(route or "").strip() or None,
+        "user_message_preview": _preview_text(user_message),
+        "assistant_message_preview": _preview_text(assistant_message),
+    }
+    return {key: value for key, value in metadata.items() if value not in (None, "")}
 
 
 def _alias_payload_from_row(row: tuple) -> dict | None:
@@ -265,6 +298,7 @@ def extract_user_memory_items(
     user_message: str,
     assistant_message: str,
     llm_callable: Callable[[list[dict], str], str] | None,
+    metadata: dict | None = None,
 ) -> list[dict]:
     if llm_callable is None:
         return []
@@ -278,8 +312,8 @@ def extract_user_memory_items(
             "content": (
                 "Extract durable user memory from a chat turn. "
                 "Return JSON only with keys facts, preferences, aliases. "
-                "Only include durable facts the assistant should remember later. "
-                "Do not include ephemeral requests, temporary plans, or anything uncertain."
+                "Only include stable facts, durable preferences, and repeatable glossary/alias terms the assistant should remember later. "
+                "Do not include ephemeral requests, temporary plans, one-off scheduling details, or anything uncertain."
             ),
         },
         {
@@ -302,6 +336,7 @@ def extract_user_memory_items(
         return []
     items: list[dict] = []
     seen: set[tuple[str, str]] = set()
+    base_metadata = dict(metadata or {})
     for key, kind in (("facts", "fact"), ("preferences", "preference"), ("aliases", "alias")):
         values = data.get(key) or []
         if not isinstance(values, list):
@@ -314,12 +349,11 @@ def extract_user_memory_items(
             if marker in seen:
                 continue
             seen.add(marker)
-            item_json = data
+            item_json = dict(base_metadata)
             if kind == "alias":
                 alias_payload = parse_alias_memory(content)
                 if alias_payload:
                     content = alias_payload["content"]
-                    item_json = dict(data)
                     item_json["alias"] = alias_payload
                     item_json["normalized"] = True
             items.append(
@@ -341,11 +375,22 @@ def auto_store_user_memory(
     user_message: str,
     assistant_message: str,
     llm_callable: Callable[[list[dict], str], str] | None,
+    session_id: str | None = None,
+    chat_id: int | None = None,
+    route: str | None = None,
 ) -> int:
+    metadata = build_auto_memory_metadata(
+        session_id=session_id,
+        chat_id=chat_id,
+        route=route,
+        user_message=user_message,
+        assistant_message=assistant_message,
+    )
     items = extract_user_memory_items(
         user_message=user_message,
         assistant_message=assistant_message,
         llm_callable=llm_callable,
+        metadata=metadata,
     )
     if not items:
         return 0

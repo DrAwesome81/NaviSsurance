@@ -38,18 +38,22 @@ class _FakeDB:
             added += 1
         return added
 
-    def user_memory_search(self, *, query, kind=None, approval_status=None, limit=10):
+    def user_memory_search(self, *, query, kind=None, source=None, approval_status=None, limit=10):
         matches = [row for row in self.user_memory_rows if query.lower() in str(row[2]).lower()]
         if kind is not None:
             matches = [row for row in matches if row[1] == kind]
+        if source is not None:
+            matches = [row for row in matches if row[3] == source]
         if approval_status is not None:
             matches = [row for row in matches if row[5] == approval_status]
         return matches[:limit]
 
-    def user_memory_recent(self, *, kind=None, approval_status=None, limit=20):
+    def user_memory_recent(self, *, kind=None, source=None, approval_status=None, limit=20):
         rows = list(self.user_memory_rows)
         if kind is not None:
             rows = [row for row in rows if row[1] == kind]
+        if source is not None:
+            rows = [row for row in rows if row[3] == source]
         if approval_status is not None:
             rows = [row for row in rows if row[5] == approval_status]
         return rows[:limit]
@@ -376,6 +380,11 @@ def test_run_main_chat_turn_auto_stores_durable_memory(monkeypatch):
 
     assert out == "Local answer"
     assert any(row[1] == "preference" and "concise bullets" in row[2] for row in db.user_memory_added)
+    pending = db.user_memory_added[-1]
+    assert pending[5] == "pending"
+    assert pending[6]["source_session_id"] == "main_session"
+    assert pending[6]["route"] == "local_fast"
+    assert pending[6]["extraction_version"] == "passive_memory_v2"
 
 
 def test_run_main_chat_turn_injects_db_user_memory_into_local_prompt(monkeypatch):

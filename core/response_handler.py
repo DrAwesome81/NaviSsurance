@@ -409,6 +409,8 @@ class ResponseHandler:
                     user_message=message,
                     assistant_message=grok_response,
                     llm_callable=self.chat_with_llama,
+                    session_id=session_id,
+                    route="legacy_response_handler",
                 )
             # Return the processed response, not the raw grok_response
             if added_tasks:

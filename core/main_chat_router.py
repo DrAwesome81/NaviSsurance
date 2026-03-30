@@ -8,7 +8,12 @@ from typing import Iterable
 from config import get_system_prompt
 from core.chief_of_staff_service import cos_response
 from core.local_llm import run_local_completion
-from core.user_memory import auto_store_user_memory, build_user_memory_context, store_teach_navi_memory
+from core.user_memory import (
+    auto_store_user_memory,
+    build_user_memory_context,
+    default_user_memory_llm,
+    store_teach_navi_memory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -315,11 +320,16 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
 
     if response and not teach_response:
         llm_callable = getattr(getattr(chat_handler, "response_handler", None), "chat_with_llama", None)
+        if llm_callable is None:
+            llm_callable = default_user_memory_llm
         auto_store_user_memory(
             db,
             user_message=message,
             assistant_message=response,
             llm_callable=llm_callable,
+            session_id=sid,
+            chat_id=chat_id,
+            route=final_source,
         )
 
     try:
