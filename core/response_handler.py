@@ -11,6 +11,7 @@ from dateutil import parser
 os.environ["TORCH_DYNAMO_DISABLE"] = "1"
 from config import PROJECT_ROOT
 # Dropbox indexing removed - using RAG index instead
+from core.chat_retrieval import build_long_term_retrieval_context
 from core.local_llm import session_profile
 from core.task_command_contract import AddTaskCommand, normalize_mmddyyyy, parse_actions
 from core.user_memory import auto_store_user_memory, build_user_memory_context, store_teach_navi_memory
@@ -297,6 +298,13 @@ class ResponseHandler:
             # Give Navi visibility into tasks and projects for planning/priorities (same as Mason)
             navi_context = self._get_navi_tasks_projects_context()
             user_memory_context = build_user_memory_context(self.chat_handler.db, message, limit=5, recent_limit=2)
+            long_term_context = build_long_term_retrieval_context(
+                self.chat_handler.db,
+                message,
+                session_id=session_id,
+                chunk_limit=2,
+                raw_turn_limit=4,
+            )
             system_messages = []
             if navi_context:
                 system_messages.append(
@@ -307,6 +315,8 @@ class ResponseHandler:
                 )
             if user_memory_context:
                 system_messages.append({"role": "system", "content": user_memory_context})
+            if long_term_context:
+                system_messages.append({"role": "system", "content": long_term_context})
             messages_for_llm = system_messages + list(conversation_history) if system_messages else conversation_history
             grok_response = self.hybrid_wrapper(messages_for_llm, session_id)
             print(f"DEBUG: hybrid_wrapper returned: {grok_response[:200] if grok_response else 'None'}...")

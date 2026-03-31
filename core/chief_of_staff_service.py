@@ -29,6 +29,7 @@ from core.cos_calendar import (
     get_calendar_events,
 )
 from core.cos_doc_search import doc_search, format_hits
+from core.chat_retrieval import build_long_term_retrieval_context, format_chat_history_tool_results
 from core.user_memory import build_user_memory_context
 from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
 
@@ -297,20 +298,17 @@ def _chat_history_tool_result(
 ) -> tuple[str, str]:
     if not chat_id:
         return "CHAT_HISTORY_RESULTS", "CHAT_HISTORY_RESULTS (untrusted):\n(unavailable for this chat)"
-    rows = []
     try:
-        rows = db.search_chat_history(f"cos_{int(chat_id)}", query, limit=8)
+        result_text = format_chat_history_tool_results(
+            db,
+            session_id=f"cos_{int(chat_id)}",
+            query=query,
+            chunk_limit=3,
+            raw_turn_limit=8,
+        )
     except Exception:
-        rows = []
-    lines = []
-    for role, content, timestamp in rows[:8]:
-        snippet = str(content or "").strip().replace("\r", " ").replace("\n", " ")
-        if len(snippet) > 240:
-            snippet = snippet[:237].rstrip() + "..."
-        lines.append(f"- [{timestamp}] {role}: {snippet}")
-    return "CHAT_HISTORY_RESULTS", "CHAT_HISTORY_RESULTS (untrusted):\n" + (
-        "\n".join(lines) if lines else "(no matches)"
-    )
+        result_text = "CHAT_HISTORY_RESULTS (untrusted):\n(no matches)"
+    return "CHAT_HISTORY_RESULTS", result_text
 
 
 def _tasks_context_rich(db: DatabaseManager, *, limit: int = 80) -> str:
@@ -734,19 +732,32 @@ def _memory_context(db: DatabaseManager, user_message: str, chat_id: Optional[in
             lines.append(f"- ({kind}) {content}")
         parts.append("**Relevant memory (structured):**\n" + "\n".join(lines))
 
-    # Also pull raw conversation snippets (across all sessions)
+    session_id = f"cos_{int(chat_id)}" if chat_id is not None else None
     try:
-        conv_rows = db.search_conversations(q)[:6]
+        retrieval_context = build_long_term_retrieval_context(
+            db,
+            q,
+            session_id=session_id,
+            chunk_limit=3,
+            raw_turn_limit=6,
+        )
     except Exception:
-        conv_rows = []
-    if conv_rows:
-        lines = []
-        for role, content, ts in conv_rows[:6]:
-            excerpt = (content or "").strip()
-            if len(excerpt) > 180:
-                excerpt = excerpt[:177] + "..."
-            lines.append(f"- ({role}) {excerpt}")
-        parts.append("**Relevant past chat snippets (FTS):**\n" + "\n".join(lines))
+        retrieval_context = ""
+    if retrieval_context:
+        parts.append(retrieval_context)
+    else:
+        try:
+            conv_rows = db.search_conversations(q)[:6]
+        except Exception:
+            conv_rows = []
+        if conv_rows:
+            lines = []
+            for role, content, ts in conv_rows[:6]:
+                excerpt = (content or "").strip()
+                if len(excerpt) > 180:
+                    excerpt = excerpt[:177] + "..."
+                lines.append(f"- ({role}) {excerpt}")
+            parts.append("**Relevant past chat snippets (FTS):**\n" + "\n".join(lines))
 
     try:
         global_memory = build_user_memory_context(db, q, limit=4, recent_limit=2)

@@ -26,6 +26,7 @@ _SESSION_PROFILES: dict[str, dict[str, int | str]] = {
     "task_detection": {"class": "local_fast", "max_tokens": 8},
     "task_query": {"class": "local_fast", "max_tokens": 220},
     "user_memory_extract": {"class": "local_fast", "max_tokens": 180, "timeout_s": 12},
+    "conversation_chunk_summarize": {"class": "local_fast", "max_tokens": 260, "timeout_s": 16},
     "doc_gen": {"class": "local_background", "max_tokens": 900},
 }
 

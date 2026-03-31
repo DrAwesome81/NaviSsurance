@@ -13,7 +13,7 @@ _UNSET = object()
 class DatabaseManager:
     def __init__(self, db_name: str | None = None):
         self.db_name = str(db_name or DATABASE_PATH)
-        self.current_schema_version = 20  # Increment this when making schema changes
+        self.current_schema_version = 21  # Increment this when making schema changes
         self.setup_db()
         self.create_indexes()
         # Additive tables for newer features (safe for legacy DBs)
@@ -1064,6 +1064,228 @@ class DatabaseManager:
                 (session, max_rows),
             )
             return cursor.fetchall()
+
+    def list_conversation_turn_rows(
+        self,
+        session_id: str,
+        *,
+        after_rowid: int | None = None,
+        before_rowid: int | None = None,
+        limit: int | None = None,
+    ) -> list[tuple]:
+        """Return ordered raw conversation rows: (rowid, role, content, timestamp)."""
+        session = str(session_id or "").strip()
+        if not session:
+            return []
+        query = [
+            "SELECT rowid, role, content, timestamp",
+            "FROM conversation",
+            "WHERE session_id = ?",
+        ]
+        params: list[object] = [session]
+        if after_rowid is not None:
+            query.append("AND rowid > ?")
+            params.append(int(after_rowid))
+        if before_rowid is not None:
+            query.append("AND rowid <= ?")
+            params.append(int(before_rowid))
+        query.append("ORDER BY rowid ASC")
+        if limit is not None:
+            query.append("LIMIT ?")
+            params.append(int(limit))
+        with sqlite3.connect(self.db_name) as conn:
+            return conn.execute("\n".join(query), params).fetchall()
+
+    def conversation_chunk_latest_end_rowid(self, session_id: str) -> int:
+        session = str(session_id or "").strip()
+        if not session:
+            return 0
+        with sqlite3.connect(self.db_name) as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(MAX(c.end_rowid), 0)
+                FROM conversation_chunks c
+                JOIN conversation_chunk_summaries s ON s.chunk_id = c.id
+                WHERE c.session_id = ?
+                """,
+                (session,),
+            ).fetchone()
+            return int((row[0] if row else 0) or 0)
+
+    def conversation_chunk_add(
+        self,
+        *,
+        session_id: str,
+        start_rowid: int,
+        end_rowid: int,
+        start_ts: str | None,
+        end_ts: str | None,
+        turn_count: int,
+        roles_json: str | dict | list | None = None,
+    ) -> int:
+        payload = roles_json
+        if isinstance(payload, (dict, list)):
+            payload = json.dumps(payload, ensure_ascii=False)
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO conversation_chunks (
+                    session_id, start_rowid, end_rowid, start_ts, end_ts, turn_count, roles_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (
+                    str(session_id or "").strip(),
+                    int(start_rowid),
+                    int(end_rowid),
+                    str(start_ts).strip() if start_ts else None,
+                    str(end_ts).strip() if end_ts else None,
+                    int(turn_count),
+                    str(payload or "[]"),
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def conversation_chunk_summary_upsert(
+        self,
+        *,
+        chunk_id: int,
+        session_id: str,
+        summary_text: str,
+        key_decisions_json: str | dict | list | None = None,
+        open_loops_json: str | dict | list | None = None,
+        tags_json: str | dict | list | None = None,
+    ) -> bool:
+        summary = str(summary_text or "").strip()
+        if not summary:
+            return False
+        decisions = key_decisions_json
+        loops = open_loops_json
+        tags = tags_json
+        if isinstance(decisions, (dict, list)):
+            decisions = json.dumps(decisions, ensure_ascii=False)
+        if isinstance(loops, (dict, list)):
+            loops = json.dumps(loops, ensure_ascii=False)
+        if isinstance(tags, (dict, list)):
+            tags = json.dumps(tags, ensure_ascii=False)
+        tags_text = ""
+        try:
+            parsed = json.loads(tags) if isinstance(tags, str) and tags.strip() else (tags_json if isinstance(tags_json, (list, dict)) else [])
+        except Exception:
+            parsed = []
+        if isinstance(parsed, list):
+            tags_text = " ".join(str(item).strip() for item in parsed if str(item).strip())
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                """
+                INSERT INTO conversation_chunk_summaries (
+                    chunk_id, session_id, summary_text, key_decisions_json, open_loops_json, tags_json, tags_text, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                ON CONFLICT(chunk_id) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    summary_text = excluded.summary_text,
+                    key_decisions_json = excluded.key_decisions_json,
+                    open_loops_json = excluded.open_loops_json,
+                    tags_json = excluded.tags_json,
+                    tags_text = excluded.tags_text,
+                    updated_at = datetime('now')
+                """,
+                (
+                    int(chunk_id),
+                    str(session_id or "").strip(),
+                    summary,
+                    str(decisions or "[]"),
+                    str(loops or "[]"),
+                    str(tags or "[]"),
+                    tags_text,
+                ),
+            )
+            try:
+                conn.execute("DELETE FROM conversation_chunk_summaries_fts WHERE sum_id = ?", (int(chunk_id),))
+                conn.execute(
+                    """
+                    INSERT INTO conversation_chunk_summaries_fts (sum_id, session_id, summary_text, tags_text, created_at)
+                    VALUES (?, ?, ?, ?, datetime('now'))
+                    """,
+                    (int(chunk_id), str(session_id or "").strip(), summary, tags_text),
+                )
+            except Exception:
+                pass
+            conn.commit()
+            return True
+
+    def conversation_chunk_summary_search(
+        self,
+        *,
+        query: str,
+        session_id: str | None = None,
+        limit: int = 10,
+    ) -> list[tuple]:
+        """
+        Search chunk summaries. Returns rows:
+        (chunk_id, session_id, summary_text, key_decisions_json, open_loops_json, tags_json, created_at)
+        """
+        q = str(query or "").strip()
+        if not q:
+            return []
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                where = "conversation_chunk_summaries_fts MATCH ?"
+                params: list[object] = [q]
+                if session_id is not None:
+                    where += " AND s.session_id = ?"
+                    params.append(str(session_id))
+                params.append(int(limit))
+                return conn.execute(
+                    f"""
+                    SELECT s.chunk_id, s.session_id, s.summary_text, s.key_decisions_json, s.open_loops_json, s.tags_json, s.created_at
+                    FROM conversation_chunk_summaries_fts f
+                    JOIN conversation_chunk_summaries s ON s.chunk_id = f.sum_id
+                    WHERE {where}
+                    ORDER BY bm25(conversation_chunk_summaries_fts), s.updated_at DESC
+                    LIMIT ?
+                    """,
+                    params,
+                ).fetchall()
+        except Exception:
+            like = f"%{q}%"
+            with sqlite3.connect(self.db_name) as conn:
+                base = """
+                    SELECT chunk_id, session_id, summary_text, key_decisions_json, open_loops_json, tags_json, created_at
+                    FROM conversation_chunk_summaries
+                    WHERE (summary_text LIKE ? OR tags_text LIKE ?)
+                """
+                params: list[object] = [like, like]
+                if session_id is not None:
+                    base += " AND session_id = ?"
+                    params.append(str(session_id))
+                base += " ORDER BY updated_at DESC LIMIT ?"
+                params.append(int(limit))
+                return conn.execute(base, params).fetchall()
+
+    def conversation_chunk_turns(self, chunk_id: int) -> list[tuple]:
+        """Return raw turns for one chunk as (role, content, timestamp)."""
+        with sqlite3.connect(self.db_name) as conn:
+            row = conn.execute(
+                "SELECT session_id, start_rowid, end_rowid FROM conversation_chunks WHERE id = ?",
+                (int(chunk_id),),
+            ).fetchone()
+            if not row:
+                return []
+            session_id, start_rowid, end_rowid = row
+            return conn.execute(
+                """
+                SELECT role, content, timestamp
+                FROM conversation
+                WHERE session_id = ?
+                  AND rowid >= ?
+                  AND rowid <= ?
+                ORDER BY rowid ASC
+                """,
+                (str(session_id), int(start_rowid), int(end_rowid)),
+            ).fetchall()
 
     def add_task(
         self,
@@ -3488,6 +3710,69 @@ class DatabaseManager:
                 conn.commit()
             except Exception as e:
                 print(f"    - Error creating important-email triage schema: {e}")
+
+        # Version 20 to 21: long-term retrieval chunk summaries for conversations.
+        if from_version < 21 and to_version >= 21:
+            print("  - Creating conversation chunk retrieval tables")
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS conversation_chunks (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT NOT NULL,
+                        start_rowid INTEGER NOT NULL,
+                        end_rowid INTEGER NOT NULL,
+                        start_ts TEXT,
+                        end_ts TEXT,
+                        turn_count INTEGER NOT NULL DEFAULT 0,
+                        roles_json TEXT NOT NULL DEFAULT '[]',
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS conversation_chunk_summaries (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chunk_id INTEGER NOT NULL UNIQUE,
+                        session_id TEXT NOT NULL,
+                        summary_text TEXT NOT NULL,
+                        key_decisions_json TEXT NOT NULL DEFAULT '[]',
+                        open_loops_json TEXT NOT NULL DEFAULT '[]',
+                        tags_json TEXT NOT NULL DEFAULT '[]',
+                        tags_text TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (chunk_id) REFERENCES conversation_chunks(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS conversation_chunk_summaries_fts USING fts5(
+                        sum_id UNINDEXED,
+                        session_id,
+                        summary_text,
+                        tags_text,
+                        created_at
+                    )
+                    """
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_conversation_chunks_session_rowid "
+                    "ON conversation_chunks(session_id, start_rowid, end_rowid)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_conversation_chunks_session_created "
+                    "ON conversation_chunks(session_id, created_at)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_conversation_chunk_summaries_session "
+                    "ON conversation_chunk_summaries(session_id)"
+                )
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error creating conversation chunk retrieval tables: {e}")
 
         print(f"Schema migration from version {from_version} to {to_version} completed.")
 
