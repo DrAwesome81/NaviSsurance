@@ -37,6 +37,7 @@ class ArtifactType(str, Enum):
     UNIFIED_BRIEF = "unified_brief"
     # A final, exportable deep-research brief (markdown) generated after review.
     RESEARCH_BRIEF = "research_brief"
+    BROWSER_CAPTURE = "browser_capture"
     # Legacy: document drafting artifacts (kept for backward compatibility).
     DRAFT = "draft"
     QA_REPORT = "qa_report"
@@ -121,6 +122,15 @@ class WebResearchBrief(BaseModel):
     findings: list[Finding] = Field(default_factory=list, description="Structured findings with support.")
     contradictions: list[Contradiction] = Field(default_factory=list, description="Conflicts across sources.")
     notes: Optional[str] = Field(None, description="Optional notes from the Researcher.")
+
+
+class BrowserToolResult(BaseModel):
+    """Output of browser automation helpers."""
+    url: str = Field(..., description="Final URL after navigation.")
+    title: Optional[str] = Field(None, description="Page title if known.")
+    text_excerpt: str = Field(default="", description="Best-effort visible text excerpt.")
+    screenshot_path: Optional[str] = Field(None, description="Saved screenshot path, if captured.")
+    metadata: dict = Field(default_factory=dict, description="Additional diagnostic metadata.")
 
 
 # ---------------------------------------------------------------------------

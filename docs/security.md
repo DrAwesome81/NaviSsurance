@@ -1,33 +1,49 @@
-NaviSsurance Security
-Overview
-NaviSsurance implements security measures to protect client data and API integrations, ensuring compliance with GDPR (EU clients) and HIPAA (US health data). These practices safeguard leads, compliance results, and documents, supporting sale preparation.
-Data Protection
+# NaviSsurance Security
 
-Encryption: Client data in crm.py (SQLite) uses AES-256 encryption for leads, compliance results, and emails. Workspaces (data/clients/[client_name]) store SOPs/PDFs with file-level encryption.
-Storage: Data resides locally at C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/data, synced to Dropbox with end-to-end encryption.
-GDPR Compliance: EU client data (e.g., leads) is processed with consent, anonymized for transfer, and deletable on request.
-HIPAA Compliance: US health data (e.g., SOPs) is encrypted, access-controlled, and audit-logged in logs/.
+Last updated: 2026-04-01
 
-API Security
+## Overview
+NaviSsurance is a local-first desktop application with optional local runtime and local HTTP service components. Security posture is therefore centered on:
+- protecting local secrets and tokens
+- avoiding secret leakage in logs and source code
+- limiting remote exposure
+- keeping durable data auditable in SQLite and local artifact storage
 
-Key Management: API keys (Grok, LinkedIn, AssemblyAI) are stored in .env, not hardcoded, and rotated every 90 days.
-Access: Keys are accessible only to the local application (interface.py, chat.py), with no external exposure.
-ToS Compliance: API usage adheres to provider terms (e.g., https://x.ai/grok), ensuring commercial use and no key sharing.
+This document describes the current implementation posture. It does not certify regulatory or legal compliance on its own.
 
-Access Controls
+## Current Security Model
 
-Local Server: NaviSsurance runs on a password-protected Windows machine (Ryzen 7900X, 64 GB RAM).
-User Access: Single-user access (consultant) via UI (interface.py), with no multi-user support.
-Audit Logs: Actions (e.g., data access, API calls) logged in C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/logs.
+### Local-first storage
+- Primary state is stored locally in SQLite through `core/db.py`.
+- Artifacts are written to local paths under the configured artifacts directory.
+- Secrets and credentials should remain in local environment/config files rather than committed source.
 
-Sale Considerations
+### Logging and secret handling
+- The app uses centralized logging from `main.py`.
+- Sensitive tokens, credentials, and auth material should not be logged directly.
+- See the more implementation-specific security notes in the repository-level `SECURITY.md`.
 
-Data Transfer: Client data transfers require consent (GDPR, HIPAA) and anonymization, per sale contract.
-API Keys: Non-transferable; buyers must register own keys (api.md).
-Transition: 30–60 days support for buyer security setup (e.g., .env configuration).
+### API and channel exposure
+- The local FastAPI surface is optional and controlled by:
+  - `NAVI_LOCAL_API_ENABLED`
+  - `NAVI_LOCAL_API_HOST`
+  - `NAVI_LOCAL_API_PORT`
+- Telegram scaffolding exists in the repo but remote chat is not part of the intended current product surface.
+- These integrations should remain disabled unless actively needed.
 
-Notes
+## Third-Party Credential Handling
+- API keys should be stored in environment/config files, not hardcoded.
+- Non-transferable provider accounts should be treated as buyer/operator-managed in any sale or handoff scenario.
+- Review provider terms separately for production and commercial use.
 
-Security practices align with MedTech standards, verified by client contracts.
-Consult a lawyer for GDPR/HIPAA compliance before sale.
+## Operational Controls
+- NaviSsurance is currently designed as a single-user local application.
+- There is no general multi-user permission system.
+- Retrieved text and external content should be treated as untrusted reference material.
+- Browser automation may create screenshots and evidence artifacts; review local storage and retention accordingly.
+
+## Data and Compliance Notes
+- This repository contains workflows that may process sensitive client, regulatory, and operational information.
+- Legal/compliance obligations such as GDPR, HIPAA, and client-contract requirements depend on deployment practices, data handling, retention, and operator behavior, not on documentation alone.
+- Do not treat this document as a formal compliance certification.
 

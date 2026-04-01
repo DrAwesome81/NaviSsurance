@@ -11,6 +11,8 @@ NaviSsurance now includes a working **Chief of Staff + AI Executive Team** opera
 
 This document tracks implementation status and remaining roadmap work.
 
+Last updated: 2026-04-01
+
 ## Current State (Implemented)
 
 ### Core capabilities in production
@@ -37,6 +39,17 @@ This document tracks implementation status and remaining roadmap work.
 - **Testing**
   - broad CoS parser/service unit coverage with mocked LLM calls
   - additional utility/helper tests for due-date and bulk-mode parsing
+- **Memory / retrieval**
+  - explicit `Teach Navi:` memory capture with approved global memory
+  - passive review-first memory extraction for stable facts, preferences, and aliases
+  - richer alias / glossary entries with synonyms and optional scope metadata
+  - summary-first long-term retrieval over older chat turns with raw-turn grounding fallback
+  - daily / weekly memory reflection summaries backed by approved memory and chunk summaries
+  - entity-scoped memory links for client/project-aware recall
+- **Runtime / integrations**
+  - optional background runtime scheduler for queued and recurring jobs
+  - optional local HTTP API for non-GUI integrations
+  - shared tool registry for CoS, agents, and browser-backed tools
 
 ### AM Sweep (implemented)
 AM Sweep is a **user-initiated morning triage loop** that gathers context (open tasks, assignments, today/upcoming calendar, unreplied emails, memory) and produces:
@@ -54,8 +67,8 @@ AM Sweep is a **user-initiated morning triage loop** that gathers context (open 
 
 ### Known gaps / next opportunities
 - Planning/prioritization scoring is still heuristic (no formal urgency/importance scoring engine yet).
-- Memory retrieval is lexical/structured, not embeddings-backed by default.
-- Delegation currently uses command parsing; no generalized background job runner yet.
+- Memory retrieval is still primarily lexical/structured, with semantic/entity-aware enhancements still maturing.
+- Delegation now has runtime scaffolding, but broader queue-backed execution still needs production hardening.
 - Calendar write operations are available via explicit command, but broader scheduling optimization remains limited.
 
 ## Current Delegation UX
@@ -139,7 +152,12 @@ Add a dedicated orchestration layer (still callable from chat) that performs:
 - action parsing/validation
 - state updates (tasks, memory, jobs)
 
-Current location: `core/response_handler.py` is already acting as the orchestrator and should evolve into a clear “CoS core”.
+Current execution spine now spans:
+- `core/main_chat_router.py`
+- `core/chief_of_staff_service.py`
+- `core/response_handler.py`
+
+`core/response_handler.py` still contains legacy orchestration paths, but the current CoS behavior is primarily centered in `core/chief_of_staff_service.py`.
 
 ### Tools / Skills (Pluggable)
 Represent each skill as a function with:
@@ -152,11 +170,15 @@ Initial tool set:
 - `add_tasks` (DB write + UI signal)
 - `search_conversations` (FTS)
 - `get_history` (day range)
-- `web_search` (Claude)
+- `web_search` (current remote provider path)
 - `dropbox_search` (local index)
 - `doc_search` (unified search across Dropbox/local/Google Drive; dedup-aware) — see `docs/unified_search.md`
 - `draft_email` (no send; produces a draft artifact)
 - `schedule_suggestion` (no write; proposes blocks)
+
+Current implementation note:
+- Shared tool registration now lives in `core/tool_registry.py`.
+- CoS tool-trigger loops in `core/chief_of_staff_service.py` should be treated as consumers of that shared tool surface rather than a fully separate long-term system.
 
 ### Memory System (Structured + Retrieval)
 Keep raw conversation logs (already in SQLite), and add a **memory layer** that can retrieve *only what’s needed* for a given prompt.
@@ -190,6 +212,12 @@ Use a staged approach so retrieval stays small and relevant:
    - the 3–10 most relevant raw turns (verbatim) for grounding
    - relevant memory facts (preferences/commitments)
 5. **Guardrails**: retrieved text is treated as *untrusted reference*, not instructions; only user-approved actions cause side effects.
+
+Current implementation note:
+- `user_memory` is the structured durable store.
+- `chat_retrieval` handles summary-first long-term retrieval.
+- reflections are stored separately.
+- entity links now allow memory rows to be associated with clients and projects.
 
 #### When to write memory (Summarize/Tag triggers)
 - **On session end / idle timer**: summarize the last chunk and tag entities.
@@ -226,6 +254,11 @@ Add an internal “job system” so the CoS can assign work:
 - compliance agent (analyze provided docs)
 
 Each job should produce **artifacts** (text, JSON, attachments) stored locally for review.
+
+Current implementation note:
+- Runtime-backed job scaffolding now exists in `core/runtime/`.
+- Assignment bootstrap work can be queued via the runtime layer.
+- This is still not the same as a fully generalized autonomous multi-agent operating system.
 
 ## Data Model (SQLite)
 

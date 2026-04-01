@@ -13,7 +13,7 @@ _UNSET = object()
 class DatabaseManager:
     def __init__(self, db_name: str | None = None):
         self.db_name = str(db_name or DATABASE_PATH)
-        self.current_schema_version = 21  # Increment this when making schema changes
+        self.current_schema_version = 25  # Increment this when making schema changes
         self.setup_db()
         self.create_indexes()
         # Additive tables for newer features (safe for legacy DBs)
@@ -934,6 +934,30 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_created_at ON user_memory(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_confidence ON user_memory(confidence)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_approval_status ON user_memory(approval_status)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_entity_links_entity "
+                "ON memory_entity_links(entity_type, entity_key, mem_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runtime_jobs_status_runat "
+                "ON runtime_jobs(status, run_at, priority)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runtime_jobs_unique_key "
+                "ON runtime_jobs(unique_key)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runtime_job_runs_job "
+                "ON runtime_job_runs(job_id, started_at DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tool_call_audit_tool_created "
+                "ON tool_call_audit(tool_name, created_at DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_channel_bindings_channel_chat "
+                "ON channel_bindings(channel_name, external_chat_id)"
+            )
 
             # Delegation / agent workflow tables
             conn.execute(
@@ -3774,6 +3798,166 @@ class DatabaseManager:
             except Exception as e:
                 print(f"    - Error creating conversation chunk retrieval tables: {e}")
 
+        # Version 21 to 22: approved-memory reflection summaries.
+        if from_version < 22 and to_version >= 22:
+            print("  - Creating memory reflection tables")
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS memory_reflections (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        scope TEXT NOT NULL,
+                        reflection_key TEXT NOT NULL,
+                        summary_text TEXT NOT NULL,
+                        highlights_json TEXT NOT NULL DEFAULT '[]',
+                        source_counts_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(scope, reflection_key)
+                    )
+                    """
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_memory_reflections_scope_key "
+                    "ON memory_reflections(scope, reflection_key)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_memory_reflections_created_at "
+                    "ON memory_reflections(created_at)"
+                )
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error creating memory reflection tables: {e}")
+
+        # Version 22 to 23: runtime job queue + worker run history.
+        if from_version < 23 and to_version >= 23:
+            print("  - Creating runtime job tables")
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS runtime_jobs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        job_type TEXT NOT NULL,
+                        payload_json TEXT NOT NULL DEFAULT '{}',
+                        status TEXT NOT NULL DEFAULT 'queued',
+                        priority INTEGER NOT NULL DEFAULT 50,
+                        run_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        max_attempts INTEGER NOT NULL DEFAULT 3,
+                        lease_expires_at TEXT,
+                        unique_key TEXT,
+                        last_error TEXT,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        completed_at TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS runtime_job_runs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        job_id INTEGER NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'running',
+                        runner_id TEXT,
+                        started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        finished_at TEXT,
+                        error_text TEXT,
+                        result_json TEXT,
+                        FOREIGN KEY (job_id) REFERENCES runtime_jobs(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_runtime_jobs_status_runat "
+                    "ON runtime_jobs(status, run_at, priority)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_runtime_jobs_unique_key "
+                    "ON runtime_jobs(unique_key)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_runtime_job_runs_job "
+                    "ON runtime_job_runs(job_id, started_at DESC)"
+                )
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error creating runtime job tables: {e}")
+
+        # Version 23 to 24: entity-scoped memory links + tool call audit.
+        if from_version < 24 and to_version >= 24:
+            print("  - Creating entity memory and tool audit tables")
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS memory_entity_links (
+                        mem_id INTEGER NOT NULL,
+                        entity_type TEXT NOT NULL,
+                        entity_key TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(mem_id, entity_type, entity_key),
+                        FOREIGN KEY (mem_id) REFERENCES user_memory(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tool_call_audit (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        tool_name TEXT NOT NULL,
+                        caller_type TEXT,
+                        caller_id TEXT,
+                        session_id TEXT,
+                        side_effect_class TEXT,
+                        approval_required INTEGER NOT NULL DEFAULT 0,
+                        request_json TEXT,
+                        response_json TEXT,
+                        success INTEGER NOT NULL DEFAULT 1,
+                        error_text TEXT,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_memory_entity_links_entity "
+                    "ON memory_entity_links(entity_type, entity_key, mem_id)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_tool_call_audit_tool_created "
+                    "ON tool_call_audit(tool_name, created_at DESC)"
+                )
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error creating entity memory and tool audit tables: {e}")
+
+        # Version 24 to 25: remote channel bindings.
+        if from_version < 25 and to_version >= 25:
+            print("  - Creating channel binding tables")
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS channel_bindings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        channel_name TEXT NOT NULL,
+                        external_chat_id TEXT NOT NULL,
+                        session_id TEXT,
+                        thread_id INTEGER,
+                        chat_id INTEGER,
+                        metadata_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(channel_name, external_chat_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_channel_bindings_channel_chat "
+                    "ON channel_bindings(channel_name, external_chat_id)"
+                )
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error creating channel binding tables: {e}")
+
         print(f"Schema migration from version {from_version} to {to_version} completed.")
 
     # -------------------------------------------------------------------------
@@ -5227,6 +5411,7 @@ class DatabaseManager:
         confidence: float = 1.0,
         approval_status: str = "approved",
         json_data: str | dict | list | None = None,
+        entity_refs: list[dict] | None = None,
     ) -> int:
         """Insert one durable user-memory item and index it in FTS."""
         text = str(content or "").strip()
@@ -5266,6 +5451,22 @@ class DatabaseManager:
                 )
             except Exception:
                 pass
+            if entity_refs:
+                for ref in entity_refs:
+                    entity_type = str((ref or {}).get("entity_type") or "").strip().lower()
+                    entity_key = str((ref or {}).get("entity_key") or "").strip()
+                    if not entity_type or not entity_key:
+                        continue
+                    try:
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO memory_entity_links (mem_id, entity_type, entity_key, created_at)
+                            VALUES (?, ?, ?, datetime('now'))
+                            """,
+                            (mem_id, entity_type, entity_key),
+                        )
+                    except Exception:
+                        continue
             conn.commit()
             return mem_id
 
@@ -5283,6 +5484,7 @@ class DatabaseManager:
                     confidence=float(it.get("confidence", 1.0)),
                     approval_status=(it.get("approval_status") or "approved"),
                     json_data=it.get("json_data"),
+                    entity_refs=it.get("entity_refs"),
                 )
                 added += 1
             except Exception:
@@ -5451,6 +5653,10 @@ class DatabaseManager:
                 conn.execute("DELETE FROM user_memory_fts WHERE mem_id = ?", (int(memory_id),))
             except Exception:
                 pass
+            try:
+                conn.execute("DELETE FROM memory_entity_links WHERE mem_id = ?", (int(memory_id),))
+            except Exception:
+                pass
             cur = conn.execute("DELETE FROM user_memory WHERE id = ?", (int(memory_id),))
             conn.commit()
             return int(cur.rowcount or 0) > 0
@@ -5543,6 +5749,92 @@ class DatabaseManager:
                 params.append(str(approval_status))
             row = conn.execute(base, params).fetchone()
             return int(row[0] or 0) if row else 0
+
+    def memory_reflection_upsert(
+        self,
+        *,
+        scope: str,
+        reflection_key: str,
+        summary_text: str,
+        highlights_json: str | dict | list | None = None,
+        source_counts_json: str | dict | None = None,
+    ) -> int:
+        summary = str(summary_text or "").strip()
+        if not summary:
+            return 0
+        highlights = highlights_json
+        counts = source_counts_json
+        if isinstance(highlights, (dict, list)):
+            highlights = json.dumps(highlights, ensure_ascii=False)
+        if isinstance(counts, dict):
+            counts = json.dumps(counts, ensure_ascii=False)
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                """
+                INSERT INTO memory_reflections (
+                    scope, reflection_key, summary_text, highlights_json, source_counts_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                ON CONFLICT(scope, reflection_key) DO UPDATE SET
+                    summary_text = excluded.summary_text,
+                    highlights_json = excluded.highlights_json,
+                    source_counts_json = excluded.source_counts_json,
+                    updated_at = datetime('now')
+                """,
+                (
+                    str(scope or "").strip() or "daily",
+                    str(reflection_key or "").strip(),
+                    summary,
+                    str(highlights or "[]"),
+                    str(counts or "{}"),
+                ),
+            )
+            row = conn.execute(
+                "SELECT id FROM memory_reflections WHERE scope = ? AND reflection_key = ? LIMIT 1",
+                (str(scope or "").strip() or "daily", str(reflection_key or "").strip()),
+            ).fetchone()
+            conn.commit()
+            return int(row[0] or 0) if row else 0
+
+    def memory_reflection_get(self, *, scope: str, reflection_key: str) -> dict | None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT id, scope, reflection_key, summary_text, highlights_json, source_counts_json, created_at, updated_at
+                FROM memory_reflections
+                WHERE scope = ? AND reflection_key = ?
+                LIMIT 1
+                """,
+                (str(scope or "").strip() or "daily", str(reflection_key or "").strip()),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def memory_reflection_recent(self, *, scope: str | None = None, limit: int = 20) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            if scope is None:
+                rows = conn.execute(
+                    """
+                    SELECT id, scope, reflection_key, summary_text, highlights_json, source_counts_json, created_at, updated_at
+                    FROM memory_reflections
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (int(limit),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, scope, reflection_key, summary_text, highlights_json, source_counts_json, created_at, updated_at
+                    FROM memory_reflections
+                    WHERE scope = ?
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (str(scope).strip(), int(limit)),
+                ).fetchall()
+            return [dict(r) for r in rows]
 
     # -------------------------------------------------------------------------
     # Agent directory + delegation workflow methods
@@ -6345,6 +6637,403 @@ class DatabaseManager:
                 tuple(params),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def list_clients(self, *, active_only: bool = True, limit: int = 200) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            if active_only:
+                rows = conn.execute(
+                    """
+                    SELECT id, name, aliases_json, domain_rules_json, notes, is_active, created_at, updated_at
+                    FROM clients
+                    WHERE is_active = 1
+                    ORDER BY name ASC
+                    LIMIT ?
+                    """,
+                    (int(limit),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, name, aliases_json, domain_rules_json, notes, is_active, created_at, updated_at
+                    FROM clients
+                    ORDER BY is_active DESC, name ASC
+                    LIMIT ?
+                    """,
+                    (int(limit),),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def list_cos_projects(self, *, active_only: bool = False, limit: int = 200) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            if active_only:
+                rows = conn.execute(
+                    """
+                    SELECT id, name, client, client_id, status, notes, next_action, blockers_json
+                    FROM cos_projects
+                    WHERE COALESCE(status, '') NOT IN ('done', 'cancelled', 'archived')
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (int(limit),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, name, client, client_id, status, notes, next_action, blockers_json
+                    FROM cos_projects
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (int(limit),),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def user_memory_entity_links(self, *, memory_id: int) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT mem_id, entity_type, entity_key, created_at
+                FROM memory_entity_links
+                WHERE mem_id = ?
+                ORDER BY entity_type ASC, entity_key ASC
+                """,
+                (int(memory_id),),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def user_memory_search_by_entity(
+        self,
+        *,
+        entity_type: str,
+        entity_key: str,
+        query: str | None = None,
+        approval_status: str | None = "approved",
+        limit: int = 10,
+    ) -> list[tuple]:
+        etype = str(entity_type or "").strip().lower()
+        ekey = str(entity_key or "").strip()
+        if not etype or not ekey:
+            return []
+        q = str(query or "").strip()
+        with sqlite3.connect(self.db_name) as conn:
+            if q:
+                terms = [part.strip() for part in q.split() if part.strip()]
+                likes = [f"%{part}%" for part in ([q] + terms)]
+                where_bits = ["m.content LIKE ?", "COALESCE(m.json_data, '') LIKE ?"]
+                params_like: list[object] = [likes[0], likes[0]]
+                for like in likes[1:]:
+                    where_bits.extend(["m.content LIKE ?", "COALESCE(m.json_data, '') LIKE ?"])
+                    params_like.extend([like, like])
+                sql = (
+                    """
+                    SELECT m.id, m.kind, m.content, m.source, m.confidence, m.approval_status, m.json_data, m.created_at, m.updated_at
+                    FROM user_memory m
+                    JOIN memory_entity_links l ON l.mem_id = m.id
+                    WHERE l.entity_type = ? AND l.entity_key = ?
+                      AND ("""
+                    + " OR ".join(where_bits)
+                    + ")"
+                )
+                params: list[object] = [etype, ekey, *params_like]
+            else:
+                sql = """
+                    SELECT m.id, m.kind, m.content, m.source, m.confidence, m.approval_status, m.json_data, m.created_at, m.updated_at
+                    FROM user_memory m
+                    JOIN memory_entity_links l ON l.mem_id = m.id
+                    WHERE l.entity_type = ? AND l.entity_key = ?
+                """
+                params = [etype, ekey]
+            if approval_status is not None:
+                sql += " AND m.approval_status = ?"
+                params.append(str(approval_status))
+            sql += " ORDER BY m.confidence DESC, m.created_at DESC, m.id DESC LIMIT ?"
+            params.append(int(limit))
+            return conn.execute(sql, tuple(params)).fetchall()
+
+    def runtime_job_enqueue(
+        self,
+        *,
+        job_type: str,
+        payload_json: str | dict | list | None = None,
+        run_at: str | None = None,
+        priority: int = 50,
+        max_attempts: int = 3,
+        unique_key: str | None = None,
+    ) -> int:
+        payload = payload_json
+        if isinstance(payload, (dict, list)):
+            payload = json.dumps(payload, ensure_ascii=False)
+        key = str(unique_key or "").strip() or None
+        with sqlite3.connect(self.db_name) as conn:
+            if key:
+                existing = conn.execute(
+                    """
+                    SELECT id FROM runtime_jobs
+                    WHERE unique_key = ? AND status IN ('queued', 'running', 'retry')
+                    LIMIT 1
+                    """,
+                    (key,),
+                ).fetchone()
+                if existing:
+                    return int(existing[0] or 0)
+            cur = conn.execute(
+                """
+                INSERT INTO runtime_jobs (
+                    job_type, payload_json, status, priority, run_at, attempts, max_attempts,
+                    lease_expires_at, unique_key, last_error, created_at, updated_at, completed_at
+                )
+                VALUES (?, ?, 'queued', ?, COALESCE(?, CURRENT_TIMESTAMP), 0, ?, NULL, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL)
+                """,
+                (
+                    str(job_type or "").strip() or "job",
+                    str(payload or "{}"),
+                    int(priority),
+                    str(run_at).strip() if run_at else None,
+                    max(1, int(max_attempts)),
+                    key,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def runtime_job_claim_due(self, *, runner_id: str, lease_seconds: int = 300) -> dict | None:
+        now_iso = self._now_iso()
+        lease_until = datetime.now(UTC).timestamp() + max(30, int(lease_seconds))
+        lease_iso = datetime.fromtimestamp(lease_until, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT id, job_type, payload_json, status, priority, run_at, attempts, max_attempts, lease_expires_at, unique_key, last_error, created_at, updated_at, completed_at
+                FROM runtime_jobs
+                WHERE status IN ('queued', 'retry')
+                  AND COALESCE(run_at, CURRENT_TIMESTAMP) <= CURRENT_TIMESTAMP
+                  AND (lease_expires_at IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP)
+                ORDER BY priority DESC, run_at ASC, id ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                """
+                UPDATE runtime_jobs
+                SET status = 'running',
+                    attempts = attempts + 1,
+                    lease_expires_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (lease_iso, now_iso, int(row["id"])),
+            )
+            cur = conn.execute(
+                """
+                INSERT INTO runtime_job_runs (job_id, status, runner_id, started_at)
+                VALUES (?, 'running', ?, ?)
+                """,
+                (int(row["id"]), str(runner_id or "").strip() or None, now_iso),
+            )
+            conn.commit()
+            claimed = dict(row)
+            claimed["run_id"] = int(cur.lastrowid or 0)
+            claimed["attempts"] = int(claimed.get("attempts") or 0) + 1
+            claimed["status"] = "running"
+            claimed["lease_expires_at"] = lease_iso
+            return claimed
+
+    def runtime_job_complete(self, *, job_id: int, run_id: int | None = None, result_json: str | dict | list | None = None) -> bool:
+        payload = result_json
+        if isinstance(payload, (dict, list)):
+            payload = json.dumps(payload, ensure_ascii=False)
+        now_iso = self._now_iso()
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                """
+                UPDATE runtime_jobs
+                SET status = 'completed', lease_expires_at = NULL, last_error = NULL, completed_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now_iso, now_iso, int(job_id)),
+            )
+            if run_id is not None:
+                conn.execute(
+                    """
+                    UPDATE runtime_job_runs
+                    SET status = 'completed', finished_at = ?, result_json = ?
+                    WHERE id = ?
+                    """,
+                    (now_iso, str(payload) if payload is not None else None, int(run_id)),
+                )
+            conn.commit()
+            return True
+
+    def runtime_job_fail(self, *, job_id: int, run_id: int | None = None, error_text: str, retry_at: str | None = None) -> bool:
+        now_iso = self._now_iso()
+        with sqlite3.connect(self.db_name) as conn:
+            row = conn.execute(
+                "SELECT attempts, max_attempts FROM runtime_jobs WHERE id = ? LIMIT 1",
+                (int(job_id),),
+            ).fetchone()
+            attempts = int((row[0] if row else 0) or 0)
+            max_attempts = int((row[1] if row else 1) or 1)
+            new_status = "retry" if attempts < max_attempts else "failed"
+            conn.execute(
+                """
+                UPDATE runtime_jobs
+                SET status = ?, lease_expires_at = NULL, last_error = ?, run_at = COALESCE(?, run_at), updated_at = ?
+                WHERE id = ?
+                """,
+                (new_status, str(error_text or "").strip(), str(retry_at).strip() if retry_at else None, now_iso, int(job_id)),
+            )
+            if run_id is not None:
+                conn.execute(
+                    """
+                    UPDATE runtime_job_runs
+                    SET status = ?, finished_at = ?, error_text = ?
+                    WHERE id = ?
+                    """,
+                    (new_status, now_iso, str(error_text or "").strip(), int(run_id)),
+                )
+            conn.commit()
+            return True
+
+    def runtime_job_list(self, *, status: str | None = None, limit: int = 100) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            if status:
+                rows = conn.execute(
+                    """
+                    SELECT id, job_type, payload_json, status, priority, run_at, attempts, max_attempts, lease_expires_at, unique_key, last_error, created_at, updated_at, completed_at
+                    FROM runtime_jobs
+                    WHERE status = ?
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (str(status).strip(), int(limit)),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, job_type, payload_json, status, priority, run_at, attempts, max_attempts, lease_expires_at, unique_key, last_error, created_at, updated_at, completed_at
+                    FROM runtime_jobs
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (int(limit),),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def tool_call_audit_add(
+        self,
+        *,
+        tool_name: str,
+        caller_type: str | None = None,
+        caller_id: str | None = None,
+        session_id: str | None = None,
+        side_effect_class: str | None = None,
+        approval_required: bool = False,
+        request_json: str | dict | list | None = None,
+        response_json: str | dict | list | None = None,
+        success: bool = True,
+        error_text: str | None = None,
+    ) -> int:
+        req = request_json
+        resp = response_json
+        if isinstance(req, (dict, list)):
+            req = json.dumps(req, ensure_ascii=False)
+        if isinstance(resp, (dict, list)):
+            resp = json.dumps(resp, ensure_ascii=False)
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO tool_call_audit (
+                    tool_name, caller_type, caller_id, session_id, side_effect_class,
+                    approval_required, request_json, response_json, success, error_text, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    str(tool_name or "").strip() or "tool",
+                    str(caller_type).strip() if caller_type else None,
+                    str(caller_id).strip() if caller_id else None,
+                    str(session_id).strip() if session_id else None,
+                    str(side_effect_class).strip() if side_effect_class else None,
+                    int(bool(approval_required)),
+                    str(req) if req is not None else None,
+                    str(resp) if resp is not None else None,
+                    int(bool(success)),
+                    str(error_text).strip() if error_text else None,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def channel_binding_upsert(
+        self,
+        *,
+        channel_name: str,
+        external_chat_id: str,
+        session_id: str | None = None,
+        thread_id: int | None = None,
+        chat_id: int | None = None,
+        metadata_json: str | dict | list | None = None,
+    ) -> int:
+        payload = metadata_json
+        if isinstance(payload, (dict, list)):
+            payload = json.dumps(payload, ensure_ascii=False)
+        now_iso = self._now_iso()
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                """
+                INSERT INTO channel_bindings (
+                    channel_name, external_chat_id, session_id, thread_id, chat_id, metadata_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, COALESCE(?, '{}'), ?, ?)
+                ON CONFLICT(channel_name, external_chat_id) DO UPDATE SET
+                    session_id = COALESCE(excluded.session_id, channel_bindings.session_id),
+                    thread_id = COALESCE(excluded.thread_id, channel_bindings.thread_id),
+                    chat_id = COALESCE(excluded.chat_id, channel_bindings.chat_id),
+                    metadata_json = COALESCE(excluded.metadata_json, channel_bindings.metadata_json),
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(channel_name or "").strip().lower() or "channel",
+                    str(external_chat_id or "").strip(),
+                    str(session_id).strip() if session_id else None,
+                    int(thread_id) if thread_id is not None else None,
+                    int(chat_id) if chat_id is not None else None,
+                    str(payload) if payload is not None else None,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            conn.commit()
+            row = conn.execute(
+                """
+                SELECT id FROM channel_bindings
+                WHERE channel_name = ? AND external_chat_id = ?
+                LIMIT 1
+                """,
+                (str(channel_name or "").strip().lower() or "channel", str(external_chat_id or "").strip()),
+            ).fetchone()
+            return int((row[0] if row else 0) or 0)
+
+    def channel_binding_get(self, *, channel_name: str, external_chat_id: str) -> dict | None:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT id, channel_name, external_chat_id, session_id, thread_id, chat_id, metadata_json, created_at, updated_at
+                FROM channel_bindings
+                WHERE channel_name = ? AND external_chat_id = ?
+                LIMIT 1
+                """,
+                (str(channel_name or "").strip().lower(), str(external_chat_id or "").strip()),
+            ).fetchone()
+            return dict(row) if row else None
 
     def close(self):
         """Close database connection."""

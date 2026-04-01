@@ -1,56 +1,85 @@
-import pytest
-
-pytest.skip(
-    "Legacy DB unit tests from pre-Workspace schema. Needs rewrite for Workspace DB schema.",
-    allow_module_level=True,
-)
+import os
+import sqlite3
+import tempfile
+from unittest.mock import patch
 
 
-def test_due_date_is_normalized_to_iso(tmp_path, monkeypatch):
-    monkeypatch.setenv("NAVISSURANCE_DB_PATH", str(tmp_path / "test.db"))
+def _db_for_temp_path(path: str):
+    import config as config_mod
+    import core.db as core_db
 
-    from core.db import DatabaseManager
-
-    db = DatabaseManager()
-    db.add_task("S1", "Legacy date task", "02-21-2026")
-    db.add_task("S1", "ISO date task", "2026-02-22")
-
-    tasks = db.get_tasks()
-    due_dates = [t[2] for t in tasks]
-    assert "2026-02-21" in due_dates
-    assert "2026-02-22" in due_dates
+    with patch.object(config_mod, "DATABASE_PATH", path):
+        with patch.object(core_db, "DATABASE_PATH", path):
+            return core_db.DatabaseManager()
 
 
-def test_archived_tasks_table_is_not_dropped_on_startup(tmp_path, monkeypatch):
-    monkeypatch.setenv("NAVISSURANCE_DB_PATH", str(tmp_path / "test.db"))
+def test_current_schema_and_core_tables_exist():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        db = _db_for_temp_path(path)
+        assert db.current_schema_version >= 22
+        with sqlite3.connect(path) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'virtual table')"
+                ).fetchall()
+            }
+        assert "user_memory" in tables
+        assert "conversation_chunks" in tables
+        assert "conversation_chunk_summaries" in tables
+        assert "memory_reflections" in tables
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
-    from core.db import DatabaseManager
 
-    db1 = DatabaseManager()
-    db1.archive_task("Archived", "2026-02-21", True)
+def test_save_message_and_search_conversations():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        db = _db_for_temp_path(path)
+        db.save_message("main_session", "user", "Let's discuss Jeff Cunningham and the quote timeline.")
+        db.save_message("main_session", "assistant", "We agreed to send Jeff the quote tomorrow morning.")
 
-    # New instance should not wipe archived_tasks
-    db2 = DatabaseManager()
+        rows = db.search_conversations("Jeff")
+        assert len(rows) >= 1
+        assert any("Jeff Cunningham" in str(content) for _role, content, _ts in rows)
 
-    with sqlite3.connect(db2.db_name) as conn:
-        (count,) = conn.execute("SELECT COUNT(*) FROM archived_tasks").fetchone()
-    assert count >= 1
+        scoped = db.search_chat_history("main_session", "quote timeline", limit=5)
+        assert len(scoped) >= 1
+        assert any("quote" in str(content).lower() for _role, content, _ts in scoped)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
-def test_archive_task_by_id_moves_row(tmp_path, monkeypatch):
-    monkeypatch.setenv("NAVISSURANCE_DB_PATH", str(tmp_path / "test.db"))
-
-    from core.db import DatabaseManager
-
-    db = DatabaseManager()
-    db.add_task("S1", "To archive", "2026-02-21")
-    task_id = db.get_tasks()[0][0]
-
-    assert db.archive_task_by_id(task_id) is True
-    assert db.archive_task_by_id(task_id) is False  # already gone
-
-    with sqlite3.connect(db.db_name) as conn:
-        (tasks_count,) = conn.execute("SELECT COUNT(*) FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        (archived_count,) = conn.execute("SELECT COUNT(*) FROM archived_tasks WHERE task = ?", ("To archive",)).fetchone()
-    assert tasks_count == 0
-    assert archived_count == 1
+def test_memory_reflection_round_trip():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        db = _db_for_temp_path(path)
+        reflection_id = db.memory_reflection_upsert(
+            scope="daily",
+            reflection_key="2026-03-30",
+            summary_text="Navi learned two durable preferences.",
+            highlights_json=["Prefer concise bullets.", "Q-sub means quality submission."],
+            source_counts_json={"approved_memory_rows": 2},
+        )
+        assert reflection_id > 0
+        row = db.memory_reflection_get(scope="daily", reflection_key="2026-03-30")
+        assert row is not None
+        assert "durable preferences" in str(row.get("summary_text") or "").lower()
+        recent = db.memory_reflection_recent(scope="daily", limit=5)
+        assert len(recent) == 1
+        assert recent[0]["id"] == reflection_id
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass

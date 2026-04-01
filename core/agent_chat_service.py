@@ -4,6 +4,7 @@ import json
 import logging
 from typing import Iterable
 
+from core.agent_execution import bootstrap_assignment_execution
 from core.db import DatabaseManager
 from core.grok_client import MODEL_FAST, grok_available, grok_completion_messages
 
@@ -254,6 +255,24 @@ def prime_assignment_handoff(
             "or to upload requested documents."
         )
     db.save_message(session_id, "assistant", reply)
+    try:
+        from core.runtime.jobs import enqueue_assignment_bootstrap
+
+        job_id = enqueue_assignment_bootstrap(
+            db,
+            assignment_id=int(assignment_id),
+            thread_id=int(thread_id),
+        )
+        if job_id:
+            logger.info("Queued assignment bootstrap job_id=%s for A-%04d", job_id, int(assignment_id))
+        else:
+            bootstrap_assignment_execution(
+                db,
+                assignment_id=int(assignment_id),
+                thread_id=int(thread_id),
+            )
+    except Exception:
+        logger.exception("assignment execution bootstrap failed for A-%04d", int(assignment_id))
     try:
         db.agent_touch_thread(int(thread_id), bump_last_message=True)
     except Exception:

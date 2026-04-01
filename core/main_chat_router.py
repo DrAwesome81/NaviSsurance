@@ -6,7 +6,6 @@ import time
 from typing import Iterable
 
 from config import get_system_prompt
-from core.chat_retrieval import build_long_term_retrieval_context
 from core.chief_of_staff_service import cos_response
 from core.local_llm import run_local_completion
 from core.user_memory import (
@@ -287,21 +286,19 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
     )
     response = ""
     final_source = route
-    memory_context = build_user_memory_context(db, message, limit=5, recent_limit=2)
-    long_term_context = build_long_term_retrieval_context(db, message, session_id=sid, chunk_limit=2, raw_turn_limit=4)
-    combined_memory_context = "\n\n".join(
-        part for part in (memory_context, long_term_context) if str(part or "").strip()
-    )
+    memory_context = ""
 
     if teach_response:
         response = teach_response
         final_source = "teach_navi"
     elif route == "local_fast":
+        # Keep the fast path fast: formatting/rewrite turns do not need durable recall.
+        memory_context = build_user_memory_context(db, message, limit=5, recent_limit=2)
         try:
             response = local_fast_chat_response(
                 message,
                 conversation_history,
-                memory_context=combined_memory_context,
+                memory_context=memory_context,
             )
             if _requires_cos_fallback(response):
                 logger.info(

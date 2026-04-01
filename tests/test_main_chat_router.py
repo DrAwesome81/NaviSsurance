@@ -25,8 +25,11 @@ class _FakeDB:
     def cos_update_chat(self, chat_id):
         self.updated_chat_ids.append(int(chat_id))
 
-    def user_memory_add(self, *, kind, content, source="unknown", confidence=1.0, approval_status="approved", json_data=None):
-        row = (len(self.user_memory_added) + 1, kind, content, source, confidence, approval_status, json_data, "now", "now")
+    def user_memory_add(self, *, kind, content, source="unknown", confidence=1.0, approval_status="approved", json_data=None, entity_refs=None):
+        payload = dict(json_data or {}) if isinstance(json_data, dict) else json_data
+        if isinstance(payload, dict) and entity_refs is not None:
+            payload["entity_refs"] = entity_refs
+        row = (len(self.user_memory_added) + 1, kind, content, source, confidence, approval_status, payload, "now", "now")
         self.user_memory_added.append(row)
         self.user_memory_rows.insert(0, row)
         return row[0]
@@ -359,6 +362,27 @@ def test_run_main_chat_turn_handles_teach_navi_alias_without_model_calls(monkeyp
     assert db.user_memory_added[0][2] == "Q-sub means quality submission."
     assert "Q-sub" in str(db.user_memory_added[0][6])
     assert handler.saved == [("main_session", "assistant", out)]
+
+
+def test_run_main_chat_turn_skips_memory_context_for_teach_navi(monkeypatch):
+    db = _FakeDB(dashboard_chat_id=7)
+    handler = _FakeHandler(db)
+    monkeypatch.setattr(
+        "core.main_chat_router.build_user_memory_context",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("memory context should not be built")),
+    )
+    monkeypatch.setattr(
+        "core.main_chat_router.run_local_completion",
+        lambda messages, session_id: (_ for _ in ()).throw(AssertionError("local should not run")),
+    )
+    monkeypatch.setattr(
+        "core.main_chat_router.cos_response",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("CoS should not run")),
+    )
+
+    out = run_main_chat_turn(handler, "Teach Navi: I prefer concise bullets.", "main_session", [])
+
+    assert "I'll remember that" in out
 
 
 def test_run_main_chat_turn_auto_stores_durable_memory(monkeypatch):

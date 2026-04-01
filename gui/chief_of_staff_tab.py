@@ -847,10 +847,14 @@ class GlobalMemoryDialog(QDialog):
                 synonyms = alias_payload.get("synonyms") or []
                 if not isinstance(synonyms, list):
                     synonyms = []
+                scope = alias_payload.get("scope") or {}
+                if not isinstance(scope, dict):
+                    scope = {}
                 return {
                     "term": term,
                     "canonical": canonical,
                     "synonyms": [str(item).strip() for item in synonyms if str(item).strip()],
+                    "scope": {str(k).strip(): str(v).strip() for k, v in scope.items() if str(k).strip() and str(v).strip()},
                 }
         return None
 
@@ -964,6 +968,15 @@ class GlobalMemoryDialog(QDialog):
                     + ", ".join(
                         str(item).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                         for item in synonyms
+                    )
+                )
+            scope = alias_payload.get("scope") or {}
+            if isinstance(scope, dict) and scope:
+                alias_html += (
+                    "<br><b>Scope:</b> "
+                    + ", ".join(
+                        f"{self._escape_html(k)}={self._escape_html(v)}"
+                        for k, v in scope.items()
                     )
                 )
             alias_html += "</p>"

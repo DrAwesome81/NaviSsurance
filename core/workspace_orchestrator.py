@@ -52,6 +52,10 @@ def _parse_round_result(text: str) -> dict:
         "is_complete": False,
         "template_blocks": {},
         "document_metadata": {},
+        "evidence_map": {},
+        "unresolved_fields": [],
+        "research_gaps": [],
+        "user_questions": [],
     }
     raw = (text or "").strip()
     if not raw:
@@ -78,6 +82,27 @@ def _parse_round_result(text: str) -> dict:
                     for k, v in metadata.items()
                     if str(k or "").strip()
                 }
+            evidence_map = obj.get("evidence_map")
+            if isinstance(evidence_map, dict):
+                normalized_map: dict[str, str] = {}
+                for k, v in evidence_map.items():
+                    key = str(k or "").strip()
+                    if not key:
+                        continue
+                    if isinstance(v, dict):
+                        parts = []
+                        for field_name in ("status", "evidence", "notes", "source"):
+                            value = str(v.get(field_name) or "").strip()
+                            if value:
+                                parts.append(f"{field_name}: {value}")
+                        normalized_map[key] = "; ".join(parts).strip()
+                    else:
+                        normalized_map[key] = str(v or "").strip()
+                out["evidence_map"] = {k: v for k, v in normalized_map.items() if v}
+            for key in ("unresolved_fields", "research_gaps", "user_questions"):
+                values = obj.get(key) or []
+                if isinstance(values, list):
+                    out[key] = [str(v).strip() for v in values if str(v).strip()]
             return out
     except Exception:
         pass
@@ -315,6 +340,69 @@ def _merge_string_map(current: dict[str, str], incoming: dict | None) -> dict[st
     }
 
 
+def _merge_string_list(current: list[str], incoming: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in list(current or []) + list(incoming or []):
+        text = str(value or "").strip()
+        if not text:
+            continue
+        marker = text.casefold()
+        if marker in seen:
+            continue
+        seen.add(marker)
+        out.append(text)
+    return out
+
+
+def _normalize_string_list(values: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in list(values or []):
+        text = str(value or "").strip()
+        if not text:
+            continue
+        marker = text.casefold()
+        if marker in seen:
+            continue
+        seen.add(marker)
+        out.append(text)
+    return out
+
+
+def _replace_string_list(current: list[str], result: dict, key: str) -> list[str]:
+    if key not in result:
+        return _normalize_string_list(current)
+    return _normalize_string_list(result.get(key) or [])
+
+
+def _normalize_completion_analysis(
+    *,
+    template_blocks: dict[str, str],
+    evidence_map: dict[str, str],
+    unresolved_fields: list[str],
+    research_gaps: list[str],
+    user_questions: list[str],
+) -> tuple[list[str], list[str], list[str]]:
+    resolved_keys = {
+        str(key).strip().casefold()
+        for key, value in (template_blocks or {}).items()
+        if str(key or "").strip()
+        and str(value or "").strip()
+        and str((evidence_map or {}).get(key) or "").strip()
+    }
+    normalized_unresolved = _normalize_string_list(unresolved_fields)
+    if resolved_keys:
+        normalized_unresolved = [
+            key for key in normalized_unresolved if str(key).strip().casefold() not in resolved_keys
+        ]
+    return (
+        normalized_unresolved,
+        _normalize_string_list(research_gaps),
+        _normalize_string_list(user_questions),
+    )
+
+
 def _build_template_validation_feedback(
     task_spec: "WorkspaceTaskSpec",
     *,
@@ -457,6 +545,10 @@ class DualLLMOrchestrator:
         current_markdown = ""
         current_template_blocks: dict[str, str] = {}
         current_document_metadata: dict[str, str] = {}
+        current_evidence_map: dict[str, str] = {}
+        current_unresolved_fields: list[str] = []
+        current_research_gaps: list[str] = []
+        current_user_questions: list[str] = []
         chatgpt_feedback = None
         round_num = 0
         grok_output = ""
@@ -474,6 +566,10 @@ class DualLLMOrchestrator:
             grok_is_complete = grok_result.get("is_complete", False)
             grok_template_blocks = grok_result.get("template_blocks") or {}
             grok_document_metadata = grok_result.get("document_metadata") or {}
+            grok_evidence_map = grok_result.get("evidence_map") or {}
+            grok_unresolved_fields = grok_result.get("unresolved_fields") or []
+            grok_research_gaps = grok_result.get("research_gaps") or []
+            grok_user_questions = grok_result.get("user_questions") or []
             
             # Use Grok's markdown if provided, otherwise keep current
             if grok_markdown and grok_markdown != current_markdown:
@@ -481,6 +577,17 @@ class DualLLMOrchestrator:
                 self.logger(f"DualLLMOrchestrator: Grok updated markdown in round {round_num}")
             current_template_blocks = _merge_string_map(current_template_blocks, grok_template_blocks)
             current_document_metadata = _merge_string_map(current_document_metadata, grok_document_metadata)
+            current_evidence_map = _merge_string_map(current_evidence_map, grok_evidence_map)
+            current_unresolved_fields = _replace_string_list(current_unresolved_fields, grok_result, "unresolved_fields")
+            current_research_gaps = _replace_string_list(current_research_gaps, grok_result, "research_gaps")
+            current_user_questions = _replace_string_list(current_user_questions, grok_result, "user_questions")
+            current_unresolved_fields, current_research_gaps, current_user_questions = _normalize_completion_analysis(
+                template_blocks=current_template_blocks,
+                evidence_map=current_evidence_map,
+                unresolved_fields=current_unresolved_fields,
+                research_gaps=current_research_gaps,
+                user_questions=current_user_questions,
+            )
             grok_template_valid, grok_template_issues, grok_template_feedback = _build_template_validation_feedback(
                 task_spec,
                 template_blocks=current_template_blocks,
@@ -497,6 +604,10 @@ class DualLLMOrchestrator:
                 chatgpt_is_complete = chatgpt_result.get("is_complete", False)
                 chatgpt_template_blocks = chatgpt_result.get("template_blocks") or {}
                 chatgpt_document_metadata = chatgpt_result.get("document_metadata") or {}
+                chatgpt_evidence_map = chatgpt_result.get("evidence_map") or {}
+                chatgpt_unresolved_fields = chatgpt_result.get("unresolved_fields") or []
+                chatgpt_research_gaps = chatgpt_result.get("research_gaps") or []
+                chatgpt_user_questions = chatgpt_result.get("user_questions") or {}
                 
                 # Use ChatGPT's markdown if provided
                 if chatgpt_markdown and chatgpt_markdown != current_markdown:
@@ -504,6 +615,21 @@ class DualLLMOrchestrator:
                     self.logger(f"DualLLMOrchestrator: ChatGPT updated markdown in round {round_num}")
                 current_template_blocks = _merge_string_map(current_template_blocks, chatgpt_template_blocks)
                 current_document_metadata = _merge_string_map(current_document_metadata, chatgpt_document_metadata)
+                current_evidence_map = _merge_string_map(current_evidence_map, chatgpt_evidence_map)
+                current_unresolved_fields = _replace_string_list(current_unresolved_fields, chatgpt_result, "unresolved_fields")
+                current_research_gaps = _replace_string_list(current_research_gaps, chatgpt_result, "research_gaps")
+                current_user_questions = _replace_string_list(
+                    current_user_questions,
+                    chatgpt_result,
+                    "user_questions",
+                )
+                current_unresolved_fields, current_research_gaps, current_user_questions = _normalize_completion_analysis(
+                    template_blocks=current_template_blocks,
+                    evidence_map=current_evidence_map,
+                    unresolved_fields=current_unresolved_fields,
+                    research_gaps=current_research_gaps,
+                    user_questions=current_user_questions,
+                )
                 chatgpt_template_valid, chatgpt_template_issues, chatgpt_template_feedback = _build_template_validation_feedback(
                     task_spec,
                     template_blocks=current_template_blocks,
@@ -521,6 +647,10 @@ class DualLLMOrchestrator:
                         "is_complete": True,
                         "template_blocks": current_template_blocks,
                         "document_metadata": current_document_metadata,
+                            "evidence_map": current_evidence_map,
+                            "unresolved_fields": current_unresolved_fields,
+                            "research_gaps": current_research_gaps,
+                            "user_questions": current_user_questions,
                         "template_validation_issues": [],
                     }
                     collaboration_history.append(round_data)
@@ -538,6 +668,10 @@ class DualLLMOrchestrator:
                         "status": "completed",
                         "template_blocks": current_template_blocks,
                         "document_metadata": current_document_metadata,
+                            "evidence_map": current_evidence_map,
+                            "unresolved_fields": current_unresolved_fields,
+                            "research_gaps": current_research_gaps,
+                            "user_questions": current_user_questions,
                     }
                 chatgpt_feedback = _combine_feedback(chatgpt_result.get("feedback"), chatgpt_template_feedback)
                 round_data = {
@@ -549,6 +683,10 @@ class DualLLMOrchestrator:
                     "is_complete": False,
                     "template_blocks": current_template_blocks,
                     "document_metadata": current_document_metadata,
+                    "evidence_map": current_evidence_map,
+                    "unresolved_fields": current_unresolved_fields,
+                    "research_gaps": current_research_gaps,
+                    "user_questions": current_user_questions,
                     "template_validation_issues": chatgpt_template_issues,
                     "reference_pack_stats": (
                         chatgpt_result.get("reference_pack_stats")
@@ -575,6 +713,10 @@ class DualLLMOrchestrator:
             chatgpt_is_complete = chatgpt_result.get("is_complete", False)
             chatgpt_template_blocks = chatgpt_result.get("template_blocks") or {}
             chatgpt_document_metadata = chatgpt_result.get("document_metadata") or {}
+            chatgpt_evidence_map = chatgpt_result.get("evidence_map") or {}
+            chatgpt_unresolved_fields = chatgpt_result.get("unresolved_fields") or []
+            chatgpt_research_gaps = chatgpt_result.get("research_gaps") or []
+            chatgpt_user_questions = chatgpt_result.get("user_questions") or []
             
             # Use ChatGPT's markdown if provided (this is the key change - ChatGPT can now edit)
             if chatgpt_markdown and chatgpt_markdown != current_markdown:
@@ -582,6 +724,17 @@ class DualLLMOrchestrator:
                 self.logger(f"DualLLMOrchestrator: ChatGPT updated markdown in round {round_num}")
             current_template_blocks = _merge_string_map(current_template_blocks, chatgpt_template_blocks)
             current_document_metadata = _merge_string_map(current_document_metadata, chatgpt_document_metadata)
+            current_evidence_map = _merge_string_map(current_evidence_map, chatgpt_evidence_map)
+            current_unresolved_fields = _replace_string_list(current_unresolved_fields, chatgpt_result, "unresolved_fields")
+            current_research_gaps = _replace_string_list(current_research_gaps, chatgpt_result, "research_gaps")
+            current_user_questions = _replace_string_list(current_user_questions, chatgpt_result, "user_questions")
+            current_unresolved_fields, current_research_gaps, current_user_questions = _normalize_completion_analysis(
+                template_blocks=current_template_blocks,
+                evidence_map=current_evidence_map,
+                unresolved_fields=current_unresolved_fields,
+                research_gaps=current_research_gaps,
+                user_questions=current_user_questions,
+            )
             chatgpt_template_valid, chatgpt_template_issues, chatgpt_template_feedback = _build_template_validation_feedback(
                 task_spec,
                 template_blocks=current_template_blocks,
@@ -599,6 +752,10 @@ class DualLLMOrchestrator:
                 "is_complete": (chatgpt_is_complete or grok_is_complete) and chatgpt_template_valid,
                 "template_blocks": current_template_blocks,
                 "document_metadata": current_document_metadata,
+                "evidence_map": current_evidence_map,
+                "unresolved_fields": current_unresolved_fields,
+                "research_gaps": current_research_gaps,
+                "user_questions": current_user_questions,
                 "template_validation_issues": chatgpt_template_issues,
                 "reference_pack_stats": (
                     chatgpt_result.get("reference_pack_stats")
@@ -638,6 +795,32 @@ class DualLLMOrchestrator:
                         current_document_metadata,
                         grok_review_result.get("document_metadata") or {},
                     )
+                    current_evidence_map = _merge_string_map(
+                        current_evidence_map,
+                        grok_review_result.get("evidence_map") or {},
+                    )
+                    current_unresolved_fields = _replace_string_list(
+                        current_unresolved_fields,
+                        grok_review_result,
+                        "unresolved_fields",
+                    )
+                    current_research_gaps = _replace_string_list(
+                        current_research_gaps,
+                        grok_review_result,
+                        "research_gaps",
+                    )
+                    current_user_questions = _replace_string_list(
+                        current_user_questions,
+                        grok_review_result,
+                        "user_questions",
+                    )
+                    current_unresolved_fields, current_research_gaps, current_user_questions = _normalize_completion_analysis(
+                        template_blocks=current_template_blocks,
+                        evidence_map=current_evidence_map,
+                        unresolved_fields=current_unresolved_fields,
+                        research_gaps=current_research_gaps,
+                        user_questions=current_user_questions,
+                    )
                     grok_review_template_valid, grok_review_template_issues, grok_review_template_feedback = _build_template_validation_feedback(
                         task_spec,
                         template_blocks=current_template_blocks,
@@ -655,6 +838,10 @@ class DualLLMOrchestrator:
                             "is_complete": True,
                             "template_blocks": current_template_blocks,
                             "document_metadata": current_document_metadata,
+                            "evidence_map": current_evidence_map,
+                            "unresolved_fields": current_unresolved_fields,
+                            "research_gaps": current_research_gaps,
+                            "user_questions": current_user_questions,
                             "template_validation_issues": [],
                             "reference_pack_stats": grok_review_result.get("reference_pack_stats") or {},
                         }
@@ -673,6 +860,10 @@ class DualLLMOrchestrator:
                             "status": "completed",
                             "template_blocks": current_template_blocks,
                             "document_metadata": current_document_metadata,
+                            "evidence_map": current_evidence_map,
+                            "unresolved_fields": current_unresolved_fields,
+                            "research_gaps": current_research_gaps,
+                            "user_questions": current_user_questions,
                         }
                     else:
                         # Grok wants more changes, continue
@@ -701,6 +892,10 @@ class DualLLMOrchestrator:
                     "status": "completed",
                     "template_blocks": current_template_blocks,
                     "document_metadata": current_document_metadata,
+                    "evidence_map": current_evidence_map,
+                    "unresolved_fields": current_unresolved_fields,
+                    "research_gaps": current_research_gaps,
+                    "user_questions": current_user_questions,
                 }
         
         # Max rounds reached
@@ -714,6 +909,10 @@ class DualLLMOrchestrator:
             "status": "max_rounds_reached",
             "template_blocks": current_template_blocks,
             "document_metadata": current_document_metadata,
+            "evidence_map": current_evidence_map,
+            "unresolved_fields": current_unresolved_fields,
+            "research_gaps": current_research_gaps,
+            "user_questions": current_user_questions,
         }
 
     # ------------------------------------------------------------------
@@ -879,6 +1078,11 @@ CRITICAL:
 - Include template_blocks as an object whose keys exactly match the requested template block keys.
 - Include document_metadata as an object with the requested metadata keys.
 - template_blocks values must be plain strings and must not contain unresolved placeholders.
+- Include evidence_map as an object keyed by template block key describing what source evidence supports each filled block.
+- Include unresolved_fields as a list of template block keys that still lack enough evidence.
+- Include research_gaps as a list of gaps that could be filled from public methodology, standards, or web research.
+- Include user_questions as a list of targeted client/user questions required to finish the template safely.
+- These completion-analysis lists must describe the CURRENT remaining gaps only. If new evidence resolves an earlier gap, omit it instead of carrying it forward.
 """
 
         user_message = f"""Goal: {task_spec.goal}
@@ -905,7 +1109,8 @@ Return STRICT JSON only with:
   "feedback": "",
   "is_complete": true{',' if template_spec else ''}
 {"  \"template_blocks\": {\"value::example\": \"...\"}," if template_spec else ""}
-{"  \"document_metadata\": {\"document_title\": \"...\", \"subtitle\": \"\", \"document_id\": \"DRAFT\", \"version\": \"0.1\", \"effective_date\": \"2026-03-19\", \"prepared_by\": \"NaviSsurance\"}" if template_spec else ""}
+{"  \"document_metadata\": {\"document_title\": \"...\", \"subtitle\": \"\", \"document_id\": \"DRAFT\", \"version\": \"0.1\", \"effective_date\": \"2026-03-19\", \"prepared_by\": \"NaviSsurance\"}," if template_spec else ""}
+{"  \"evidence_map\": {\"value::example\": \"supported by source document A section 2\"},\"unresolved_fields\": [],\"research_gaps\": [],\"user_questions\": []" if template_spec else ""}
 }}
 """
 
@@ -985,6 +1190,11 @@ CRITICAL:
 - Include template_blocks as an object whose keys exactly match the requested template block keys.
 - Include document_metadata as an object with the requested metadata keys.
 - Keep template_blocks aligned with the reviewed markdown.
+- Include evidence_map as an object keyed by template block key describing what source evidence supports each filled block.
+- Include unresolved_fields as a list of template block keys that still lack enough evidence.
+- Include research_gaps as a list of gaps that could be filled from public methodology, standards, or web research.
+- Include user_questions as a list of targeted client/user questions required to finish the template safely.
+- These completion-analysis lists must describe the CURRENT remaining gaps only. If new evidence resolves an earlier gap, omit it instead of carrying it forward.
 """
         
         # Get current date for context
@@ -1014,7 +1224,8 @@ Return STRICT JSON only with:
   "feedback": "",
   "is_complete": true{',' if template_spec else ''}
 {"  \"template_blocks\": {\"value::example\": \"...\"}," if template_spec else ""}
-{"  \"document_metadata\": {\"document_title\": \"...\", \"subtitle\": \"\", \"document_id\": \"DRAFT\", \"version\": \"0.1\", \"effective_date\": \"2026-03-19\", \"prepared_by\": \"NaviSsurance\"}" if template_spec else ""}
+{"  \"document_metadata\": {\"document_title\": \"...\", \"subtitle\": \"\", \"document_id\": \"DRAFT\", \"version\": \"0.1\", \"effective_date\": \"2026-03-19\", \"prepared_by\": \"NaviSsurance\"}," if template_spec else ""}
+{"  \"evidence_map\": {\"value::example\": \"supported by source document A section 2\"},\"unresolved_fields\": [],\"research_gaps\": [],\"user_questions\": []" if template_spec else ""}
 }}
 """
         
@@ -1163,6 +1374,11 @@ CRITICAL:
             system_message += """
 - Include template_blocks as an object whose keys exactly match the requested template block keys.
 - Include document_metadata as an object with the requested metadata keys.
+- Include evidence_map as an object keyed by template block key describing what source evidence supports each filled block.
+- Include unresolved_fields as a list of template block keys that still lack enough evidence.
+- Include research_gaps as a list of gaps that could be filled from public methodology, standards, or web research.
+- Include user_questions as a list of targeted client/user questions required to finish the template safely.
+- These completion-analysis lists must describe the CURRENT remaining gaps only. If new evidence resolves an earlier gap, omit it instead of carrying it forward.
 """
 
         # Get current date for context
@@ -1189,7 +1405,8 @@ Return STRICT JSON only with:
   "feedback": "",
   "is_complete": true{',' if template_spec else ''}
 {"  \"template_blocks\": {\"value::example\": \"...\"}," if template_spec else ""}
-{"  \"document_metadata\": {\"document_title\": \"...\", \"subtitle\": \"\", \"document_id\": \"DRAFT\", \"version\": \"0.1\", \"effective_date\": \"2026-03-19\", \"prepared_by\": \"NaviSsurance\"}" if template_spec else ""}
+{"  \"document_metadata\": {\"document_title\": \"...\", \"subtitle\": \"\", \"document_id\": \"DRAFT\", \"version\": \"0.1\", \"effective_date\": \"2026-03-19\", \"prepared_by\": \"NaviSsurance\"}," if template_spec else ""}
+{"  \"evidence_map\": {\"value::example\": \"supported by source document A section 2\"},\"unresolved_fields\": [],\"research_gaps\": [],\"user_questions\": []" if template_spec else ""}
 }}
 """
 

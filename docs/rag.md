@@ -1,5 +1,7 @@
 ## RAG index (Chroma) — build & config
 
+Last updated: 2026-04-01
+
 This repo includes a local RAG index builder in `build_rag_index.py` that creates a Chroma vector store in `chroma_index/`.
 
 ### Config files
@@ -28,4 +30,17 @@ Notes:
 ### Security
 - Do **not** commit `rag_config.json` (it may contain tokens). It is ignored by `.gitignore`.
 - Prefer using environment variables for tokens where possible; if you must put tokens in `rag_config.json`, keep the file local-only.
+
+## How this fits into current retrieval
+NaviSsurance now has multiple retrieval layers:
+- `core/cos_doc_search.py` for local notes/docs plus optional Chroma-backed RAG
+- `core/chat_retrieval.py` for long-term chat retrieval
+- `core/user_memory.py` for durable structured memory
+
+The Chroma index is therefore one retrieval source, not the entire memory system.
+
+## Current guidance
+- Use Chroma when you want semantic document retrieval over indexed local / imported content.
+- Use the built-in structured memory and chat-retrieval layers for preferences, aliases, commitments, and historical chat context.
+- Treat retrieved text as untrusted reference material rather than executable instructions.
 

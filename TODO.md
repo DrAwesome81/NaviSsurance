@@ -48,17 +48,17 @@
 
 ## Memory / Learning
 
-- [ ] Passive learning from conversation:
+- [x] Passive learning from conversation:
   - auto-extract stable preferences/facts/aliases from chat
   - store low-risk items as unconfirmed memory
   - add confirmation / approval flow so memory can be accepted, edited, or rejected
-- [ ] Terminology / alias memory:
+- [x] Terminology / alias memory:
   - support client aliases, shorthand, and glossary terms
   - make retrieval and prompt grounding use these aliases consistently
-- [ ] Long-term learning / reflection:
+- [x] Long-term learning / reflection:
   - add daily or weekly "what Navi learned" reflection summaries
   - let approved learnings persist into durable memory
-- [ ] Better long-term chat retrieval:
+- [x] Better long-term chat retrieval:
   - improve chat-history-as-memory beyond raw FTS
   - use summarized/structured retrieval for older conversations
 
@@ -70,9 +70,28 @@
   - add context windowing/summarization
   - tune token caps
 
+## Runtime / Integration Hardening
+
+- [ ] Remaining runtime validation:
+  - repeat end-to-end validation with any production-style deployment settings you decide to keep enabled by default
+
+- [ ] Runtime follow-through:
+  - move more ad hoc timer/background flows onto the shared runtime where it improves consistency
+  - broaden automated coverage for runtime jobs, browser tools, and local API surfaces
+  - add clearer operator-facing setup guidance for env-gated integrations
+
+## Workspace / Execution Verification
+
+- [x] Verified current Workspace dual-LLM source-document visibility:
+  - uploaded/marked files are normalized and passed into the current Workspace orchestration path
+  - added regression coverage for normalized file-content handoff
+  - added fail-fast behavior when all marked files are unusable placeholders or extraction errors
+
 ## Docs / Closeout
 
 - [x] Final closeout artifact: "done vs intentionally manual" matrix in docs
+- [x] Current architecture/status docs aligned with runtime, local API, browser tools, and channel scaffolding
+- [x] Added `docs/roadmap_status.md` as the visible roadmap status reference
 
 ## Completed Recently
 
@@ -91,7 +110,12 @@
 - [x] Added DOCX save support for meeting transcripts
 - [x] Added review-first task extraction from meeting transcripts
 - [x] Added persistent global Navi memory with approval workflow and management UI
+- [x] Added terminology / alias memory upgrades with scoped glossary support
+- [x] Added daily / weekly memory reflection summaries
+- [x] Added summary-first long-term chat retrieval over older conversations
 - [x] Completed Chief of Staff UX polish for preferences, priority handling, scroll behavior, sizing, and host-shell layout
+- [x] Added optional runtime scheduler, local API, browser tool registry, entity-linked memory scaffolding, and Telegram integration scaffolding
+- [x] Installed and validated APScheduler, local API startup, Playwright browser tooling, and runtime/job execution on the current workstation
 
 ## Intentionally Manual / Not Targeted for Deterministic Automation
 

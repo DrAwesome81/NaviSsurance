@@ -202,6 +202,29 @@ class DashboardTab(QWidget):
         except Exception:
             pass
 
+        # Optional runtime / local API / browser tooling
+        try:
+            from core.runtime.service import runtime_scheduler_status
+
+            ok, detail = runtime_scheduler_status()
+            items.append(("Runtime scheduler", ok, detail))
+        except Exception:
+            pass
+        try:
+            from core.service.local_api import local_api_status
+
+            ok, detail = local_api_status()
+            items.append(("Local API", ok, detail))
+        except Exception:
+            pass
+        try:
+            from core.tools.browser import browser_tools_available
+
+            ok, detail = browser_tools_available()
+            items.append(("Browser tools", ok, detail))
+        except Exception:
+            pass
+
         return items
 
     def _render_setup_banner_html(self) -> str:

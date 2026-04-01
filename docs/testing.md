@@ -1,21 +1,32 @@
 # NaviSsurance Testing
 
+Last revised: 2026-04-01
+
 ## Automated tests (recommended first)
 
 - Full unit suite:
   - `python -m pytest -q`
+- Alternate wrapper:
+  - `python run_tests.py`
 - Focused suites:
   - `python -m pytest tests/test_chief_of_staff.py -q`
   - `python -m pytest tests/test_workflow_engine.py -q`
+  - `python -m pytest tests/test_runtime_jobs.py tests/test_local_api.py tests/test_user_memory_entities.py -q`
 
 ### Optional UI test flags
 - Qt/UI tests are disabled by default:
   - `set RUN_QT_TESTS=1` (Windows)
   - `export RUN_QT_TESTS=1` (macOS/Linux)
 
-## Chief of Staff + Executive Team Manual Regression (Current)
+## Active vs Legacy
 
-Last revised: 2026-03-30
+- The active release path is:
+  - automated unit tests,
+  - the `Fast smoke (10–15 min)` section below,
+  - and the current CoS / delegation / Deep Research / Billing checks.
+- Older historical manual cases later in this document should be treated as archived reference unless they are explicitly covered by the current sections above.
+
+## Chief of Staff + Executive Team Manual Regression (Current)
 
 ### Prerequisites
 
@@ -29,6 +40,15 @@ Last revised: 2026-03-30
   - Missing token should degrade gracefully (no crash, no auth popup).
 - Optional document RAG:
   - `COS_ENABLE_RAG_SEARCH=1` and available index for semantic retrieval checks.
+- Optional runtime scheduler:
+  - Ensure `APScheduler` is installed if you want runtime jobs to start from the desktop app.
+  - Runtime is controlled by `NAVI_RUNTIME_ENABLED`.
+- Optional local API:
+  - Set `NAVI_LOCAL_API_ENABLED=1` to start the local FastAPI service from the desktop app.
+  - Default local endpoint is `http://127.0.0.1:8765/health`.
+- Optional browser automation:
+  - Ensure `playwright` is installed.
+  - Run `playwright install chromium` once on the machine before browser-tool validation.
 
 ### Deep Research (web) prerequisites
 - Web research requires OpenAI access:
@@ -42,6 +62,49 @@ Last revised: 2026-03-30
 - Open assignee chat routing (`TC-COS-004`)
 - Bulk board action (`TC-COS-007`)
 - Assignment health filter (`TC-COS-010`)
+- Local API health check (`TC-API-001`)
+- Runtime queue smoke (`TC-RT-001`)
+
+### Runtime / integration smoke
+
+#### TC-RT-001: Runtime scheduler starts cleanly
+- Steps:
+  1. Set `NAVI_RUNTIME_ENABLED=1`.
+  2. Launch the app.
+  3. Inspect `logs/app.log`.
+- Expected:
+  - Runtime service starts without crashing the desktop app.
+  - No repeated scheduler-start failures appear in the log.
+
+#### TC-RT-002: Runtime jobs are enqueued and processed
+- Steps:
+  1. Launch with runtime enabled.
+  2. Trigger or inspect job-producing flows such as assignment bootstrap or recurring runtime checks.
+  3. Inspect `runtime_jobs` and `runtime_job_runs` in the SQLite database.
+- Expected:
+  - Jobs enter queued/running/completed or retry/failed states deterministically.
+  - Job runs are recorded with timestamps and any error text.
+
+#### TC-API-001: Local API health endpoint
+- Steps:
+  1. Set `NAVI_LOCAL_API_ENABLED=1`.
+  2. Launch the app.
+  3. Request `GET /health` from `http://127.0.0.1:8765/health`.
+- Expected:
+  - Returns a healthy response without blocking or crashing the desktop app.
+
+#### TC-API-002: Local API tool listing
+- Steps:
+  1. With local API enabled, request `GET /tools`.
+- Expected:
+  - Returns the registered tool list and metadata such as side-effect class / approval fields.
+
+#### TC-BROWSER-001: Browser snapshot tool
+- Steps:
+  1. Ensure Playwright and Chromium are installed.
+  2. Invoke a browser snapshot flow through the local API or test harness.
+- Expected:
+  - A screenshot and best-effort text excerpt are produced without crashing the app.
 
 ### Current CoS / Delegation test cases
 
@@ -266,6 +329,8 @@ Note:
   - `python -m pytest tests/test_chief_of_staff.py -q`
 - Additional memory/DB smoke:
   - `python -m pytest tests/test_cos_memory.py tests/test_db.py -q`
+- Runtime/API/entity memory smoke:
+  - `python -m pytest tests/test_runtime_jobs.py tests/test_local_api.py tests/test_user_memory_entities.py -q`
 
 ---
 

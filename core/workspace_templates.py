@@ -246,6 +246,12 @@ def build_template_contract(spec: WorkspaceTemplateSpec) -> str:
             "- Use plain strings for each value.",
             "- Do not leave placeholders or bracketed instructions in the content.",
             "- Keep content faithful to the provided source files and user goal.",
+            "",
+            "Also return completion-analysis fields:",
+            '- "evidence_map": object keyed by template block key',
+            '- "unresolved_fields": list of template block keys still not fully supported by source evidence',
+            '- "research_gaps": list of public/best-practice gaps that could be filled by research',
+            '- "user_questions": list of targeted user/client questions required to finish the document safely',
         ]
     )
     return "\n".join(lines)
@@ -280,6 +286,7 @@ def discover_workspace_templates() -> list[WorkspaceTemplateSpec]:
                     continue
                 if (
                     lower.endswith("_human.docx")
+                    or lower.endswith("_human.dotx")
                     or lower.endswith(" - human readable.docx")
                     or lower.endswith(" - cf template.dotx")
                 ):
@@ -335,10 +342,17 @@ def build_template_schema(spec: WorkspaceTemplateSpec) -> dict:
         "required_template_blocks": [target.key for target in spec.fill_targets],
         "template_block_labels": {target.key: target.label for target in spec.fill_targets},
         "required_document_metadata": required_metadata,
+        "completion_analysis_keys": [
+            "evidence_map",
+            "unresolved_fields",
+            "research_gaps",
+            "user_questions",
+        ],
         "notes": [
             "Return every required template block key exactly once.",
             "Return plain strings only for template_blocks values.",
             "Do not emit extra template block keys.",
+            "Leave unresolved template block values blank rather than guessing.",
         ],
     }
 
@@ -397,11 +411,17 @@ def import_workspace_template_pair(
     target_dir = os.path.join(str(WORKSPACE_TEMPLATE_CACHE_DIR), slug)
     os.makedirs(target_dir, exist_ok=True)
 
-    machine_target = os.path.join(target_dir, os.path.basename(machine_abs))
-    human_target = os.path.join(target_dir, os.path.basename(human_abs))
+    canonical_base = _normalize_template_base_name(slug) or "imported_template"
+    machine_target = os.path.join(target_dir, f"{canonical_base}_machine.docx")
+    human_ext = os.path.splitext(human_abs)[1].lower() or ".docx"
+    if human_ext not in {".docx", ".dotx"}:
+        human_ext = ".docx"
+    human_target = os.path.join(target_dir, f"{canonical_base}_human{human_ext}")
     shutil.copy2(machine_abs, machine_target)
     shutil.copy2(human_abs, human_target)
 
+    tokens = _extract_machine_tokens(machine_target)
+    fill_targets = _build_fill_targets(tokens)
     spec = WorkspaceTemplateSpec(
         key=f"imported:{_normalize_template_base_name(slug).lower()}",
         display_name=_humanize_name(base_name),
@@ -409,11 +429,11 @@ def import_workspace_template_pair(
         source="imported",
         machine_path=os.path.abspath(machine_target),
         human_path=os.path.abspath(human_target),
-        sections=[],
-        instructions=[],
-        fields=[],
-        values=[],
-        fill_targets=[],
+        sections=[name for kind, name in tokens if kind == "SECTION"],
+        instructions=[name for kind, name in tokens if kind == "INSTRUCTION"],
+        fields=[name for kind, name in tokens if kind == "FIELD"],
+        values=[name for kind, name in tokens if kind == "VALUE"],
+        fill_targets=fill_targets,
     )
     return get_workspace_template_by_key(spec.key) or spec
 

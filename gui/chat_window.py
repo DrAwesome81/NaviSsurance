@@ -7,7 +7,10 @@ import json
 import time
 from datetime import datetime
 from dateutil import parser
+import logging
 from gui.notifications import notify_chat_response
+
+logger = logging.getLogger(__name__)
 
 PIPE_TASK_PATTERN = re.compile(
     r"(?:^|[\r\n]|(?:\s[-*•]\s))(?P<task>[^|\r\n]+?)\s*\|\s*(?P<due>\d{2}-\d{2}-\d{4}|none)\s*\|\s*(?P<category>Business|Personal)\b",
@@ -78,13 +81,13 @@ class ChatThread(QThread):
             response = self.chat_handler.get_response(self.message, self.session_id, self.history)
             
             if response:
-                print(f"DEBUG: Raw LLM response: '{response}'")
+                logger.debug("Legacy ChatThread received response chars=%s", len(str(response or "")))
                 
                 # First try to parse the "Added..." format (processed by ResponseHandler)
                 if "Added" in response and "due on" in response:
                     # Split the response into individual task entries
                     task_entries = response.replace("Added ", "").split(", ")
-                    print(f"DEBUG: Found {len(task_entries)} task entries in 'Added' format: {task_entries}")
+                    logger.debug("Parsed %s task entries from Added-format response.", len(task_entries))
                     
                     for i, entry in enumerate(task_entries):
                         # More robust task parsing - handle different quote styles and formats
@@ -100,43 +103,38 @@ class ChatThread(QThread):
                             # Handle date - if it's "unknown" or invalid, use today's date
                             if date_match:
                                 due_date_raw = date_match.group(1).strip()
-                                print(f"DEBUG: Raw date from LLM: '{due_date_raw}'")
+                                logger.debug("Task entry raw due date=%s", due_date_raw)
                                 
                                 # Try to parse the date, fallback to today if it fails
                                 try:
                                     if due_date_raw.lower() in ['unknown', 'none', 'n/a', '']:
                                         due_date = datetime.now().strftime('%m-%d-%Y')
-                                        print(f"DEBUG: Using today's date for unknown date")
+                                        logger.debug("Using today's date for unknown task due date.")
                                     else:
                                         # Try to parse various date formats
                                         from dateutil import parser
                                         parsed_date = parser.parse(due_date_raw, default=datetime.now())
                                         due_date = parsed_date.strftime('%m-%d-%Y')
-                                        print(f"DEBUG: Parsed date: {due_date}")
+                                        logger.debug("Parsed task due date=%s", due_date)
                                 except Exception as e:
-                                    print(f"DEBUG: Date parsing failed, using today: {e}")
+                                    logger.debug("Date parsing failed; using today instead: %s", e)
                                     due_date = datetime.now().strftime('%m-%d-%Y')
                             else:
                                 # No date found, use today
                                 due_date = datetime.now().strftime('%m-%d-%Y')
-                                print(f"DEBUG: No date found, using today: {due_date}")
+                                logger.debug("No due date found; using today=%s", due_date)
                             
-                            print(f"DEBUG: Adding task {i+1}: '{task_text}' due {due_date}")
+                            logger.debug("Emitting task %s due %s", task_text, due_date)
                             
                             # Emit the signal through the chat_manager (which is actually a ChatManager)
                             # The ChatManager will forward it to the interface
-                            print(f"DEBUG: Emitting signal for task {i+1}")
                             self.chat_handler.task_added_signal.emit(task_text, due_date)
-                            print(f"DEBUG: Signal emitted for task {i+1}")
                             
                             # Add a small delay between signal emissions to prevent race conditions
                             if i < len(task_entries) - 1:  # Don't delay after the last task
-                                print(f"DEBUG: Waiting 100ms before next task...")
                                 time.sleep(0.1)  # 100ms delay
                         else:
-                            print(f"DEBUG: Failed to parse task entry: '{entry}'")
-                            print(f"  task_match: {task_match}")
-                            print(f"  date_match: {date_match}")
+                            logger.debug("Failed to parse task entry=%s", entry)
                             
                             # Try alternative parsing if the first attempt failed
                             if not task_match:
@@ -145,17 +143,14 @@ class ChatThread(QThread):
                                 if alt_task_match and date_match:
                                     task_text = alt_task_match.group(1).strip()
                                     due_date = date_match.group(1)
-                                    print(f"DEBUG: Alternative parsing successful: '{task_text}' due {due_date}")
-                                    print(f"DEBUG: Emitting signal for alternative task {i+1}")
+                                    logger.debug("Alternative parsing succeeded for task=%s due=%s", task_text, due_date)
                                     self.chat_handler.task_added_signal.emit(task_text, due_date)
-                                    print(f"DEBUG: Alternative signal emitted for task {i+1}")
                                     if i < len(task_entries) - 1:
-                                        print(f"DEBUG: Waiting 100ms before next task...")
                                         time.sleep(0.1)
                 
                 # Fallback: Also try to parse ADD_TASK: format directly (in case ResponseHandler didn't process it)
                 elif "ADD_TASK:" in response:
-                    print(f"DEBUG: Found ADD_TASK: format in response, parsing directly...")
+                    logger.debug("Found ADD_TASK format in legacy ChatThread response.")
                     task_segments = [seg for seg in response.split("ADD_TASK:") if seg.strip()]
                     
                     for i, segment in enumerate(task_segments):
@@ -174,10 +169,10 @@ class ChatThread(QThread):
                                         parsed_date = parser.parse(due_date_raw, default=datetime.now())
                                         due_date = parsed_date.strftime('%m-%d-%Y')
                                 except Exception as e:
-                                    print(f"DEBUG: Date parsing failed for ADD_TASK, using today: {e}")
+                                    logger.debug("ADD_TASK date parsing failed; using today instead: %s", e)
                                     due_date = datetime.now().strftime('%m-%d-%Y')
                                 
-                                print(f"DEBUG: ADD_TASK parsing - task {i+1}: '{task_description}' due {due_date}")
+                                logger.debug("Parsed ADD_TASK task=%s due=%s", task_description, due_date)
                                 self.chat_handler.task_added_signal.emit(task_description, due_date)
                                 
                                 if i < len(task_segments) - 1:
@@ -187,7 +182,7 @@ class ChatThread(QThread):
                     # "- task text | MM-DD-YYYY | Business"
                     pipe_tasks = extract_pipe_tasks(response)
                     if pipe_tasks:
-                        print(f"DEBUG: Found {len(pipe_tasks)} pipe-format task(s), emitting signals...")
+                        logger.debug("Found %s pipe-format tasks in legacy response.", len(pipe_tasks))
                         for i, (task_text, due_date) in enumerate(pipe_tasks):
                             self.chat_handler.task_added_signal.emit(task_text, due_date)
                             if i < len(pipe_tasks) - 1:
@@ -197,7 +192,7 @@ class ChatThread(QThread):
             else:
                 self.response_signal.emit("Error: No response received.")
         except Exception as e:
-            print(f"DEBUG: Error in ChatThread: {e}")
+            logger.exception("Error in ChatThread: %s", e)
             self.response_signal.emit(f"Error: {str(e)}")
 
 class ResponseHandler:

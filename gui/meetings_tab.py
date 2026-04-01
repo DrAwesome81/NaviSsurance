@@ -11,11 +11,13 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFormLayout,
     QLineEdit,
+    QComboBox,
     QDateEdit,
     QDialogButtonBox,
     QLabel,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDate
+import logging
 import json
 import os
 import requests
@@ -25,6 +27,8 @@ from docx import Document
 
 from core.task_extract import SuggestedTask, parse_suggested_tasks
 from gui.task_import_dialog import TaskImportDialog
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_filename_part(value: str, *, fallback: str = "unknown") -> str:
@@ -437,6 +441,12 @@ class MeetingsTab(QWidget):
                 audio_array = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
             wavfile.write(self.audio_file_path, self.sample_rate, audio_array)
             print(f"Audio saved to {self.audio_file_path}")
+            logger.info(
+                "Meeting recording WAV saved: path=%s sample_rate=%s samples=%s",
+                self.audio_file_path,
+                self.sample_rate,
+                int(audio_array.shape[0]) if getattr(audio_array, "shape", None) else 0,
+            )
             self.selected_audio_path = self.audio_file_path
             self.meetingTranscript.setText("Recording saved. Sending for transcription…")
             self._begin_meeting_transcription_flow(
@@ -447,6 +457,7 @@ class MeetingsTab(QWidget):
             )
         except Exception as e:
             print(f"Stop/save error: {e}")
+            logger.exception("Meeting recording save failed")
             QMessageBox.critical(
                 self,
                 "Save recording error",

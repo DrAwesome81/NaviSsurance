@@ -19,7 +19,11 @@ def test_parse_round_result_accepts_strict_json():
       "explanation": "ok",
       "markdown": "# Title\\n\\nBody",
       "feedback": "",
-      "is_complete": true
+      "is_complete": true,
+      "evidence_map": {"value::scope": "supported by source section 2"},
+      "unresolved_fields": ["value::sample_size"],
+      "research_gaps": ["Confirm standard moderation ratio"],
+      "user_questions": ["What enrollment target should be used?"]
     }
     """
     out = _parse_round_result(raw)
@@ -27,6 +31,10 @@ def test_parse_round_result_accepts_strict_json():
     assert out["markdown"].startswith("# Title")
     assert out["feedback"] == ""
     assert out["is_complete"] is True
+    assert out["evidence_map"]["value::scope"] == "supported by source section 2"
+    assert out["unresolved_fields"] == ["value::sample_size"]
+    assert out["research_gaps"] == ["Confirm standard moderation ratio"]
+    assert out["user_questions"] == ["What enrollment target should be used?"]
 
 
 def test_parse_round_result_accepts_json_code_fence():
@@ -103,6 +111,30 @@ def test_build_reference_pack_returns_coverage_stats():
     assert stats["pack_chars"] == len(pack)
 
 
+def test_build_reference_pack_uses_original_path_fallback():
+    original_path = "relative/path/source.txt"
+    normalized_path = os.path.abspath(original_path)
+    content = "Critical source content for grounding."
+    task = WorkspaceTaskSpec(
+        goal="Use source content",
+        context="",
+        files=[WorkspaceFile(path=original_path, display_name="source.txt", file_type="text")],
+        max_rounds=1,
+    )
+    pack = build_reference_pack(
+        task_spec=task,
+        file_contents={normalized_path: content},
+        goal=task.goal,
+        feedback="",
+        previous_markdown="",
+        max_total_chars=10000,
+        max_chunks_per_file=2,
+        include_small_files_full=True,
+        small_file_max_chars=1000,
+    )
+    assert "Critical source content for grounding." in pack
+
+
 def test_format_reference_pack_summary_human_readable():
     summary = format_reference_pack_summary(
         {
@@ -155,6 +187,10 @@ def test_orchestrator_retries_when_template_payload_invalid():
                 "is_complete": False,
                 "template_blocks": {"value::scope": "Pilot release scope."},
                 "document_metadata": {},
+                "evidence_map": {"value::scope": "supported by pilot brief"},
+                "unresolved_fields": ["value::scope"],
+                "research_gaps": ["Confirm standard pilot scope wording"],
+                "user_questions": ["Which release train should this apply to?"],
             }
         assert "Structured template payload is still invalid" in (feedback or "")
         return {
@@ -171,6 +207,10 @@ def test_orchestrator_retries_when_template_payload_invalid():
                 "effective_date": "2026-03-19",
                 "prepared_by": "NaviSsurance",
             },
+            "evidence_map": {"value::scope": "supported by pilot brief and imported research"},
+            "unresolved_fields": [],
+            "research_gaps": [],
+            "user_questions": [],
         }
 
     def chatgpt_call(task_spec, grok_result, file_contents, round_num):
@@ -182,6 +222,10 @@ def test_orchestrator_retries_when_template_payload_invalid():
             "is_complete": round_num >= 2,
             "template_blocks": grok_result.get("template_blocks", {}),
             "document_metadata": grok_result.get("document_metadata", {}),
+            "evidence_map": grok_result.get("evidence_map", {}),
+            "unresolved_fields": grok_result.get("unresolved_fields", []),
+            "research_gaps": grok_result.get("research_gaps", []),
+            "user_questions": grok_result.get("user_questions", []),
         }
 
     orchestrator = DualLLMOrchestrator(grok_call=grok_call, chatgpt_call=chatgpt_call)
@@ -198,8 +242,50 @@ def test_orchestrator_retries_when_template_payload_invalid():
     assert result["rounds"] == 2
     assert result["document_metadata"]["document_title"] == "Draft"
     assert "Structured template payload is still invalid" in result["collaboration_history"][0]["feedback"]
+    assert result["evidence_map"]["value::scope"] == "supported by pilot brief and imported research"
+    assert result["research_gaps"] == []
+    assert result["user_questions"] == []
     assert calls["grok"] == 2
     assert calls["chatgpt"] == 2
+
+
+def test_orchestrator_filters_resolved_unresolved_fields():
+    def grok_call(task_spec, file_contents, feedback, round_num, previous_markdown):
+        return {
+            "explanation": "Resolved draft",
+            "markdown": "# Draft\n\nBody",
+            "feedback": "",
+            "is_complete": True,
+            "template_blocks": {"value::scope": "Supported scope text."},
+            "document_metadata": {
+                "document_title": "Draft",
+                "subtitle": "",
+                "document_id": "DRAFT",
+                "version": "0.1",
+                "effective_date": "2026-03-19",
+                "prepared_by": "NaviSsurance",
+            },
+            "evidence_map": {"value::scope": "supported by merged Atlas research"},
+            "unresolved_fields": ["value::scope"],
+            "research_gaps": [],
+            "user_questions": [],
+        }
+
+    def chatgpt_call(task_spec, grok_result, file_contents, round_num):
+        return dict(grok_result)
+
+    orchestrator = DualLLMOrchestrator(grok_call=grok_call, chatgpt_call=chatgpt_call)
+    result = orchestrator.run_once(
+        WorkspaceTaskSpec(
+            goal="Draft a templated document",
+            max_rounds=1,
+            document_template=_template_payload(),
+        ),
+        file_contents={},
+    )
+
+    assert result["status"] == "completed"
+    assert result["unresolved_fields"] == []
 
 
 def test_orchestrator_does_not_complete_invalid_template_payload_at_max_rounds():

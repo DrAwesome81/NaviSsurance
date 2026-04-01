@@ -12,25 +12,15 @@ def run_tests():
     """Run all tests with pytest."""
     print("Running NaviSsurance Test Suite")
     print("=" * 50)
-    
-    # Test files to run
-    test_files = [
-        "test_table_widget_pytest.py",
-        # Add more test files here as they're created
-    ]
-    
-    # Pytest arguments
     pytest_args = [
+        sys.executable,
+        "-m",
         "pytest",
-        "-v",  # Verbose output
-        "-s",  # Don't capture output
-        "--tb=short",  # Short traceback format
-        "--color=yes",  # Colored output
-        "--durations=10",  # Show slowest 10 tests
+        "-q",
+        "--tb=short",
+        "--color=yes",
+        "--durations=10",
     ]
-    
-    # Add test files
-    pytest_args.extend(test_files)
     
     # Run tests
     try:
@@ -49,10 +39,12 @@ def run_tests():
 def run_specific_test(test_name):
     """Run a specific test by name."""
     pytest_args = [
+        sys.executable,
+        "-m",
         "pytest",
-        "-v",
-        "-s",
-        f"test_table_widget_pytest.py::TestTableWidget::{test_name}",
+        "-q",
+        "--tb=short",
+        str(test_name),
     ]
     
     try:

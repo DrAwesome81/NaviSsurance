@@ -8,11 +8,24 @@ NaviSsurance is a desktop operating system for consulting work. It combines dail
 
 Use this manual as the practical "how do I do this?" guide. It focuses on the workflows you see in the UI rather than internal implementation details.
 
+This manual now also notes a few optional advanced integrations so operators understand what may be enabled on a given machine.
+
+Contributor/operator note:
+- If you are trying to determine whether a behavior is current, planned, or historical, check `docs/contributor_guide.md` and `docs/roadmap_status.md` before relying on older plan files.
+
 ## 2. Getting Started
 
 ### Open the app
 - Launch NaviSsurance.
 - Wait for the main window and tabs to finish loading.
+
+### Optional advanced services
+Some installations may also start optional services in the background:
+- a runtime scheduler for queued or recurring work
+- a local API for non-GUI integrations
+
+If these are not enabled, the main desktop workflows should still function normally.
+The intended user chat surface is still the built-in desktop chat, not a remote messaging app.
 
 ### Main navigation
 You will see top-level tabs for:

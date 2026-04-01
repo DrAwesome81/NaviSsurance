@@ -1,11 +1,13 @@
 import json
 import logging
+import os
 import re
 from collections.abc import Callable
 
 from core.local_llm import run_local_completion
 
 logger = logging.getLogger(__name__)
+_SEMANTIC_MODEL = None
 
 _TEACH_NAVI_RE = re.compile(r"^\s*teach\s+navi\s*:\s*(?P<body>.+?)\s*$", re.IGNORECASE | re.DOTALL)
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -32,6 +34,177 @@ _NON_ALIAS_TERMS = {
     "remember",
     "prefer",
 }
+
+
+def _coerce_scope_payload(value) -> dict:
+    if isinstance(value, dict):
+        out = {
+            str(k).strip(): str(v).strip()
+            for k, v in value.items()
+            if str(k).strip() and str(v).strip()
+        }
+        return out
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    if ":" in text:
+        key, raw_value = text.split(":", 1)
+        key = str(key or "").strip().lower()
+        raw_value = str(raw_value or "").strip()
+        if key and raw_value:
+            return {key: raw_value}
+    return {"label": text}
+
+
+def _coerce_synonyms(value) -> list[str]:
+    if isinstance(value, list):
+        raw_values = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return []
+        raw_values = re.split(r"[;,/]|(?:\s+or\s+)", text)
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw_values:
+        synonym = _strip_terminal_punctuation(item)
+        if not synonym:
+            continue
+        marker = synonym.casefold()
+        if marker in seen:
+            continue
+        seen.add(marker)
+        out.append(synonym)
+    return out[:8]
+
+
+def _json_list(value) -> list:
+    if isinstance(value, list):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _entity_ref(entity_type: str, entity_key: str, label: str) -> dict:
+    return {
+        "entity_type": str(entity_type or "").strip().lower(),
+        "entity_key": str(entity_key or "").strip(),
+        "label": str(label or "").strip(),
+    }
+
+
+def infer_entity_memory_refs(db, text: str, *, client_limit: int = 200, project_limit: int = 250) -> list[dict]:
+    query = str(text or "").strip().casefold()
+    if not query:
+        return []
+    refs: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(entity_type: str, entity_key: str, label: str) -> None:
+        marker = (str(entity_type or "").strip().lower(), str(entity_key or "").strip())
+        if not marker[0] or not marker[1] or marker in seen:
+            return
+        seen.add(marker)
+        refs.append(_entity_ref(marker[0], marker[1], label))
+
+    try:
+        for row in db.list_clients(active_only=False, limit=client_limit):
+            names = [str(row.get("name") or "").strip()]
+            names.extend(str(item or "").strip() for item in _json_list(row.get("aliases_json")))
+            matches = [candidate for candidate in names if candidate and candidate.casefold() in query]
+            if matches:
+                _add("client", str(row.get("id") or ""), matches[0])
+    except Exception as exc:
+        logger.debug("client entity inference failed: %s", exc)
+
+    try:
+        for row in db.list_cos_projects(active_only=False, limit=project_limit):
+            names = [
+                str(row.get("name") or "").strip(),
+                str(row.get("client") or "").strip(),
+            ]
+            matches = [candidate for candidate in names if candidate and candidate.casefold() in query]
+            if matches:
+                _add("project", str(row.get("id") or ""), matches[0])
+    except Exception as exc:
+        logger.debug("project entity inference failed: %s", exc)
+
+    return refs[:8]
+
+
+def _semantic_model():
+    global _SEMANTIC_MODEL
+    if _SEMANTIC_MODEL is not None:
+        return _SEMANTIC_MODEL
+    try:
+        from sentence_transformers import SentenceTransformer
+    except Exception:
+        return None
+    model_name = str(os.getenv("MEMORY_EMBEDDINGS_MODEL", "all-MiniLM-L6-v2")).strip() or "all-MiniLM-L6-v2"
+    try:
+        _SEMANTIC_MODEL = SentenceTransformer(model_name)
+    except Exception:
+        _SEMANTIC_MODEL = None
+    return _SEMANTIC_MODEL
+
+
+def _cosine_similarity(a, b) -> float:
+    if a is None or b is None:
+        return 0.0
+    if len(a) == 0 or len(b) == 0:
+        return 0.0
+    dot = sum(float(x) * float(y) for x, y in zip(a, b))
+    norm_a = sum(float(x) * float(x) for x in a) ** 0.5
+    norm_b = sum(float(y) * float(y) for y in b) ** 0.5
+    if norm_a <= 0.0 or norm_b <= 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _semantic_rerank_rows(query: str, rows: list[tuple], *, limit: int) -> list[tuple]:
+    model = _semantic_model()
+    if model is None or not rows:
+        return rows[: int(limit)]
+    try:
+        query_emb = model.encode([str(query or "").strip()], convert_to_numpy=True)[0]
+        row_embs = model.encode([str(row[2] or "").strip() for row in rows], convert_to_numpy=True)
+    except Exception as exc:
+        logger.debug("semantic rerank failed: %s", exc)
+        return rows[: int(limit)]
+    scored: list[tuple[float, tuple]] = []
+    for row, emb in zip(rows, row_embs):
+        scored.append((_cosine_similarity(query_emb, emb), row))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [row for _score, row in scored[: int(limit)]]
+
+
+def _normalize_alias_payload(value, *, default_term: str = "", default_canonical: str = "") -> dict | None:
+    if isinstance(value, dict):
+        term = _strip_terminal_punctuation(value.get("term") or default_term)
+        canonical = _strip_terminal_punctuation(value.get("canonical") or default_canonical)
+        if not _looks_like_alias_term(term) or not canonical:
+            return None
+        synonyms = _coerce_synonyms(value.get("synonyms"))
+        synonyms = [item for item in synonyms if item.casefold() not in {term.casefold(), canonical.casefold()}]
+        scope = _coerce_scope_payload(value.get("scope"))
+        payload = {
+            "term": term,
+            "canonical": canonical,
+            "synonyms": synonyms,
+            "scope": scope,
+            "content": f"{term} means {canonical}.",
+        }
+        return payload
+    parsed = parse_alias_memory(str(value or "").strip())
+    if parsed:
+        return parsed
+    return None
 
 
 def parse_teach_navi_command(message: str) -> str | None:
@@ -64,8 +237,25 @@ def parse_alias_memory(text: str) -> dict | None:
     raw = str(text or "").strip()
     if not raw:
         return None
+    scope_payload: dict = {}
+    synonyms: list[str] = []
+    base = raw
+    if ";" in raw or "|" in raw:
+        parts = [segment.strip() for segment in re.split(r"[;|]", raw) if str(segment).strip()]
+        retained: list[str] = []
+        for segment in parts:
+            lowered = segment.casefold()
+            if lowered.startswith("synonyms:") or lowered.startswith("synonym:"):
+                synonyms = _coerce_synonyms(segment.split(":", 1)[1] if ":" in segment else "")
+                continue
+            if lowered.startswith("scope:"):
+                scope_payload = _coerce_scope_payload(segment.split(":", 1)[1] if ":" in segment else "")
+                continue
+            retained.append(segment)
+        if retained:
+            base = retained[0]
     for pattern in _ALIAS_PATTERNS:
-        match = pattern.match(raw)
+        match = pattern.match(base)
         if not match:
             continue
         term = _strip_terminal_punctuation(match.group("term") or "")
@@ -75,7 +265,8 @@ def parse_alias_memory(text: str) -> dict | None:
         return {
             "term": term,
             "canonical": canonical,
-            "synonyms": [],
+            "synonyms": [item for item in synonyms if item.casefold() not in {term.casefold(), canonical.casefold()}],
+            "scope": scope_payload,
             "content": f"{term} means {canonical}.",
         }
     return None
@@ -113,6 +304,7 @@ def build_auto_memory_metadata(
     route: str | None = None,
     user_message: str = "",
     assistant_message: str = "",
+    entity_refs: list[dict] | None = None,
 ) -> dict:
     metadata: dict[str, object] = {
         "extraction_version": "passive_memory_v2",
@@ -121,6 +313,7 @@ def build_auto_memory_metadata(
         "route": str(route or "").strip() or None,
         "user_message_preview": _preview_text(user_message),
         "assistant_message_preview": _preview_text(assistant_message),
+        "entity_refs": entity_refs or [],
     }
     return {key: value for key, value in metadata.items() if value not in (None, "")}
 
@@ -129,18 +322,9 @@ def _alias_payload_from_row(row: tuple) -> dict | None:
     json_payload = _parse_json_payload(row[6] if len(row) > 6 else None)
     alias_payload = json_payload.get("alias") if isinstance(json_payload, dict) else None
     if isinstance(alias_payload, dict):
-        term = _strip_terminal_punctuation(alias_payload.get("term") or "")
-        canonical = _strip_terminal_punctuation(alias_payload.get("canonical") or "")
-        if term and canonical:
-            synonyms = alias_payload.get("synonyms") or []
-            if not isinstance(synonyms, list):
-                synonyms = []
-            return {
-                "term": term,
-                "canonical": canonical,
-                "synonyms": [str(item).strip() for item in synonyms if str(item).strip()],
-                "content": f"{term} means {canonical}.",
-            }
+        normalized = _normalize_alias_payload(alias_payload)
+        if normalized:
+            return normalized
     return parse_alias_memory(row[2] if len(row) > 2 else "")
 
 
@@ -234,6 +418,9 @@ def _format_alias_memory_lines(rows: list[tuple]) -> list[str]:
             synonyms = alias_payload.get("synonyms") or []
             if synonyms:
                 line += f" Synonyms: {', '.join(str(item) for item in synonyms)}."
+            scope = alias_payload.get("scope") or {}
+            if isinstance(scope, dict) and scope:
+                line += " Scope: " + ", ".join(f"{k}={v}" for k, v in scope.items()) + "."
         else:
             line = f"- {content}"
         if source and source not in {"alias", "teach_navi"}:
@@ -259,14 +446,34 @@ def build_user_memory_context(db, query: str, *, limit: int = 5, recent_limit: i
         rows.extend(db.user_memory_recent(approval_status="approved", limit=recent_limit))
     except Exception as exc:
         logger.debug("user_memory recent failed: %s", exc)
-    rows = [row for row in _dedupe_rows(rows, limit) if int(row[0]) not in alias_ids]
+    rows = [row for row in _dedupe_rows(rows, max(limit, 12)) if int(row[0]) not in alias_ids]
+    rows = _semantic_rerank_rows(text, rows, limit=limit)
+    entity_refs = infer_entity_memory_refs(db, text)
+    entity_sections: list[str] = []
+    for ref in entity_refs[:4]:
+        try:
+            entity_rows = db.user_memory_search_by_entity(
+                entity_type=ref.get("entity_type") or "",
+                entity_key=ref.get("entity_key") or "",
+                query=text,
+                approval_status="approved",
+                limit=3,
+            )
+        except Exception as exc:
+            logger.debug("entity memory lookup failed: %s", exc)
+            entity_rows = []
+        if not entity_rows:
+            continue
+        lines = _format_generic_memory_lines(_semantic_rerank_rows(text, entity_rows, limit=3))
+        entity_sections.append(f"Relevant {ref.get('entity_type')} memory for {ref.get('label')}:\n" + "\n".join(lines))
     if not rows and not alias_rows:
-        return ""
+        return "\n\n".join(section for section in entity_sections if section.strip())
     sections: list[str] = []
     if alias_rows:
         sections.append("Approved aliases / glossary:\n" + "\n".join(_format_alias_memory_lines(alias_rows)))
     if rows:
         sections.append("Relevant durable user memory:\n" + "\n".join(_format_generic_memory_lines(rows)))
+    sections.extend(entity_sections)
     return "\n\n".join(section for section in sections if section.strip())
 
 
@@ -299,6 +506,7 @@ def extract_user_memory_items(
     assistant_message: str,
     llm_callable: Callable[[list[dict], str], str] | None,
     metadata: dict | None = None,
+    entity_refs: list[dict] | None = None,
 ) -> list[dict]:
     if llm_callable is None:
         return []
@@ -322,7 +530,8 @@ def extract_user_memory_items(
                 f"user_message: {user_text}\n"
                 f"assistant_message: {assistant_text}\n\n"
                 "Return JSON like "
-                '{"facts":["..."],"preferences":["..."],"aliases":["..."]}.'
+                '{"facts":["..."],"preferences":["..."],"aliases":[{"term":"...","canonical":"...","synonyms":["..."],"scope":{"client":"..."}}]}. '
+                "Aliases may also be simple strings if structure is unclear."
             ),
         },
     ]
@@ -342,20 +551,23 @@ def extract_user_memory_items(
         if not isinstance(values, list):
             continue
         for value in values[:8]:
-            content = str(value or "").strip()
+            item_json = dict(base_metadata)
+            if kind == "alias":
+                alias_payload = _normalize_alias_payload(value)
+                if alias_payload:
+                    content = alias_payload["content"]
+                    item_json["alias"] = alias_payload
+                    item_json["normalized"] = True
+                else:
+                    content = str(value or "").strip()
+            else:
+                content = str(value or "").strip()
             if not content or len(content) > 220:
                 continue
             marker = (kind, content.casefold())
             if marker in seen:
                 continue
             seen.add(marker)
-            item_json = dict(base_metadata)
-            if kind == "alias":
-                alias_payload = parse_alias_memory(content)
-                if alias_payload:
-                    content = alias_payload["content"]
-                    item_json["alias"] = alias_payload
-                    item_json["normalized"] = True
             items.append(
                 {
                     "kind": kind,
@@ -364,6 +576,7 @@ def extract_user_memory_items(
                     "confidence": 0.65,
                     "approval_status": "pending",
                     "json_data": item_json,
+                    "entity_refs": list(entity_refs or []),
                 }
             )
     return items[:10]
@@ -379,18 +592,21 @@ def auto_store_user_memory(
     chat_id: int | None = None,
     route: str | None = None,
 ) -> int:
+    entity_refs = infer_entity_memory_refs(db, user_message)
     metadata = build_auto_memory_metadata(
         session_id=session_id,
         chat_id=chat_id,
         route=route,
         user_message=user_message,
         assistant_message=assistant_message,
+        entity_refs=entity_refs,
     )
     items = extract_user_memory_items(
         user_message=user_message,
         assistant_message=assistant_message,
         llm_callable=llm_callable,
         metadata=metadata,
+        entity_refs=entity_refs,
     )
     if not items:
         return 0

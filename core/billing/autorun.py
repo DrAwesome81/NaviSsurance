@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date
+from calendar import monthrange
 
 from core.billing.invoice_service import generate_invoice_draft, previous_month_period
 from core.billing.ledger_bridge import notify_ledger_invoice_drafts
@@ -39,6 +40,31 @@ def should_autorun(db: DatabaseManager, *, today: date | None = None) -> bool:
     return last != _yyyymm(d)
 
 
+def next_autorun_date(db: DatabaseManager, *, today: date | None = None) -> date:
+    d = today or date.today()
+    enabled_raw = str(db.get_setting("billing.autorun_enabled", "true") or "").strip().lower()
+    enabled = enabled_raw not in {"0", "false", "no", "off"}
+    if not enabled:
+        return d
+
+    try:
+        dom = int(str(db.get_setting("billing.autorun_day_of_month", "1") or "1").strip())
+    except Exception:
+        dom = 1
+    dom = max(1, min(28, dom))
+
+    last = str(db.get_setting("billing.last_autorun_yyyymm", "") or "").strip()
+    current_key = _yyyymm(d)
+    if last == current_key or d.day > dom:
+        year = d.year + (1 if d.month == 12 else 0)
+        month = 1 if d.month == 12 else d.month + 1
+    else:
+        year = d.year
+        month = d.month
+    day = min(dom, monthrange(year, month)[1])
+    return date(year, month, day)
+
+
 def run_monthly_autodraft(db: DatabaseManager, *, today: date | None = None) -> AutoRunResult:
     d = today or date.today()
     if not should_autorun(db, today=d):
@@ -60,6 +86,7 @@ def run_monthly_autodraft(db: DatabaseManager, *, today: date | None = None) -> 
 
     if not template_id:
         db.set_setting("billing.last_autorun_yyyymm", _yyyymm(d))
+        db.set_setting("billing.pending_review_notes", "No invoice template configured. Create a template first in Billing.")
         return AutoRunResult(
             ran=True,
             draft_ids=[],
@@ -99,5 +126,6 @@ def run_monthly_autodraft(db: DatabaseManager, *, today: date | None = None) -> 
     db.set_setting("billing.last_autorun_yyyymm", _yyyymm(d))
     db.set_setting("billing.pending_review_count", str(len(draft_ids)))
     db.set_setting("billing.pending_review_draft_ids_json", json.dumps(draft_ids))
+    db.set_setting("billing.pending_review_notes", str("" if draft_ids else "No invoice drafts were generated."))
     return AutoRunResult(ran=True, draft_ids=draft_ids, notes="")
 

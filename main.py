@@ -12,7 +12,7 @@ from gui.interface import ChatWindow, EnhancedSplashScreen
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor
 
 # Import centralized paths
-from config import LOGS_DIR
+from config import LOCAL_API_ENABLED, LOGS_DIR, RUNTIME_ENABLED, TELEGRAM_BOT_ENABLED
 
 # Create logs directory if it doesn't exist
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -88,6 +88,34 @@ if __name__ == "__main__":
             sys.exit(1)
         app.processEvents()
 
+        runtime_service = None
+        local_api_service = None
+        telegram_bot_service = None
+        if RUNTIME_ENABLED:
+            try:
+                from core.runtime.service import get_runtime_service
+
+                runtime_service = get_runtime_service(db=getattr(chatWindow, "db", None))
+                runtime_service.start()
+            except Exception as e:
+                logger.warning(f"Runtime service failed to start: {e}")
+        if LOCAL_API_ENABLED:
+            try:
+                from core.service.local_api import get_local_api_service
+
+                local_api_service = get_local_api_service()
+                local_api_service.start()
+            except Exception as e:
+                logger.warning(f"Local API failed to start: {e}")
+        if TELEGRAM_BOT_ENABLED and LOCAL_API_ENABLED:
+            try:
+                from core.channels.telegram_bot import get_telegram_bot_service
+
+                telegram_bot_service = get_telegram_bot_service()
+                telegram_bot_service.start()
+            except Exception as e:
+                logger.warning(f"Telegram bot failed to start: {e}")
+
         # Set window geometry with smart sizing based on available screen space
         try:
             # Get available screen geometry (excludes taskbar, dock, etc.)
@@ -139,6 +167,21 @@ if __name__ == "__main__":
         try:
             logger.info("Starting PyQt event loop...")
             result = app.exec()
+            try:
+                if runtime_service is not None:
+                    runtime_service.stop()
+            except Exception:
+                pass
+            try:
+                if local_api_service is not None:
+                    local_api_service.stop()
+            except Exception:
+                pass
+            try:
+                if telegram_bot_service is not None:
+                    telegram_bot_service.stop()
+            except Exception:
+                pass
             logger.info(f"Event loop exited with code: {result}")
             sys.exit(result)
         except Exception as e:

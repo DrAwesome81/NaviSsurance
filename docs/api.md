@@ -1,133 +1,204 @@
-NaviSsurance API Integrations
-Overview
-NaviSsurance uses third-party APIs for core functionality: xAI Grok (compliance, study design, lead generation), LinkedIn (posting, authentication), and AssemblyAI (transcription). It also uses a local Llama 3.1-8B-Instruct model for note-taking and chat interactions. API keys are non-transferable; buyers must register their own accounts.
+# NaviSsurance APIs And Integrations
 
-Local AI Model (Llama 3.1-8B-Instruct)
+Last updated: 2026-04-01
 
-Purpose: Provides AI-powered note formatting, categorization, and chat interactions using a local model for privacy and cost efficiency.
-Model: Llama 3.1-8B-Instruct-GGUF (quantized for efficiency).
-Configuration:
-- Context Window: 8192 tokens
-- Response Limit: 1000 tokens
-- GPU Layers: 33 (for acceleration)
-- Threads: 4 (for CPU processing)
-- Temperature: 0.9 (for creative responses)
-- Top-p: 0.9 (for response diversity)
+## Overview
+NaviSsurance now has two different API layers:
 
-Setup:
-Download model from Hugging Face: Meta-Llama-3-8B-Instruct-GGUF
-Place in local cache directory
-Configure model path in core/llama_worker.py
+1. **Third-party APIs and SDKs** used for research, transcription, search, calendar, and storage
+2. **A local HTTP API** exposed by the app itself when enabled
 
-Code: core/llama_worker.py, gui/interface.py (NoteTakingSystem)
-Notes: Local processing ensures data privacy; no API costs; requires GPU for optimal performance.
+This distinction matters because `core/api.py` is Dropbox-related code, while the app’s local REST surface lives in `api/app.py`.
 
-API Details
-xAI Grok
+## Local Runtime API
 
-Purpose: Analyzes SOPs for compliance (ISO 13485, 21 CFR 820), generates study protocols, provides lead generation, and supports app-wide Grok completions/web search via the xAI SDK.
-Default model: `grok-4.20-multi-agent-beta-0309` (centralized in `core/grok_client.py`).
-Endpoints: https://api.x.ai/grok (xAI platform; app access is through the xAI SDK rather than the deprecated legacy REST chat-completions path).
-Authentication: API key (GROK_API_KEY) in .env.
-Setup:
-Register at https://x.ai/api.
-Obtain SuperGrok subscription (~$20–$100/month, higher quotas).
-Update .env with key.
+### Purpose
+The local API creates a non-GUI entry point into the same SQLite-backed system used by the desktop app. It is intended for:
+- local integrations
+- runtime jobs
+- future external automation surfaces
 
-Features:
-- Compliance Analysis: Document analysis against regulatory standards
-- Lead Generation: Company and contact research for MedTech companies
-- News Search: AI-powered query generation for MedTech industry news
+### Code
+- `api/app.py`
+- `core/service/local_api.py`
 
-Code: `core/grok_client.py` (shared xAI client/model selection), plus feature callers such as `core/compliance.py`, `core/workspace_orchestrator.py`, `core/response_handler.py`, `core/chat_handler.py`, and `gui/dashboard_tab.py`.
-Notes: Commercial use allowed per ToS; verify at https://x.ai/grok.
+### Enablement
+The local API is optional and controlled via `config.py` environment flags:
+- `NAVI_LOCAL_API_ENABLED`
+- `NAVI_LOCAL_API_HOST`
+- `NAVI_LOCAL_API_PORT`
+- `NAVI_LOCAL_API_LOG_LEVEL`
 
-OpenAI (ChatGPT) — Web Research (Deep Research Tab)
+### Current endpoints
+- `GET /health`
+- `GET /tools`
+- `POST /chat/main-turn`
+- `GET /jobs`
+- `POST /jobs`
+- `POST /tools/{tool_name}`
 
-Purpose: Provides web research text that is structured into a `WebResearchBrief` and then synthesized into a final research brief (markdown) in the `Deep Research` tab.
+### Notes
+- The local API uses the same SQLite database and orchestration logic as the desktop app.
+- It is designed as a local-only service surface, not a public multi-user web product.
+- It is not intended to replace the built-in desktop chat as the main user interaction surface.
 
-Authentication: API key (`OPENAI_API_KEY`) in `.env` / `config/.env` depending on setup.
+## Local Model Runtime
 
-Code:
-- Web research tool: `core/tools/web_research.py` (calls `core.llm_collab.call_chatgpt_simple`)
-- Pipeline orchestration: `core/workflow_engine.py`
-- UI: `gui/deep_research_tab.py`
+### Purpose
+The local model is used for narrower structured and formatting-heavy tasks, especially where local execution is preferred for privacy, speed, or cost.
 
-Notes:
-- This is web research only. Internal document workflows live in `Workspace` and `Library`.
-- If `OPENAI_API_KEY` is missing, web research should degrade gracefully (artifact notes indicate failure).
+### Current configuration source
+- `config.py`
+- `docs/llm_routing.md`
+- `docs/local_model_validation.md`
 
-LinkedIn APIs (Share, Sign In, Community Management)
+### Current model path
+- `Qwen3-14B-Q5_K_M.gguf`
 
-Purpose: Posts content, authenticates users, manages NaviSure's LinkedIn page.
-Endpoints:
-Share: https://api.linkedin.com/v2/ugcPosts (w_member_social).
-Sign In: https://api.linkedin.com/v2/me (r_liteprofile).
-Community: https://api.linkedin.com/v2/socialActions (r_organization_social).
+### Related config
+- `LOCAL_LLM_MODEL_PATH`
+- `LOCAL_LLM_CTX_SIZE`
+- `LOCAL_LLM_GPU_LAYERS`
+- `LOCAL_LLM_TIMEOUT_S`
 
-Authentication: OAuth token (LINKEDIN_ACCESS_TOKEN) in .env.
-Setup:
-Apply at https://www.linkedin.com/developers.
-Create app, request Marketing Developer Platform access.
-Update .env with token.
+### Notes
+- This replaces older documentation that described the local path primarily as Llama 3.1-8B.
+- The app still contains legacy local-model pathways and worker-style patterns, but the current documented local target is the Qwen3-based runtime configured in `config.py`.
 
-Code: gui/interface.py (Leads Tab, page posts).
-Notes: US accounts can't use Member Data Portability; buyer must reapply for access.
+## xAI Grok
 
-AssemblyAI
+### Purpose
+Used for:
+- Chief of Staff and planning flows
+- compliance analysis
+- lead generation
+- shared remote completions
+- app-level web-aware flows
 
-Purpose: Transcribes client meetings with speaker-separated output.
-Endpoints: https://api.assemblyai.com/v2/transcript.
-Authentication: API key (ASSEMBLYAI_API_KEY) in .env.
-Setup:
-Register at https://www.assemblyai.com.
-Obtain API key (~$0.10–$0.50/hour audio).
-Update .env.
+### Authentication
+- `GROK_API_KEY` (or compatible xAI key setup)
 
-Code: gui/interface.py (Meeting Transcription Tab).
-Notes: ToS allows commercial use; verify at https://www.assemblyai.com/terms.
+### Code
+- `core/grok_client.py`
+- callers include `core/chief_of_staff_service.py`, `core/response_handler.py`, `gui/dashboard_tab.py`, `gui/leads_tab.py`, and others
 
-Google Calendar API
+### Notes
+- Default model selection is centralized in `core/grok_client.py`.
+- CoS and remote planning flows should be treated as Grok-backed unless explicitly rerouted.
 
-Purpose: Fetches calendar events for dashboard schedule display.
-Endpoints: https://www.googleapis.com/calendar/v3.
-Authentication: OAuth2 credentials via client_secret.json and token files.
-Setup:
-Configure Google Cloud Console project
-Enable Calendar API
-Download credentials to config/client_secret.json
-Generate token via OAuth2 flow
+## OpenAI Responses API
 
-Code: core/data_fetch.py (get_calendar_events)
-Notes: Used for dashboard schedule display with auto-refresh functionality.
+### Purpose
+Used primarily by Deep Research for hosted web search and synthesis.
 
-Dropbox API
+### Authentication
+- `OPENAI_API_KEY`
 
-Purpose: File storage, indexing, and management for workspace documents.
-Endpoints: https://api.dropboxapi.com/2.
-Authentication: Access token (DROPBOX_ACCESS_TOKEN) in .env.
-Setup:
-Create Dropbox app at https://www.dropbox.com/developers
-Generate access token
-Update .env with token
+### Code
+- `core/tools/web_research.py`
+- `core/llm_collab.py`
+- `core/workflow_engine.py`
+- `gui/deep_research_tab.py`
 
-Code: core/api.py, core/index_dropbox.py
-Notes: Used for document workspace, file preview, and storage integration.
+### Current behavior
+- Deep Research uses the Responses API hosted `web_search` tool when available.
+- It falls back to non-browsing ChatGPT behavior if hosted web search is unavailable.
 
-Task storage (local)
+## AssemblyAI
 
-Purpose: Task persistence and management in NaviSsurance without external task systems.
+### Purpose
+- meeting transcription
 
-Storage: SQLite (`core/db.py`, `tasks` table).
-UI: Dashboard task list and `gui/tasks_tab.py`.
+### Authentication
+- `ASSEMBLYAI_API_KEY`
 
-Notes: Chief of Staff task capture uses `ADD_TASK` and stores tasks locally.
+### Code
+- `gui/meetings_tab.py`
+- related meeting/transcription flows in the GUI and DB-backed meeting records
 
-Notes
+## Google Calendar API
 
-API keys are stored in .env, not hardcoded, ensuring GDPR/HIPAA compliance.
-Buyers must secure their own API keys due to non-transferable ToS.
-Transition support (30–60 days) recommended for buyer setup.
-Review ToS for commercial use and transfer policies before sale.
-All API integrations are currently functional and tested in the application.
+### Purpose
+- dashboard schedule display
+- calendar context in Chief of Staff
+- optional explicit calendar block creation when configured
+
+### Authentication
+- OAuth token files and Google client credentials
+
+### Code
+- `core/data_fetch.py`
+- `core/cos_calendar.py`
+
+### Notes
+- Calendar use should degrade gracefully when credentials are unavailable.
+
+## Dropbox
+
+### Purpose
+- document storage and indexing
+- RAG source material
+- older storage integrations still present in the repo
+
+### Code
+- `core/api.py`
+- `build_rag_index.py`
+- Dropbox-related indexing and retrieval helpers elsewhere in the repo
+
+### Important distinction
+`core/api.py` is Dropbox integration code. It is not the app’s local FastAPI service.
+
+## Browser Automation
+
+### Purpose
+- browser-backed evidence capture
+- automated page fetch and workflow steps
+- future lead, research, and portal interaction support
+
+### Code
+- `core/tools/browser.py`
+- `core/fda_scraper.py`
+
+### Dependency
+- `playwright`
+- browser install step: `playwright install chromium`
+
+## Telegram Integration
+
+Telegram support exists only as optional scaffolding:
+- `core/channels/telegram_bot.py`
+
+Current product direction:
+- built-in desktop chat is the intended user chat surface
+- remote chat integrations are not part of the active roadmap
+- Telegram should remain disabled unless explicitly revisited for a future use case
+
+## Shared Tool Surface
+
+The app now has a central tool registry:
+- `core/tool_registry.py`
+
+This is the canonical place for:
+- shared tool names
+- caller permissions
+- side-effect classification
+- approval metadata
+- common invocation patterns
+
+Current registered tool families include:
+- internal retrieval
+- web research
+- browser tools
+- CoS doc search
+- CoS memory search
+- CoS chat-history search
+
+## Security Notes
+- Keys and tokens should remain in local config and environment files, not hardcoded source.
+- The local API increases the operational attack surface and should remain disabled unless actively needed.
+- Browser automation may capture screenshots and artifacts under local artifact paths.
+
+See also:
+- `docs/security.md`
+- `SECURITY.md`
 

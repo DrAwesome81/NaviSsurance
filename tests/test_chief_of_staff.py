@@ -1665,7 +1665,7 @@ def test_global_memory_dialog_renders_structured_alias_details(qapp, cos_db):
         approval_status="approved",
         json_data={
             "explicit": True,
-            "alias": {"term": "Q-sub", "canonical": "quality submission", "synonyms": ["quality sub"]},
+            "alias": {"term": "Q-sub", "canonical": "quality submission", "synonyms": ["quality sub"], "scope": {"client": "Abbott"}},
         },
     )
     assert mid
@@ -1679,6 +1679,7 @@ def test_global_memory_dialog_renders_structured_alias_details(qapp, cos_db):
     assert "q-sub" in detail
     assert "quality submission" in detail
     assert "quality sub" in detail
+    assert "abbott" in detail
 
 
 @pytest.mark.qt

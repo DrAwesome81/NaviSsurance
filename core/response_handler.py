@@ -180,7 +180,11 @@ class ResponseHandler:
         return self.chat_with_llama(messages, session_id)
 
     def get_response(self, message, session_id, conversation_history):
-        print(f"DEBUG: ResponseHandler.get_response called with message: {message[:50]}..., session_id: {session_id}")
+        logger.debug(
+            "ResponseHandler.get_response session_id=%s message=%s",
+            session_id,
+            str(message or "")[:50],
+        )
         conversation_history.append({"role": "user", "content": message})
         try:
             teach_response = store_teach_navi_memory(self.chat_handler.db, message)
@@ -201,7 +205,7 @@ class ResponseHandler:
                     else:
                         return f"I couldn't find any conversations from {date_query}."
                 except Exception as e:
-                    print(f"Error processing history request: {e}")
+                    logger.warning("Error processing history request: %s", e)
                     return "I had trouble retrieving that history. Try being more specific about the date."
             if message.lower().startswith("!search"):
                 try:
@@ -216,10 +220,10 @@ class ResponseHandler:
                     else:
                         return f"I couldn't find any conversations about '{search_terms}'."
                 except Exception as e:
-                    print(f"Error processing search request: {e}")
+                    logger.warning("Error processing search request: %s", e)
                     return "I had trouble searching the conversations. Please try again."
             if "daily briefing" in message.lower():
-                print("Manual briefing requested")
+                logger.info("Manual briefing requested")
                 briefing = self.chat_handler.daily_briefing()
                 formatted_briefing = self.hybrid_wrapper(
                     [
@@ -261,14 +265,14 @@ class ResponseHandler:
             # Check for creation keywords first - if it's about creating, skip task query handler
             is_task_creation = any(keyword in message.lower() for keyword in ['add', 'create', 'new task', 'make a task', 'add a task'])
             if is_task_creation:
-                print(f"DEBUG: Detected task creation request, skipping task query handler, continuing to ADD_TASK processing")
+                logger.debug("Task creation request detected; skipping task query handler.")
             elif self._is_task_query(message):
-                print(f"DEBUG: Detected task query (not creation), routing to _handle_task_query")
+                logger.debug("Task query detected; routing to _handle_task_query.")
                 return self._handle_task_query(message)
             
             # Handle news queries specifically - ALWAYS require web search
             if "WEB_SEARCH:" in message or ("medtech" in message.lower() and "news" in message.lower()):
-                print("News query detected - forcing web search")
+                logger.info("News query detected - forcing web search")
                 # Extract search query from WEB_SEARCH: prefix or use the message directly
                 if "WEB_SEARCH:" in message:
                     search_query = message.split("WEB_SEARCH:")[1].strip()
@@ -319,13 +323,15 @@ class ResponseHandler:
                 system_messages.append({"role": "system", "content": long_term_context})
             messages_for_llm = system_messages + list(conversation_history) if system_messages else conversation_history
             grok_response = self.hybrid_wrapper(messages_for_llm, session_id)
-            print(f"DEBUG: hybrid_wrapper returned: {grok_response[:200] if grok_response else 'None'}...")
+            logger.debug("hybrid_wrapper returned chars=%s", len(str(grok_response or "")))
             added_tasks = []
             extracted = []
             if isinstance(grok_response, str) and grok_response.strip():
                 extracted = list(self._ADD_TASK_CMD_RE.finditer(grok_response))
-            print(
-                f"DEBUG: ADD_TASK matches: {len(extracted)}, has ADD_TASK: {('ADD_TASK:' in (grok_response or ''))}"
+            logger.debug(
+                "ADD_TASK matches=%s has_add_task=%s",
+                len(extracted),
+                "ADD_TASK:" in (grok_response or ""),
             )
             # 1) Preferred: parse canonical action lines (same contract as CoS/Mason Tasks tab).
             created: list[tuple[str, str | None, str]] = []  # (desc, due, category)
@@ -424,22 +430,19 @@ class ResponseHandler:
                 )
             # Return the processed response, not the raw grok_response
             if added_tasks:
-                print(f"DEBUG: Returning processed tasks: {added_tasks}")
+                logger.debug("Returning processed task result count=%s", len(added_tasks))
                 return f"Added {', '.join(added_tasks)}"
             else:
                 # If no tasks were added but ADD_TASK was in response, we need to handle it
                 # Don't return raw ADD_TASK: string - ChatThread will try to parse it for old system
                 if "ADD_TASK:" in (grok_response or ""):
-                    print("DEBUG: ADD_TASK found but no tasks parsed - likely parse error")
                     logger.warning("ADD_TASK: found in response but no tasks were parsed")
                     # Return a message instead of raw ADD_TASK to prevent ChatThread from parsing it
                     return "I received a task creation request, but couldn't parse it. Please try again with a clearer task description and due date."
-                print(f"DEBUG: Returning grok_response (no ADD_TASK): {grok_response[:100]}...")
+                logger.debug("Returning normal response path without task side effects.")
                 return grok_response
         except Exception as e:
-            import traceback
-            print(f"ERROR in get_response: {e}")
-            traceback.print_exc()
+            logger.exception("ERROR in get_response: %s", e)
             return "I encountered an issue—try again, doc!"
 
     def _load_llama_model(self):

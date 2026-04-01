@@ -30,6 +30,7 @@ import requests
 from gui.notes_tab import NoteTakingSystem, NoteProcessingThread
 from gui.notifications import play_notification_sound
 import html
+from config import RUNTIME_ENABLED
 
 
 class ChatEntryEdit(QTextEdit):
@@ -433,8 +434,8 @@ class ChatWindow(QMainWindow):
         In-app monthly billing auto-run.
 
         Notes:
-        - This runs only while the app is open.
-        - It is idempotent by YYYY-MM via app_settings key billing.last_autorun_yyyymm.
+        - When the shared runtime scheduler is available, the GUI only handles prompting/review visibility.
+        - If the shared runtime is unavailable, this falls back to the older in-app generation path.
         """
         try:
             self._billing_autorun_timer = QTimer(self)
@@ -463,15 +464,47 @@ class ChatWindow(QMainWindow):
         try:
             from datetime import date as _date
             from core.billing.autorun import should_autorun, run_monthly_autodraft
+            from core.runtime.jobs import enqueue_billing_autorun
+            from core.runtime.service import get_runtime_service, runtime_scheduler_available
 
             today = _date.today()
-            if not should_autorun(self.db, today=today):
-                return
 
             # Guard: don't re-prompt multiple times in the same month if the user dismisses.
             yyyymm = f"{today.year:04d}-{today.month:02d}"
             last_prompt = str(self.db.get_setting("billing.last_prompt_yyyymm", "") or "").strip()
             if last_prompt == yyyymm:
+                return
+
+            runtime_ok, _runtime_reason = runtime_scheduler_available()
+            if RUNTIME_ENABLED and runtime_ok:
+                try:
+                    enqueue_billing_autorun(self.db)
+                    runtime = get_runtime_service(db=self.db)
+                    runtime.process_due_jobs()
+                except Exception:
+                    pass
+                try:
+                    pending_count = int(str(self.db.get_setting("billing.pending_review_count", "0") or "0").strip())
+                except Exception:
+                    pending_count = 0
+                pending_notes = str(self.db.get_setting("billing.pending_review_notes", "") or "").strip()
+                if pending_count > 0 or pending_notes:
+                    try:
+                        self.db.set_setting("billing.last_prompt_yyyymm", yyyymm)
+                    except Exception:
+                        pass
+                    msg = pending_notes or f"{pending_count} invoice draft(s) are ready for review."
+                    box = QMessageBox(self)
+                    box.setWindowTitle("Billing")
+                    box.setText(msg)
+                    open_btn = box.addButton("Open Billing", QMessageBox.ButtonRole.AcceptRole)
+                    box.addButton("Dismiss", QMessageBox.ButtonRole.RejectRole)
+                    box.exec()
+                    if box.clickedButton() == open_btn:
+                        self._open_billing_tab()
+                return
+
+            if not should_autorun(self.db, today=today):
                 return
 
             class _BillingAutoRunWorker(QThread):

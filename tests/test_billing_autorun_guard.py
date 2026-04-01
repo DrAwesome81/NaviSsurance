@@ -29,3 +29,25 @@ def test_should_autorun_guard_and_last_autorun_yyyymm(tmp_path, monkeypatch):
     db.set_setting("billing.autorun_enabled", "false")
     assert autorun.should_autorun(db, today=today) is False
 
+
+def test_next_autorun_date_rolls_forward_after_due_day(tmp_path):
+    db = DatabaseManager(db_name=str(tmp_path / "billing_next.db"))
+    db.set_setting("billing.autorun_enabled", "true")
+    db.set_setting("billing.autorun_day_of_month", "10")
+
+    same_month = autorun.next_autorun_date(db, today=date(2026, 2, 5))
+    assert same_month == date(2026, 2, 10)
+
+    next_month = autorun.next_autorun_date(db, today=date(2026, 2, 15))
+    assert next_month == date(2026, 3, 10)
+
+
+def test_next_autorun_date_rolls_forward_after_month_already_run(tmp_path):
+    db = DatabaseManager(db_name=str(tmp_path / "billing_done.db"))
+    db.set_setting("billing.autorun_enabled", "true")
+    db.set_setting("billing.autorun_day_of_month", "15")
+    db.set_setting("billing.last_autorun_yyyymm", "2026-02")
+
+    target = autorun.next_autorun_date(db, today=date(2026, 2, 15))
+    assert target == date(2026, 3, 15)
+

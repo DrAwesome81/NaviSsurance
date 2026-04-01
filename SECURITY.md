@@ -1,5 +1,7 @@
 # Security Guidelines for NaviSsurance Application
 
+Last updated: 2026-04-01
+
 ## Overview
 This document outlines the security measures implemented to protect sensitive information such as API keys, tokens, and credentials from being exposed in logs or code.
 
@@ -56,6 +58,14 @@ def refresh_dropbox_token():
 - Consistent format across all modules
 - No conflicting logging configurations
 
+### 5. Optional Runtime And Local API Surface
+
+Recent architecture additions introduce optional local runtime and service components:
+- background scheduler / runtime
+- local HTTP API
+
+These are controlled through environment flags in `config.py` and should remain disabled unless intentionally used. Remote chat surfaces are not part of the intended current product direction.
+
 ## Files Updated for Security
 
 ### **Core Files**:
@@ -71,6 +81,13 @@ def refresh_dropbox_token():
 - `build_rag_index.py`: Removed conflicting logging configuration
 - `search_rag_index.py`: Removed conflicting logging configuration
 - All test files: Standardized logging setup
+
+### **Runtime / Integration Files**:
+- `main.py`: optional runtime, local API, and Telegram startup
+- `api/app.py`: local HTTP API
+- `core/runtime/`: background runtime jobs and scheduler
+- `core/tool_registry.py`: centralized tool metadata and audit hooks
+- `core/channels/telegram_bot.py`: dormant optional remote chat scaffolding
 
 ## Environment Variables Required
 
@@ -89,6 +106,10 @@ DROPBOX_APP_SECRET=your_dropbox_app_secret
 # Other API keys
 ANTHROPIC_API_KEY=your_anthropic_key
 GROK_API_KEY=your_grok_key
+
+# Optional local runtime / service flags
+NAVI_RUNTIME_ENABLED=1
+NAVI_LOCAL_API_ENABLED=0
 ```
 
 ## Security Best Practices
@@ -151,6 +172,7 @@ safe_log(logger, logging.INFO, f"Processing data: {user_data}")
 - Ensure proper file permissions (600 or 644)
 - Regular log rotation to prevent disk space issues
 - Consider encrypting log files in production
+- Treat browser screenshots and runtime artifacts as potentially sensitive local files
 
 ## Compliance Notes
 

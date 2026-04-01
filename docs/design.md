@@ -1,57 +1,162 @@
 # NaviSsurance Design
 
+Last updated: 2026-04-01
+
+Contributor note:
+- If this design doc, older plan files, and the codebase appear to disagree, use `docs/contributor_guide.md` to determine which source should win.
+
 ## Architecture Overview
-NaviSsurance is a Python 3.12.7-based desktop application using PyQt6 for the UI (`interface.py`), SQLite for data storage (`core/db.py`), and APIs (Grok, LinkedIn, AssemblyAI) for AI-driven features. The system flow:
-- UI (`interface.py`) handles user inputs (e.g., PDF uploads, lead searches, note-taking, dashboard interactions).
-- Backend (`core/chat.py`, `core/fetch_all_emails.py`) processes requests via APIs or local logic.
-- Data persists in SQLite (`core/db.py`) for leads, compliance results, emails, notes, tasks, and news items.
-- Local AI model (Llama 3.1-8B-Instruct) handles note formatting and categorization with 1000-token response limits.
-See `docs/diagrams/architecture.png` for a visual representation.
+NaviSsurance is a PyQt desktop application with a SQLite-backed data layer, optional background runtime, optional local HTTP API, and a growing shared tool system. The UI remains the primary host, but orchestration, memory, and integrations are no longer confined to the GUI thread.
 
-## Module Descriptions
-- **Dashboard Tab** (`gui/interface.py`): Comprehensive dashboard with task list (interactive with double-click completion), schedule display (Google Calendar integration), and news feed (AI-powered MedTech news with 7-day persistence and hyperlinks). Features auto-refresh timers and real-time updates.
-- **Workspace Tab** (`gui/workspace_tab.py`): Document drafting workflow: add files/folders, mark scope, run Grok+ChatGPT iterative collaboration to produce a markdown draft, and optionally extract/import a parseable `## Suggested Tasks (importable)` section into SQLite tasks (with an approval/edit dialog).
-- **Deep Research Tab** (`gui/deep_research_tab.py`): Web-first deep research pipeline. Runs iterative web research (max 8 rounds, 30-minute timebox) → synthesis → review gate → final research brief (markdown). The UI shows continuous “still working” status updates during research rounds. Artifacts persist to SQLite via `core/workflow_engine.py` + `core/db.py`, and the final brief is also written to `data/artifacts/<project_id>/research_brief.md`.
-- **Billing Tab** (`gui/billing_tab.py`): Manual time entry + invoice draft generation. Uses SQLite tables for clients/time entries/templates/drafts. Drafts are generated from a user-defined template and written to `data/artifacts/invoice_drafts/<draft_id>/…` for review/export. Monthly auto-draft runs happen in-app (while the app is open) and prompt the user to review drafts.
-- **Note-Taking System** (`gui/interface.py`): AI-powered note-taking with context setting, automatic formatting, dynamic categorization, and export capabilities. Uses local Llama model for processing with robust JSON response handling.
-- **Tasks Tab** (`gui/tasks_tab.py`): Local (SQLite-backed) task manager. Uses the same task store as the Dashboard + CoS task capture. Supports search, filters, quick add, completion toggling, and deletion.
-- **Chief of Staff Tab** (`gui/chief_of_staff_tab.py`, `core/chief_of_staff_service.py`): Planning and delegation workspace with CoS chat threads, assignment board controls, specialist-agent routing, automatic assignment handoff into assignee-owned threads, board-level `NEEDS_INPUT` visibility based on the latest agent reply, and assignment artifact uploads through agent consoles.
-- **Compliance Tab** (`interface.py`): Three-column UI for uploading SOPs/URLs, analyzing with Grok, and displaying JSON results (`[{section, issue, fix, reference}]`).
-- **Leads Tab** (`gui/leads_tab.py`): DB-backed lead generation with evidence-first web research, openFDA 510(k) enrichment, scoring/filters, and follow-up task creation (see `docs/lead_generation.md`).
-- **Email Fetching** (`core/fetch_all_emails.py`): Fetches Gmail, MSN/Outlook, IMAP emails; planned folder access for DistilBERT filtering.
-- **Task Management** (`core/db.DatabaseManager`): Stores tasks in SQLite, accessible via UI, chat, or dashboard with interactive features.
-- **Transcription** (`interface.py`, lines 248–312): Uses AssemblyAI for meeting transcripts.
-- **CRM** (`crm.py`): SQLite-based, planned to unify leads, compliance, and emails.
+```mermaid
+flowchart LR
+    UI[PyQt UI] --> Router[Main Router and CoS]
+    UI --> DB[SQLite Database]
+    Router --> Memory[Memory and Retrieval]
+    Router --> Tools[Tool Registry]
+    Router --> Runtime[Runtime Scheduler]
+    Runtime --> DB
+    Tools --> Browser[Playwright Browser Tools]
+    Tools --> Search[Search and Research Tools]
+    Router --> Service[Local FastAPI]
+    Memory --> DB
+```
 
-## AI Model Configuration
-- **Local Llama Model**: Llama 3.1-8B-Instruct-GGUF running locally with 8192-token context window
-- **Response Limits**: 1000 tokens across all AI interactions for comprehensive outputs
-- **Worker Processes**: Subprocess-based architecture for model loading and response generation
-- **Error Handling**: Robust JSON parsing with fallback mechanisms for truncated responses
+## Primary Execution Paths
 
-## API Integrations
-- **xAI Grok**: Compliance analysis, document generation, dashboard/news search, and other shared app features use the centralized xAI SDK client in `core/grok_client.py`.
-- **xAI Grok default model**: `grok-4.20-multi-agent-beta-0309`, exposed through the shared model constants in `core/grok_client.py`.
-- **LinkedIn (Share, Sign In, Community Management)**: Posts content, authenticates users; endpoints: `https://api.linkedin.com/v2` (`interface.py`).
-- **AssemblyAI**: Meeting transcription; endpoints: `https://api.assemblyai.com` (`interface.py`).
-- **Task storage (SQLite)**: Tasks are persisted in `core/db.py` (`tasks` table) and surfaced in Dashboard + Tasks tab. The Chief of Staff can create tasks via `ADD_TASK`.
-- **Web research (OpenAI)**: Deep Research web research uses OpenAI (ChatGPT) via the Responses API + hosted `web_search` tool (`core.llm_collab.call_chatgpt_web_search`) and requires `OPENAI_API_KEY` when enabled. A fallback to non-browsing ChatGPT (`call_chatgpt_simple`) is used if web_search is unavailable.
+### Desktop host
+- `main.py` boots the PyQt application, sets up logging, creates the main window, and optionally starts:
+  - the runtime scheduler
+  - the local FastAPI service
 
-## Database Schema
-- **Tasks**: `id`, `session_id`, `task`, `due_date`, `completed`, `created_at`
-- **News Items**: `id`, `title`, `content`, `url`, `source`, `published_date`, `created_at` (with duplicate prevention)
-- **Notes**: `id`, `formatted_note`, `category`, `context`, `timestamp`, `created_at`
-- **Dropbox Files**: `id`, `name`, `path`, `link`, `modified_time`, `size`
-- **Conversations**: FTS5 virtual table for full-text search
-- **Task Metadata**: Tasks are stored in SQLite with `id`, `task_text`, `due_date`, `category`, `recurrence`, `completed`, `created_at`.
-- **Billing**:
-  - `billing_clients`: clients, optional default rate/currency
-  - `time_entries`: manual time entries (start/end/minutes/description/billable)
-  - `invoice_templates`: user-editable template bodies with `{{placeholders}}`
-  - `invoice_drafts`: rendered markdown drafts + totals + artifact file path
+### Main chat and orchestration
+- `core/main_chat_router.py` is the main route selector for non-CoS chat.
+- `core/chief_of_staff_service.py` handles CoS planning, delegation, and tool-trigger loops.
+- `core/response_handler.py` still hosts several legacy and non-CoS paths.
 
-## Diagram
-See `docs/diagrams/architecture.png`.
+### Agent and workflow execution
+- `core/agent_chat_service.py` handles direct agent conversation behavior.
+- `core/agent_execution.py` bootstraps assignment execution into concrete research, drafting, billing, or retrieval work.
+- `core/workflow_engine.py` runs the Deep Research and multi-step research pipeline.
+- `core/workspace_orchestrator.py` handles Workspace collaboration and drafting flows.
 
-## Issue Tracking
-Tasks tracked in Github issues (see repo Issues tab)
+### Runtime and service layer
+- `core/runtime/service.py` runs the optional APScheduler-backed background runtime.
+- `core/runtime/jobs.py` defines runtime job types such as:
+  - assignment bootstrap
+  - daily briefing refresh
+  - assignment follow-up scan
+  - billing autorun
+- `api/app.py` exposes a local FastAPI surface for chat, jobs, and tool invocation.
+- `core/service/local_api.py` hosts that API from the desktop app when enabled.
+- `core/channels/telegram_bot.py` exists as optional dormant scaffolding, but remote chat is not part of the current product direction.
+
+## Shared Tooling
+NaviSsurance now has a central tool registry:
+- `core/tool_registry.py`
+
+It defines shared tools and metadata such as:
+- name
+- description
+- allowed callers
+- side-effect class
+- approval requirements
+
+Current shared tool families include:
+- internal retrieval
+- web research
+- browser fetch / workflow / snapshot
+- CoS doc search
+- CoS memory search
+- CoS chat-history search
+
+## Browser Automation
+Playwright-backed browser tools live in:
+- `core/tools/browser.py`
+
+These support:
+- page fetch/render extraction
+- multi-step browser workflows
+- screenshot capture and evidence artifacts
+
+Legacy Selenium experiments in `core/fda_scraper.py` have been reduced to a wrapper around the shared browser tooling model instead of a standalone import-time script.
+
+## Memory And Retrieval
+NaviSsurance uses a layered retrieval architecture:
+
+### Durable memory
+- `core/user_memory.py`
+- `core/db.py`
+
+Durable memory stores:
+- preferences
+- facts
+- aliases / glossary entries
+- pending and approved memory rows
+
+### Long-term chat retrieval
+- `core/chat_retrieval.py`
+
+This provides:
+- chunk summaries
+- raw-turn grounding
+- summary-first retrieval
+
+### Reflection layer
+- `core/memory_reflection.py`
+
+This creates higher-level daily and weekly memory summaries.
+
+### Entity-aware memory
+The current schema now supports entity-linked memory rows so memory can be scoped to:
+- user
+- client
+- project
+- assignment / engagement
+
+The system still uses SQLite as the source of truth. Semantic retrieval is added as an enhancement layer, not a replacement.
+
+## Data Layer
+`core/db.py` remains the central persistent store.
+
+Major table families include:
+- conversations and chunk summaries
+- tasks and projects
+- CoS chats, preferences, and plans
+- agent threads, assignments, assignment events, and artifacts
+- billing clients, time entries, templates, and invoice drafts
+- leads and supporting evidence fields
+- durable user memory and reflections
+- runtime jobs and job runs
+- tool call audit
+- channel bindings
+
+## Model And Routing Strategy
+The current local model path in `config.py` is:
+- `Qwen3-14B-Q5_K_M.gguf`
+
+The current routing model is:
+- local model for narrow structured or formatting-heavy flows
+- Grok for CoS, remote planning, compliance, lead-gen, and shared remote interactions
+- OpenAI-hosted `web_search` path for Deep Research when configured
+
+See:
+- `docs/llm_routing.md`
+- `docs/local_model_validation.md`
+
+## Optional Runtime Flags
+Environment-controlled optional features are defined in `config.py`:
+- `NAVI_RUNTIME_ENABLED`
+- `NAVI_RUNTIME_POLL_INTERVAL_S`
+- `NAVI_RUNTIME_JOB_LEASE_S`
+- `NAVI_LOCAL_API_ENABLED`
+- `NAVI_LOCAL_API_HOST`
+- `NAVI_LOCAL_API_PORT`
+
+## Current Design Direction
+NaviSsurance is evolving toward:
+- a desktop-first operating environment for consulting work
+- a background-capable runtime for repeatable jobs
+- a shared tool system instead of feature-specific one-off tool loops
+- richer, entity-aware memory and retrieval
+- optional internal service/runtime surfaces that still route back into the same local system of record

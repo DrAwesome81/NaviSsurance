@@ -52,6 +52,7 @@ from core.workspace_templates import (
 from gui.task_import_dialog import TaskImportDialog
 from gui.agent_console import AgentConsole
 from gui.document_export import export_markdownish_document
+from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ _WORKSPACE_SUPPORTED_EXTS = {
 }
 
 _WORKSPACE_MAX_FILES_PER_FOLDER = 800
+_VIRTUAL_WORKSPACE_PREFIX = "virtual://workspace/"
 
 class CollaborationWorker(QThread):
     """Worker thread to run the AI collaboration workflow without freezing the UI."""
@@ -169,6 +171,13 @@ class WorkspaceTab(QWidget):
         self._current_document_metadata: dict[str, str] = {}
         self._last_generated_template_spec: WorkspaceTemplateSpec | None = None
         self._current_template_validation_issues: list[str] = []
+        self._current_template_evidence_map: dict[str, str] = {}
+        self._current_unresolved_fields: list[str] = []
+        self._current_research_gaps: list[str] = []
+        self._current_user_questions: list[str] = []
+        self._previous_gap_snapshot: dict[str, list[str]] = {}
+        self._resolved_gap_snapshot: dict[str, list[str]] = {}
+        self._latest_merged_atlas_info: dict[str, object] = {}
         
         self.setup_ui()
         self._refresh_document_templates()
@@ -562,6 +571,34 @@ class WorkspaceTab(QWidget):
         button_bar.addStretch()
         markdown_layout.addLayout(button_bar)
 
+        self.template_gap_summary = QTextEdit()
+        self.template_gap_summary.setReadOnly(True)
+        self.template_gap_summary.setVisible(False)
+        self.template_gap_summary.setMinimumHeight(150)
+        self.template_gap_summary.setStyleSheet(
+            "background-color: #1f232a; color: #f1f3f4; border: 1px solid #2e2f32; border-radius: 6px;"
+        )
+        markdown_layout.addWidget(self.template_gap_summary)
+
+        gap_button_row = QHBoxLayout()
+        self.send_research_gaps_btn = QPushButton("Send Research Gaps to Atlas")
+        self.send_research_gaps_btn.setEnabled(False)
+        self.send_research_gaps_btn.clicked.connect(self.send_research_gaps_to_atlas)
+        gap_button_row.addWidget(self.send_research_gaps_btn)
+        self.merge_atlas_research_btn = QPushButton("Merge Atlas Research")
+        self.merge_atlas_research_btn.clicked.connect(self.merge_latest_atlas_research)
+        gap_button_row.addWidget(self.merge_atlas_research_btn)
+        self.copy_user_questions_btn = QPushButton("Copy User Questions")
+        self.copy_user_questions_btn.setEnabled(False)
+        self.copy_user_questions_btn.clicked.connect(self.copy_user_questions)
+        gap_button_row.addWidget(self.copy_user_questions_btn)
+        self.export_question_packet_btn = QPushButton("Export Question Packet...")
+        self.export_question_packet_btn.setEnabled(False)
+        self.export_question_packet_btn.clicked.connect(self.export_question_packet)
+        gap_button_row.addWidget(self.export_question_packet_btn)
+        gap_button_row.addStretch()
+        markdown_layout.addLayout(gap_button_row)
+
         # IMPORTANT: reuse self.preview_text so existing methods still work
         self.preview_text = AlwaysVisiblePlaceholderTextEdit()
         # Let you edit the Markdown directly if desired
@@ -612,6 +649,7 @@ class WorkspaceTab(QWidget):
     def _workspace_state_payload(self) -> dict:
         files = []
         for file_info in self.selected_files:
+            is_virtual = bool(file_info.get("virtual"))
             files.append(
                 {
                     "name": str(file_info.get("name") or ""),
@@ -620,6 +658,11 @@ class WorkspaceTab(QWidget):
                     "size": int(file_info.get("size") or 0),
                     "modified": file_info.get("modified"),
                     "marked": bool(file_info.get("marked")),
+                    "virtual": is_virtual,
+                    "content": str(file_info.get("content") or "") if is_virtual else "",
+                    "source_type": str(file_info.get("source_type") or ""),
+                    "source_assignment_id": int(file_info.get("source_assignment_id") or 0),
+                    "source_title": str(file_info.get("source_title") or ""),
                 }
             )
         return {
@@ -659,6 +702,572 @@ class WorkspaceTab(QWidget):
                     self.db.workspace_state_set_last_used(self._current_workspace_id)
             except Exception as e:
                 logger.debug(f"Could not autosave named workspace state: {e}")
+
+    def _template_label_for_key(self, key: str) -> str:
+        spec = self._last_generated_template_spec
+        if spec:
+            for target in spec.fill_targets:
+                if str(target.key) == str(key):
+                    return str(target.label or key)
+        return str(key or "")
+
+    @staticmethod
+    def _normalize_string_list(values) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for value in list(values or []):
+            text = str(value or "").strip()
+            if not text:
+                continue
+            marker = text.casefold()
+            if marker in seen:
+                continue
+            seen.add(marker)
+            out.append(text)
+        return out
+
+    def _current_gap_snapshot(self) -> dict[str, list[str]]:
+        return {
+            "unresolved_fields": self._normalize_string_list(self._current_unresolved_fields),
+            "research_gaps": self._normalize_string_list(self._current_research_gaps),
+            "user_questions": self._normalize_string_list(self._current_user_questions),
+        }
+
+    def _resolved_gap_snapshot_from_baseline(self) -> dict[str, list[str]]:
+        baseline = self._previous_gap_snapshot or {}
+        current = self._current_gap_snapshot()
+        resolved: dict[str, list[str]] = {}
+        for key in ("unresolved_fields", "research_gaps", "user_questions"):
+            current_markers = {str(item).casefold() for item in current.get(key, [])}
+            resolved[key] = [
+                item
+                for item in self._normalize_string_list(baseline.get(key, []))
+                if str(item).casefold() not in current_markers
+            ]
+        return resolved
+
+    def _capture_gap_baseline_for_next_run(self):
+        self._previous_gap_snapshot = self._current_gap_snapshot()
+        self._resolved_gap_snapshot = {}
+
+    def _atlas_merge_context_label(self) -> str:
+        info = self._latest_merged_atlas_info or {}
+        assignment_id = int(info.get("assignment_id") or 0)
+        if assignment_id <= 0:
+            for file_info in self.selected_files:
+                if str(file_info.get("source_type") or "").strip() != "atlas_research":
+                    continue
+                assignment_id = int(file_info.get("source_assignment_id") or 0)
+                if assignment_id > 0:
+                    break
+        if assignment_id > 0:
+            return f"Atlas research merge A-{assignment_id:04d}"
+        return "merged Atlas research"
+
+    def _has_active_atlas_research_source(self) -> bool:
+        for file_info in self.selected_files:
+            if not bool(file_info.get("virtual")):
+                continue
+            if str(file_info.get("source_type") or "").strip() == "atlas_research":
+                return True
+        return False
+
+    def _resolved_gap_provenance(self, resolved: dict[str, list[str]]) -> dict[str, dict[str, str]]:
+        atlas_label = self._atlas_merge_context_label() if self._has_active_atlas_research_source() else ""
+        evidence_map = {str(k): str(v or "").strip() for k, v in (self._current_template_evidence_map or {}).items()}
+        provenance: dict[str, dict[str, str]] = {
+            "unresolved_fields": {},
+            "research_gaps": {},
+            "user_questions": {},
+        }
+        for key in resolved.get("unresolved_fields", []):
+            evidence_text = evidence_map.get(str(key), "")
+            parts = []
+            if atlas_label:
+                parts.append(f"via {atlas_label}")
+            if evidence_text:
+                parts.append(f"evidence: {evidence_text}")
+            provenance["unresolved_fields"][str(key)] = "; ".join(parts) if parts else "supported by updated evidence"
+        for item in resolved.get("research_gaps", []):
+            provenance["research_gaps"][str(item)] = (
+                f"via {atlas_label}" if atlas_label else "resolved in latest review pass"
+            )
+        for item in resolved.get("user_questions", []):
+            provenance["user_questions"][str(item)] = (
+                f"via {atlas_label}" if atlas_label else "resolved in latest review pass"
+            )
+        return provenance
+
+    @staticmethod
+    def _json_object(value) -> dict:
+        if isinstance(value, dict):
+            return dict(value)
+        if not value:
+            return {}
+        try:
+            obj = json.loads(value)
+        except Exception:
+            return {}
+        return dict(obj) if isinstance(obj, dict) else {}
+
+    @staticmethod
+    def _virtual_workspace_path(slug: str) -> str:
+        return f"{_VIRTUAL_WORKSPACE_PREFIX}{slug}"
+
+    @staticmethod
+    def _is_virtual_workspace_path(path: str) -> bool:
+        return str(path or "").startswith(_VIRTUAL_WORKSPACE_PREFIX)
+
+    def _current_workspace_template_key(self) -> str:
+        spec = self._last_generated_template_spec or self._selected_document_template_spec()
+        return str(getattr(spec, "key", "") or "")
+
+    def _find_selected_file_index(self, path: str) -> int:
+        needle = str(path or "")
+        for idx, file_info in enumerate(self.selected_files):
+            if str(file_info.get("path") or "") == needle:
+                return idx
+        return -1
+
+    def _upsert_virtual_workspace_file(self, *, path: str, name: str, content: str, marked: bool = True) -> bool:
+        normalized_path = str(path or "").strip()
+        payload = {
+            "name": str(name or "Atlas Research Notes"),
+            "path": normalized_path,
+            "is_folder": False,
+            "size": len(content or ""),
+            "modified": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "marked": bool(marked),
+            "virtual": True,
+            "content": str(content or "").strip(),
+            "source_type": "atlas_research",
+            "source_assignment_id": int((self._latest_merged_atlas_info or {}).get("assignment_id") or 0),
+            "source_title": str((self._latest_merged_atlas_info or {}).get("title") or ""),
+        }
+        existing_idx = self._find_selected_file_index(normalized_path)
+        if existing_idx >= 0:
+            self.selected_files[existing_idx].update(payload)
+            item = self.file_list.item(existing_idx)
+            if item is not None:
+                item.setData(Qt.ItemDataRole.UserRole, self.selected_files[existing_idx])
+                row_widget = self.file_list.itemWidget(item)
+                if row_widget is not None:
+                    checkbox = row_widget.findChild(QCheckBox)
+                    if checkbox is not None:
+                        checkbox.blockSignals(True)
+                        checkbox.setChecked(bool(marked))
+                        checkbox.blockSignals(False)
+            self._on_workspace_state_changed()
+            return False
+        return self.add_file_to_list(payload)
+
+    def _matching_atlas_assignments(self) -> list[dict]:
+        list_assignments = getattr(self.db, "agent_list_assignments", None)
+        if not callable(list_assignments):
+            return []
+        workspace_name = str(self._current_workspace_name or "").strip()
+        template_key = self._current_workspace_template_key()
+        if not workspace_name and not template_key:
+            return []
+        rows = list_assignments(assignee_code="atlas", requester_code="navi", limit=100) or []
+        matches: list[dict] = []
+        for row in rows:
+            context = self._json_object(row.get("context_json"))
+            if str(context.get("kind") or "").strip() != "workspace_template_research_gaps":
+                continue
+            context_workspace = str(context.get("workspace_name") or "").strip()
+            context_template = str(context.get("template_key") or "").strip()
+            if workspace_name and context_workspace and context_workspace != workspace_name:
+                continue
+            if template_key and context_template and context_template != template_key:
+                continue
+            matches.append(row)
+        status_rank = {"done": 0, "awaiting_review": 1, "in_progress": 2, "queued": 3, "blocked": 4}
+        matches.sort(key=lambda row: (status_rank.get(str(row.get("status") or "").strip().lower(), 9), -int(row.get("id") or 0)))
+        return matches
+
+    def _format_project_artifact_for_workspace(self, artifact_type: str, content_json: str) -> str:
+        artifact_type = str(artifact_type or "").strip()
+        data = self._json_object(content_json)
+        if artifact_type == "research_brief":
+            return str(data.get("markdown_body") or "").strip()
+        if artifact_type in {"research_brief_grok", "synthesis_grok", "synthesis_chatgpt", "user_research_feedback"}:
+            return str(data.get("content") or content_json or "").strip()
+        if artifact_type == "web_research_brief":
+            lines = []
+            query = str(data.get("query") or "").strip()
+            if query:
+                lines.append(f"Query: {query}")
+                lines.append("")
+            for finding in data.get("findings") or []:
+                claim = str((finding or {}).get("claim") or "").strip()
+                if claim:
+                    lines.append(f"- Finding: {claim}")
+            sources = data.get("sources") or []
+            if sources:
+                lines.append("")
+                lines.append("Sources:")
+                for source in sources:
+                    title = str((source or {}).get("title") or "Source").strip()
+                    url = str((source or {}).get("url") or "").strip()
+                    lines.append(f"- {title} | {url}")
+            return "\n".join(lines).strip()
+        if artifact_type == "internal_retrieval_brief":
+            lines = []
+            query = str(data.get("query") or "").strip()
+            if query:
+                lines.append(f"Query: {query}")
+                lines.append("")
+            for result in data.get("results") or []:
+                title = str((result or {}).get("title") or "Result").strip()
+                excerpt = str((result or {}).get("excerpt") or "").strip()
+                lines.append(f"- [{title}] {excerpt}")
+            return "\n".join(lines).strip()
+        return str(content_json or "").strip()
+
+    def _resolve_latest_atlas_research_packet(self) -> tuple[str, str, int, str] | None:
+        assignment_rows = self._matching_atlas_assignments()
+        if not assignment_rows:
+            return None
+        list_artifacts = getattr(self.db, "agent_list_artifacts", None)
+        get_project_artifacts = getattr(self.db, "get_artifacts_for_project", None)
+        for assignment in assignment_rows:
+            assignment_id = int(assignment.get("id") or 0)
+            assignment_title = str(assignment.get("title") or "Atlas research").strip()
+            result_summary = str(assignment.get("result_summary_md") or "").strip()
+            artifact_rows = list_artifacts(assignment_id=assignment_id, limit=100) if callable(list_artifacts) else []
+            project_id = 0
+            for row in artifact_rows:
+                if str(row.get("artifact_type") or "").strip() != "deep_research_project":
+                    continue
+                project_id = int(self._json_object(row.get("content_json")).get("project_id") or 0)
+                if project_id:
+                    break
+            if project_id and callable(get_project_artifacts):
+                project_artifacts = list(get_project_artifacts(project_id) or [])
+                preferred_types = [
+                    "research_brief",
+                    "research_brief_grok",
+                    "synthesis_chatgpt",
+                    "synthesis_grok",
+                    "web_research_brief",
+                    "internal_retrieval_brief",
+                ]
+                for preferred_type in preferred_types:
+                    for _artifact_id, artifact_type, content_json, _file_path, _created_at in reversed(project_artifacts):
+                        if str(artifact_type or "").strip() != preferred_type:
+                            continue
+                        rendered = self._format_project_artifact_for_workspace(artifact_type, content_json)
+                        if not rendered:
+                            continue
+                        lines = [
+                            f"# Atlas Research Merge - {assignment_title}",
+                            "",
+                            f"Assignment: A-{assignment_id:04d}",
+                            f"Linked Deep Research Project: {project_id}",
+                        ]
+                        if result_summary:
+                            lines.extend(["", "## Assignment Summary", "", result_summary])
+                        lines.extend(["", "## Imported Research", "", rendered])
+                        return (
+                            f"Atlas Research A-{assignment_id:04d}.md",
+                            "\n".join(lines).strip(),
+                            assignment_id,
+                            assignment_title,
+                        )
+            for row in artifact_rows:
+                if str(row.get("artifact_type") or "").strip() != "agent_reply":
+                    continue
+                content_md = str(row.get("content_md") or "").strip()
+                if not content_md:
+                    continue
+                lines = [
+                    f"# Atlas Research Merge - {assignment_title}",
+                    "",
+                    f"Assignment: A-{assignment_id:04d}",
+                ]
+                if result_summary:
+                    lines.extend(["", "## Assignment Summary", "", result_summary])
+                lines.extend(["", "## Imported Research", "", content_md])
+                return (
+                    f"Atlas Research A-{assignment_id:04d}.md",
+                    "\n".join(lines).strip(),
+                    assignment_id,
+                    assignment_title,
+                )
+        return None
+
+    def _update_template_gap_summary(self):
+        if not hasattr(self, "template_gap_summary") or self.template_gap_summary is None:
+            return
+        lines: list[str] = []
+        resolved = self._resolved_gap_snapshot_from_baseline()
+        self._resolved_gap_snapshot = resolved
+        resolved_provenance = self._resolved_gap_provenance(resolved)
+        baseline = self._previous_gap_snapshot or {}
+        has_baseline = any(bool(baseline.get(key)) for key in ("unresolved_fields", "research_gaps", "user_questions"))
+        if has_baseline:
+            lines.append("Gap delta since previous run:")
+            lines.append(
+                f"- Unresolved fields: {len(baseline.get('unresolved_fields', []))} -> {len(self._current_unresolved_fields)}"
+            )
+            lines.append(
+                f"- Researchable gaps: {len(baseline.get('research_gaps', []))} -> {len(self._current_research_gaps)}"
+            )
+            lines.append(
+                f"- Client/user questions: {len(baseline.get('user_questions', []))} -> {len(self._current_user_questions)}"
+            )
+            lines.append("")
+        if any(resolved.get(key) for key in ("unresolved_fields", "research_gaps", "user_questions")):
+            lines.append("Resolved since previous run:")
+            for key in resolved.get("unresolved_fields", []):
+                note = str(resolved_provenance.get("unresolved_fields", {}).get(str(key)) or "").strip()
+                suffix = f" ({note})" if note else ""
+                lines.append(f"- Unresolved field cleared: {self._template_label_for_key(key)} [{key}]{suffix}")
+            for item in resolved.get("research_gaps", []):
+                note = str(resolved_provenance.get("research_gaps", {}).get(str(item)) or "").strip()
+                suffix = f" ({note})" if note else ""
+                lines.append(f"- Research gap cleared: {item}{suffix}")
+            for item in resolved.get("user_questions", []):
+                note = str(resolved_provenance.get("user_questions", {}).get(str(item)) or "").strip()
+                suffix = f" ({note})" if note else ""
+                lines.append(f"- Client/user question cleared: {item}{suffix}")
+            lines.append("")
+        if self._current_template_evidence_map:
+            lines.append("Template evidence coverage:")
+            for key, value in self._current_template_evidence_map.items():
+                lines.append(f"- {self._template_label_for_key(key)} [{key}]: {value}")
+            lines.append("")
+        if self._current_unresolved_fields:
+            lines.append("Unresolved template fields:")
+            for key in self._current_unresolved_fields:
+                lines.append(f"- {self._template_label_for_key(key)} [{key}]")
+            lines.append("")
+        if self._current_research_gaps:
+            lines.append("Researchable gaps:")
+            for item in self._current_research_gaps:
+                lines.append(f"- {item}")
+            lines.append("")
+        if self._current_user_questions:
+            lines.append("Questions for you / the client:")
+            for item in self._current_user_questions:
+                lines.append(f"- {item}")
+            lines.append("")
+        if self._current_template_validation_issues:
+            lines.append("Template validation issues:")
+            for item in self._current_template_validation_issues:
+                lines.append(f"- {item}")
+        text = "\n".join(lines).strip()
+        self.template_gap_summary.setVisible(bool(text))
+        self.template_gap_summary.setPlainText(text)
+        self.send_research_gaps_btn.setEnabled(bool(self._current_research_gaps))
+        self.copy_user_questions_btn.setEnabled(bool(self._current_user_questions))
+        self.export_question_packet_btn.setEnabled(bool(self._current_user_questions or self._current_unresolved_fields))
+
+    def _atlas_assignment_title(self) -> str:
+        spec = self._last_generated_template_spec
+        if spec is not None:
+            return f"Research gaps for {spec.display_name}"
+        return "Research gaps for template document"
+
+    def _atlas_assignment_brief(self) -> str:
+        spec = self._last_generated_template_spec
+        title = self._atlas_assignment_title()
+        lines = [
+            title,
+            "",
+            "Goal:",
+            str(getattr(self._last_task_spec, "goal", "") or "(unspecified)"),
+            "",
+        ]
+        if spec is not None:
+            lines.extend(
+                [
+                    f"Template: {spec.display_name}",
+                    f"Template key: {spec.key}",
+                    "",
+                ]
+            )
+        if self._current_research_gaps:
+            lines.append("Research gaps to fill from public guidance / best practice:")
+            lines.extend(f"- {item}" for item in self._current_research_gaps)
+            lines.append("")
+        if self._current_unresolved_fields:
+            lines.append("Template fields still unresolved:")
+            lines.extend(f"- {self._template_label_for_key(key)} [{key}]" for key in self._current_unresolved_fields)
+            lines.append("")
+        if self._current_user_questions:
+            lines.append("Client/user-specific questions still open (do not answer from public research):")
+            lines.extend(f"- {item}" for item in self._current_user_questions)
+            lines.append("")
+        if self._current_template_evidence_map:
+            lines.append("Current evidence map from source documents:")
+            for key, value in self._current_template_evidence_map.items():
+                lines.append(f"- {self._template_label_for_key(key)} [{key}]: {value}")
+            lines.append("")
+        lines.append("Deliverable:")
+        lines.append("- findings")
+        lines.append("- gaps")
+        lines.append("- recommended next queries")
+        lines.append("- cite sources with URLs")
+        return "\n".join(lines).strip()
+
+    def send_research_gaps_to_atlas(self):
+        if not self._current_research_gaps:
+            self.status_label.setText("No research gaps are available to send.")
+            return
+        try:
+            assignment_id = self.db.agent_create_assignment(
+                title=self._atlas_assignment_title(),
+                brief_md=self._atlas_assignment_brief(),
+                requester_code="navi",
+                assignee_code="atlas",
+                priority=3,
+                due_date=None,
+                status="queued",
+                context_json={
+                    "kind": "workspace_template_research_gaps",
+                    "workspace_name": self._current_workspace_name,
+                    "template_key": str(getattr(self._last_generated_template_spec, "key", "") or ""),
+                    "research_gaps": list(self._current_research_gaps),
+                    "unresolved_fields": list(self._current_unresolved_fields),
+                    "user_questions": list(self._current_user_questions),
+                },
+            )
+            if not assignment_id:
+                self.status_label.setText("Could not create Atlas assignment.")
+                return
+            self.db.agent_add_artifact(
+                artifact_type="workspace_template_gap_analysis",
+                assignment_id=int(assignment_id),
+                title=f"Workspace template gap analysis A-{int(assignment_id):04d}",
+                content_md=(self.template_gap_summary.toPlainText() or "").strip(),
+                content_json={
+                    "research_gaps": list(self._current_research_gaps),
+                    "user_questions": list(self._current_user_questions),
+                    "unresolved_fields": list(self._current_unresolved_fields),
+                    "evidence_map": dict(self._current_template_evidence_map),
+                },
+            )
+            if self._current_user_questions or self._current_unresolved_fields:
+                self.db.agent_add_artifact(
+                    artifact_type="workspace_question_packet",
+                    assignment_id=int(assignment_id),
+                    title=f"Workspace question packet A-{int(assignment_id):04d}",
+                    content_md=self._build_question_packet_markdown(),
+                    content_json={
+                        "user_questions": list(self._current_user_questions),
+                        "unresolved_fields": list(self._current_unresolved_fields),
+                        "research_gaps": list(self._current_research_gaps),
+                    },
+                )
+            tid = create_assignment_thread(
+                self.db,
+                assignment_id=int(assignment_id),
+                assignee_code="atlas",
+                reason="workspace_template_research_gaps",
+                actor_code="navi",
+                context_json={"source": "workspace_template_research_gaps"},
+            )
+            if tid:
+                prime_assignment_handoff(
+                    self.db,
+                    assignment_id=int(assignment_id),
+                    thread_id=int(tid),
+                    force=True,
+                )
+            self.status_label.setText(f"Sent research gaps to Atlas as assignment A-{int(assignment_id):04d}")
+        except Exception as e:
+            logger.exception("Could not send research gaps to Atlas: %s", e)
+            self.status_label.setText(f"Error sending research gaps to Atlas: {e}")
+
+    def copy_user_questions(self):
+        if not self._current_user_questions:
+            self.status_label.setText("No user questions are available to copy.")
+            return
+        text = "\n".join(f"- {item}" for item in self._current_user_questions)
+        QApplication.clipboard().setText(text)
+        self.status_label.setText(f"Copied {len(self._current_user_questions)} user question(s)")
+
+    def _build_question_packet_markdown(self) -> str:
+        spec = self._last_generated_template_spec
+        title = spec.display_name if spec is not None else "Template Document"
+        lines = [
+            f"# Missing Information Packet — {title}",
+            "",
+            "Use this packet to collect the remaining document-specific information that could not be safely inferred from the source materials.",
+            "",
+        ]
+        if self._current_unresolved_fields:
+            lines.append("## Unresolved Template Fields")
+            lines.append("")
+            for key in self._current_unresolved_fields:
+                lines.append(f"- {self._template_label_for_key(key)} [{key}]")
+            lines.append("")
+        if self._current_user_questions:
+            lines.append("## Questions For You / The Client")
+            lines.append("")
+            for item in self._current_user_questions:
+                lines.append(f"- {item}")
+            lines.append("")
+        if self._current_research_gaps:
+            lines.append("## Research Gaps Already Identified")
+            lines.append("")
+            lines.append(
+                "These items appear fillable from public guidance, standards, or best practice research rather than requiring client-specific answers:"
+            )
+            lines.append("")
+            for item in self._current_research_gaps:
+                lines.append(f"- {item}")
+            lines.append("")
+        return "\n".join(lines).strip()
+
+    def export_question_packet(self):
+        if not self._current_user_questions and not self._current_unresolved_fields:
+            self.status_label.setText("No question packet is available to export.")
+            return
+        default_name = f"workspace_questions_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Question Packet",
+            default_name,
+            "Word Document (*.docx);;PDF (*.pdf);;Markdown Files (*.md);;Text Files (*.txt);;All Files (*)"
+        )
+        if not file_path:
+            self.status_label.setText("Question packet export cancelled")
+            return
+        try:
+            exported_path = export_markdownish_document(
+                title="Workspace Question Packet",
+                text=self._build_question_packet_markdown(),
+                file_path=file_path,
+                selected_filter=selected_filter,
+            )
+            self.status_label.setText(f"Question packet exported to {os.path.basename(exported_path)}")
+        except Exception as e:
+            logger.error(f"Error exporting question packet: {e}")
+            self.status_label.setText(f"Error exporting question packet: {str(e)}")
+
+    def merge_latest_atlas_research(self) -> bool:
+        packet = self._resolve_latest_atlas_research_packet()
+        if not packet:
+            self.status_label.setText("No Atlas research results are ready to merge for this workspace.")
+            return False
+        name, content, assignment_id, assignment_title = packet
+        self._latest_merged_atlas_info = {
+            "assignment_id": int(assignment_id),
+            "title": str(assignment_title or ""),
+            "name": str(name or ""),
+        }
+        added = self._upsert_virtual_workspace_file(
+            path=self._virtual_workspace_path(f"atlas-research-a-{assignment_id:04d}.md"),
+            name=name,
+            content=content,
+            marked=True,
+        )
+        action = "Merged" if added else "Refreshed"
+        self.status_label.setText(f"{action} Atlas research from assignment A-{assignment_id:04d}")
+        return True
 
     def _refresh_saved_workspaces(self):
         current_id = self._current_workspace_id
@@ -742,6 +1351,11 @@ class WorkspaceTab(QWidget):
                     "size": int(file_info.get("size") or 0),
                     "modified": file_info.get("modified"),
                     "marked": bool(file_info.get("marked")),
+                    "virtual": bool(file_info.get("virtual")),
+                    "content": str(file_info.get("content") or ""),
+                    "source_type": str(file_info.get("source_type") or ""),
+                    "source_assignment_id": int(file_info.get("source_assignment_id") or 0),
+                    "source_title": str(file_info.get("source_title") or ""),
                 }
                 if self.add_file_to_list(item):
                     loaded += 1
@@ -776,9 +1390,19 @@ class WorkspaceTab(QWidget):
         self._current_markdown = ""
         self._current_template_blocks = {}
         self._current_document_metadata = {}
+        self._current_template_evidence_map = {}
+        self._current_unresolved_fields = []
+        self._current_research_gaps = []
+        self._current_user_questions = []
+        self._previous_gap_snapshot = {}
+        self._resolved_gap_snapshot = {}
+        self._latest_merged_atlas_info = {}
         self._last_generated_template_spec = None
         self._current_template_validation_issues = []
         self.preview_text.clear()
+        if hasattr(self, "template_gap_summary") and self.template_gap_summary is not None:
+            self.template_gap_summary.clear()
+            self.template_gap_summary.setVisible(False)
         self.grok_text.clear()
         self.chatgpt_text.clear()
         self.save_button.setEnabled(False)
@@ -850,34 +1474,40 @@ class WorkspaceTab(QWidget):
         self._load_workspace_record(record)
 
     def import_template_pair(self):
-        machine_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select machine-readable template",
-            "",
-            "Word Documents (*.docx);;All Files (*)",
-        )
-        if not machine_path:
-            self.status_label.setText("Template import cancelled")
-            return
-        inferred_human = self._infer_human_template_pair(machine_path)
-        human_path = inferred_human
-        if not human_path:
-            human_path, _ = QFileDialog.getOpenFileName(
+        try:
+            machine_path, _ = QFileDialog.getOpenFileName(
                 self,
-                "Select matching human-readable template",
+                "Select machine-readable template",
                 "",
-                "Word Templates (*.docx *.dotx);;All Files (*)",
+                "Word Documents (*.docx);;All Files (*)",
             )
-        if not human_path:
-            self.status_label.setText("Template import cancelled")
-            return
-        spec = import_workspace_template_pair(machine_path=machine_path, human_path=human_path)
-        self._refresh_document_templates()
-        idx = self.document_template_combo.findData(spec.key)
-        if idx >= 0:
-            self.document_template_combo.setCurrentIndex(idx)
-        self.status_label.setText(f"Imported template: {spec.display_name}")
-        self._on_workspace_state_changed()
+            if not machine_path:
+                self.status_label.setText("Template import cancelled")
+                return
+            inferred_human = self._infer_human_template_pair(machine_path)
+            human_path = inferred_human
+            if not human_path:
+                human_path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "Select matching human-readable template",
+                    "",
+                    "Word Templates (*.docx *.dotx);;All Files (*)",
+                )
+            if not human_path:
+                self.status_label.setText("Template import cancelled")
+                return
+            spec = import_workspace_template_pair(machine_path=machine_path, human_path=human_path)
+            self._refresh_document_templates()
+            idx = self.document_template_combo.findData(spec.key)
+            if idx >= 0:
+                self.document_template_combo.setCurrentIndex(idx)
+            self.status_label.setText(
+                f"Imported template: {spec.display_name} ({len(getattr(spec, 'fill_targets', []) or [])} fill target(s))"
+            )
+            self._on_workspace_state_changed()
+        except Exception as e:
+            logger.exception("Template import failed: %s", e)
+            self.status_label.setText(f"Template import failed: {e}")
 
     def _infer_human_template_pair(self, machine_path: str) -> str:
         directory = os.path.dirname(os.path.abspath(str(machine_path or "")))
@@ -908,7 +1538,9 @@ class WorkspaceTab(QWidget):
             return
         row = self.file_list.row(item)
         file_info = item.data(Qt.ItemDataRole.UserRole) or {}
-        path = os.path.abspath(str(file_info.get("path") or ""))
+        path = str(file_info.get("path") or "")
+        if path and not bool(file_info.get("virtual")) and not self._is_virtual_workspace_path(path):
+            path = os.path.abspath(path)
         removed = self.file_list.takeItem(row)
         if removed is not None and 0 <= row < len(self.selected_files):
             self.selected_files.pop(row)
@@ -1050,15 +1682,19 @@ class WorkspaceTab(QWidget):
         if file_info.get("is_folder"):
             return False
         raw_path = file_info.get("path") or ""
-        full_path = os.path.abspath(raw_path)
-        if not full_path or not os.path.exists(full_path):
+        is_virtual = bool(file_info.get("virtual")) or self._is_virtual_workspace_path(raw_path)
+        full_path = str(raw_path or "").strip() if is_virtual else os.path.abspath(raw_path)
+        if not full_path:
+            return False
+        if not is_virtual and not os.path.exists(full_path):
             return False
         if full_path in self._seen_paths:
             return False
         self._seen_paths.add(full_path)
         file_info["path"] = full_path
+        file_info["virtual"] = is_virtual
 
-        icon = "📄"
+        icon = "[AI]" if is_virtual else "FILE"
         item_text = file_info['name'][:30] + "..." if len(file_info['name']) > 30 else file_info['name']
         item = QListWidgetItem()
         widget = QWidget()
@@ -1137,6 +1773,8 @@ class WorkspaceTab(QWidget):
 
     def get_file_content(self, file_info):
         """Get file content with caching to avoid repeated disk I/O."""
+        if bool(file_info.get("virtual")):
+            return str(file_info.get("content") or "")
         if 'content' not in file_info:
             try:
                 # Use file_handler for proper extraction
@@ -1162,6 +1800,17 @@ class WorkspaceTab(QWidget):
             file_info['content'] = content
         
         return file_info['content']
+
+    @staticmethod
+    def _has_usable_source_content(content: str) -> bool:
+        text = str(content or "").strip()
+        if not text:
+            return False
+        if text.startswith("[Error"):
+            return False
+        if text.startswith("[File:"):
+            return False
+        return True
 
     def _guess_file_type(self, filename: str) -> str:
         """Simple helper to guess file type based on file extension."""
@@ -1251,8 +1900,10 @@ class WorkspaceTab(QWidget):
         - Shows Grok and ChatGPT outputs in their respective panes
         """
         try:
+            self.merge_latest_atlas_research()
             marked_files = [f for f in self.selected_files if f.get("marked")]
             selected_template_spec = self._selected_document_template_spec()
+            self._capture_gap_baseline_for_next_run()
             
             # Ask the user what they want Grok + ChatGPT to do
             if marked_files:
@@ -1299,7 +1950,9 @@ class WorkspaceTab(QWidget):
                     # Extract and cache file content
                     content = self.get_file_content(f)
                     # Normalize file path for consistent matching
-                    file_path = os.path.abspath(f["path"])
+                    file_path = str(f["path"] or "").strip()
+                    if not bool(f.get("virtual")):
+                        file_path = os.path.abspath(file_path)
                     
                     # Validate content extraction
                     if not content or content.startswith("[Error") or content.startswith("[File:"):
@@ -1315,6 +1968,19 @@ class WorkspaceTab(QWidget):
                             file_type=self._guess_file_type(f["name"]),
                         )
                     )
+                usable_count = sum(1 for value in file_contents.values() if self._has_usable_source_content(value))
+                if usable_count == 0:
+                    self.status_label.setText("No usable source content extracted from the marked files")
+                    self.progress_bar.setVisible(False)
+                    self.preview_text.setPlainText(
+                        "No usable source content could be extracted from the marked files. "
+                        "Try a supported text/PDF/DOCX source or check the extraction warnings."
+                    )
+                    if hasattr(self, 'grok_text'):
+                        self.grok_text.setPlainText("Source extraction failed for all marked files.")
+                    if hasattr(self, 'chatgpt_text'):
+                        self.chatgpt_text.setPlainText("Workflow did not start because no usable source content was available.")
+                    return
             else:
                 # No files - just research request
                 self.status_label.setText("Starting research collaboration...")
@@ -1351,6 +2017,10 @@ class WorkspaceTab(QWidget):
             self._last_generated_template_spec = selected_template_spec
             self._current_template_blocks = {}
             self._current_document_metadata = {}
+            self._current_template_evidence_map = {}
+            self._current_unresolved_fields = []
+            self._current_research_gaps = []
+            self._current_user_questions = []
 
             # Store file contents for use in API calls
             self._current_file_contents = file_contents
@@ -1477,6 +2147,21 @@ class WorkspaceTab(QWidget):
                 **self._current_document_metadata,
                 **{str(k): str(v or "").strip() for k, v in document_metadata.items()},
             }
+        evidence_map = round_data.get("evidence_map") or {}
+        if isinstance(evidence_map, dict) and evidence_map:
+            self._current_template_evidence_map = {
+                **self._current_template_evidence_map,
+                **{str(k): str(v or "").strip() for k, v in evidence_map.items()},
+            }
+        unresolved_fields = round_data.get("unresolved_fields") or []
+        if isinstance(unresolved_fields, list):
+            self._current_unresolved_fields = [str(v).strip() for v in unresolved_fields if str(v).strip()]
+        research_gaps = round_data.get("research_gaps") or []
+        if isinstance(research_gaps, list):
+            self._current_research_gaps = [str(v).strip() for v in research_gaps if str(v).strip()]
+        user_questions = round_data.get("user_questions") or []
+        if isinstance(user_questions, list):
+            self._current_user_questions = [str(v).strip() for v in user_questions if str(v).strip()]
         if markdown and hasattr(self, 'preview_text'):
             self.preview_text.setPlainText(markdown)
             self._current_markdown = markdown
@@ -1490,6 +2175,7 @@ class WorkspaceTab(QWidget):
             self._current_markdown = preview
 
         self._update_template_validation_state()
+        self._update_template_gap_summary()
         
         QApplication.processEvents()
     
@@ -1508,6 +2194,10 @@ class WorkspaceTab(QWidget):
         status = result.get("status", "unknown")
         template_blocks = result.get("template_blocks") or {}
         document_metadata = result.get("document_metadata") or {}
+        evidence_map = result.get("evidence_map") or {}
+        unresolved_fields = result.get("unresolved_fields") or []
+        research_gaps = result.get("research_gaps") or []
+        user_questions = result.get("user_questions") or []
         latest_coverage = ""
         if isinstance(collaboration_history, list) and collaboration_history:
             last_entry = collaboration_history[-1] or {}
@@ -1544,6 +2234,17 @@ class WorkspaceTab(QWidget):
                 **self._current_document_metadata,
                 **{str(k): str(v or "").strip() for k, v in document_metadata.items()},
             }
+        if isinstance(evidence_map, dict) and evidence_map:
+            self._current_template_evidence_map = {
+                **self._current_template_evidence_map,
+                **{str(k): str(v or "").strip() for k, v in evidence_map.items()},
+            }
+        if isinstance(unresolved_fields, list):
+            self._current_unresolved_fields = [str(v).strip() for v in unresolved_fields if str(v).strip()]
+        if isinstance(research_gaps, list):
+            self._current_research_gaps = [str(v).strip() for v in research_gaps if str(v).strip()]
+        if isinstance(user_questions, list):
+            self._current_user_questions = [str(v).strip() for v in user_questions if str(v).strip()]
         self._current_markdown = markdown_doc
 
         # Show the final Markdown in the preview pane
@@ -1574,10 +2275,18 @@ class WorkspaceTab(QWidget):
             self.extract_tasks_button.setEnabled(bool(self._current_markdown.strip()))
         self._on_workspace_state_changed()
         self._update_template_validation_state()
+        self._update_template_gap_summary()
 
         status_text = f"AI collaboration complete ({status}, {rounds} round{'s' if rounds != 1 else ''})"
         if self._current_template_validation_issues:
             status_text = f"{status_text} | Template validation needed"
+        if self._current_user_questions:
+            status_text = f"{status_text} | {len(self._current_user_questions)} user question(s)"
+        if self._current_research_gaps:
+            status_text = f"{status_text} | {len(self._current_research_gaps)} research gap(s)"
+        resolved_total = sum(len(v) for v in (self._resolved_gap_snapshot or {}).values())
+        if resolved_total:
+            status_text = f"{status_text} | resolved {resolved_total} prior gap(s)"
         if latest_coverage:
             status_text = f"{status_text} | {latest_coverage}"
         self.status_label.setText(status_text)
@@ -1650,6 +2359,8 @@ class WorkspaceTab(QWidget):
         self.status_label.setText("Error during workflow")
         self.progress_bar.setVisible(False)
         self.preview_text.setPlainText(f"Error running AI collaboration workflow: {error_msg}")
+        if hasattr(self, "template_gap_summary") and self.template_gap_summary is not None:
+            self.template_gap_summary.setVisible(False)
         if hasattr(self, 'grok_text'):
             self.grok_text.setPlainText(f"Error: {error_msg}")
         if hasattr(self, 'chatgpt_text'):
@@ -1738,8 +2449,10 @@ class WorkspaceTab(QWidget):
         self._current_template_validation_issues = []
         spec = self._last_generated_template_spec
         if not spec:
+            self._update_template_gap_summary()
             return
         if not self._current_template_blocks and not self._current_document_metadata:
+            self._update_template_gap_summary()
             return
         result = validate_template_payload(
             spec,
@@ -1747,6 +2460,7 @@ class WorkspaceTab(QWidget):
             document_metadata=self._current_document_metadata,
         )
         self._current_template_validation_issues = result.issues()
+        self._update_template_gap_summary()
 
     def _ensure_template_payload_valid_for_export(self) -> bool:
         self._update_template_validation_state()

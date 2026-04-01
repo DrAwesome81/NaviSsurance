@@ -150,6 +150,30 @@ def test_import_workspace_template_pair_copies_into_cache(tmp_path, monkeypatch)
     assert any(Path(item.machine_path).exists() and Path(item.human_path).exists() for item in imported_specs)
 
 
+def test_import_workspace_template_pair_renames_nonstandard_files_for_discovery(tmp_path, monkeypatch):
+    external_root = tmp_path / "external"
+    cache_root = tmp_path / "cache"
+    external_root.mkdir()
+    cache_root.mkdir()
+    monkeypatch.setattr(wt, "DEFAULT_WORKSPACE_TEMPLATE_ROOT", str(external_root))
+    monkeypatch.setattr(wt, "WORKSPACE_TEMPLATE_CACHE_DIR", str(cache_root))
+
+    machine = external_root / "URS Draft v7.docx"
+    human = external_root / "URS Client Facing Template.dotx"
+    _write_docx(machine, ["[[FIELD:primary_users]]", "[[VALUE:primary_users]]"])
+    _write_docx(human, ["Primary Users", "[Describe the primary users.]"])
+
+    spec = wt.import_workspace_template_pair(machine_path=str(machine), human_path=str(human))
+
+    assert spec.source == "imported"
+    imported_specs = [item for item in wt.discover_workspace_templates() if item.key == spec.key]
+    assert len(imported_specs) == 1
+    imported = imported_specs[0]
+    assert Path(imported.machine_path).name.endswith("_machine.docx")
+    assert Path(imported.human_path).name.endswith("_human.dotx")
+    assert imported.values == ["primary_users"]
+
+
 def test_build_template_contract_includes_explicit_schema(tmp_path, monkeypatch):
     external_root = tmp_path / "external"
     cache_root = tmp_path / "cache"
@@ -178,6 +202,7 @@ def test_build_template_contract_includes_explicit_schema(tmp_path, monkeypatch)
 
     assert "Schema object to follow exactly:" in contract
     assert '"required_template_blocks"' in contract
+    assert '"completion_analysis_keys"' in contract
     assert '"value::purpose"' in contract
 
 

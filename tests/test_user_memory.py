@@ -47,6 +47,17 @@ def test_store_teach_navi_memory_normalizes_explicit_aliases():
     assert captured[0]["json_data"]["alias"]["term"] == "Q-sub"
 
 
+def test_parse_alias_memory_supports_synonyms_and_scope_suffixes():
+    alias = parse_alias_memory(
+        "Q-sub means quality submission; synonyms: quality sub, submission memo; scope: client:Abbott"
+    )
+    assert alias is not None
+    assert alias["term"] == "Q-sub"
+    assert alias["canonical"] == "quality submission"
+    assert alias["synonyms"] == ["quality sub", "submission memo"]
+    assert alias["scope"] == {"client": "Abbott"}
+
+
 def test_user_memory_add_search_recent_and_schema():
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
@@ -119,7 +130,7 @@ def test_build_user_memory_context_prioritizes_structured_aliases():
                 "teach_navi",
                 1.0,
                 "approved",
-                '{"alias":{"term":"Q-sub","canonical":"quality submission","synonyms":["quality sub"]}}',
+                '{"alias":{"term":"Q-sub","canonical":"quality submission","synonyms":["quality sub"],"scope":{"client":"Abbott"}}}',
                 "now",
                 "now",
             ),
@@ -136,6 +147,7 @@ def test_build_user_memory_context_prioritizes_structured_aliases():
     assert "Approved aliases / glossary" in out
     assert "Q-sub means quality submission." in out
     assert "Synonyms: quality sub." in out
+    assert "Scope: client=Abbott." in out
     assert "Relevant durable user memory" in out
 
 
@@ -270,7 +282,7 @@ def test_extract_user_memory_items_normalizes_alias_json():
     items = extract_user_memory_items(
         user_message="Around here, Q-sub means quality submission.",
         assistant_message="Understood.",
-        llm_callable=lambda messages, session_id: '{"aliases":["Q-sub means quality submission."]}',
+        llm_callable=lambda messages, session_id: '{"aliases":[{"term":"Q-sub","canonical":"quality submission","synonyms":["quality sub"],"scope":{"client":"Abbott"}}]}',
         metadata={"source_session_id": "cos_7", "chat_id": 7, "route": "chief_of_staff_tab"},
     )
 
@@ -278,6 +290,8 @@ def test_extract_user_memory_items_normalizes_alias_json():
     assert items[0]["kind"] == "alias"
     assert items[0]["content"] == "Q-sub means quality submission."
     assert items[0]["json_data"]["alias"]["term"] == "Q-sub"
+    assert items[0]["json_data"]["alias"]["synonyms"] == ["quality sub"]
+    assert items[0]["json_data"]["alias"]["scope"] == {"client": "Abbott"}
     assert items[0]["json_data"]["source_session_id"] == "cos_7"
     assert items[0]["json_data"]["chat_id"] == 7
     assert items[0]["json_data"]["route"] == "chief_of_staff_tab"
@@ -323,7 +337,7 @@ def test_user_memory_alias_helpers_return_alias_rows():
                     source="teach_navi",
                     confidence=1.0,
                     approval_status="approved",
-                    json_data={"alias": {"term": "Q-sub", "canonical": "quality submission", "synonyms": []}},
+                    json_data={"alias": {"term": "Q-sub", "canonical": "quality submission", "synonyms": ["quality sub"], "scope": {"client": "Abbott"}}},
                 )
                 db.user_memory_add(
                     kind="preference",
@@ -340,6 +354,53 @@ def test_user_memory_alias_helpers_return_alias_rows():
                 assert hits[0][1] == "alias"
                 assert len(recent) == 1
                 assert recent[0][1] == "alias"
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def test_memory_reflection_upsert_and_recent():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        import config as config_mod
+        import core.db as core_db
+        from core.memory_reflection import build_memory_reflection
+
+        with patch.object(config_mod, "DATABASE_PATH", path):
+            with patch.object(core_db, "DATABASE_PATH", path):
+                db = core_db.DatabaseManager()
+                db.user_memory_add(
+                    kind="alias",
+                    content="Q-sub means quality submission.",
+                    source="teach_navi",
+                    confidence=1.0,
+                    approval_status="approved",
+                    json_data={"alias": {"term": "Q-sub", "canonical": "quality submission", "synonyms": ["quality sub"]}},
+                )
+                db.user_memory_add(
+                    kind="preference",
+                    content="Prefer concise bullets.",
+                    source="teach_navi",
+                    confidence=1.0,
+                    approval_status="approved",
+                )
+
+                reflection = build_memory_reflection(
+                    db,
+                    scope="daily",
+                    llm_callable=lambda messages, session_id: '{"summary":"Navi learned stable terminology and formatting preferences.","highlights":["Q-sub means quality submission.","Prefer concise bullets."]}',
+                )
+
+                assert reflection["id"] > 0
+                row = db.memory_reflection_get(scope="daily", reflection_key=reflection["reflection_key"])
+                assert row is not None
+                assert "stable terminology" in str(row.get("summary_text") or "").lower()
+                recent = db.memory_reflection_recent(scope="daily", limit=5)
+                assert len(recent) == 1
+                assert recent[0]["id"] == reflection["id"]
     finally:
         try:
             os.unlink(path)

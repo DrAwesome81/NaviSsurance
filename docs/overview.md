@@ -1,37 +1,94 @@
 # NaviSsurance Overview
 
-## Purpose
-NaviSsurance is an AI-powered medical device regulatory consulting platform, serving AI Software as a Medical Device (SaMD), In Vitro Diagnostics/Laboratory Developed Tests (IVD/LDT), and non-AI MedTech clients (e.g., diagnostics, implants, surgical devices). It automates compliance checking, lead generation, and clinical study design, delivering 60–80% cost savings ($3,750–$28,000 per project) compared to traditional consultancies (e.g., Emergo, RQM+), with results in hours or days versus weeks.
+Last updated: 2026-04-01
 
-## Features
-- **Dashboard Tab**: New comprehensive dashboard with task list, schedule display (Google Calendar integration), and news feed (AI-powered MedTech news with 7-day persistence and hyperlinks). Features auto-refresh timers and interactive task completion.
-- **Chief of Staff Tab**: Planning, delegation, and operational triage. Supports an AM Sweep morning loop (Dispatch/Prep/Yours/Skip) and machine-action outputs for assignments and task updates.
-- **Workspace Tab**: Document-centered drafting workflow: add files/folders, mark scope, run the dual-LLM collaboration to produce a markdown deliverable, then optionally extract a reviewable “Suggested Tasks (importable)” section and import accepted tasks into SQLite.
-- **Deep Research Tab**: Web-first deep research workflow that runs iterative web research (max 8 rounds, 30-minute timebox) + synthesis and produces a reusable research brief (markdown) with linked sources. Uses OpenAI Responses API hosted `web_search` when configured, shows continuous “still working” status updates during rounds, and writes the final brief to `data/artifacts/<project_id>/research_brief.md`.
-- **Billing Tab**: Manual time entry and template-based invoice drafting. Generates invoice drafts as markdown and prompts for review after monthly auto-draft runs (no auto-send).
-- **Note-Taking System**: AI-powered context-document workspace. Each context becomes one living document that Navi continuously rewrites into coherent sections and bullets as new observations are added. Supports robust JSON parsing, thread-safe updates, and DOCX/Markdown/PDF export for the active document.
-- **Compliance Checking**: Grok-powered three-column UI (`interface.py`) for analyzing SOPs, PDFs, or URLs against standards (e.g., ISO 13485, 21 CFR 801), outputting JSON results (`[{section, issue, fix, reference}]`) for client recommendations.
-- **Lead Generation**: DB-backed Leads Tab (`gui/leads_tab.py`) runs a two-pass discover→verify pipeline with evidence links, openFDA 510(k) signals, scoring/filters, and one-click follow-up task creation (see `docs/lead_generation.md`).
-- **Clinical Study Design (Planned)**: AI optimizer for 510(k), IDE, or PMCF protocols, costing $3,000–$12,000 versus $10,000–$40,000, targeting diagnostics (e.g., Abbott) and CROs, with 1–3 day delivery.
-- **Email Fetching**: Fetches Gmail, MSN/Outlook, and custom IMAP inboxes (`fetch_all_emails.py`); planned folder access (e.g., "Clients," "Leads") for DistilBERT training to filter emails (8-class: Response Needed, Personal, etc.).
-- **Meeting Transcription**: AssemblyAI processes speaker-separated transcripts (`interface.py`, lines 248–312).
-- **Task Management**: Manual and chat-based task addition, archiving, and persistence (`core.db.DatabaseManager`), with interactive dashboard integration and double-click completion.
-- **Tasks Tab (Local)**: SQLite-backed tasks manager (no external task system required). Provides search, filters, quick add, completion toggling, and deletion.
-- **CRM Integration (Planned)**: SQLite-based (`crm.py`) to unify leads, compliance results, and filtered emails.
+## Purpose
+NaviSsurance is a desktop-first MedTech consulting operations platform. It combines planning, delegation, drafting, research, billing, note-taking, compliance review, lead generation, and durable memory into one local application oriented around regulatory and client-service work.
+
+The app is not just a chat shell. Its core value is domain workflow support for AI/ML, SaMD, IVD/LDT, and broader MedTech consulting.
+
+## Current Product Surface
+
+### Core user-facing areas
+- **Dashboard**: Daily briefing, schedule, unreplied email triage, tasks, and news.
+- **Chief of Staff**: Planning, delegation, AM Sweep, assignment board controls, and durable memory-aware triage.
+- **Tasks**: Local SQLite-backed task and project management.
+- **Workspace**: Document-centered drafting with multi-step collaboration and task extraction.
+- **Deep Research**: Iterative web research plus synthesis into reusable markdown briefs.
+- **Billing**: Time entry, invoice templates, draft generation, and review-first export.
+- **Notes**: Long-running context documents with AI-assisted organization and export.
+- **Leads**: Evidence-first MedTech lead generation with openFDA enrichment and scoring.
+- **Compliance**: Grok-assisted compliance review of documents and URLs.
+- **Meetings**: Audio transcription and downstream task/document workflows.
+
+### Specialist-agent operating model
+NaviSsurance includes a working Chief of Staff plus named specialists such as `Atlas`, `Quill`, `Scout`, `Ledger`, `Archive`, `Pulse`, and `Shield`. These agents are surfaced through assignment workflows, direct agent threads, artifacts, and board-level state rather than as abstract hidden subagents.
+
+## Runtime And Integration Surface
+The application now includes optional platform infrastructure beyond the PyQt UI:
+
+- **Background runtime scheduler** via `core/runtime/`
+- **Local HTTP API** via `api/app.py` and `core/service/local_api.py`
+- **Shared typed tool registry** via `core/tool_registry.py`
+- **Playwright browser tools** via `core/tools/browser.py`
+
+These integrations are environment-gated. The desktop app and its built-in chat remain the intended user interface. The local API exists for internal/runtime integration paths rather than as a public or end-user remote chat surface.
+
+## Memory And Retrieval
+NaviSsurance already includes a structured memory system:
+- `user_memory` for durable facts, preferences, aliases, and glossary entries
+- long-term chat retrieval with chunk summaries and raw-turn grounding
+- daily/weekly memory reflections
+- entity-scoped memory links for clients and projects
+
+The memory system remains SQLite-backed and auditable. Semantic retrieval is layered onto the structured store rather than replacing it.
 
 ## Tech Stack
-- **Core**: Python 3.12.7, PyQt6 (UI), SQLite (`core/db.py` for data storage).
-- **AI Models**: Local Llama 3.1-8B-Instruct model for note-taking and some chat interactions; OpenAI (ChatGPT) is used for web research where configured.
-- **APIs**: xAI Grok (compliance, document generation, lead generation), OpenAI (web research), LinkedIn (Share, Sign In, Community Management), AssemblyAI (transcription).
-- **Tools**: Cursor (IDE), Git/GitHub (version control), Dropbox (storage at `C:/Users/adamo/Dropbox/_Consulting/NaviSsurance`).
+- **Application host**: Python, PyQt6, SQLite
+- **Primary orchestration**: `core/main_chat_router.py`, `core/chief_of_staff_service.py`, `core/response_handler.py`
+- **Local model path**: `Qwen3-14B-Q5_K_M.gguf` via the local runtime configured in `config.py`
+- **Remote models/services**:
+  - xAI Grok for CoS, compliance, lead-gen, and other shared remote flows
+  - OpenAI Responses API hosted `web_search` for Deep Research when configured
+  - AssemblyAI for transcription
+- **Optional runtime infrastructure**:
+  - APScheduler
+  - FastAPI / uvicorn
+  - Playwright
+  - aiogram
 
-## Status
-- **Fully Operational**: Dashboard tab with task management, schedule display, and news feed; Workspace tab with document management and analysis tools; Note-taking system with live context documents; Lead generation and transcription are fully functional.
-- **Operational with Improvements**: Task management is now functional with dashboard integration and interactive features; Email fetching is limited to inboxes, needing folder access.
-- **In Development**: Clinical study design optimizer, CRM integration, and DistilBERT email filtering.
-- **Next Steps**: Debug `fetch_all_emails.py` for folder access, launch clinical study design optimizer to expand client base (diagnostics, CROs), enhance CRM integration.
+## Current Status
+
+### Implemented and active
+- Chief of Staff planning and delegation
+- assignment lifecycle and artifact workflows
+- local durable memory with approval and reflection layers
+- Deep Research web workflow
+- Billing drafts and exports
+- Notes document workflow
+- Leads scoring and evidence workflows
+- background runtime scaffolding
+- local API scaffolding
+- browser automation scaffolding
+
+### Implemented but still maturing
+- runtime-backed follow-ups and recurring jobs
+- entity-scoped and semantic memory retrieval
+- service-boundary integrations that bypass the GUI
+- browser-backed evidence capture workflows
+
+### Still intentionally incomplete
+- broad multi-channel parity
+- fully generalized plugin ecosystem
+- production-grade remote operations and observability
+- clinical study design productization
+- full CRM unification
 
 ## Related Docs
-- `docs/user_manual.md` for end-user workflows
-- `docs/chief_of_staff.md` for CoS behavior and roadmap
-- `docs/staff_replacement_matrix.md` for the role-replacement readiness matrix and phased autonomy roadmap
+- `docs/user_manual.md` for user-facing workflows
+- `docs/chief_of_staff.md` for CoS behavior, delegation, and memory
+- `docs/design.md` for architecture
+- `docs/api.md` for external integrations and the local API
+- `docs/testing.md` for current validation flow
+- `docs/roadmap_status.md` for active vs historical roadmap alignment
+- `docs/contributor_guide.md` for source-of-truth guidance when docs, plans, and code diverge

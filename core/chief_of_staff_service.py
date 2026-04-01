@@ -32,6 +32,7 @@ from core.cos_doc_search import doc_search, format_hits
 from core.chat_retrieval import build_long_term_retrieval_context, format_chat_history_tool_results
 from core.user_memory import build_user_memory_context
 from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
+from core.tool_registry import invoke_tool
 
 logger = logging.getLogger(__name__)
 
@@ -1154,26 +1155,56 @@ def _cos_tool_results_for_trigger(db: DatabaseManager, out: str, *, chat_id: Opt
         return "WEB_SEARCH_RESULTS", "WEB_SEARCH_RESULTS (untrusted):\n" + (results or "(no results)")
     if m_doc:
         query = m_doc.group(1).strip()
-        hits = []
         try:
-            hits = doc_search(db.db_name, query, limit=10)
+            result = invoke_tool(
+                "doc_search",
+                db=db,
+                caller_type="cos",
+                caller_id="chief_of_staff",
+                session_id=f"cos_{int(chat_id)}" if chat_id is not None else None,
+                query=query,
+                limit=10,
+            )
         except Exception:
-            hits = []
-        return "DOC_SEARCH_RESULTS", "DOC_SEARCH_RESULTS (untrusted):\n" + format_hits(hits)
+            result = {"hits": []}
+        hits = result.get("hits") or []
+        formatted = format_hits([type("DocHitShim", (), hit)() for hit in hits]) if hits else "(no matches)"
+        return "DOC_SEARCH_RESULTS", "DOC_SEARCH_RESULTS (untrusted):\n" + formatted
     if m_mem:
         query = m_mem.group(1).strip()
-        rows = []
         try:
-            rows = db.cos_memory_search(query=query, chat_id=chat_id, limit=10)
+            result = invoke_tool(
+                "memory_search",
+                db=db,
+                caller_type="cos",
+                caller_id="chief_of_staff",
+                session_id=f"cos_{int(chat_id)}" if chat_id is not None else None,
+                query=query,
+                chat_id=chat_id,
+                limit=10,
+            )
         except Exception:
-            rows = []
+            result = {"rows": []}
+        rows = result.get("rows") or []
         lines = []
-        for _id, _chat_id, kind, content, _json_data, created_at in rows[:10]:
-            lines.append(f"- ({kind}) {content}")
+        for row in rows[:10]:
+            lines.append(f"- ({row.get('kind')}) {row.get('content')}")
         return "MEMORY_SEARCH_RESULTS", "MEMORY_SEARCH_RESULTS (untrusted):\n" + ("\n".join(lines) if lines else "(no matches)")
     if m_hist:
         query = m_hist.group(1).strip()
-        return _chat_history_tool_result(db, query, chat_id=chat_id)
+        try:
+            result = invoke_tool(
+                "chat_history_search",
+                db=db,
+                caller_type="cos",
+                caller_id="chief_of_staff",
+                session_id=f"cos_{int(chat_id)}" if chat_id is not None else None,
+                query=query,
+                history_session_id=f"cos_{int(chat_id)}" if chat_id is not None else "",
+            )
+            return "CHAT_HISTORY_RESULTS", result.get("text") or "CHAT_HISTORY_RESULTS (untrusted):\n(no matches)"
+        except Exception:
+            return _chat_history_tool_result(db, query, chat_id=chat_id)
     return None
 
 
@@ -1406,26 +1437,56 @@ Always interpret and communicate schedule/time references in the user's local ti
             return "WEB_SEARCH_RESULTS", "WEB_SEARCH_RESULTS (untrusted):\n" + (results or "(no results)")
         if m_doc:
             query = m_doc.group(1).strip()
-            hits = []
             try:
-                hits = doc_search(db.db_name, query, limit=10)
+                result = invoke_tool(
+                    "doc_search",
+                    db=db,
+                    caller_type="cos",
+                    caller_id="chief_of_staff",
+                    session_id=f"cos_{int(chat_id)}" if chat_id is not None else None,
+                    query=query,
+                    limit=10,
+                )
             except Exception:
-                hits = []
-            return "DOC_SEARCH_RESULTS", "DOC_SEARCH_RESULTS (untrusted):\n" + format_hits(hits)
+                result = {"hits": []}
+            hits = result.get("hits") or []
+            formatted = format_hits([type("DocHitShim", (), hit)() for hit in hits]) if hits else "(no matches)"
+            return "DOC_SEARCH_RESULTS", "DOC_SEARCH_RESULTS (untrusted):\n" + formatted
         if m_mem:
             query = m_mem.group(1).strip()
-            rows = []
             try:
-                rows = db.cos_memory_search(query=query, chat_id=chat_id, limit=10)
+                result = invoke_tool(
+                    "memory_search",
+                    db=db,
+                    caller_type="cos",
+                    caller_id="chief_of_staff",
+                    session_id=f"cos_{int(chat_id)}" if chat_id is not None else None,
+                    query=query,
+                    chat_id=chat_id,
+                    limit=10,
+                )
             except Exception:
-                rows = []
+                result = {"rows": []}
+            rows = result.get("rows") or []
             lines = []
-            for _id, _chat_id, kind, content, _json_data, created_at in rows[:10]:
-                lines.append(f"- ({kind}) {content}")
+            for row in rows[:10]:
+                lines.append(f"- ({row.get('kind')}) {row.get('content')}")
             return "MEMORY_SEARCH_RESULTS", "MEMORY_SEARCH_RESULTS (untrusted):\n" + ("\n".join(lines) if lines else "(no matches)")
         if m_hist:
             query = m_hist.group(1).strip()
-            return _chat_history_tool_result(db, query, chat_id=chat_id)
+            try:
+                result = invoke_tool(
+                    "chat_history_search",
+                    db=db,
+                    caller_type="cos",
+                    caller_id="chief_of_staff",
+                    session_id=f"cos_{int(chat_id)}" if chat_id is not None else None,
+                    query=query,
+                    history_session_id=f"cos_{int(chat_id)}" if chat_id is not None else "",
+                )
+                return "CHAT_HISTORY_RESULTS", result.get("text") or "CHAT_HISTORY_RESULTS (untrusted):\n(no matches)"
+            except Exception:
+                return _chat_history_tool_result(db, query, chat_id=chat_id)
         return None
 
     def _run_tool_loop_single(system_text: str, user_text: str) -> str:

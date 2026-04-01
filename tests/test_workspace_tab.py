@@ -11,6 +11,7 @@ Disabled by default. Enable with RUN_QT_TESTS=1.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from unittest.mock import Mock
@@ -203,6 +204,11 @@ def test_workspace_collaboration_complete_enables_save_and_sets_markdown(workspa
     workspace_tab.save_button.setEnabled(False)
     workspace_tab.export_button.setEnabled(False)
     workspace_tab._current_markdown = ""
+    workspace_tab._previous_gap_snapshot = {
+        "unresolved_fields": ["value::sample_size", "value::scope"],
+        "research_gaps": ["Confirm standard formative study sample guidance.", "Confirm moderator guidance."],
+        "user_questions": ["What enrollment target should the plan use?", "Who is the approver?"],
+    }
     result = {
         "markdown": "# Draft\n\nBody",
         "grok_output": "grok out",
@@ -210,6 +216,10 @@ def test_workspace_collaboration_complete_enables_save_and_sets_markdown(workspa
         "collaboration_history": [],
         "rounds": 2,
         "status": "complete",
+        "evidence_map": {"value::scope": "supported by source protocol section 2"},
+        "unresolved_fields": ["value::sample_size"],
+        "research_gaps": ["Confirm standard formative study sample guidance."],
+        "user_questions": ["What enrollment target should the plan use?"],
     }
 
     workspace_tab._on_collaboration_complete_safe(result)
@@ -220,6 +230,13 @@ def test_workspace_collaboration_complete_enables_save_and_sets_markdown(workspa
     assert workspace_tab.export_button.isEnabled() is True
     assert "AI collaboration complete" in workspace_tab.status_label.text()
     assert "2 rounds" in workspace_tab.status_label.text()
+    assert "resolved 3 prior gap(s)" in workspace_tab.status_label.text()
+    assert "researchable gaps" in workspace_tab.template_gap_summary.toPlainText().lower()
+    assert "gap delta since previous run" in workspace_tab.template_gap_summary.toPlainText().lower()
+    assert "resolved since previous run" in workspace_tab.template_gap_summary.toPlainText().lower()
+    assert workspace_tab.send_research_gaps_btn.isEnabled() is True
+    assert workspace_tab.copy_user_questions_btn.isEnabled() is True
+    assert workspace_tab.export_question_packet_btn.isEnabled() is True
 
 
 def test_workspace_collaboration_cancelled_before_start(monkeypatch, workspace_tab):
@@ -280,6 +297,117 @@ def test_workspace_collaboration_no_files_starts_worker(monkeypatch, workspace_t
     assert workspace_tab.export_button.isEnabled() is False
 
 
+def test_workspace_collaboration_marked_files_pass_normalized_content(monkeypatch, workspace_tab, tmp_path):
+    sample = tmp_path / "source.txt"
+    sample.write_text("Ground truth content", encoding="utf-8")
+    file_info = {
+        "name": "source.txt",
+        "path": str(sample),
+        "is_folder": False,
+        "size": sample.stat().st_size,
+        "modified": "2026-03-19 12:00:00",
+        "marked": True,
+    }
+    workspace_tab.selected_files = [file_info]
+
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("Use the uploaded file", True),
+    )
+    monkeypatch.setattr(
+        workspace_tab,
+        "get_file_content",
+        lambda f: "Ground truth content",
+    )
+
+    captured = {}
+
+    class _WorkerStub:
+        def __init__(self, orchestrator, task_spec, file_contents):
+            captured["task_spec"] = task_spec
+            captured["file_contents"] = dict(file_contents)
+
+            class _Sig:
+                def connect(self, _fn):
+                    return None
+
+            self.progress_signal = _Sig()
+            self.round_update_signal = _Sig()
+            self.result_signal = _Sig()
+            self.error_signal = _Sig()
+
+        def start(self):
+            captured["started"] = True
+
+    class _OrchestratorStub:
+        def __init__(self, logger, grok_call, chatgpt_call):
+            self.logger = logger
+            self.grok_call = grok_call
+            self.chatgpt_call = chatgpt_call
+
+    monkeypatch.setattr("gui.workspace_tab.CollaborationWorker", _WorkerStub)
+    monkeypatch.setattr("gui.workspace_tab.DualLLMOrchestrator", _OrchestratorStub)
+
+    workspace_tab.run_ai_collaboration_workflow()
+
+    normalized = os.path.abspath(str(sample))
+    assert captured["started"] is True
+    assert captured["task_spec"].files[0].path == normalized
+    assert captured["file_contents"][normalized] == "Ground truth content"
+
+
+def test_workspace_collaboration_blocks_when_all_marked_files_are_unusable(monkeypatch, workspace_tab, tmp_path):
+    sample = tmp_path / "bad.bin"
+    sample.write_bytes(b"\x00\x01")
+    file_info = {
+        "name": "bad.bin",
+        "path": str(sample),
+        "is_folder": False,
+        "size": sample.stat().st_size,
+        "modified": "2026-03-19 12:00:00",
+        "marked": True,
+    }
+    workspace_tab.selected_files = [file_info]
+
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("Use the uploaded file", True),
+    )
+    monkeypatch.setattr(
+        workspace_tab,
+        "get_file_content",
+        lambda f: "[File: bad.bin - content extraction not available for this file type]",
+    )
+
+    called = {"worker": False}
+
+    class _WorkerStub:
+        def __init__(self, orchestrator, task_spec, file_contents):
+            called["worker"] = True
+
+            class _Sig:
+                def connect(self, _fn):
+                    return None
+
+            self.progress_signal = _Sig()
+            self.round_update_signal = _Sig()
+            self.result_signal = _Sig()
+            self.error_signal = _Sig()
+
+        def start(self):
+            called["worker"] = True
+
+    monkeypatch.setattr("gui.workspace_tab.CollaborationWorker", _WorkerStub)
+
+    workspace_tab.run_ai_collaboration_workflow()
+
+    assert called["worker"] is False
+    assert "No usable source content extracted" in workspace_tab.status_label.text()
+    assert "No usable source content could be extracted" in workspace_tab.preview_text.toPlainText()
+
+
 def test_workspace_collaboration_setup_error_is_surfaceable(monkeypatch, workspace_tab):
     monkeypatch.setattr(
         QInputDialog,
@@ -294,6 +422,265 @@ def test_workspace_collaboration_setup_error_is_surfaceable(monkeypatch, workspa
 
     assert "Error during setup" in workspace_tab.status_label.text()
     assert "spec boom" in workspace_tab.preview_text.toPlainText()
+
+
+def test_workspace_can_send_research_gaps_to_atlas(monkeypatch, workspace_tab):
+    calls = {"created": [], "artifacts": [], "threads": [], "handoff": []}
+
+    workspace_tab._current_research_gaps = ["Confirm standard moderation ratio."]
+    workspace_tab._current_unresolved_fields = ["value::sample_size"]
+    workspace_tab._current_user_questions = ["What enrollment target should the plan use?"]
+    workspace_tab._current_template_evidence_map = {"value::scope": "supported by source brief"}
+    workspace_tab.template_gap_summary.setPlainText("gap summary")
+    workspace_tab._last_task_spec = type("Spec", (), {"goal": "Draft a templated plan"})()
+    workspace_tab._last_generated_template_spec = WorkspaceTemplateSpec(
+        key="external:test",
+        display_name="Test Template",
+        title="Test Template",
+        source="external",
+        machine_path="machine.docx",
+        human_path="human.docx",
+        sections=[],
+        instructions=[],
+        fields=["scope"],
+        values=["scope", "sample_size"],
+        fill_targets=[
+            TemplateFillTarget(
+                key="value::sample_size",
+                token_kind="VALUE",
+                token_name="sample_size",
+                label="Sample Size",
+                order=0,
+            )
+        ],
+    )
+
+    workspace_tab.db.agent_create_assignment = lambda **kwargs: calls["created"].append(kwargs) or 17
+    workspace_tab.db.agent_add_artifact = lambda **kwargs: calls["artifacts"].append(kwargs) or 1
+    monkeypatch.setattr("gui.workspace_tab.create_assignment_thread", lambda *args, **kwargs: calls["threads"].append(kwargs) or 12)
+    monkeypatch.setattr("gui.workspace_tab.prime_assignment_handoff", lambda *args, **kwargs: calls["handoff"].append(kwargs) or "")
+
+    workspace_tab.send_research_gaps_to_atlas()
+
+    assert calls["created"]
+    assert calls["created"][0]["assignee_code"] == "atlas"
+    assert "research gaps" in calls["created"][0]["title"].lower()
+    assert len(calls["artifacts"]) == 2
+    assert calls["artifacts"][0]["artifact_type"] == "workspace_template_gap_analysis"
+    assert calls["artifacts"][1]["artifact_type"] == "workspace_question_packet"
+    assert calls["threads"]
+    assert calls["handoff"]
+
+
+def test_workspace_can_merge_latest_atlas_research(workspace_tab):
+    class _Db:
+        def agent_list_assignments(self, **kwargs):
+            return [
+                {
+                    "id": 44,
+                    "title": "Unrelated Atlas assignment",
+                    "status": "done",
+                    "context_json": json.dumps(
+                        {
+                            "kind": "workspace_template_research_gaps",
+                            "workspace_name": "Other Workspace",
+                            "template_key": "external:other",
+                        }
+                    ),
+                    "result_summary_md": "ignore me",
+                },
+                {
+                    "id": 17,
+                    "title": "Research gaps for Test Template",
+                    "status": "done",
+                    "context_json": json.dumps(
+                        {
+                            "kind": "workspace_template_research_gaps",
+                            "workspace_name": "Alpha Workspace",
+                            "template_key": "external:test",
+                        }
+                    ),
+                    "result_summary_md": "Key findings captured with citations.",
+                },
+            ]
+
+        def agent_list_artifacts(self, *, assignment_id=None, limit=100):
+            if int(assignment_id or 0) != 17:
+                return []
+            return [
+                {
+                    "artifact_type": "deep_research_project",
+                    "content_json": json.dumps({"project_id": 91}),
+                }
+            ]
+
+        def get_artifacts_for_project(self, project_id):
+            assert int(project_id) == 91
+            return [
+                (
+                    1,
+                    "research_brief",
+                    json.dumps({"markdown_body": "## Key findings\n\n- Public guidance supports X."}),
+                    None,
+                    "2026-03-30T10:00:00Z",
+                )
+            ]
+
+    workspace_tab.db = _Db()
+    workspace_tab._current_workspace_name = "Alpha Workspace"
+    workspace_tab._last_generated_template_spec = WorkspaceTemplateSpec(
+        key="external:test",
+        display_name="Test Template",
+        title="Test Template",
+        source="external",
+        machine_path="machine.docx",
+        human_path="human.docx",
+        sections=[],
+        instructions=[],
+        fields=[],
+        values=[],
+        fill_targets=[],
+    )
+
+    assert workspace_tab.merge_latest_atlas_research() is True
+    assert workspace_tab.file_list.count() == 1
+    assert len(workspace_tab.selected_files) == 1
+    imported = workspace_tab.selected_files[0]
+    assert imported["virtual"] is True
+    assert imported["marked"] is True
+    assert "Atlas Research A-0017.md" == imported["name"]
+    assert "Public guidance supports X." in imported["content"]
+    assert imported["source_type"] == "atlas_research"
+    assert imported["source_assignment_id"] == 17
+
+    assert workspace_tab.merge_latest_atlas_research() is True
+    assert workspace_tab.file_list.count() == 1
+
+
+def test_workspace_can_export_question_packet(monkeypatch, workspace_tab, tmp_path):
+    out_path = tmp_path / "question_packet.md"
+    workspace_tab._current_user_questions = ["What enrollment target should the plan use?"]
+    workspace_tab._current_unresolved_fields = ["value::sample_size"]
+    workspace_tab._current_research_gaps = ["Confirm standard moderation ratio."]
+    workspace_tab._last_generated_template_spec = WorkspaceTemplateSpec(
+        key="external:test",
+        display_name="Test Template",
+        title="Test Template",
+        source="external",
+        machine_path="machine.docx",
+        human_path="human.docx",
+        sections=[],
+        instructions=[],
+        fields=["scope"],
+        values=["sample_size"],
+        fill_targets=[
+            TemplateFillTarget(
+                key="value::sample_size",
+                token_kind="VALUE",
+                token_name="sample_size",
+                label="Sample Size",
+                order=0,
+            )
+        ],
+    )
+
+    monkeypatch.setattr(
+        "gui.workspace_tab.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (str(out_path), "Markdown Files (*.md)"),
+    )
+
+    workspace_tab.export_question_packet()
+
+    assert out_path.exists()
+    text = out_path.read_text(encoding="utf-8")
+    assert "Questions For You / The Client" in text
+    assert "What enrollment target should the plan use?" in text
+    assert "Sample Size" in text
+
+
+def test_workspace_round_update_can_clear_gap_lists(workspace_tab):
+    workspace_tab._current_unresolved_fields = ["value::sample_size"]
+    workspace_tab._current_research_gaps = ["Confirm standard moderation ratio."]
+    workspace_tab._current_user_questions = ["What enrollment target should the plan use?"]
+
+    workspace_tab._on_round_update(
+        {
+            "round": 2,
+            "grok_output": "Updated",
+            "chatgpt_output": "Reviewed",
+            "markdown": "# Draft\n\nBody",
+            "feedback": "",
+            "unresolved_fields": [],
+            "research_gaps": [],
+            "user_questions": [],
+        }
+    )
+
+    assert workspace_tab._current_unresolved_fields == []
+    assert workspace_tab._current_research_gaps == []
+    assert workspace_tab._current_user_questions == []
+
+
+def test_workspace_gap_summary_shows_resolved_deltas(workspace_tab):
+    workspace_tab._previous_gap_snapshot = {
+        "unresolved_fields": ["value::sample_size", "value::scope"],
+        "research_gaps": ["Confirm standard moderation ratio."],
+        "user_questions": ["What enrollment target should the plan use?"],
+    }
+    workspace_tab._current_unresolved_fields = ["value::sample_size"]
+    workspace_tab._current_research_gaps = []
+    workspace_tab._current_user_questions = []
+    workspace_tab._current_template_evidence_map = {"value::scope": "supported by merged Atlas research findings"}
+    workspace_tab.selected_files = [
+        {
+            "name": "Atlas Research A-0017.md",
+            "path": "virtual://workspace/atlas-research-a-0017.md",
+            "virtual": True,
+            "marked": True,
+            "source_type": "atlas_research",
+            "source_assignment_id": 17,
+        }
+    ]
+    workspace_tab._last_generated_template_spec = WorkspaceTemplateSpec(
+        key="external:test",
+        display_name="Test Template",
+        title="Test Template",
+        source="external",
+        machine_path="machine.docx",
+        human_path="human.docx",
+        sections=[],
+        instructions=[],
+        fields=["scope"],
+        values=["scope", "sample_size"],
+        fill_targets=[
+            TemplateFillTarget(
+                key="value::sample_size",
+                token_kind="VALUE",
+                token_name="sample_size",
+                label="Sample Size",
+                order=0,
+            ),
+            TemplateFillTarget(
+                key="value::scope",
+                token_kind="VALUE",
+                token_name="scope",
+                label="Scope",
+                order=1,
+            ),
+        ],
+    )
+
+    workspace_tab._update_template_gap_summary()
+
+    text = workspace_tab.template_gap_summary.toPlainText()
+    assert "Gap delta since previous run:" in text
+    assert "Unresolved fields: 2 -> 1" in text
+    assert "Researchable gaps: 1 -> 0" in text
+    assert "Client/user questions: 1 -> 0" in text
+    assert "Resolved since previous run:" in text
+    assert "Unresolved field cleared: Scope [value::scope] (via Atlas research merge A-0017; evidence: supported by merged Atlas research findings)" in text
+    assert "Research gap cleared: Confirm standard moderation ratio. (via Atlas research merge A-0017)" in text
+    assert "Client/user question cleared: What enrollment target should the plan use? (via Atlas research merge A-0017)" in text
 
 
 def test_workspace_save_and_load_round_trip(monkeypatch, workspace_tab, tmp_path):

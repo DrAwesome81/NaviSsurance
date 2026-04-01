@@ -1,5 +1,9 @@
 # Unified Search (Dropbox + Local + Google Drive) with Duplicate Detection
 
+Status: roadmap / design document, not a full description of shipped behavior.
+
+Last updated: 2026-04-01
+
 ## Purpose
 Build a single search capability that lets the Chief of Staff assistant (and the UI) find relevant information across:
 - **Dropbox** (existing indexing/search foundation)
@@ -7,6 +11,17 @@ Build a single search capability that lets the Chief of Staff assistant (and the
 - **Google Drive** (My Drive + optionally Shared Drives)
 
 Results should be **passage-based** (best excerpts) with links to the source files, and duplicates across sources should be **recognized and collapsed**.
+
+## Current implementation note
+Parts of this design are implemented, but the full end-state in this document is still aspirational.
+
+Today the repo primarily exposes:
+- `core/cos_doc_search.py` for note search, local markdown/text search, and optional Chroma search
+- `core/tools/internal_retrieval.py` for agent-facing Chroma retrieval
+- `core/chat_retrieval.py` for long-term chat retrieval
+- `core/user_memory.py` for durable memory retrieval
+
+Use this document as the target design for broader unified search rather than as a precise description of shipped behavior.
 
 ## Principles
 - **Index once, search many**: normalize all sources into one schema and one query path.
