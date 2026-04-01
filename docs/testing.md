@@ -2,33 +2,64 @@
 
 Last revised: 2026-04-01
 
-## Automated tests (recommended first)
+## Active release path
 
-- Full unit suite:
+Run testing in this order:
+
+1. Automated regression
+2. User-only manual smoke
+3. Targeted manual deep checks for the areas you changed
+
+The goal of this document is to keep developer/integration checks out of the user manual path. If a case can be verified deterministically through `pytest`, it should be treated as automated first.
+
+## Automated regression (run first)
+
+### Baseline commands
+
+- Full automated suite:
   - `python -m pytest -q`
 - Alternate wrapper:
   - `python run_tests.py`
 - Focused suites:
   - `python -m pytest tests/test_chief_of_staff.py -q`
   - `python -m pytest tests/test_workflow_engine.py -q`
-  - `python -m pytest tests/test_runtime_jobs.py tests/test_local_api.py tests/test_user_memory_entities.py -q`
+  - `python -m pytest tests/test_runtime_jobs.py tests/test_runtime_service.py tests/test_local_api.py tests/test_browser_tools.py tests/test_user_memory_entities.py -q`
 
 ### Optional UI test flags
+
 - Qt/UI tests are disabled by default:
   - `set RUN_QT_TESTS=1` (Windows)
   - `export RUN_QT_TESTS=1` (macOS/Linux)
 
-## Active vs Legacy
+### What is automated now
 
-- The active release path is:
-  - automated unit tests,
-  - the `Fast smoke (10–15 min)` section below,
-  - and the current CoS / delegation / Deep Research / Billing checks.
-- Older historical manual cases later in this document should be treated as archived reference unless they are explicitly covered by the current sections above.
+These are developer/integration checks and should normally be validated by the test suite rather than by hand:
 
-## Chief of Staff + Executive Team Manual Regression (Current)
+| Test ID | Coverage path | Notes |
+|---------|---------------|-------|
+| `TC-RT-001` | `tests/test_runtime_service.py` | Runtime scheduler/service startup behavior |
+| `TC-RT-002` | `tests/test_runtime_jobs.py`, `tests/test_runtime_service.py` | Runtime queue state transitions and service processing |
+| `TC-API-001` | `tests/test_local_api.py` | `GET /health` contract |
+| `TC-API-002` | `tests/test_local_api.py` | `GET /tools` contract |
+| `TC-BROWSER-001` | `tests/test_browser_tools.py` | Browser fetch/snapshot/workflow output contracts |
+| `TC-COS-013` | `tests/test_chief_of_staff.py` | Deterministic count/open-mode semantics |
+| `TC-COS-014` | `tests/test_chief_of_staff.py` | Invalid-date rejection logic |
+| `TC-COS-019` | automated where practical, manual spot-check optional | Logging format can be asserted automatically; one manual spot-check is optional after large logging changes |
+| `TC-BILL-003` | mixed | Idempotency should be automated; prompt timing/UX remains manual |
 
-### Prerequisites
+### Prerequisites for automated optional integrations
+
+- Runtime scheduler:
+  - `APScheduler` installed if you want runtime tests that touch the real scheduler path.
+- Browser tools:
+  - `playwright` installed for availability checks.
+  - `playwright install chromium` only if you are intentionally running real-browser validation outside the mocked baseline tests.
+
+## User-only manual regression (current)
+
+These are the cases that still require a human because they depend on GUI judgment, live service behavior, restart semantics, or subjective answer quality.
+
+### Manual prerequisites
 
 - Grok/xAI access:
   - Set `XAI_API_KEY` or `GROK_API_KEY` and ensure `xai-sdk` is available.
@@ -40,19 +71,8 @@ Last revised: 2026-04-01
   - Missing token should degrade gracefully (no crash, no auth popup).
 - Optional document RAG:
   - `COS_ENABLE_RAG_SEARCH=1` and available index for semantic retrieval checks.
-- Optional runtime scheduler:
-  - Ensure `APScheduler` is installed if you want runtime jobs to start from the desktop app.
-  - Runtime is controlled by `NAVI_RUNTIME_ENABLED`.
-- Optional local API:
-  - Set `NAVI_LOCAL_API_ENABLED=1` to start the local FastAPI service from the desktop app.
-  - Default local endpoint is `http://127.0.0.1:8765/health`.
-- Optional browser automation:
-  - Ensure `playwright` is installed.
-  - Run `playwright install chromium` once on the machine before browser-tool validation.
-
-### Deep Research (web) prerequisites
-- Web research requires OpenAI access:
-  - Set `OPENAI_API_KEY` so `core/tools/web_research.py` can call ChatGPT via the Responses API hosted `web_search` tool (with a fallback to non-browsing ChatGPT if needed).
+- Deep Research (web):
+  - Set `OPENAI_API_KEY` so `core/tools/web_research.py` can call ChatGPT via the Responses API hosted `web_search` tool.
 
 ### Fast smoke (10–15 min)
 
@@ -62,49 +82,37 @@ Last revised: 2026-04-01
 - Open assignee chat routing (`TC-COS-004`)
 - Bulk board action (`TC-COS-007`)
 - Assignment health filter (`TC-COS-010`)
-- Local API health check (`TC-API-001`)
-- Runtime queue smoke (`TC-RT-001`)
 
-### Runtime / integration smoke
+### Automated integration smoke reference
+
+Do not send users through these checks manually unless you are debugging a failure that the automated suite already surfaced.
 
 #### TC-RT-001: Runtime scheduler starts cleanly
-- Steps:
-  1. Set `NAVI_RUNTIME_ENABLED=1`.
-  2. Launch the app.
-  3. Inspect `logs/app.log`.
-- Expected:
-  - Runtime service starts without crashing the desktop app.
-  - No repeated scheduler-start failures appear in the log.
+
+- Automated expectation:
+  - Runtime service starts without crashing the app/service harness.
+  - Scheduler-start failures are surfaced by automated tests instead of manual log inspection.
 
 #### TC-RT-002: Runtime jobs are enqueued and processed
-- Steps:
-  1. Launch with runtime enabled.
-  2. Trigger or inspect job-producing flows such as assignment bootstrap or recurring runtime checks.
-  3. Inspect `runtime_jobs` and `runtime_job_runs` in the SQLite database.
-- Expected:
+
+- Automated expectation:
   - Jobs enter queued/running/completed or retry/failed states deterministically.
-  - Job runs are recorded with timestamps and any error text.
+  - Job runs are recorded with timestamps and error text when appropriate.
 
 #### TC-API-001: Local API health endpoint
-- Steps:
-  1. Set `NAVI_LOCAL_API_ENABLED=1`.
-  2. Launch the app.
-  3. Request `GET /health` from `http://127.0.0.1:8765/health`.
-- Expected:
-  - Returns a healthy response without blocking or crashing the desktop app.
+
+- Automated expectation:
+  - `GET /health` returns a healthy response and capability metadata.
 
 #### TC-API-002: Local API tool listing
-- Steps:
-  1. With local API enabled, request `GET /tools`.
-- Expected:
-  - Returns the registered tool list and metadata such as side-effect class / approval fields.
+
+- Automated expectation:
+  - `GET /tools` returns registered tool metadata including side-effect and approval fields.
 
 #### TC-BROWSER-001: Browser snapshot tool
-- Steps:
-  1. Ensure Playwright and Chromium are installed.
-  2. Invoke a browser snapshot flow through the local API or test harness.
-- Expected:
-  - A screenshot and best-effort text excerpt are produced without crashing the app.
+
+- Automated expectation:
+  - Browser fetch/snapshot/workflow paths return structured output and screenshot metadata without crashing.
 
 ### Current CoS / Delegation test cases
 
@@ -229,12 +237,16 @@ Last revised: 2026-04-01
   - Closed assignments are skipped and command notes mention skipped closed count.
   - Bulk status command notes include deterministic counts (`matched`, `eligible`, `changed`, `unchanged`, `failed`).
   - If no rows were changed, the note explicitly shows `changed=0` (no implied success language).
+- Note:
+  - Deterministic count/open-mode behavior is covered by automated tests. Manual verification here is only to confirm the user-visible presentation still makes sense in chat/board flows.
 
 #### TC-COS-014: Due-date validation (chat and UI)
 - Steps:
   1. Try invalid dates like `2026-02-30` in CoS due commands and board due dialogs.
 - Expected:
   - Invalid dates are rejected; existing data remains unchanged.
+- Note:
+  - Invalid-date rejection logic is automated. Manual verification here is for the visible error and unchanged UI state.
 
 #### TC-COS-015: AM Sweep reuse / persistence
 - Steps:
@@ -271,6 +283,8 @@ Last revised: 2026-04-01
   2. Inspect `logs/app.log`.
 - Expected:
   - Timing entries for CoS / AM Sweep are written with elapsed milliseconds.
+- Note:
+  - This is no longer part of the normal user smoke path. Keep it as an optional spot-check only if you changed logging/timing instrumentation.
 
 #### TC-DR-001: Deep Research — web research run
 - Steps:
@@ -322,6 +336,8 @@ Note:
   4. Dismiss it, then wait for the next periodic check (or restart again).
 - Expected:
   - Prompt appears once for the month (no repeated prompts/duplicate drafts for the same month).
+- Note:
+  - The idempotency portion should be covered by automated tests. The remaining manual focus is whether the prompt timing and UX behave acceptably for a real user.
 
 ### Automated test commands (recommended)
 
@@ -329,8 +345,8 @@ Note:
   - `python -m pytest tests/test_chief_of_staff.py -q`
 - Additional memory/DB smoke:
   - `python -m pytest tests/test_cos_memory.py tests/test_db.py -q`
-- Runtime/API/entity memory smoke:
-  - `python -m pytest tests/test_runtime_jobs.py tests/test_local_api.py tests/test_user_memory_entities.py -q`
+- Runtime/API/browser/entity memory smoke:
+  - `python -m pytest tests/test_runtime_jobs.py tests/test_runtime_service.py tests/test_local_api.py tests/test_browser_tools.py tests/test_user_memory_entities.py -q`
 
 ---
 

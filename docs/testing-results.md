@@ -9,9 +9,29 @@ Record the **result** and **date** for each test item. Aligned with [testing.md]
 
 ---
 
+## Automated regression
+
+*Ref: testing.md § Automated regression*
+
+Record command-level outcomes here. These entries replace manual runtime/API/browser smoke checks unless you are debugging a specific failure interactively.
+
+| Command / suite | Result  | Date       | Description                          | Notes |
+|-----------------|---------|------------|--------------------------------------|-------|
+| `pytest -q` | Pass | 2026-03-09 | Full automated regression suite | 204 passed, 30 skipped, 3 deselected |
+| `pytest tests/test_chief_of_staff.py -q` | Pass | 2026-03-09 | Focused CoS service/UI regression suite | Relevant targeted regressions passed during AM Sweep fixes |
+| `pytest tests/test_cos_memory.py tests/test_db.py -q` | Pending |     | Additional memory/DB smoke | Prior note: 1 passed, 1 skipped (`test_db` legacy) |
+| `pytest tests/test_runtime_jobs.py tests/test_runtime_service.py tests/test_local_api.py tests/test_browser_tools.py tests/test_user_memory_entities.py -q` | Pass | 2026-04-01 | Runtime/API/browser/entity-memory smoke | 19 passed, 1 warning. On Windows/Python 3.13 the FastAPI `TestClient` path still printed noisy teardown `access violation` text despite a successful exit code. |
+| `pytest tests/test_chief_of_staff.py -q -m qt` | Pending |        | Qt-marked tests only                 |       |
+
+---
+
+## User-only manual regression
+
+*Ref: testing.md § User-only manual regression (current)*
+
 ## Chief of Staff + Executive Team Regression
 
-*Ref: testing.md § Chief of Staff + Executive Team Manual Regression*
+*Ref: testing.md § User-only manual regression (current)*
 
 ### Fast smoke (10–15 min)
 
@@ -30,7 +50,7 @@ Record the **result** and **date** for each test item. Aligned with [testing.md]
 | TC-COS-010     | Pass    | 2026-03-09 | Assignment health filter             | Health filters and badges behaved correctly in current runtime pass |
 | TC-COS-011     | Pass    | 2026-03-09 | Bulk reassign with optional note     | Reassignment, routing continuity, and event note all worked |
 | TC-COS-012     | Pass    | 2026-03-09 | Bulk create tasks from filtered assignments | Worked perfectly; counts and duplicate handling looked correct |
-| TC-COS-013     | Pass    | 2026-03-09 | CoS bulk command open-mode semantics | `open` mode skipped closed items and counts/behavior looked correct |
+| TC-COS-013     | Pass    | 2026-03-09 | CoS bulk command open-mode semantics | Manual pass looked correct; deterministic count/open-mode logic is also automated |
 | TC-056         | Pass    | 2026-03-09 | CoS calendar read-only context       | Read-only context worked and degraded safely; separate accuracy bug remains logged (late-night/local-day window issue) |
 
 ### Current CoS / Delegation test cases
@@ -63,17 +83,6 @@ Record the **result** and **date** for each test item. Aligned with [testing.md]
 | TC-COS-018     | Pass    | 2026-03-09 | Task refresh after CoS / assignment actions | Dashboard and Tasks reflected new tasks without manual refresh |
 | TC-COS-019     | Pass    | 2026-03-09 | CoS timing logs                            | Timing entries present in `logs/app.log` |
 
-### Automated test runs
-
-| Command / suite | Result  | Date       | Description                          | Notes |
-|-----------------|---------|------------|--------------------------------------|-------|
-| `pytest tests/test_chief_of_staff.py -q` | Pass | 2026-03-09 | Focused CoS service/UI regression suite | Relevant targeted regressions passed during AM Sweep fixes |
-| `pytest tests/test_cos_memory.py tests/test_db.py -q` | Pending |     | 1 passed, 1 skipped (test_db legacy) |       |
-| `pytest tests/test_chief_of_staff.py -q -m qt` | Pending |        | Qt-marked tests only                 |       |
-| `pytest -q` | Pass | 2026-03-09 | Full automated regression suite | 204 passed, 30 skipped, 3 deselected |
-
----
-
 ## Deep Research (web) regression
 
 *Ref: testing.md § Deep Research test cases*
@@ -93,13 +102,13 @@ Record the **result** and **date** for each test item. Aligned with [testing.md]
 |-------------|---------|------|--------------------------------------------------|-------|
 | TC-BILL-001 | Pass    | 2026-03-09 | Billing — manual time entry                      | Manual timer/start-stop save flow worked and entry appeared correctly |
 | TC-BILL-002 | Fail    | 2026-03-09 | Billing — template + invoice draft generation    | Draft generation worked, but template/output is not readable or acceptable yet |
-| TC-BILL-003 | Pass    | 2026-03-09 | Billing — monthly autorun prompt + idempotency   | Autorun prompt/idempotency behavior passed in current runtime pass |
+| TC-BILL-003 | Pass    | 2026-03-09 | Billing — monthly autorun prompt + idempotency   | Manual prompt behavior passed; idempotency should also be covered by automation |
 
 ---
 
 ## Legacy manual catalog
 
-*Ref: testing.md § Legacy manual catalog. Fill in Result and Date as you run each.*
+*Ref: testing.md § Legacy manual catalog. These are archived reference cases rather than the active release gate.*
 
 ### Dashboard tab
 
@@ -173,14 +182,7 @@ Record the **result** and **date** for each test item. Aligned with [testing.md]
 
 ### Chief of Staff tab
 
-| Test ID | Result  | Date       | Description                            | Notes |
-|---------|---------|------------|----------------------------------------|-------|
-| TC-054  | Pending |            | CoS new chat + persistence             |       |
-| TC-055  | Pending |            | CoS preferences affect responses       |       |
-| TC-056  | Pending |            | CoS calendar read-only context         |       |
-| TC-057  | Pending |            | CoS tool loop (WEB_SEARCH / DOC_SEARCH) |       |
-| TC-058  | Pending |            | CoS task capture (ADD_TASK)            |       |
-| TC-059  | Pending |            | CoS structured memory                  |       |
+This legacy subsection is superseded by the active `Chief of Staff + Executive Team Regression` section above. Do not duplicate status updates here.
 
 ### Workspace document generation
 
