@@ -68,10 +68,33 @@ class TaskEditDialog(QDialog):
         layout.addLayout(row1)
 
         row1b = QHBoxLayout()
+        row1b.addWidget(QLabel("Assigned To:"))
+        self.assigned_to = QComboBox()
+        self.assigned_to.setEditable(True)
+        self.assigned_to.addItem("")
+        if self.assigned_to.lineEdit() is not None:
+            self.assigned_to.lineEdit().setPlaceholderText("Assigned to (optional)")
+        db = getattr(self.parent(), "db", None)
+        if db is not None:
+            try:
+                for row in (db.agents_list_active() or []):
+                    label = str(row.get("display_name") or row.get("code") or "").strip()
+                    if label:
+                        self.assigned_to.addItem(label)
+            except Exception:
+                pass
+        cur_assignee = str(self._task.get("assigned_to") or "").strip()
+        if cur_assignee:
+            idx = self.assigned_to.findText(cur_assignee)
+            if idx >= 0:
+                self.assigned_to.setCurrentIndex(idx)
+            else:
+                self.assigned_to.setEditText(cur_assignee)
+        row1b.addWidget(self.assigned_to)
+
         row1b.addWidget(QLabel("Project:"))
         self.project_combo = QComboBox()
         self.project_combo.addItem("(None)", None)
-        db = getattr(self.parent(), "db", None)
         if db is not None:
             try:
                 for row in (db.cos_get_projects() or []):
@@ -160,15 +183,6 @@ class TaskEditDialog(QDialog):
         self.due_date.setDate(qd if qd else QDate.currentDate())
         row2.addWidget(self.due_date)
 
-        self.next_enabled = QCheckBox("Next action:")
-        self.next_enabled.setChecked(bool((self._task.get("next_action_date") or "").strip()))
-        row2.addWidget(self.next_enabled)
-        self.next_action = QDateEdit()
-        self.next_action.setCalendarPopup(True)
-        qn = _qdate_from_mmddyyyy(self._task.get("next_action_date"))
-        self.next_action.setDate(qn if qn else QDate.currentDate())
-        row2.addWidget(self.next_action)
-
         self.snooze_enabled = QCheckBox("Snoozed until:")
         self.snooze_enabled.setChecked(bool((self._task.get("snoozed_until") or "").strip()))
         row2.addWidget(self.snooze_enabled)
@@ -200,11 +214,11 @@ class TaskEditDialog(QDialog):
         tags_json = json.dumps(tags, ensure_ascii=False)
 
         due = _mmddyyyy_from_qdate(self.due_date.date()) if self.due_enabled.isChecked() else None
-        next_action = _mmddyyyy_from_qdate(self.next_action.date()) if self.next_enabled.isChecked() else None
         snoozed = _mmddyyyy_from_qdate(self.snoozed_until.date()) if self.snooze_enabled.isChecked() else None
         start_date = _mmddyyyy_from_qdate(self.start_date.date()) if self.start_enabled.isChecked() else None
 
         blockers = (self.blockers.text() or "").strip() or None
+        assigned_to = (self.assigned_to.currentText() or "").strip() or None
 
         depends_raw = (self.depends_on.text() or "").strip()
         depends_ids: list[int] = []
@@ -225,12 +239,12 @@ class TaskEditDialog(QDialog):
             "category": category,
             "priority": priority,
             "tags_json": tags_json,
+            "assigned_to": assigned_to,
             "due_date": due,
             "start_date": start_date,
             "estimate_minutes": int(self.estimate_minutes.value() or 0),
             "blockers": blockers,
             "depends_on_json": depends_on_json,
-            "next_action_date": next_action,
             "snoozed_until": snoozed,
             "cos_project_id": int(cos_project_id) if cos_project_id is not None else None,
         }

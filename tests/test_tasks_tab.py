@@ -58,10 +58,14 @@ def test_tasks_tab_initializes(qapp, tmp_db):
 def test_tasks_tab_add_task_shows_in_table(qapp, tmp_db):
     tab = TasksTab(_Parent(tmp_db))
     tab.new_task_input.setText("Review FDA guidance")
+    tab.new_task_assigned_to.setEditText("Mason")
     tab.new_task_due.setText("")
     tab.add_task()
     assert tab.table.rowCount() == 1
     assert "Review FDA guidance" in (tab.table.item(0, 1).text() or "")
+    assignee_widget = tab.table.cellWidget(0, 2)
+    assert assignee_widget is not None
+    assert assignee_widget.currentText() == "Mason"
 
 
 def test_tasks_tab_due_picker_preserves_selected_date(qapp, tmp_db, monkeypatch):
@@ -190,7 +194,7 @@ def test_tasks_tab_edit_task_updates_text(qapp, tmp_db, monkeypatch):
                 "category": "Business",
                 "priority": 0,
                 "tags_json": "[]",
-                "next_action_date": None,
+                "assigned_to": "Atlas",
                 "snoozed_until": None,
                 "completed": 0,
             }
@@ -202,6 +206,23 @@ def test_tasks_tab_edit_task_updates_text(qapp, tmp_db, monkeypatch):
 
     assert tab.table.rowCount() == 1
     assert "After edit" in (tab.table.item(0, 1).text() or "")
+
+
+def test_tasks_tab_assignee_cell_updates_db(qapp, tmp_db):
+    tab = TasksTab(_Parent(tmp_db))
+    tab.new_task_input.setText("Delegate me")
+    tab.add_task()
+    assert tab.table.rowCount() == 1
+    task_id = int(tab.table.item(0, 0).text())
+
+    assignee_widget = tab.table.cellWidget(0, 2)
+    assert assignee_widget is not None
+    assignee_widget.setEditText("Quill")
+    qapp.processEvents()
+
+    row = tmp_db.get_task_by_id(task_id)
+    assert row is not None
+    assert row["assigned_to"] == "Quill"
 
 
 def test_tasks_tab_snooze_sets_snoozed_until(qapp, tmp_db):

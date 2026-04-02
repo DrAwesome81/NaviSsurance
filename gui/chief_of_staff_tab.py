@@ -36,7 +36,8 @@ class ChatEntryEdit(QTextEdit):
 
 from core.db import DatabaseManager
 from core.chief_of_staff_service import cos_response, cos_am_sweep
-from core.user_memory import auto_store_user_memory, default_user_memory_llm, store_teach_navi_memory
+from core.agent_memory import promote_agent_memory_to_global, promote_assignment_memory_to_agent
+from core.user_memory import auto_store_user_memory, default_user_memory_llm, store_teach_memory
 from gui.agent_routing import route_for_agent
 from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
 from gui.notifications import notify_chat_response
@@ -314,7 +315,7 @@ class CosAskWorker(QThread):
 
     def run(self):
         try:
-            teach_response = store_teach_navi_memory(self.db, self.user_message)
+            teach_response = store_teach_memory(self.db, self.user_message)
             if teach_response:
                 self.finished_signal.emit(teach_response)
                 return
@@ -642,16 +643,50 @@ class CosPreferencesDialog(QDialog):
 
 
 class GlobalMemoryDialog(QDialog):
-    """Inspect and prune global durable memory entries."""
+    """Inspect and prune global or agent durable memory entries."""
 
 
     class EditDialog(QDialog):
-        def __init__(self, *, parent=None, row: Optional[tuple] = None):
+        def __init__(
+            self,
+            *,
+            parent=None,
+            row: Optional[tuple] = None,
+            scope: str = "global",
+            agent_code: Optional[str] = None,
+            agents: Optional[list[dict]] = None,
+        ):
             super().__init__(parent)
             self._memory_id = int(row[0]) if row else None
-            self.setWindowTitle("Edit Global Memory" if row else "Add Global Memory")
+            self._scope = str(scope or "global").strip().lower() or "global"
+            self._agents = list(agents or [])
+            self.setWindowTitle("Edit Memory" if row else "Add Memory")
             layout = QVBoxLayout(self)
             form = QFormLayout()
+
+            self.scope_combo = QComboBox()
+            self.scope_combo.addItem("Global", "global")
+            self.scope_combo.addItem("Agent", "agent")
+            self.scope_combo.addItem("Assignment", "assignment")
+            self.scope_combo.setCurrentIndex(max(0, self.scope_combo.findData(self._scope)))
+            form.addRow("Scope:", self.scope_combo)
+
+            self.agent_combo = QComboBox()
+            self.agent_combo.addItem("Select agent", "")
+            for agent in self._agents:
+                code = str(agent.get("code") or "").strip().lower()
+                label = str(agent.get("display_name") or code).strip() or code
+                if code:
+                    self.agent_combo.addItem(label, code)
+            if agent_code:
+                idx = self.agent_combo.findData(str(agent_code).strip().lower())
+                if idx >= 0:
+                    self.agent_combo.setCurrentIndex(idx)
+            form.addRow("Agent:", self.agent_combo)
+
+            self.assignment_edit = QLineEdit()
+            self.assignment_edit.setPlaceholderText("A-0007 or 7")
+            form.addRow("Assignment:", self.assignment_edit)
 
             self.kind_combo = QComboBox()
             for label, value in (
@@ -699,8 +734,30 @@ class GlobalMemoryDialog(QDialog):
             buttons.rejected.connect(self.reject)
             layout.addWidget(buttons)
 
+            def _sync_scope_fields():
+                scope = (self.scope_combo.currentData() or "global")
+                is_agent = scope == "agent"
+                is_assignment = scope == "assignment"
+                self.agent_combo.setEnabled(is_agent)
+                self.assignment_edit.setEnabled(is_assignment)
+
+            self.scope_combo.currentIndexChanged.connect(_sync_scope_fields)
+
             if row:
-                _mem_id, kind, content, source, confidence, approval_status, json_data, _created_at, _updated_at = row
+                if self._scope == "agent":
+                    _mem_id, row_agent_code, kind, content, source, confidence, approval_status, json_data, _created_at, _updated_at = row
+                    idx = self.agent_combo.findData(str(row_agent_code or "").strip().lower())
+                    if idx >= 0:
+                        self.agent_combo.setCurrentIndex(idx)
+                elif self._scope == "assignment":
+                    _mem_id, row_assignment_id, _row_thread_id, row_agent_code, kind, content, source, json_data, _created_at = row
+                    if row_assignment_id is not None:
+                        self.assignment_edit.setText(f"A-{int(row_assignment_id):04d}")
+                    idx = self.agent_combo.findData(str(row_agent_code or "").strip().lower())
+                    if idx >= 0:
+                        self.agent_combo.setCurrentIndex(idx)
+                else:
+                    _mem_id, kind, content, source, confidence, approval_status, json_data, _created_at, _updated_at = row
                 idx = max(0, self.kind_combo.findData(str(kind or "").strip()))
                 self.kind_combo.setCurrentIndex(idx)
                 self.source_edit.setText(str(source or ""))
@@ -712,18 +769,31 @@ class GlobalMemoryDialog(QDialog):
                 self.kind_combo.setCurrentIndex(max(0, self.kind_combo.findData("fact")))
                 self.source_edit.setText("manual")
                 self.status_combo.setCurrentIndex(max(0, self.status_combo.findData("approved")))
+            _sync_scope_fields()
 
         def _on_save(self):
             content = (self.content_edit.toPlainText() or "").strip()
             if not content:
-                QMessageBox.warning(self, "Global Memory", "Content is required.")
+                QMessageBox.warning(self, "Memory", "Content is required.")
                 return
+            if (self.scope_combo.currentData() or "global") == "agent" and not (self.agent_combo.currentData() or "").strip():
+                QMessageBox.warning(self, "Memory", "Select an agent for agent memory.")
+                return
+            if (self.scope_combo.currentData() or "global") == "assignment":
+                assignment_raw = (self.assignment_edit.text() or "").strip()
+                if assignment_raw:
+                    assignment_value = assignment_raw.upper()
+                    if assignment_value.startswith("A-"):
+                        assignment_value = assignment_value[2:]
+                    if not assignment_value.isdigit():
+                        QMessageBox.warning(self, "Memory", "Assignment must be entered as A-0007 or 7.")
+                        return
             json_text = (self.json_edit.toPlainText() or "").strip()
             if json_text:
                 try:
                     json.loads(json_text)
                 except json.JSONDecodeError:
-                    QMessageBox.warning(self, "Global Memory", "JSON data must be valid JSON.")
+                    QMessageBox.warning(self, "Memory", "JSON data must be valid JSON.")
                     return
             self.accept()
 
@@ -731,6 +801,9 @@ class GlobalMemoryDialog(QDialog):
             json_text = (self.json_edit.toPlainText() or "").strip()
             return {
                 "id": self._memory_id,
+                "scope": (self.scope_combo.currentData() or "global").strip(),
+                "agent_code": (self.agent_combo.currentData() or "").strip().lower() or None,
+                "assignment_id": (self.assignment_edit.text() or "").strip() or None,
                 "kind": (self.kind_combo.currentData() or "note").strip(),
                 "source": (self.source_edit.text() or "").strip() or "manual",
                 "confidence": float(self.confidence_spin.value()),
@@ -744,9 +817,13 @@ class GlobalMemoryDialog(QDialog):
         self.db = db
         self.setWindowTitle("Navi Global Memory")
         self.resize(860, 540)
+        try:
+            self._agents = self.db.agents_list_active()
+        except Exception:
+            self._agents = []
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Inspect what Navi has stored globally. You can search, filter, add, edit, refresh, and delete entries."))
+        layout.addWidget(QLabel("Inspect what Navi or a named agent has stored durably. You can search, filter, add, edit, refresh, and delete entries."))
 
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Search:"))
@@ -764,11 +841,35 @@ class GlobalMemoryDialog(QDialog):
         self.kind_filter.addItem("Note", "note")
         self.kind_filter.currentIndexChanged.connect(self._reload)
         controls.addWidget(self.kind_filter)
+        controls.addWidget(QLabel("Scope:"))
+        self.scope_filter = QComboBox()
+        self.scope_filter.addItem("Global", "global")
+        self.scope_filter.addItem("Agent", "agent")
+        self.scope_filter.addItem("Assignment", "assignment")
+        self.scope_filter.currentIndexChanged.connect(self._reload)
+        controls.addWidget(self.scope_filter)
+        controls.addWidget(QLabel("Agent:"))
+        self.agent_filter = QComboBox()
+        self.agent_filter.addItem("All agents", "")
+        for agent in self._agents:
+            code = str(agent.get("code") or "").strip().lower()
+            label = str(agent.get("display_name") or code).strip() or code
+            if code:
+                self.agent_filter.addItem(label, code)
+        self.agent_filter.currentIndexChanged.connect(self._reload)
+        controls.addWidget(self.agent_filter)
+        controls.addWidget(QLabel("Assignment:"))
+        self.assignment_filter = QLineEdit()
+        self.assignment_filter.setPlaceholderText("A-0007 or 7")
+        self.assignment_filter.returnPressed.connect(self._reload)
+        controls.addWidget(self.assignment_filter)
         controls.addWidget(QLabel("Source:"))
         self.source_filter = QComboBox()
         self.source_filter.addItem("All", "")
         self.source_filter.addItem("Auto chat", "auto_chat")
         self.source_filter.addItem("Teach Navi", "teach_navi")
+        self.source_filter.addItem("Teach Agent", "teach_agent")
+        self.source_filter.addItem("Agent chat", "agent_chat")
         self.source_filter.addItem("Manual", "manual")
         self.source_filter.currentIndexChanged.connect(self._reload)
         controls.addWidget(self.source_filter)
@@ -808,6 +909,9 @@ class GlobalMemoryDialog(QDialog):
         self.reject_btn = QPushButton("Reject Selected")
         self.reject_btn.clicked.connect(lambda: self._set_selected_status("rejected"))
         buttons.addButton(self.reject_btn, QDialogButtonBox.ButtonRole.ActionRole)
+        self.promote_btn = QPushButton("Promote to Navi")
+        self.promote_btn.clicked.connect(self._promote_selected_to_global)
+        buttons.addButton(self.promote_btn, QDialogButtonBox.ButtonRole.ActionRole)
         self.delete_btn = QPushButton("Delete Selected")
         self.delete_btn.clicked.connect(self._delete_selected)
         buttons.addButton(self.delete_btn, QDialogButtonBox.ButtonRole.ActionRole)
@@ -836,9 +940,20 @@ class GlobalMemoryDialog(QDialog):
             return None
         return data if isinstance(data, dict) else None
 
+    @staticmethod
+    def _record_scope(record) -> str:
+        return str((record or {}).get("scope") or "global").strip().lower() or "global"
+
+    @staticmethod
+    def _record_row(record):
+        return (record or {}).get("row")
+
     @classmethod
-    def _alias_payload(cls, row: tuple) -> Optional[dict]:
-        payload = cls._json_payload(row[6] if len(row) > 6 else None)
+    def _alias_payload(cls, record) -> Optional[dict]:
+        row = cls._record_row(record)
+        scope = cls._record_scope(record)
+        json_idx = 7 if scope == "agent" else 6
+        payload = cls._json_payload(row[json_idx] if row and len(row) > json_idx else None)
         alias_payload = payload.get("alias") if isinstance(payload, dict) else None
         if isinstance(alias_payload, dict):
             term = str(alias_payload.get("term") or "").strip()
@@ -863,8 +978,11 @@ class GlobalMemoryDialog(QDialog):
         return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     @classmethod
-    def _provenance_html(cls, row: tuple) -> str:
-        payload = cls._json_payload(row[6] if len(row) > 6 else None)
+    def _provenance_html(cls, record) -> str:
+        row = cls._record_row(record)
+        scope = cls._record_scope(record)
+        json_idx = 7 if scope == "agent" else 6
+        payload = cls._json_payload(row[json_idx] if row and len(row) > json_idx else None)
         if not payload:
             return ""
         provenance_bits: list[str] = []
@@ -894,9 +1012,26 @@ class GlobalMemoryDialog(QDialog):
             html += "".join(f"<p>{block}</p>" for block in previews)
         return html
 
-    def _row_label(self, row: tuple) -> str:
-        _mem_id, kind, content, source, confidence, approval_status, _json_data, created_at, _updated_at = row
-        alias_payload = self._alias_payload(row) if str(kind or "").strip() == "alias" else None
+    def _row_label(self, record) -> str:
+        row = self._record_row(record)
+        scope = self._record_scope(record)
+        if scope == "agent":
+            _mem_id, agent_code, kind, content, source, confidence, approval_status, _json_data, created_at, _updated_at = row
+            owner = str(agent_code or "").strip().lower()
+        elif scope == "assignment":
+            _mem_id, assignment_id, thread_id, agent_code, kind, content, source, _json_data, created_at = row
+            owner_bits = []
+            if assignment_id is not None:
+                owner_bits.append(f"A-{int(assignment_id):04d}")
+            if thread_id is not None:
+                owner_bits.append(f"thread {int(thread_id)}")
+            if str(agent_code or "").strip():
+                owner_bits.append(str(agent_code or "").strip().lower())
+            owner = "/".join(owner_bits) or "assignment"
+        else:
+            _mem_id, kind, content, source, confidence, approval_status, _json_data, created_at, _updated_at = row
+            owner = "navi"
+        alias_payload = self._alias_payload(record) if str(kind or "").strip() == "alias" else None
         if alias_payload:
             text = f"{alias_payload['term']} -> {alias_payload['canonical']}"
         else:
@@ -906,47 +1041,126 @@ class GlobalMemoryDialog(QDialog):
         kind_s = str(kind or "note").strip() or "note"
         source_s = str(source or "unknown").strip() or "unknown"
         status_s = str(approval_status or "approved").strip() or "approved"
-        return f"[{status_s}/{kind_s}] {text} ({source_s}, {float(confidence or 0):.2f})"
+        return f"[{owner}/{status_s}/{kind_s}] {text} ({source_s}, {float(confidence or 0):.2f})"
 
     def _reload(self):
         query = (self.search_edit.text() or "").strip()
         kind = (self.kind_filter.currentData() or "").strip() or None
         source = (self.source_filter.currentData() or "").strip() or None
         approval_status = (self.status_filter.currentData() or "").strip() or None
+        scope = (self.scope_filter.currentData() or "global").strip() or "global"
+        agent_code = (self.agent_filter.currentData() or "").strip().lower() or None
+        assignment_raw = (self.assignment_filter.text() or "").strip()
+        assignment_id = None
+        if assignment_raw:
+            assignment_token = assignment_raw.upper()
+            if assignment_token.startswith("A-"):
+                assignment_token = assignment_token[2:]
+            if assignment_token.isdigit():
+                assignment_id = int(assignment_token)
+        self.agent_filter.setEnabled(scope in {"agent", "assignment"})
+        self.assignment_filter.setEnabled(scope == "assignment")
         try:
-            if query:
-                rows = self.db.user_memory_search(
-                    query=query,
-                    kind=kind,
-                    source=source,
-                    approval_status=approval_status,
-                    limit=200,
-                )
+            records = []
+            if scope == "agent":
+                agent_codes = [agent_code] if agent_code else [str(a.get("code") or "").strip().lower() for a in self._agents if str(a.get("code") or "").strip()]
+                for code in agent_codes:
+                    if query:
+                        rows = self.db.agent_memory_search(
+                            agent_code=code,
+                            query=query,
+                            kind=kind,
+                            source=source,
+                            approval_status=approval_status,
+                            limit=100,
+                        )
+                    else:
+                        rows = self.db.agent_memory_recent(
+                            agent_code=code,
+                            kind=kind,
+                            source=source,
+                            approval_status=approval_status,
+                            limit=100,
+                        )
+                    records.extend({"scope": "agent", "row": row} for row in rows)
+            elif scope == "assignment":
+                if query:
+                    rows = self.db.assignment_memory_search(
+                        query=query,
+                        assignment_id=assignment_id,
+                        agent_code=agent_code,
+                        limit=200,
+                    )
+                else:
+                    rows = self.db.assignment_memory_recent(
+                        assignment_id=assignment_id,
+                        agent_code=agent_code,
+                        limit=200,
+                    )
+                records = [{"scope": "assignment", "row": row} for row in rows]
             else:
-                rows = self.db.user_memory_recent(kind=kind, source=source, approval_status=approval_status, limit=200)
+                if query:
+                    rows = self.db.user_memory_search(
+                        query=query,
+                        kind=kind,
+                        source=source,
+                        approval_status=approval_status,
+                        limit=200,
+                    )
+                else:
+                    rows = self.db.user_memory_recent(kind=kind, source=source, approval_status=approval_status, limit=200)
+                records = [{"scope": "global", "row": row} for row in rows]
         except Exception as e:
-            QMessageBox.warning(self, "Global Memory", f"Could not load memory entries.\n\n{e}")
+            QMessageBox.warning(self, "Memory", f"Could not load memory entries.\n\n{e}")
             return
         self.memory_list.clear()
-        for row in rows:
-            item = QListWidgetItem(self._row_label(row))
-            item.setData(Qt.ItemDataRole.UserRole, row)
+        for record in records:
+            item = QListWidgetItem(self._row_label(record))
+            item.setData(Qt.ItemDataRole.UserRole, record)
             self.memory_list.addItem(item)
         if self.memory_list.count() > 0:
             self.memory_list.setCurrentRow(0)
         else:
             self.detail_browser.setHtml("<p style='color: #9aa0a6;'>(No matching memory entries.)</p>")
+        self.add_btn.setEnabled(scope != "assignment")
+        self.edit_btn.setEnabled(scope != "assignment")
+        self.approve_btn.setEnabled(scope != "assignment")
+        self.reject_btn.setEnabled(scope != "assignment")
+        if scope == "assignment":
+            self.promote_btn.setText("Promote to Agent")
+        else:
+            self.promote_btn.setText("Promote to Navi")
+        self.promote_btn.setEnabled(scope in {"agent", "assignment"} and self.memory_list.count() > 0)
 
     def _update_detail(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem] = None):
         if current is None:
             self.detail_browser.setHtml("<p style='color: #9aa0a6;'>(No selection)</p>")
             return
-        row = current.data(Qt.ItemDataRole.UserRole)
-        if not row:
+        record = current.data(Qt.ItemDataRole.UserRole)
+        if not record:
             self.detail_browser.setHtml("<p style='color: #9aa0a6;'>(No selection)</p>")
             return
-        mem_id, kind, content, source, confidence, approval_status, json_data, created_at, updated_at = row
-        alias_payload = self._alias_payload(row) if str(kind or "").strip() == "alias" else None
+        row = self._record_row(record)
+        scope = self._record_scope(record)
+        if scope == "agent":
+            mem_id, agent_code, kind, content, source, confidence, approval_status, json_data, created_at, updated_at = row
+            owner_html = f"<b>Agent:</b> {self._escape_html(agent_code)}<br>"
+        elif scope == "assignment":
+            mem_id, assignment_id, thread_id, agent_code, kind, content, source, json_data, created_at = row
+            owner_html = ""
+            if assignment_id is not None:
+                owner_html += f"<b>Assignment:</b> A-{int(assignment_id):04d}<br>"
+            if thread_id is not None:
+                owner_html += f"<b>Thread:</b> {int(thread_id)}<br>"
+            if str(agent_code or "").strip():
+                owner_html += f"<b>Agent:</b> {self._escape_html(agent_code)}<br>"
+            confidence = 1.0
+            approval_status = "task-local"
+            updated_at = created_at
+        else:
+            mem_id, kind, content, source, confidence, approval_status, json_data, created_at, updated_at = row
+            owner_html = ""
+        alias_payload = self._alias_payload(record) if str(kind or "").strip() == "alias" else None
         json_html = ""
         if json_data:
             json_html = (
@@ -982,6 +1196,7 @@ class GlobalMemoryDialog(QDialog):
             alias_html += "</p>"
         html = (
             f"<p><b>ID:</b> {mem_id}<br>"
+            f"{owner_html}"
             f"<b>Kind:</b> {kind}<br>"
             f"<b>Source:</b> {source}<br>"
             f"<b>Confidence:</b> {float(confidence or 0):.2f}<br>"
@@ -989,14 +1204,14 @@ class GlobalMemoryDialog(QDialog):
             f"<b>Created:</b> {created_at}<br>"
             f"<b>Updated:</b> {updated_at}</p>"
             f"{alias_html}"
-            f"{self._provenance_html(row)}"
+            f"{self._provenance_html(record)}"
             f"<p><b>Content</b></p><pre>{self._escape_html(content)}</pre>"
             f"{json_html}"
         )
         self.detail_browser.setHtml(html)
 
-    def _selected_rows(self) -> list[tuple]:
-        rows: list[tuple] = []
+    def _selected_rows(self) -> list[dict]:
+        rows: list[dict] = []
         for item in self.memory_list.selectedItems():
             row = item.data(Qt.ItemDataRole.UserRole)
             if row:
@@ -1009,74 +1224,177 @@ class GlobalMemoryDialog(QDialog):
         row = item.data(Qt.ItemDataRole.UserRole)
         return [row] if row else []
 
-    def _selected_row(self) -> Optional[tuple]:
+    def _selected_row(self) -> Optional[dict]:
         rows = self._selected_rows()
         return rows[0] if rows else None
 
     def _add_memory(self):
-        d = self.EditDialog(parent=self)
+        d = self.EditDialog(
+            parent=self,
+            scope=(self.scope_filter.currentData() or "global"),
+            agent_code=(self.agent_filter.currentData() or "").strip() or None,
+            agents=self._agents,
+        )
         if d.exec() != QDialog.DialogCode.Accepted:
             return
         values = d.values()
-        self.db.user_memory_add(
-            kind=values["kind"],
-            content=values["content"],
-            source=values["source"],
-            confidence=values["confidence"],
-            approval_status=values["approval_status"],
-            json_data=values["json_data"],
-        )
+        if values["scope"] == "agent":
+            self.db.agent_memory_add(
+                agent_code=values["agent_code"] or "",
+                kind=values["kind"],
+                content=values["content"],
+                source=values["source"],
+                confidence=values["confidence"],
+                approval_status=values["approval_status"],
+                json_data=values["json_data"],
+            )
+        else:
+            self.db.user_memory_add(
+                kind=values["kind"],
+                content=values["content"],
+                source=values["source"],
+                confidence=values["confidence"],
+                approval_status=values["approval_status"],
+                json_data=values["json_data"],
+            )
         self._reload()
 
     def _edit_selected(self):
-        row = self._selected_row()
-        if not row:
-            QMessageBox.information(self, "Global Memory", "Select a memory entry first.")
+        record = self._selected_row()
+        if not record:
+            QMessageBox.information(self, "Memory", "Select a memory entry first.")
             return
-        d = self.EditDialog(parent=self, row=row)
+        row = self._record_row(record)
+        scope = self._record_scope(record)
+        agent_code = str(row[1] or "").strip().lower() if scope == "agent" else None
+        d = self.EditDialog(parent=self, row=row, scope=scope, agent_code=agent_code, agents=self._agents)
         if d.exec() != QDialog.DialogCode.Accepted:
             return
         values = d.values()
-        ok = self.db.user_memory_update(
-            int(values["id"]),
-            kind=values["kind"],
-            content=values["content"],
-            source=values["source"],
-            confidence=values["confidence"],
-            approval_status=values["approval_status"],
-            json_data=values["json_data"],
-        )
+        if values["scope"] == "agent":
+            ok = self.db.agent_memory_update(
+                int(values["id"]),
+                kind=values["kind"],
+                content=values["content"],
+                source=values["source"],
+                confidence=values["confidence"],
+                approval_status=values["approval_status"],
+                json_data=values["json_data"],
+            )
+        else:
+            ok = self.db.user_memory_update(
+                int(values["id"]),
+                kind=values["kind"],
+                content=values["content"],
+                source=values["source"],
+                confidence=values["confidence"],
+                approval_status=values["approval_status"],
+                json_data=values["json_data"],
+            )
         if not ok:
-            QMessageBox.warning(self, "Global Memory", "That memory entry could not be updated.")
+            QMessageBox.warning(self, "Memory", "That memory entry could not be updated.")
             return
         self._reload()
 
     def _set_selected_status(self, approval_status: str):
         rows = self._selected_rows()
         if not rows:
-            QMessageBox.information(self, "Global Memory", "Select one or more memory entries first.")
+            QMessageBox.information(self, "Memory", "Select one or more memory entries first.")
             return
         failures = 0
-        for row in rows:
-            if not self.db.user_memory_set_approval_status(int(row[0]), approval_status):
+        for record in rows:
+            row = self._record_row(record)
+            scope = self._record_scope(record)
+            ok = (
+                self.db.agent_memory_set_approval_status(int(row[0]), approval_status)
+                if scope == "agent"
+                else self.db.user_memory_set_approval_status(int(row[0]), approval_status)
+            )
+            if not ok:
                 failures += 1
         self._reload()
         if failures:
             QMessageBox.warning(
                 self,
-                "Global Memory",
+                "Memory",
                 f"{failures} selected entr{'y' if failures == 1 else 'ies'} could not be updated.",
+            )
+
+    def _promote_selected_to_global(self):
+        rows = self._selected_rows()
+        if not rows:
+            QMessageBox.information(self, "Memory", "Select one or more memory entries first.")
+            return
+        created = 0
+        reused = 0
+        failed = 0
+        scope = self._record_scope(rows[0])
+        if scope == "agent":
+            selected_rows = [record for record in rows if self._record_scope(record) == "agent"]
+            if not selected_rows:
+                QMessageBox.information(self, "Memory", "Promotion only applies to agent memory entries.")
+                return
+            for record in selected_rows:
+                row = self._record_row(record)
+                try:
+                    _new_id, was_created = promote_agent_memory_to_global(self.db, memory_id=int(row[0]))
+                    if was_created:
+                        created += 1
+                    else:
+                        reused += 1
+                except Exception:
+                    failed += 1
+        elif scope == "assignment":
+            selected_rows = [record for record in rows if self._record_scope(record) == "assignment"]
+            if not selected_rows:
+                QMessageBox.information(self, "Memory", "Promotion only applies to assignment memory entries.")
+                return
+            for record in selected_rows:
+                row = self._record_row(record)
+                try:
+                    _new_id, was_created = promote_assignment_memory_to_agent(self.db, memory_id=int(row[0]))
+                    if was_created:
+                        created += 1
+                    else:
+                        reused += 1
+                except Exception:
+                    failed += 1
+        else:
+            QMessageBox.information(self, "Memory", "Promotion is only available for agent or assignment memory entries.")
+            return
+        self._reload()
+        if failed:
+            QMessageBox.warning(
+                self,
+                "Memory",
+                f"Promoted {created}, reused {reused}, failed {failed}.",
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Memory",
+                (
+                    f"Promoted {created} entr{'y' if created == 1 else 'ies'} to Navi global memory; reused {reused} existing match{'es' if reused != 1 else ''}."
+                    if scope == "agent"
+                    else f"Promoted {created} entr{'y' if created == 1 else 'ies'} to durable agent memory; reused {reused} existing match{'es' if reused != 1 else ''}."
+                ),
             )
 
     def _delete_selected(self):
         rows = self._selected_rows()
         if not rows:
-            QMessageBox.information(self, "Global Memory", "Select one or more memory entries first.")
+            QMessageBox.information(self, "Memory", "Select one or more memory entries first.")
             return
-        row = rows[0]
+        record = rows[0]
+        row = self._record_row(record)
         mem_id = int(row[0])
-        kind = str(row[1] or "note")
-        content = str(row[2] or "").strip()
+        scope = self._record_scope(record)
+        if scope == "agent":
+            kind = str(row[2] or "note")
+            content = str(row[3] or "").strip()
+        else:
+            kind = str(row[1] or "note")
+            content = str(row[2] or "").strip()
         preview = content if len(content) <= 120 else content[:117] + "..."
         message = f"Delete this {kind} memory?\n\n{preview}"
         if len(rows) > 1:
@@ -1090,13 +1408,22 @@ class GlobalMemoryDialog(QDialog):
             return
         failures = 0
         for selected in rows:
-            if not self.db.user_memory_delete(int(selected[0])):
+            row = self._record_row(selected)
+            scope = self._record_scope(selected)
+            ok = (
+                self.db.agent_memory_delete(int(row[0]))
+                if scope == "agent"
+                else self.db.assignment_memory_delete(int(row[0]))
+                if scope == "assignment"
+                else self.db.user_memory_delete(int(row[0]))
+            )
+            if not ok:
                 failures += 1
         self._reload()
         if failures:
             QMessageBox.warning(
                 self,
-                "Global Memory",
+                "Memory",
                 f"{failures} selected entr{'y' if failures == 1 else 'ies'} could not be deleted.",
             )
 

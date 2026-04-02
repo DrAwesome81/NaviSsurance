@@ -138,13 +138,8 @@ Return only the relevant emails, nothing else."""
             due_today = []
             upcoming = []
             no_due = []
-            next_action_today = []
-
             for r in rows:
                 due_dt = _parse(r.get("due_date"))
-                next_dt = _parse(r.get("next_action_date"))
-                if next_dt and next_dt.date() == today_dt.date():
-                    next_action_today.append(r)
                 if due_dt is None:
                     no_due.append(r)
                 elif due_dt.date() < today_dt.date():
@@ -160,12 +155,12 @@ Return only the relevant emails, nothing else."""
                 txt = str(r.get("task_text") or "").strip()
                 cat = str(r.get("category") or "").strip()
                 due = (r.get("due_date") or "").strip()
-                na = (r.get("next_action_date") or "").strip()
+                assigned_to = (r.get("assigned_to") or "").strip()
                 parts = [f"{pr_s}{txt}"]
                 if show_due and due:
                     parts.append(f"(due {due})")
-                if na and na != due:
-                    parts.append(f"(next {na})")
+                if assigned_to:
+                    parts.append(f"(assigned to {assigned_to})")
                 if cat:
                     parts.append(f"[{cat}]")
                 return " ".join(parts).strip()
@@ -186,11 +181,6 @@ Return only the relevant emails, nothing else."""
                 tasks_parts.append("\nDUE TODAY:")
                 for r in due_today[:10]:
                     tasks_parts.append("  • " + _fmt(r, show_due=False))
-
-            if next_action_today:
-                tasks_parts.append("\nNEXT ACTIONS TODAY:")
-                for r in next_action_today[:10]:
-                    tasks_parts.append("  • " + _fmt(r, show_due=True))
 
             if upcoming:
                 tasks_parts.append("\nUPCOMING (next 3 days):")

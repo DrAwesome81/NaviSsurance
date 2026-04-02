@@ -30,6 +30,7 @@ from core.cos_calendar import (
 )
 from core.cos_doc_search import doc_search, format_hits
 from core.chat_retrieval import build_long_term_retrieval_context, format_chat_history_tool_results
+from core.agent_memory import build_agent_memory_context, build_assignment_memory_context
 from core.user_memory import build_user_memory_context
 from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
 from core.tool_registry import invoke_tool
@@ -50,7 +51,7 @@ def _log_timing(event: str, t0: float, **fields) -> None:
         return
 
 # Pattern for CoS to add a task:
-# ADD_TASK: text | due_date (MM-DD-YYYY or none) | category (Business or Personal) [| priority(P0-P5|0-5|none)] [| next_action(MM-DD-YYYY|none)] [| project_id|none] [| recurrence]
+# ADD_TASK: text | due_date (MM-DD-YYYY or none) | category (Business or Personal) [| priority(P0-P5|0-5|none)] [| assigned_to|none] [| project_id|none] [| recurrence]
 ADD_TASK_PATTERN = re.compile(r"^\s*ADD_TASK:\s*(.+?)\s*$", re.IGNORECASE)
 # Fallback for rich prose task lists, e.g.:
 # 1. **Task text** (Business) – Due Friday (03-06-2026).
@@ -337,12 +338,12 @@ def _tasks_context_rich(db: DatabaseManager, *, limit: int = 80) -> str:
             due = str(r.get("due_date") or "").strip()
             pr = int(r.get("priority") or 0)
             est = int(r.get("estimate_minutes") or 0)
-            next_action = str(r.get("next_action_date") or "").strip()
+            assigned_to = str(r.get("assigned_to") or "").strip()
             tags_json = str(r.get("tags_json") or "[]").strip()
             due_part = f" due {due}" if due else ""
-            next_part = f" next {next_action}" if next_action else ""
+            assigned_part = f" assigned_to {assigned_to}" if assigned_to else ""
             est_part = f" est {est}m" if est else ""
-            lines.append(f"- #{tid} P{pr} {text}{due_part}{next_part}{est_part} tags={tags_json}")
+            lines.append(f"- #{tid} P{pr} {text}{due_part}{assigned_part}{est_part} tags={tags_json}")
         return "**Dashboard tasks (rich, open):**\n" + "\n".join(lines)
     except Exception as e:
         logger.warning("Could not load rich tasks for CoS context: %s", e)
@@ -662,7 +663,7 @@ Parallelism expectation:
 - If there are multiple Dispatch/Prep items, emit MULTIPLE ASSIGN lines (one per item/agent) so work can run in parallel.
 
 Action commands you may output:
-- ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal> [| <priority P0-P5 or 0-5 or none>] [| <next action date MM-DD-YYYY or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]
+- ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal> [| <priority P0-P5 or 0-5 or none>] [| <assigned to or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]
 - TASK_SET_TAGS: <task_id> | <json array of tags>    (example: TASK_SET_TAGS: 123 | [\"triage:dispatch\",\"source:am_sweep\"])
 - TASK_SET_ESTIMATE: <task_id> | <minutes>           (0-600, example: TASK_SET_ESTIMATE: 123 | 45)
 - ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>
@@ -766,6 +767,59 @@ def _memory_context(db: DatabaseManager, user_message: str, chat_id: Optional[in
         global_memory = ""
     if global_memory:
         parts.append(global_memory)
+
+    assignment_match = re.search(r"\bA-(\d{1,6})\b", q, re.IGNORECASE)
+    if assignment_match:
+        try:
+            assignment_id = int(assignment_match.group(1))
+        except Exception:
+            assignment_id = None
+        if assignment_id is not None:
+            try:
+                assignment_memory = build_assignment_memory_context(
+                    db,
+                    q,
+                    assignment_id=assignment_id,
+                    limit=4,
+                    recent_limit=2,
+                )
+            except Exception:
+                assignment_memory = ""
+            if assignment_memory:
+                parts.append(assignment_memory)
+
+    try:
+        agents = db.agents_list_active()
+    except Exception:
+        agents = []
+    lowered_query = q.casefold()
+    seen_agents: set[str] = set()
+    agent_sections: list[str] = []
+    for agent in agents:
+        code = str(agent.get("code") or "").strip().lower()
+        if not code or code in seen_agents:
+            continue
+        names = [
+            code,
+            str(agent.get("display_name") or "").strip(),
+        ]
+        try:
+            aliases = json.loads(agent.get("aliases_json") or "[]")
+        except Exception:
+            aliases = []
+        names.extend(str(alias or "").strip() for alias in aliases)
+        if not any(name and name.casefold() in lowered_query for name in names):
+            continue
+        seen_agents.add(code)
+        try:
+            agent_context = build_agent_memory_context(db, code, q, limit=3, recent_limit=1)
+        except Exception:
+            agent_context = ""
+        if agent_context:
+            agent_sections.append(agent_context)
+        if len(agent_sections) >= 2:
+            break
+    parts.extend(section for section in agent_sections if section.strip())
 
     return "\n\n".join(parts)
 
@@ -1315,10 +1369,10 @@ Priority scale is numeric and consistent:
 - Delegation assignments: P1 (lowest urgency) … P5 (highest urgency).
 
 You can see his current dashboard task list and may add tasks to it. To add a task, write one or more lines in this exact format (one task per line):
-ADD_TASK: <task description> | <due date as MM-DD-YYYY or "none"> | <Business or Personal> [| <priority P0-P5 or 0-5 or none>] [| <next action date MM-DD-YYYY or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]
+ADD_TASK: <task description> | <due date as MM-DD-YYYY or "none"> | <Business or Personal> [| <priority P0-P5 or 0-5 or none>] [| <assigned to or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]
 Examples:
 - ADD_TASK: Send follow-up to client | 02-25-2026 | Business | P3
-- ADD_TASK: Draft DHF gap memo | 03-05-2026 | Business | P1 | 03-03-2026 | 12 | Weekly
+- ADD_TASK: Draft DHF gap memo | 03-05-2026 | Business | P1 | Mason | 12 | Weekly
 When adding a task, include priority whenever you can infer it from urgency, timing, or the surrounding plan context. Do not use P0 as a placeholder for "unspecified." If the user asked you to add a task and priority is genuinely unclear, ask a short follow-up question instead of outputting an ADD_TASK line with no priority.
 Omit ADD_TASK lines if you are not adding any tasks.
 {calendar_instructions}
@@ -1830,12 +1884,19 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 ambiguous_task_priorities.append(task_text)
                 logger.info("CoS ADD_TASK deferred pending priority clarification: %r", task_text)
                 continue
-            next_action_ok, next_action = _normalize_dashboard_mmddyyyy(parts[4] if len(parts) > 4 else "")
-            if not next_action_ok:
-                logger.warning("CoS ADD_TASK rejected due to invalid next-action date: %r", parts[4] if len(parts) > 4 else "")
-                continue
-            project_raw = (parts[5] if len(parts) > 5 else "").strip()
-            recurrence_raw = (parts[6] if len(parts) > 6 else "").strip()
+            assigned_to: Optional[str] = None
+            project_part_idx = 4
+            recurrence_part_idx = 5
+            legacy_next_ok, _legacy_next = _normalize_dashboard_mmddyyyy(parts[4] if len(parts) > 4 else "")
+            if len(parts) > 4 and legacy_next_ok and (parts[4] or "").strip():
+                project_part_idx = 5
+                recurrence_part_idx = 6
+            elif len(parts) > 4:
+                assigned_to = (parts[4] or "").strip() or None
+                if assigned_to and assigned_to.lower() in {"none", "null", "n/a"}:
+                    assigned_to = None
+            project_raw = (parts[project_part_idx] if len(parts) > project_part_idx else "").strip()
+            recurrence_raw = (parts[recurrence_part_idx] if len(parts) > recurrence_part_idx else "").strip()
             recurrence = recurrence_raw if recurrence_raw else "None"
             if recurrence.lower() in {"none", "null", "n/a"}:
                 recurrence = "None"
@@ -1858,13 +1919,13 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     recurrence=recurrence,
                     completed=0,
                     cos_project_id=cos_project_id,
+                    assigned_to=assigned_to,
                 )
                 # Apply optional richer fields available in the Tasks table.
-                if priority is not None or next_action is not None:
+                if priority is not None:
                     db.update_task_by_id(
                         task_id=int(task_id),
                         priority=priority if priority is not None else db._UNSET,  # type: ignore[attr-defined]
-                        next_action_date=next_action if next_action is not None else db._UNSET,  # type: ignore[attr-defined]
                     )
                 added_tasks += 1
             except Exception as e:

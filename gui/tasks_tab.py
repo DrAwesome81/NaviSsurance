@@ -44,7 +44,7 @@ from core.task_command_contract import (
     TaskCompleteCommand,
     TaskDeleteCommand,
     TaskSetDueCommand,
-    TaskSetNextActionCommand,
+    TaskSetAssignedToCommand,
     TaskSetProjectCommand,
     TaskSnoozeCommand,
     TaskUpdatePriorityCommand,
@@ -70,8 +70,8 @@ _TASK_SET_DUE_PATTERN = re.compile(
     r"TASK_SET_DUE:\s*(\d+)\s*\|\s*([^|\n]+)",
     re.IGNORECASE,
 )
-_TASK_SET_NEXT_ACTION_PATTERN = re.compile(
-    r"TASK_SET_NEXT_ACTION:\s*(\d+)\s*\|\s*([^|\n]+)",
+_TASK_SET_ASSIGNED_TO_PATTERN = re.compile(
+    r"TASK_SET_ASSIGNED_TO:\s*(\d+)\s*\|\s*([^|\n]+)",
     re.IGNORECASE,
 )
 _TASK_SNOOZE_PATTERN = re.compile(
@@ -244,7 +244,7 @@ class TasksTab(QWidget):
         filters.addWidget(lbl_sort)
         self.sort_filter = QComboBox()
         self.sort_filter.setStyleSheet(field_style)
-        self.sort_filter.addItems(["Priority", "Due date", "Next action", "Newest"])
+        self.sort_filter.addItems(["Priority", "Due date", "Newest"])
         self.sort_filter.currentIndexChanged.connect(self.refresh_tasks)
         filters.addWidget(self.sort_filter)
 
@@ -276,6 +276,12 @@ class TasksTab(QWidget):
         self.new_task_category.setMinimumHeight(32)
         add_row.addWidget(self.new_task_category)
 
+        self.new_task_assigned_to = self._create_assignee_combo()
+        self.new_task_assigned_to.setMinimumHeight(32)
+        self.new_task_assigned_to.setMinimumWidth(150)
+        self.new_task_assigned_to.setToolTip("Assign to an agent or type any name.")
+        add_row.addWidget(self.new_task_assigned_to)
+
         self.new_task_due = QLineEdit()
         self.new_task_due.setPlaceholderText("Due (MM-DD-YYYY, optional)")
         self.new_task_due.setStyleSheet(field_style)
@@ -301,7 +307,7 @@ class TasksTab(QWidget):
         # Table: Tasks-tab-only layout. Task column gets most space; Priority and Actions have room.
         self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels(
-            ["ID", "Task", "Priority", "Tags", "Next action date", "Due", "Category", "Project", "Done", "Actions"]
+            ["ID", "Task", "Assigned To", "Priority", "Tags", "Due", "Category", "Project", "Done", "Actions"]
         )
         self.table.setColumnHidden(0, True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -333,17 +339,20 @@ class TasksTab(QWidget):
             hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
             hdr.setStretchLastSection(False)
             hdr.resizeSection(1, 360)  # Task
-            hdr.resizeSection(2, 85)   # Priority
+            hdr.resizeSection(2, 140)  # Assigned To
+            hdr.resizeSection(3, 85)   # Priority
             hdr.resizeSection(5, 110)  # Due
             hdr.resizeSection(6, 100)  # Category
         else:
             # Task column: stretch to use remaining space (main content)
             hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            hdr.resizeSection(2, 150)
+            hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
             # Priority: fixed width so P0–P5 combo is fully visible (Tasks tab footprint)
-            hdr.resizeSection(2, 80)
-            hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-            # Tags, Next action, Due, Category, Project, Done: size to content
-            for c in (3, 4, 5, 6, 7, 8):
+            hdr.resizeSection(3, 80)
+            hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+            # Tags, Due, Category, Project, Done: size to content
+            for c in (4, 5, 6, 7, 8):
                 hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
             # Actions: size to content so buttons aren’t squished (width comes from button layout)
             hdr.setSectionResizeMode(9, QHeaderView.ResizeMode.ResizeToContents)
@@ -352,11 +361,6 @@ class TasksTab(QWidget):
         hdr.sectionResized.connect(lambda *_: self._save_header_state())
         hdr.sectionMoved.connect(lambda *_: self._save_header_state())
         QTimer.singleShot(0, self._restore_header_state)
-        # Tooltip for header (Next action date = when you plan to act on the task)
-        self.table.horizontalHeader().setToolTip(
-            "Next action date: when you plan to take the next step on this task (e.g. follow-up, review)."
-        )
-
         task_list_layout.addWidget(self.table, 1)
 
         if not self._compact:
@@ -427,19 +431,60 @@ class TasksTab(QWidget):
         except Exception:
             return ""
 
+    def _task_assignee_options(self) -> list[str]:
+        options: list[str] = []
+        try:
+            for row in self.db.agents_list_active() or []:
+                label = str(row.get("display_name") or row.get("code") or "").strip()
+                if label and label not in options:
+                    options.append(label)
+        except Exception:
+            return []
+        return options
+
+    def _create_assignee_combo(self, *, current_text: str = "") -> QComboBox:
+        combo = QComboBox()
+        combo.setEditable(True)
+        combo.addItem("")
+        for label in self._task_assignee_options():
+            combo.addItem(label)
+        if combo.lineEdit() is not None:
+            combo.lineEdit().setPlaceholderText("Assigned to (optional)")
+        if current_text:
+            idx = combo.findText(current_text)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            else:
+                combo.setEditText(current_text)
+        combo.setStyleSheet(
+            "QComboBox { background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
+            "padding: 6px 8px; border-radius: 6px; }"
+            "QComboBox:focus { border: 1px solid #6b8cae; }"
+        )
+        return combo
+
     def add_task(self):
         text = (self.new_task_input.text() or "").strip()
         if not text:
             return
         due = _parse_due_date(self.new_task_due.text())
         category = (self.new_task_category.currentText() or "Business").strip() or "Business"
+        assigned_to = (self.new_task_assigned_to.currentText() or "").strip() or None
         proj_id = self._selected_project_id()
         try:
-            self.db.add_task("tasks_tab", text, due, category=category, cos_project_id=proj_id)
+            self.db.add_task(
+                "tasks_tab",
+                text,
+                due,
+                category=category,
+                cos_project_id=proj_id,
+                assigned_to=assigned_to,
+            )
         except Exception as e:
             QMessageBox.warning(self, "Tasks", f"Could not add task:\n\n{type(e).__name__}: {e}")
             return
         self.new_task_input.clear()
+        self.new_task_assigned_to.setCurrentIndex(0)
         self.new_task_due.clear()
         self.refresh_tasks()
         # Keep dashboard's embedded task list in sync.
@@ -508,7 +553,7 @@ class TasksTab(QWidget):
             show_done = self.show_completed.isChecked()
             show_snoozed = self.show_snoozed.isChecked()
             project_id = self._selected_project_id()
-            sort_map = {"Priority": "priority", "Due date": "due_date", "Next action": "next_action", "Newest": "newest"}
+            sort_map = {"Priority": "priority", "Due date": "due_date", "Newest": "newest"}
             sort_by = sort_map.get(self.sort_filter.currentText() or "Priority", "priority")
 
             tasks = self.db.list_tasks_rich(
@@ -531,6 +576,7 @@ class TasksTab(QWidget):
                 cat = str(rdict.get("category") or "")
                 done = int(rdict.get("completed") or 0)
                 priority = int(rdict.get("priority") or 0)
+                assigned_to = str(rdict.get("assigned_to") or "").strip()
                 tags_json = str(rdict.get("tags_json") or "[]")
                 tags_display = tags_json
                 try:
@@ -539,7 +585,6 @@ class TasksTab(QWidget):
                         tags_display = ", ".join(str(x) for x in arr if str(x).strip())
                 except Exception:
                     pass
-                next_action = rdict.get("next_action_date") or ""
                 proj_id = rdict.get("cos_project_id")
                 project_name = self._project_id_to_name(proj_id) if proj_id else ""
 
@@ -553,6 +598,12 @@ class TasksTab(QWidget):
                 it_task = QTableWidgetItem(task_text)
                 it_task.setFlags(it_task.flags() ^ Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(r, 1, it_task)
+
+                assignee_combo = self._create_assignee_combo(current_text=assigned_to)
+                assignee_combo.currentTextChanged.connect(
+                    lambda value, tid=task_id: self._on_assigned_to_changed(tid, value)
+                )
+                self.table.setCellWidget(r, 2, assignee_combo)
 
                 # Priority: combo fits in 80px column (Tasks tab), no right-side clip
                 priority_widget = QWidget()
@@ -578,15 +629,11 @@ class TasksTab(QWidget):
                     lambda idx, tid=task_id: self._on_priority_changed(tid, idx)
                 )
                 priority_layout.addWidget(priority_combo)
-                self.table.setCellWidget(r, 2, priority_widget)
+                self.table.setCellWidget(r, 3, priority_widget)
 
                 it_tags = QTableWidgetItem(tags_display)
                 it_tags.setFlags(it_tags.flags() ^ Qt.ItemFlag.ItemIsEditable)
-                self.table.setItem(r, 3, it_tags)
-
-                it_next = QTableWidgetItem(next_action)
-                it_next.setFlags(it_next.flags() ^ Qt.ItemFlag.ItemIsEditable)
-                self.table.setItem(r, 4, it_next)
+                self.table.setItem(r, 4, it_tags)
 
                 it_due = QTableWidgetItem(due_date)
                 it_due.setFlags(it_due.flags() ^ Qt.ItemFlag.ItemIsEditable)
@@ -701,6 +748,14 @@ class TasksTab(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Tasks", f"Could not update priority:\n\n{type(e).__name__}: {e}")
 
+    def _on_assigned_to_changed(self, task_id: int, value: str):
+        """Update task assignee when the row's assignee control changes."""
+        try:
+            assigned_to = (value or "").strip() or None
+            self.db.update_task_by_id(int(task_id), assigned_to=assigned_to)
+        except Exception as e:
+            QMessageBox.warning(self, "Tasks", f"Could not update assignee:\n\n{type(e).__name__}: {e}")
+
     def _parse_mason_task_commands(self, response: str) -> str:
         """
         Parse Mason's reply for task command lines, apply them via the DB, and return
@@ -728,15 +783,13 @@ class TasksTab(QWidget):
                         recurrence=cmd.recurrence,
                         completed=0,
                         cos_project_id=cmd.project_id,
+                        assigned_to=cmd.assigned_to,
                     )
                     # Apply richer optional fields.
-                    if cmd.priority is not None or cmd.next_action_date is not None:
+                    if cmd.priority is not None:
                         self.db.update_task_by_id(
                             int(task_id),
                             priority=cmd.priority if cmd.priority is not None else self.db._UNSET,  # type: ignore[attr-defined]
-                            next_action_date=cmd.next_action_date
-                            if cmd.next_action_date is not None
-                            else self.db._UNSET,  # type: ignore[attr-defined]
                         )
                 except Exception as e:
                     logger.warning("Mason ADD_TASK failed: %s", e)
@@ -759,11 +812,11 @@ class TasksTab(QWidget):
                 except Exception as e:
                     logger.warning("Mason TASK_SET_DUE failed: %s", e)
                 continue
-            if isinstance(cmd, TaskSetNextActionCommand):
+            if isinstance(cmd, TaskSetAssignedToCommand):
                 try:
-                    self.db.update_task_by_id(int(cmd.task_id), next_action_date=cmd.next_action_date)
+                    self.db.update_task_by_id(int(cmd.task_id), assigned_to=cmd.assigned_to)
                 except Exception as e:
-                    logger.warning("Mason TASK_SET_NEXT_ACTION failed: %s", e)
+                    logger.warning("Mason TASK_SET_ASSIGNED_TO failed: %s", e)
                 continue
             if isinstance(cmd, TaskSnoozeCommand):
                 try:
@@ -871,11 +924,10 @@ class TasksTab(QWidget):
                 tid = int(t.get("id") or 0)
                 prio = int(t.get("priority") or 0)
                 due_raw = str(t.get("due_date") or "").strip()
-                next_raw = str(t.get("next_action_date") or "").strip()
+                assigned_to = str(t.get("assigned_to") or "").strip()
                 snoozed_until = str(t.get("snoozed_until") or "").strip()
 
                 due_dt = _parse_mmddyyyy(due_raw)
-                next_dt = _parse_mmddyyyy(next_raw)
                 snooze_dt = _parse_mmddyyyy(snoozed_until)
 
                 is_snoozed = bool(snoozed_until)
@@ -899,9 +951,7 @@ class TasksTab(QWidget):
                     snooze_block = 1
 
                 days_to_due = (due_dt.date() - today).days if due_dt else 9999
-                days_to_next = (next_dt.date() - today).days if next_dt else 9999
-
-                # Sort key: overdue first, then due soon, then priority, then next-action soon.
+                # Sort key: overdue first, then due soon, then priority.
                 key = (
                     0 if is_overdue else 1,
                     0 if is_due_soon else 1,
@@ -909,7 +959,7 @@ class TasksTab(QWidget):
                     days_to_due if days_to_due >= 0 else 0,
                 )
                 # Secondary tie-breakers.
-                key2 = (-prio, days_to_next if days_to_next >= 0 else 0)
+                key2 = (-prio,)
                 scored.append(((key[0], key[1], key[2], key[3] * 10 + (99 - prio)), {**t, "_k2": key2, "_tid": tid}))
 
             # Keep the final ordering stable and high-signal.
@@ -930,13 +980,13 @@ class TasksTab(QWidget):
                     text = (str(t.get("task_text") or "").strip() or "(no text)")[:72]
                     prio = int(t.get("priority") or 0)
                     due = (t.get("due_date") or "").strip() or "none"
-                    next_act = (t.get("next_action_date") or "").strip() or "none"
+                    assigned_to = (t.get("assigned_to") or "").strip() or "none"
                     cat = t.get("category") or "—"
                     snoozed = str(t.get("snoozed_until") or "").strip()
                     snooze_tag = f" snoozed_until={snoozed}" if snoozed else ""
                     proj = t.get("cos_project_id")
                     proj_s = f" project={proj}" if proj else ""
-                    lines.append(f"  {tid}: {text} | P{prio} | due {due} | next {next_act} | {cat}{proj_s}{snooze_tag}")
+                    lines.append(f"  {tid}: {text} | P{prio} | due {due} | assigned_to {assigned_to} | {cat}{proj_s}{snooze_tag}")
             lines.append("")
             try:
                 proj_rows = self.db.cos_get_projects() or []
@@ -981,12 +1031,12 @@ class TasksTab(QWidget):
             lines.append("If you think important tasks/projects are missing, ask Adam for a filter (project id, keyword, category, date range). Do not assume you saw everything.")
             lines.append("")
             lines.append(
-                "Tasks: ADD_TASK: <description> | <MM-DD-YYYY or none> | Business|Personal [| <priority P0-P5 or 0-5 or none>] [| <next action MM-DD-YYYY or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]"
+                "Tasks: ADD_TASK: <description> | <MM-DD-YYYY or none> | Business|Personal [| <priority P0-P5 or 0-5 or none>] [| <assigned to or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]"
             )
             lines.append("TASK_UPDATE_PRIORITY: <task_id> | <0-5>")
             lines.append("TASK_COMPLETE: <task_id>")
             lines.append("TASK_SET_DUE: <task_id> | <MM-DD-YYYY or none>")
-            lines.append("TASK_SET_NEXT_ACTION: <task_id> | <MM-DD-YYYY or none>")
+            lines.append("TASK_SET_ASSIGNED_TO: <task_id> | <agent name, custom name, or none>")
             lines.append("TASK_SNOOZE: <task_id> | <days>")
             lines.append("TASK_DELETE: <task_id> (requires confirmation; you may propose it)")
             lines.append("TASK_SET_PROJECT: <task_id> | <project_id or none>")

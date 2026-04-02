@@ -78,7 +78,7 @@ def _rh_with_rich_db():
     rh.model_loaded = False
     memory_rows = []
 
-    def _user_memory_add(*, kind, content, source="unknown", confidence=1.0, approval_status="approved", json_data=None):
+    def _user_memory_add(*, kind, content, source="unknown", confidence=1.0, approval_status="approved", json_data=None, **_extra):
         row = (len(memory_rows) + 1, kind, content, source, confidence, approval_status, json_data, "now", "now")
         memory_rows.insert(0, row)
         return row[0]
@@ -94,6 +94,10 @@ def _rh_with_rich_db():
         get_tasks=lambda: [],
         list_tasks_rich=lambda **kw: [],
         cos_get_projects=lambda status=None, client=None: [],
+        conversation_chunk_latest_end_rowid=lambda session_id: 0,
+        list_conversation_turn_rows=lambda session_id, after_rowid=0: [],
+        conversation_chunk_add=lambda **kw: 0,
+        conversation_chunk_summary_search=lambda **kw: [],
         user_memory_search=lambda **kw: [],
         user_memory_recent=lambda **kw: [],
         user_memory_add=_user_memory_add,
@@ -121,7 +125,7 @@ def test_get_navi_tasks_projects_context_with_tasks():
             "task_text": "Review FDA memo",
             "priority": 4,
             "due_date": "02-26-2026",
-            "next_action_date": "02-25-2026",
+            "assigned_to": "Mason",
             "category": "Business",
         },
     ]
@@ -130,7 +134,7 @@ def test_get_navi_tasks_projects_context_with_tasks():
     assert "Review FDA memo" in out
     assert "P4" in out
     assert "02-26-2026" in out
-    assert "02-25-2026" in out
+    assert "Mason" in out
     assert "Business" in out
 
 
@@ -158,7 +162,7 @@ def test_get_navi_tasks_projects_context_on_error_returns_empty(monkeypatch):
 def test_get_response_injects_navi_context_when_nonempty(monkeypatch):
     rh = _rh_with_rich_db()
     rh.chat_handler.db.list_tasks_rich = lambda **kw: [
-        {"id": 1, "task_text": "Ship report", "priority": 3, "due_date": "02-28-2026", "next_action_date": "", "category": "Business"},
+        {"id": 1, "task_text": "Ship report", "priority": 3, "due_date": "02-28-2026", "assigned_to": "Quill", "category": "Business"},
     ]
     captured = []
 

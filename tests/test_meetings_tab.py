@@ -303,7 +303,7 @@ def test_task_extraction_completed_imports_selected_tasks(monkeypatch, meetings_
     monkeypatch.setattr("gui.meetings_tab.TaskImportDialog", _Dialog)
 
     meetings_tab._on_task_extraction_completed(
-        "## Suggested Tasks (importable)\n- [ ] Send follow-up memo | due: 03-10-2026 | category: Business\n",
+        "## Suggested Tasks (importable)\n- [ ] Send follow-up memo | due: 03-10-2026 | category: Business | priority: P4\n",
         auto=False,
     )
 
@@ -313,6 +313,7 @@ def test_task_extraction_completed_imports_selected_tasks(monkeypatch, meetings_
     assert db.added[0][2] == "03-10-2026"
     assert db.added[0][3] == "Business"
     assert db.updated and db.updated[0][0] == 1
+    assert db.updated[0][1]["priority"] == 4
     assert "Imported 1 draft task" in meetings_tab.meetingTranscript.toPlainText()
 
 

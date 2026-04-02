@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import logging
 import os
 from typing import Callable
@@ -28,6 +29,7 @@ from PyQt6.QtWidgets import (
 from core.agent_chat_service import agent_chat_response
 from core.db import DatabaseManager
 from core.file_handler import extract_text_from_file
+from gui.document_export import export_markdownish_document
 from gui.notifications import notify_chat_response
 
 logger = logging.getLogger(__name__)
@@ -101,18 +103,23 @@ class AgentConsole(QWidget):
         parent=None,
         context_provider: Callable[[], str] | None = None,
         response_processor: Callable[[str], str] | None = None,
+        reply_ready_callback: Callable[[str], None] | None = None,
+        workflow_trigger_callback: Callable[[str], None] | None = None,
     ):
         super().__init__(parent)
         self.db = db
         self.agent_code = (agent_code or "").strip().lower()
         self._context_provider = context_provider
         self._response_processor = response_processor
+        self._reply_ready_callback = reply_ready_callback
+        self._workflow_trigger_callback = workflow_trigger_callback
         self.agent = self.db.agent_get(self.agent_code) or self.db.agent_resolve_by_name(self.agent_code) or {}
         if self.agent:
             self.agent_code = str(self.agent.get("code") or self.agent_code).strip().lower()
         self._current_thread_id: int | None = None
         self._current_assignment_id: int | None = None
         self._last_assistant_message: str = ""
+        self._last_user_message: str = ""
         self._worker: AgentAskWorker | None = None
         self._setup_ui()
         self._refresh_threads()
@@ -152,6 +159,13 @@ class AgentConsole(QWidget):
         self.upload_artifact_btn = QPushButton("Upload Artifact")
         self.upload_artifact_btn.clicked.connect(self._upload_assignment_artifacts)
         action_row.addWidget(self.upload_artifact_btn)
+        self.reviewed_workflow_btn = QPushButton("Run Reviewed Workflow")
+        self.reviewed_workflow_btn.clicked.connect(self._trigger_reviewed_workflow)
+        self.reviewed_workflow_btn.setVisible(self.agent_code == "quill")
+        action_row.addWidget(self.reviewed_workflow_btn)
+        self.export_reply_btn = QPushButton("Export Reply")
+        self.export_reply_btn.clicked.connect(self._export_latest_reply)
+        action_row.addWidget(self.export_reply_btn)
         self.save_artifact_btn = QPushButton("Save Reply Artifact")
         self.save_artifact_btn.clicked.connect(self._save_latest_reply_artifact)
         action_row.addWidget(self.save_artifact_btn)
@@ -419,6 +433,89 @@ class AgentConsole(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Artifacts", f"Could not save artifact: {e}")
 
+    @staticmethod
+    def _reply_document_text(text: str) -> str:
+        body = str(text or "").strip()
+        if not body:
+            return ""
+        lines = body.splitlines()
+        if len(lines) >= 2 and lines[0].strip().startswith("```") and lines[-1].strip() == "```":
+            inner = "\n".join(lines[1:-1]).strip()
+            if inner:
+                return inner
+        return body
+
+    def _export_latest_reply(self):
+        if not self._last_assistant_message.strip():
+            QMessageBox.information(self, "Export Reply", "No assistant reply available to export yet.")
+            return
+        export_body = self._reply_document_text(self._last_assistant_message)
+        if not export_body:
+            QMessageBox.information(self, "Export Reply", "No assistant reply available to export yet.")
+            return
+
+        display_name = str(self.agent.get("display_name") or self.agent_code or "agent").strip() or "agent"
+        slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in display_name).strip("_") or "agent"
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"{slug}_reply_{stamp}.md"
+        if self._current_assignment_id is not None:
+            default_name = f"{slug}_A-{int(self._current_assignment_id):04d}_{stamp}.md"
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Agent Reply",
+            default_name,
+            "Markdown Files (*.md);;Word Documents (*.docx);;PDF Files (*.pdf);;Text Files (*.txt)",
+        )
+        if not file_path:
+            return
+
+        title = f"{display_name} Reply"
+        if self._current_assignment_id is not None:
+            title = f"{display_name} Reply A-{int(self._current_assignment_id):04d}"
+        try:
+            exported_path = export_markdownish_document(
+                title=title,
+                text=export_body,
+                file_path=file_path,
+                selected_filter=selected_filter,
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Export Reply", f"Could not export reply: {e}")
+            return
+
+        self.chat_display.append(
+            f"<p style='color:#9aa0a6;'><i>Exported reply to {os.path.basename(exported_path)}.</i></p>"
+        )
+
+    def _trigger_reviewed_workflow(self):
+        if not callable(self._workflow_trigger_callback):
+            QMessageBox.information(
+                self,
+                "Reviewed Workflow",
+                "This agent console is not connected to a reviewed workflow trigger.",
+            )
+            return
+        instruction = (self.input_edit.toPlainText() or "").strip()
+        if not instruction:
+            instruction = self._last_user_message.strip()
+        if not instruction:
+            instruction, ok = QInputDialog.getText(
+                self,
+                "Run Reviewed Workflow",
+                "Describe what should be run through the reviewed workspace workflow:",
+            )
+            if not ok or not str(instruction or "").strip():
+                return
+        instruction = str(instruction).strip()
+        try:
+            self._workflow_trigger_callback(instruction)
+        except Exception as e:
+            QMessageBox.warning(self, "Reviewed Workflow", f"Could not start reviewed workflow: {e}")
+            return
+        self.chat_display.append(
+            "<p style='color:#9aa0a6;'><i>Sent request to the reviewed Workspace workflow.</i></p>"
+        )
+
     def _upload_assignment_artifacts(self):
         if self._current_assignment_id is None:
             QMessageBox.information(self, "Artifacts", "Select an assignment first.")
@@ -602,6 +699,7 @@ class AgentConsole(QWidget):
         msg = (self.input_edit.toPlainText() or "").strip()
         if not msg:
             return
+        self._last_user_message = msg
         if self._current_thread_id is None:
             self._on_new_thread()
             if self._current_thread_id is None:
@@ -681,6 +779,11 @@ class AgentConsole(QWidget):
                     )
                 except Exception:
                     pass
+            if self._last_assistant_message and callable(self._reply_ready_callback):
+                try:
+                    self._reply_ready_callback(self._reply_document_text(self._last_assistant_message))
+                except Exception as e:
+                    logger.warning("Reply ready callback failed: %s", e)
         finally:
             self._worker = None
             self.send_btn.setEnabled(True)

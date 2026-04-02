@@ -35,13 +35,24 @@ def test_parse_add_task_line_canonical_minimal():
 
 def test_parse_add_task_line_with_optional_fields():
     ok, cmd, _reason = parse_add_task_line(
-        "ADD_TASK: Draft memo | none | Business | P4 | 03-05-2026 | 12 | Weekly"
+        "ADD_TASK: Draft memo | none | Business | P4 | Mason | 12 | Weekly"
     )
     assert ok is True
     assert isinstance(cmd, AddTaskCommand)
     assert cmd.due_date is None
     assert cmd.priority == 4
-    assert cmd.next_action_date == "03-05-2026"
+    assert cmd.assigned_to == "Mason"
+    assert cmd.project_id == 12
+    assert cmd.recurrence == "Weekly"
+
+
+def test_parse_add_task_line_legacy_next_action_field_is_ignored():
+    ok, cmd, _reason = parse_add_task_line(
+        "ADD_TASK: Draft memo | none | Business | P4 | 03-05-2026 | 12 | Weekly"
+    )
+    assert ok is True
+    assert isinstance(cmd, AddTaskCommand)
+    assert cmd.assigned_to is None
     assert cmd.project_id == 12
     assert cmd.recurrence == "Weekly"
 
@@ -59,4 +70,11 @@ def test_parse_action_line_task_delete_and_project_deadline():
     assert isinstance(cmd3, ProjectSetDeadlineCommand)
     assert cmd3.project_id == 5
     assert cmd3.deadline == "2026-03-01"
+
+
+def test_parse_action_line_task_set_assigned_to():
+    cmd = parse_action_line("TASK_SET_ASSIGNED_TO: 7 | Quill")
+    assert cmd is not None
+    assert cmd.task_id == 7
+    assert cmd.assigned_to == "Quill"
 

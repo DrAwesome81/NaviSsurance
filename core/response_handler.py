@@ -14,7 +14,8 @@ from config import PROJECT_ROOT
 from core.chat_retrieval import build_long_term_retrieval_context
 from core.local_llm import session_profile
 from core.task_command_contract import AddTaskCommand, normalize_mmddyyyy, parse_actions
-from core.user_memory import auto_store_user_memory, build_user_memory_context, store_teach_navi_memory
+from core.agent_memory import build_supervisor_cross_memory_context
+from core.user_memory import auto_store_user_memory, build_user_memory_context, store_teach_memory
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,7 @@ class ResponseHandler:
         )
         conversation_history.append({"role": "user", "content": message})
         try:
-            teach_response = store_teach_navi_memory(self.chat_handler.db, message)
+            teach_response = store_teach_memory(self.chat_handler.db, message)
             if teach_response:
                 return teach_response
 
@@ -302,6 +303,13 @@ class ResponseHandler:
             # Give Navi visibility into tasks and projects for planning/priorities (same as Mason)
             navi_context = self._get_navi_tasks_projects_context()
             user_memory_context = build_user_memory_context(self.chat_handler.db, message, limit=5, recent_limit=2)
+            cross_memory_context = build_supervisor_cross_memory_context(
+                self.chat_handler.db,
+                message,
+                limit_agents=2,
+                agent_memory_limit=3,
+                assignment_memory_limit=4,
+            )
             long_term_context = build_long_term_retrieval_context(
                 self.chat_handler.db,
                 message,
@@ -319,6 +327,8 @@ class ResponseHandler:
                 )
             if user_memory_context:
                 system_messages.append({"role": "system", "content": user_memory_context})
+            if cross_memory_context:
+                system_messages.append({"role": "system", "content": cross_memory_context})
             if long_term_context:
                 system_messages.append({"role": "system", "content": long_term_context})
             messages_for_llm = system_messages + list(conversation_history) if system_messages else conversation_history
@@ -353,16 +363,14 @@ class ResponseHandler:
                             recurrence=cmd.recurrence,
                             completed=0,
                             cos_project_id=cmd.project_id,
+                            assigned_to=cmd.assigned_to,
                         )
-                        if cmd.priority is not None or cmd.next_action_date is not None:
+                        if cmd.priority is not None:
                             try:
                                 self.chat_handler.db.update_task_by_id(
                                     int(task_id),
                                     priority=cmd.priority
                                     if cmd.priority is not None
-                                    else self.chat_handler.db._UNSET,  # type: ignore[attr-defined]
-                                    next_action_date=cmd.next_action_date
-                                    if cmd.next_action_date is not None
                                     else self.chat_handler.db._UNSET,  # type: ignore[attr-defined]
                                 )
                             except Exception:
@@ -568,7 +576,7 @@ All Tasks:
                 include_snoozed=False,
                 limit=100,
             )
-            lines = ["Tasks (id, text, priority P0–P5, due, next action, category):"]
+            lines = ["Tasks (id, text, priority P0–P5, due, assigned to, category):"]
             if not tasks:
                 lines.append("  (none)")
             else:
@@ -577,9 +585,9 @@ All Tasks:
                     text = (str(t.get("task_text") or "").strip() or "(no text)")[:80]
                     prio = t.get("priority", 0)
                     due = t.get("due_date") or "—"
-                    next_act = t.get("next_action_date") or "—"
+                    assigned_to = t.get("assigned_to") or "—"
                     cat = t.get("category") or "—"
-                    lines.append(f"  {tid}: {text} | P{prio} | due {due} | next {next_act} | {cat}")
+                    lines.append(f"  {tid}: {text} | P{prio} | due {due} | assigned to {assigned_to} | {cat}")
             try:
                 proj_rows = db.cos_get_projects() or []
                 lines.append("")

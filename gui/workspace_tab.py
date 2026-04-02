@@ -262,7 +262,7 @@ class WorkspaceTab(QWidget):
         main_splitter.setStretchFactor(0, 2)  # Files panel gets more usable default space
         main_splitter.setStretchFactor(1, 5)  # Preview panel still remains primary
 
-        self.quill_chat_group = QGroupBox("Direct chat with Quill (Technical Writer)")
+        self.quill_chat_group = QGroupBox("Direct chat with Quill (single-agent; bypasses Grok + ChatGPT review)")
         self.quill_chat_group.setCheckable(True)
         self.quill_chat_group.setChecked(False)
         quill_chat_layout = QVBoxLayout(self.quill_chat_group)
@@ -271,6 +271,8 @@ class WorkspaceTab(QWidget):
             agent_code="quill",
             parent=self,
             context_provider=self._build_quill_runtime_context,
+            reply_ready_callback=self._load_quill_reply_into_preview,
+            workflow_trigger_callback=self._run_quill_reviewed_workflow,
         )
         self.quill_console.setVisible(False)
         quill_chat_layout.addWidget(self.quill_console)
@@ -1888,7 +1890,35 @@ class WorkspaceTab(QWidget):
             return ""
         return "\n\n".join(sections)
 
-    def run_ai_collaboration_workflow(self):
+    def _load_quill_reply_into_preview(self, reply_text: str) -> None:
+        body = str(reply_text or "").strip()
+        if not body:
+            return
+        self._current_markdown = body
+        self.preview_text.setPlainText(body)
+        self._last_generated_template_spec = None
+        self._current_template_blocks = {}
+        self._current_document_metadata = {}
+        self._current_template_evidence_map = {}
+        self._current_unresolved_fields = []
+        self._current_research_gaps = []
+        self._current_user_questions = []
+        self._update_template_validation_state()
+        self._update_template_gap_summary()
+        if hasattr(self, "save_button"):
+            self.save_button.setEnabled(True)
+        if hasattr(self, "export_button"):
+            self.export_button.setEnabled(True)
+        self.status_label.setText("Loaded Quill direct reply into preview. Use Export to save it.")
+
+    def _run_quill_reviewed_workflow(self, instruction: str) -> None:
+        prompt = str(instruction or "").strip()
+        if not prompt:
+            self.status_label.setText("No reviewed-workflow instruction provided from Quill.")
+            return
+        self.run_ai_collaboration_workflow(initial_instructions=prompt, prompt_source="Quill")
+
+    def run_ai_collaboration_workflow(self, initial_instructions: str | None = None, prompt_source: str = "Workspace"):
         """
         Run the dual-LLM collaboration workflow on the marked files.
 
@@ -1921,15 +1951,20 @@ class WorkspaceTab(QWidget):
             except Exception:
                 default_instructions = ""
             
-            instructions, ok = QInputDialog.getText(
-                self,
-                "AI Collaboration Instructions",
-                prompt_text,
-                text=default_instructions,
-            )
-            if not ok or not instructions.strip():
-                self.status_label.setText("AI collaboration cancelled")
-                return
+            provided_instructions = str(initial_instructions or "").strip()
+            if provided_instructions:
+                instructions = provided_instructions
+                ok = True
+            else:
+                instructions, ok = QInputDialog.getText(
+                    self,
+                    "AI Collaboration Instructions",
+                    prompt_text,
+                    text=default_instructions,
+                )
+                if not ok or not instructions.strip():
+                    self.status_label.setText("AI collaboration cancelled")
+                    return
 
             # Convert marked_files into WorkspaceFile objects and extract content (if any)
             workspace_files = []
@@ -1996,8 +2031,9 @@ class WorkspaceTab(QWidget):
                     "Output contract:\n"
                     "- The markdown MUST include a section exactly titled: '## Suggested Tasks (importable)'.\n"
                     "- Under that header, include one task per line in this exact format:\n"
-                    "  - [ ] <task title> | due: <MM-DD-YYYY or none> | category: <Business or Personal>\n"
+                    "  - [ ] <task title> | due: <MM-DD-YYYY or none> | category: <Business or Personal> | priority: <P0-P5>\n"
                     "- Use realistic due dates; if unknown, use 'none'.\n"
+                    "- Use P0 for low priority, P3 for normal priority, and P5 only for clearly urgent items.\n"
                     "- Keep task titles short and action-oriented.\n"
                 )
             task_spec = WorkspaceTaskSpec(
@@ -2039,6 +2075,8 @@ class WorkspaceTab(QWidget):
                 self.progress_bar.setValue(20)
             if selected_template_spec:
                 self.status_label.setText(f"Generating structured draft with template: {selected_template_spec.display_name}")
+            elif provided_instructions:
+                self.status_label.setText(f"Starting reviewed workflow from {prompt_source}...")
             QApplication.processEvents()
             
             # Clear previous outputs
@@ -2324,12 +2362,17 @@ class WorkspaceTab(QWidget):
         failed = 0
         for t in selected:
             try:
-                self.db.add_task(
+                task_id = self.db.add_task(
                     "workspace_import",
                     t.title,
                     t.due_mmddyyyy,
                     category=t.category,
                 )
+                if hasattr(self.db, "update_task_by_id"):
+                    try:
+                        self.db.update_task_by_id(int(task_id), priority=int(t.priority or 0))
+                    except Exception:
+                        pass
                 created += 1
             except Exception:
                 failed += 1

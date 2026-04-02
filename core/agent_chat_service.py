@@ -5,8 +5,15 @@ import logging
 from typing import Iterable
 
 from core.agent_execution import bootstrap_assignment_execution
+from core.agent_memory import (
+    auto_store_agent_memory,
+    auto_store_assignment_memory,
+    build_agent_memory_context,
+    build_assignment_memory_context,
+)
 from core.db import DatabaseManager
 from core.grok_client import MODEL_FAST, grok_available, grok_completion_messages
+from core.user_memory import build_user_memory_context, default_user_memory_llm, store_teach_memory
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +155,59 @@ def _format_thread_context(db: DatabaseManager, thread_id: int) -> str:
     if not body:
         return ""
     return "Thread context:\n" + body
+
+
+def _agent_memory_prompt_context(
+    db: DatabaseManager,
+    *,
+    agent_code: str,
+    user_message: str,
+    assignment_id: int | None,
+    thread_id: int | None,
+) -> str:
+    query_parts = [str(user_message or "").strip()]
+    if assignment_id is not None:
+        assignment_context = _format_assignment_context(db, int(assignment_id))
+        if assignment_context:
+            query_parts.append(assignment_context)
+    if thread_id is not None:
+        thread_context = _format_thread_context(db, int(thread_id))
+        if thread_context:
+            query_parts.append(thread_context)
+    query = "\n\n".join(part for part in query_parts if part).strip()
+    if not query:
+        return ""
+    sections: list[str] = []
+    try:
+        agent_memory = build_agent_memory_context(db, agent_code, query, limit=4, recent_limit=2)
+    except Exception as exc:
+        logger.debug("agent memory context failed for %s: %s", agent_code, exc)
+        agent_memory = ""
+    if agent_memory:
+        sections.append(agent_memory)
+    try:
+        assignment_memory = build_assignment_memory_context(
+            db,
+            query,
+            assignment_id=assignment_id,
+            thread_id=thread_id,
+            agent_code=agent_code,
+            limit=4,
+            recent_limit=2,
+        )
+    except Exception as exc:
+        logger.debug("assignment memory context failed for %s: %s", agent_code, exc)
+        assignment_memory = ""
+    if assignment_memory:
+        sections.append(assignment_memory)
+    try:
+        global_memory = build_user_memory_context(db, query, limit=2, recent_limit=1)
+    except Exception as exc:
+        logger.debug("global memory context failed for %s: %s", agent_code, exc)
+        global_memory = ""
+    if global_memory:
+        sections.append("Relevant shared Navi memory:\n" + global_memory)
+    return "\n\n".join(section for section in sections if section.strip())
 
 
 def _thread_session_id(db: DatabaseManager, thread_id: int) -> str:
@@ -322,6 +382,10 @@ def agent_chat_response(
         return f"{display_name} unavailable: {msg}"
 
     system = _system_prompt_for(code, display_name=display_name, role_title=role_title)
+    user_text = (user_message or "").strip()
+    teach_response = store_teach_memory(db, user_text)
+    if teach_response:
+        return teach_response
     context_parts: list[str] = []
     if assignment_id is not None:
         asg_ctx = _format_assignment_context(db, int(assignment_id))
@@ -335,6 +399,15 @@ def agent_chat_response(
         runtime_text = str(runtime_context).strip()
         if runtime_text:
             context_parts.append("Runtime context:\n" + runtime_text)
+    memory_context = _agent_memory_prompt_context(
+        db,
+        agent_code=code,
+        user_message=user_text,
+        assignment_id=assignment_id,
+        thread_id=thread_id,
+    )
+    if memory_context:
+        context_parts.append(memory_context)
 
     messages: list[dict] = [{"role": "system", "content": system}]
     if context_parts:
@@ -347,7 +420,6 @@ def agent_chat_response(
     hist = _coerce_history(conversation_history)
     messages.extend(hist)
 
-    user_text = (user_message or "").strip()
     if user_text:
         # Avoid duplicate user turn if caller already included it in history.
         if not hist or hist[-1].get("role") != "user" or hist[-1].get("content") != user_text:
@@ -362,6 +434,38 @@ def agent_chat_response(
     out = (out or "").strip()
     if not out:
         out = f"{display_name} has no output right now. Please try rephrasing."
+
+    if user_text:
+        try:
+            session_id = _thread_session_id(db, int(thread_id)) if thread_id is not None else None
+            auto_store_agent_memory(
+                db,
+                agent_code=code,
+                user_message=user_text,
+                assistant_message=out,
+                llm_callable=default_user_memory_llm,
+                session_id=session_id,
+                thread_id=thread_id,
+                assignment_id=assignment_id,
+                route="agent_chat",
+            )
+        except Exception as exc:
+            logger.debug("agent memory writeback failed for %s: %s", code, exc)
+        try:
+            session_id = _thread_session_id(db, int(thread_id)) if thread_id is not None else None
+            auto_store_assignment_memory(
+                db,
+                user_message=user_text,
+                assistant_message=out,
+                assignment_id=assignment_id,
+                thread_id=thread_id,
+                agent_code=code,
+                llm_callable=default_user_memory_llm,
+                session_id=session_id,
+                route="agent_assignment_chat",
+            )
+        except Exception as exc:
+            logger.debug("assignment memory writeback failed for %s: %s", code, exc)
 
     if thread_id is not None:
         try:

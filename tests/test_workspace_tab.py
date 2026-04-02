@@ -46,7 +46,7 @@ def qapp():
 def workspace_tab(monkeypatch, qapp):
     # Keep WorkspaceTab lightweight for tests by stubbing AgentConsole.
     class _StubAgentConsole(QWidget):
-        def __init__(self, db, agent_code="quill", parent=None, context_provider=None):
+        def __init__(self, db, agent_code="quill", parent=None, context_provider=None, **kwargs):
             super().__init__(parent)
 
     monkeypatch.setattr("gui.workspace_tab.AgentConsole", _StubAgentConsole)
@@ -121,6 +121,48 @@ def test_workspace_generate_draft_button_click_triggers_workflow(monkeypatch, wo
     assert "AI collaboration cancelled" in workspace_tab.status_label.text()
 
 
+def test_workspace_quill_reviewed_workflow_uses_provided_instruction(monkeypatch, workspace_tab):
+    captured = {}
+
+    class _WorkerStub:
+        def __init__(self, orchestrator, task_spec, file_contents):
+            captured["task_spec"] = task_spec
+            captured["file_contents"] = dict(file_contents)
+
+            class _Sig:
+                def connect(self, _fn):
+                    return None
+
+            self.progress_signal = _Sig()
+            self.round_update_signal = _Sig()
+            self.result_signal = _Sig()
+            self.error_signal = _Sig()
+
+        def start(self):
+            captured["started"] = True
+
+    class _OrchestratorStub:
+        def __init__(self, logger, grok_call, chatgpt_call):
+            self.logger = logger
+            self.grok_call = grok_call
+            self.chatgpt_call = chatgpt_call
+
+    monkeypatch.setattr("gui.workspace_tab.CollaborationWorker", _WorkerStub)
+    monkeypatch.setattr("gui.workspace_tab.DualLLMOrchestrator", _OrchestratorStub)
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("dialog should not run")),
+    )
+
+    workspace_tab.selected_files = []
+    workspace_tab._run_quill_reviewed_workflow("Re-run this with the marked client device info reference.")
+
+    assert captured["started"] is True
+    assert captured["task_spec"].goal == "Re-run this with the marked client device info reference."
+    assert "reviewed workflow from Quill" in workspace_tab.status_label.text()
+
+
 def test_workspace_save_markdown_writes_file(monkeypatch, workspace_tab, tmp_path):
     out_path = tmp_path / "workspace_doc.md"
     workspace_tab._current_markdown = "# Title\n\nBody"
@@ -140,6 +182,33 @@ def test_workspace_export_markdown_without_document_sets_status(workspace_tab):
     workspace_tab._current_markdown = None
     workspace_tab.export_markdown()
     assert "No document to export" in workspace_tab.status_label.text()
+
+
+def test_workspace_quill_reply_loads_into_preview_and_enables_export(workspace_tab):
+    workspace_tab.save_button.setEnabled(False)
+    workspace_tab.export_button.setEnabled(False)
+    workspace_tab._last_generated_template_spec = object()
+    workspace_tab._current_template_blocks = {"section": "stale"}
+    workspace_tab._current_document_metadata = {"title": "stale"}
+    workspace_tab._current_template_evidence_map = {"field": "stale"}
+    workspace_tab._current_unresolved_fields = ["value::scope"]
+    workspace_tab._current_research_gaps = ["gap"]
+    workspace_tab._current_user_questions = ["question"]
+
+    workspace_tab._load_quill_reply_into_preview("# Draft\n\nBody")
+
+    assert workspace_tab._current_markdown == "# Draft\n\nBody"
+    assert workspace_tab.preview_text.toPlainText() == "# Draft\n\nBody"
+    assert workspace_tab.save_button.isEnabled() is True
+    assert workspace_tab.export_button.isEnabled() is True
+    assert workspace_tab._last_generated_template_spec is None
+    assert workspace_tab._current_template_blocks == {}
+    assert workspace_tab._current_document_metadata == {}
+    assert workspace_tab._current_template_evidence_map == {}
+    assert workspace_tab._current_unresolved_fields == []
+    assert workspace_tab._current_research_gaps == []
+    assert workspace_tab._current_user_questions == []
+    assert "Loaded Quill direct reply into preview" in workspace_tab.status_label.text()
 
 
 def test_workspace_template_export_blocks_invalid_payload(monkeypatch, workspace_tab, tmp_path):
@@ -752,7 +821,7 @@ def test_workspace_restores_last_session_on_startup(monkeypatch, qapp, tmp_path)
     sample.write_text("restored", encoding="utf-8")
 
     class _StubAgentConsole(QWidget):
-        def __init__(self, db, agent_code="quill", parent=None, context_provider=None):
+        def __init__(self, db, agent_code="quill", parent=None, context_provider=None, **kwargs):
             super().__init__(parent)
 
     class _Db:

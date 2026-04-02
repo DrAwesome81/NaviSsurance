@@ -13,7 +13,7 @@ _UNSET = object()
 class DatabaseManager:
     def __init__(self, db_name: str | None = None):
         self.db_name = str(db_name or DATABASE_PATH)
-        self.current_schema_version = 25  # Increment this when making schema changes
+        self.current_schema_version = 27  # Increment this when making schema changes
         self.setup_db()
         self.create_indexes()
         # Additive tables for newer features (safe for legacy DBs)
@@ -112,6 +112,8 @@ class DatabaseManager:
                     conn.execute("ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
                 if "tags_json" not in columns:
                     conn.execute("ALTER TABLE tasks ADD COLUMN tags_json TEXT")
+                if "assigned_to" not in columns:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN assigned_to TEXT")
                 if "next_action_date" not in columns:
                     conn.execute("ALTER TABLE tasks ADD COLUMN next_action_date TEXT")
                 if "snoozed_until" not in columns:
@@ -878,6 +880,7 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_assigned_to ON tasks(assigned_to)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_next_action_date ON tasks(next_action_date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_snoozed_until ON tasks(snoozed_until)")
             
@@ -934,9 +937,24 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_created_at ON user_memory(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_confidence ON user_memory(confidence)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_approval_status ON user_memory(approval_status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_agent_code ON agent_memory(agent_code)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_kind ON agent_memory(kind)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_source ON agent_memory(source)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_created_at ON agent_memory(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_confidence ON agent_memory(confidence)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_approval_status ON agent_memory(approval_status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_assignment_memory_assignment_id ON assignment_memory(assignment_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_assignment_memory_thread_id ON assignment_memory(thread_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_assignment_memory_agent_code ON assignment_memory(agent_code)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_assignment_memory_kind ON assignment_memory(kind)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_assignment_memory_created_at ON assignment_memory(created_at)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memory_entity_links_entity "
                 "ON memory_entity_links(entity_type, entity_key, mem_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_memory_entity_links_entity "
+                "ON agent_memory_entity_links(entity_type, entity_key, mem_id)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_runtime_jobs_status_runat "
@@ -1321,6 +1339,7 @@ class DatabaseManager:
         completed=0,
         cos_project_id=None,
         *,
+        assigned_to: str | None = None,
         start_date: str | None = None,
         estimate_minutes: int | None = None,
         blockers: str | None = None,
@@ -1339,6 +1358,7 @@ class DatabaseManager:
                         completed,
                         priority,
                         tags_json,
+                        assigned_to,
                         next_action_date,
                         snoozed_until,
                         created_at,
@@ -1350,7 +1370,7 @@ class DatabaseManager:
                         depends_on_json
                     )
                 VALUES
-                    (?, ?, ?, ?, ?, ?, COALESCE(?, 0), COALESCE(?, '[]'), ?, ?, datetime('now'), datetime('now'), ?, ?, COALESCE(?, 0), ?, COALESCE(?, '[]'))
+                    (?, ?, ?, ?, ?, ?, COALESCE(?, 0), COALESCE(?, '[]'), ?, ?, ?, datetime('now'), datetime('now'), ?, ?, COALESCE(?, 0), ?, COALESCE(?, '[]'))
                 """,
                 (
                     session_id,
@@ -1361,6 +1381,7 @@ class DatabaseManager:
                     completed,
                     0,
                     "[]",
+                    (str(assigned_to).strip() or None) if assigned_to is not None else None,
                     None,
                     None,
                     int(cos_project_id) if cos_project_id is not None else None,
@@ -1386,6 +1407,7 @@ class DatabaseManager:
         completed: int | object = _UNSET,
         priority: int | object = _UNSET,
         tags_json: str | None | object = _UNSET,
+        assigned_to: str | None | object = _UNSET,
         next_action_date: str | None | object = _UNSET,
         snoozed_until: str | None | object = _UNSET,
         cos_project_id: int | None | object = _UNSET,
@@ -1416,6 +1438,9 @@ class DatabaseManager:
         if tags_json is not self._UNSET:
             fields.append("tags_json = ?")
             params.append(str(tags_json))
+        if assigned_to is not self._UNSET:
+            fields.append("assigned_to = ?")
+            params.append((str(assigned_to).strip() or None) if assigned_to is not None else None)
         if next_action_date is not self._UNSET:
             fields.append("next_action_date = ?")
             params.append(next_action_date)
@@ -1455,6 +1480,7 @@ class DatabaseManager:
                         id, session_id, task_text, due_date, start_date, category, recurrence, completed,
                         COALESCE(priority, 0) AS priority,
                         COALESCE(tags_json, '[]') AS tags_json,
+                        COALESCE(assigned_to, '') AS assigned_to,
                         next_action_date,
                         snoozed_until,
                         created_at,
@@ -1513,6 +1539,7 @@ class DatabaseManager:
                     id, session_id, task_text, due_date, category, recurrence, completed,
                     COALESCE(priority, 0) AS priority,
                     COALESCE(tags_json, '[]') AS tags_json,
+                    COALESCE(assigned_to, '') AS assigned_to,
                     next_action_date,
                     snoozed_until,
                     created_at,
@@ -1575,7 +1602,11 @@ class DatabaseManager:
                 except Exception:
                     tags = (r.get("tags_json") or "").lower()
                 if search_l not in tt and search_l not in tags:
-                    continue
+                    assigned_to = (r.get("assigned_to") or "").lower()
+                    if search_l in assigned_to:
+                        pass
+                    else:
+                        continue
 
             # Project filter (cos_project_id already in SQL when provided)
             # (handled in WHERE clause)
@@ -3958,6 +3989,114 @@ class DatabaseManager:
             except Exception as e:
                 print(f"    - Error creating channel binding tables: {e}")
 
+        # Version 25 to 26: per-agent durable memory tables.
+        if from_version < 26 and to_version >= 26:
+            print("  - Creating per-agent durable memory tables")
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_memory (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        agent_code TEXT NOT NULL,
+                        kind TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        source TEXT NOT NULL DEFAULT 'unknown',
+                        confidence REAL NOT NULL DEFAULT 1.0,
+                        approval_status TEXT NOT NULL DEFAULT 'approved',
+                        json_data TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (agent_code) REFERENCES agent_directory(code)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS agent_memory_fts
+                        USING fts5 (
+                            mem_id UNINDEXED,
+                            agent_code UNINDEXED,
+                            kind UNINDEXED,
+                            content,
+                            source UNINDEXED,
+                            created_at UNINDEXED,
+                            tokenize='porter'
+                        )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_memory_entity_links (
+                        mem_id INTEGER NOT NULL,
+                        entity_type TEXT NOT NULL,
+                        entity_key TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(mem_id, entity_type, entity_key),
+                        FOREIGN KEY (mem_id) REFERENCES agent_memory(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_agent_code ON agent_memory(agent_code)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_kind ON agent_memory(kind)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_source ON agent_memory(source)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_created_at ON agent_memory(created_at)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_confidence ON agent_memory(confidence)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_approval_status ON agent_memory(approval_status)")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_memory_entity_links_entity "
+                    "ON agent_memory_entity_links(entity_type, entity_key, mem_id)"
+                )
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error creating per-agent durable memory tables: {e}")
+
+        # Version 26 to 27: task-local assignment memory tables.
+        if from_version < 27 and to_version >= 27:
+            print("  - Creating assignment memory tables")
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS assignment_memory (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        assignment_id INTEGER,
+                        thread_id INTEGER,
+                        agent_code TEXT,
+                        kind TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        source TEXT NOT NULL DEFAULT 'assignment_chat',
+                        json_data TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (assignment_id) REFERENCES agent_assignments(id) ON DELETE CASCADE,
+                        FOREIGN KEY (thread_id) REFERENCES agent_threads(id) ON DELETE CASCADE,
+                        FOREIGN KEY (agent_code) REFERENCES agent_directory(code)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS assignment_memory_fts
+                        USING fts5 (
+                            mem_id UNINDEXED,
+                            assignment_id UNINDEXED,
+                            thread_id UNINDEXED,
+                            agent_code UNINDEXED,
+                            kind UNINDEXED,
+                            content,
+                            source UNINDEXED,
+                            created_at UNINDEXED,
+                            tokenize='porter'
+                        )
+                    """
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_assignment_memory_assignment_id ON assignment_memory(assignment_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_assignment_memory_thread_id ON assignment_memory(thread_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_assignment_memory_agent_code ON assignment_memory(agent_code)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_assignment_memory_kind ON assignment_memory(kind)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_assignment_memory_created_at ON assignment_memory(created_at)")
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error creating assignment memory tables: {e}")
+
         print(f"Schema migration from version {from_version} to {to_version} completed.")
 
     # -------------------------------------------------------------------------
@@ -5749,6 +5888,598 @@ class DatabaseManager:
                 params.append(str(approval_status))
             row = conn.execute(base, params).fetchone()
             return int(row[0] or 0) if row else 0
+
+    def agent_memory_add(
+        self,
+        *,
+        agent_code: str,
+        kind: str,
+        content: str,
+        source: str = "unknown",
+        confidence: float = 1.0,
+        approval_status: str = "approved",
+        json_data: str | dict | list | None = None,
+        entity_refs: list[dict] | None = None,
+    ) -> int:
+        """Insert one durable per-agent memory item and index it in FTS."""
+        agent = str(agent_code or "").strip().lower()
+        text = str(content or "").strip()
+        if not agent or not text:
+            return 0
+        payload = json_data
+        if isinstance(payload, (dict, list)):
+            payload = json.dumps(payload, ensure_ascii=False)
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO agent_memory (
+                    agent_code, kind, content, source, confidence, approval_status, json_data, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                """,
+                (
+                    agent,
+                    str(kind or "note").strip() or "note",
+                    text,
+                    str(source or "unknown").strip() or "unknown",
+                    float(confidence),
+                    str(approval_status or "approved").strip() or "approved",
+                    payload,
+                ),
+            )
+            mem_id = int(cur.lastrowid)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO agent_memory_fts (mem_id, agent_code, kind, content, source, created_at)
+                    VALUES (?, ?, ?, ?, ?, datetime('now'))
+                    """,
+                    (
+                        mem_id,
+                        agent,
+                        str(kind or "note").strip() or "note",
+                        text,
+                        str(source or "unknown").strip() or "unknown",
+                    ),
+                )
+            except Exception:
+                pass
+            if entity_refs:
+                for ref in entity_refs:
+                    entity_type = str((ref or {}).get("entity_type") or "").strip().lower()
+                    entity_key = str((ref or {}).get("entity_key") or "").strip()
+                    if not entity_type or not entity_key:
+                        continue
+                    try:
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO agent_memory_entity_links (mem_id, entity_type, entity_key, created_at)
+                            VALUES (?, ?, ?, datetime('now'))
+                            """,
+                            (mem_id, entity_type, entity_key),
+                        )
+                    except Exception:
+                        continue
+            conn.commit()
+            return mem_id
+
+    def agent_memory_add_many(self, *, agent_code: str, items: list[dict]) -> int:
+        """Insert many durable agent-memory items. Returns count inserted."""
+        if not items:
+            return 0
+        added = 0
+        for it in items:
+            try:
+                self.agent_memory_add(
+                    agent_code=agent_code,
+                    kind=(it.get("kind") or "note"),
+                    content=(it.get("content") or ""),
+                    source=(it.get("source") or "unknown"),
+                    confidence=float(it.get("confidence", 1.0)),
+                    approval_status=(it.get("approval_status") or "approved"),
+                    json_data=it.get("json_data"),
+                    entity_refs=it.get("entity_refs"),
+                )
+                added += 1
+            except Exception:
+                continue
+        return added
+
+    def agent_memory_get(self, memory_id: int) -> tuple | None:
+        """
+        Return one agent_memory row:
+        (id, agent_code, kind, content, source, confidence, approval_status, json_data, created_at, updated_at)
+        """
+        with sqlite3.connect(self.db_name) as conn:
+            return conn.execute(
+                """
+                SELECT id, agent_code, kind, content, source, confidence, approval_status, json_data, created_at, updated_at
+                FROM agent_memory
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (int(memory_id),),
+            ).fetchone()
+
+    def agent_memory_recent(
+        self,
+        *,
+        agent_code: str,
+        kind: str | None = None,
+        source: str | None = None,
+        approval_status: str | None = None,
+        limit: int = 20,
+    ) -> list[tuple]:
+        """
+        Return recent agent_memory rows:
+        (id, agent_code, kind, content, source, confidence, approval_status, json_data, created_at, updated_at)
+        """
+        agent = str(agent_code or "").strip().lower()
+        if not agent:
+            return []
+        with sqlite3.connect(self.db_name) as conn:
+            base = """
+                SELECT id, agent_code, kind, content, source, confidence, approval_status, json_data, created_at, updated_at
+                FROM agent_memory
+                WHERE agent_code = ?
+            """
+            params: list[object] = [agent]
+            if kind is not None:
+                base += " AND kind = ?"
+                params.append(str(kind))
+            if source is not None:
+                base += " AND source = ?"
+                params.append(str(source))
+            if approval_status is not None:
+                base += " AND approval_status = ?"
+                params.append(str(approval_status))
+            base += " ORDER BY created_at DESC, id DESC LIMIT ?"
+            params.append(int(limit))
+            return conn.execute(base, params).fetchall()
+
+    def agent_memory_search(
+        self,
+        *,
+        agent_code: str,
+        query: str,
+        kind: str | None = None,
+        source: str | None = None,
+        approval_status: str | None = None,
+        limit: int = 10,
+    ) -> list[tuple]:
+        """
+        Full-text search over agent_memory_fts. Returns rows:
+        (id, agent_code, kind, content, source, confidence, approval_status, json_data, created_at, updated_at)
+        """
+        agent = str(agent_code or "").strip().lower()
+        q = str(query or "").strip()
+        if not agent or not q:
+            return []
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                where = "agent_memory_fts MATCH ? AND m.agent_code = ?"
+                params = [q, agent]
+                if kind is not None:
+                    where += " AND kind = ?"
+                    params.append(str(kind))
+                if source is not None:
+                    where += " AND m.source = ?"
+                    params.append(str(source))
+                if approval_status is not None:
+                    where += " AND m.approval_status = ?"
+                    params.append(str(approval_status))
+                params.append(int(limit))
+                return conn.execute(
+                    f"""
+                    SELECT m.id, m.agent_code, m.kind, m.content, m.source, m.confidence, m.approval_status, m.json_data, m.created_at, m.updated_at
+                    FROM agent_memory_fts f
+                    JOIN agent_memory m ON m.id = f.mem_id
+                    WHERE {where}
+                    ORDER BY bm25(agent_memory_fts), m.confidence DESC, m.created_at DESC
+                    LIMIT ?
+                    """,
+                    params,
+                ).fetchall()
+        except Exception:
+            like = f"%{q}%"
+            with sqlite3.connect(self.db_name) as conn:
+                base = """
+                    SELECT id, agent_code, kind, content, source, confidence, approval_status, json_data, created_at, updated_at
+                    FROM agent_memory
+                    WHERE agent_code = ? AND (content LIKE ? OR source LIKE ?)
+                """
+                params = [agent, like, like]
+                if kind is not None:
+                    base += " AND kind = ?"
+                    params.append(str(kind))
+                if source is not None:
+                    base += " AND source = ?"
+                    params.append(str(source))
+                if approval_status is not None:
+                    base += " AND approval_status = ?"
+                    params.append(str(approval_status))
+                base += " ORDER BY confidence DESC, created_at DESC, id DESC LIMIT ?"
+                params.append(int(limit))
+                return conn.execute(base, params).fetchall()
+
+    def agent_memory_delete(self, memory_id: int) -> bool:
+        """Delete one durable agent-memory row and its FTS/entity-link entries."""
+        with sqlite3.connect(self.db_name) as conn:
+            try:
+                conn.execute("DELETE FROM agent_memory_fts WHERE mem_id = ?", (int(memory_id),))
+            except Exception:
+                pass
+            try:
+                conn.execute("DELETE FROM agent_memory_entity_links WHERE mem_id = ?", (int(memory_id),))
+            except Exception:
+                pass
+            cur = conn.execute("DELETE FROM agent_memory WHERE id = ?", (int(memory_id),))
+            conn.commit()
+            return int(cur.rowcount or 0) > 0
+
+    def agent_memory_update(
+        self,
+        memory_id: int,
+        *,
+        kind: str,
+        content: str,
+        source: str,
+        confidence: float,
+        approval_status: str,
+        json_data: str | dict | list | None = None,
+    ) -> bool:
+        """Update one durable agent-memory row and refresh its FTS entry."""
+        text = str(content or "").strip()
+        if not text:
+            return False
+        payload = json_data
+        if isinstance(payload, (dict, list)):
+            payload = json.dumps(payload, ensure_ascii=False)
+        kind_s = str(kind or "note").strip() or "note"
+        source_s = str(source or "unknown").strip() or "unknown"
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                UPDATE agent_memory
+                SET kind = ?, content = ?, source = ?, confidence = ?, approval_status = ?, json_data = ?, updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (
+                    kind_s,
+                    text,
+                    source_s,
+                    float(confidence),
+                    str(approval_status or "approved").strip() or "approved",
+                    payload,
+                    int(memory_id),
+                ),
+            )
+            if int(cur.rowcount or 0) <= 0:
+                conn.commit()
+                return False
+            try:
+                conn.execute("DELETE FROM agent_memory_fts WHERE mem_id = ?", (int(memory_id),))
+                conn.execute(
+                    """
+                    INSERT INTO agent_memory_fts (mem_id, agent_code, kind, content, source, created_at)
+                    SELECT id, agent_code, kind, content, source, created_at
+                    FROM agent_memory
+                    WHERE id = ?
+                    """,
+                    (int(memory_id),),
+                )
+            except Exception:
+                pass
+            conn.commit()
+            return True
+
+    def agent_memory_set_approval_status(self, memory_id: int, approval_status: str) -> bool:
+        """Set approval state for one durable agent-memory row."""
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                "UPDATE agent_memory SET approval_status = ?, updated_at = datetime('now') WHERE id = ?",
+                (str(approval_status or "approved").strip() or "approved", int(memory_id)),
+            )
+            conn.commit()
+            return int(cur.rowcount or 0) > 0
+
+    def agent_memory_count(
+        self,
+        *,
+        agent_code: str,
+        kind: str | None = None,
+        source: str | None = None,
+        approval_status: str | None = None,
+    ) -> int:
+        """Count durable agent-memory rows with optional filters."""
+        agent = str(agent_code or "").strip().lower()
+        if not agent:
+            return 0
+        with sqlite3.connect(self.db_name) as conn:
+            base = "SELECT COUNT(*) FROM agent_memory WHERE agent_code = ?"
+            params: list[object] = [agent]
+            if kind is not None:
+                base += " AND kind = ?"
+                params.append(str(kind))
+            if source is not None:
+                base += " AND source = ?"
+                params.append(str(source))
+            if approval_status is not None:
+                base += " AND approval_status = ?"
+                params.append(str(approval_status))
+            row = conn.execute(base, params).fetchone()
+            return int(row[0] or 0) if row else 0
+
+    def agent_memory_entity_links(self, *, memory_id: int) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT entity_type, entity_key, created_at
+                FROM agent_memory_entity_links
+                WHERE mem_id = ?
+                ORDER BY entity_type, entity_key
+                """,
+                (int(memory_id),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def agent_memory_search_by_entity(
+        self,
+        *,
+        agent_code: str,
+        entity_type: str,
+        entity_key: str,
+        query: str = "",
+        approval_status: str | None = None,
+        limit: int = 10,
+    ) -> list[tuple]:
+        agent = str(agent_code or "").strip().lower()
+        ent_type = str(entity_type or "").strip().lower()
+        ent_key = str(entity_key or "").strip()
+        if not agent or not ent_type or not ent_key:
+            return []
+        q = str(query or "").strip()
+        with sqlite3.connect(self.db_name) as conn:
+            params: list[object] = [agent, ent_type, ent_key]
+            if q:
+                like = f"%{q}%"
+                base = """
+                    SELECT m.id, m.agent_code, m.kind, m.content, m.source, m.confidence, m.approval_status, m.json_data, m.created_at, m.updated_at
+                    FROM agent_memory m
+                    JOIN agent_memory_entity_links l ON l.mem_id = m.id
+                    WHERE m.agent_code = ? AND l.entity_type = ? AND l.entity_key = ?
+                      AND (m.content LIKE ? OR m.source LIKE ?)
+                """
+                params.extend([like, like])
+            else:
+                base = """
+                    SELECT m.id, m.agent_code, m.kind, m.content, m.source, m.confidence, m.approval_status, m.json_data, m.created_at, m.updated_at
+                    FROM agent_memory m
+                    JOIN agent_memory_entity_links l ON l.mem_id = m.id
+                    WHERE m.agent_code = ? AND l.entity_type = ? AND l.entity_key = ?
+                """
+            if approval_status is not None:
+                base += " AND m.approval_status = ?"
+                params.append(str(approval_status))
+            base += " ORDER BY m.confidence DESC, m.created_at DESC, m.id DESC LIMIT ?"
+            params.append(int(limit))
+            return conn.execute(base, tuple(params)).fetchall()
+
+    def assignment_memory_add(
+        self,
+        *,
+        assignment_id: int | None = None,
+        thread_id: int | None = None,
+        agent_code: str | None = None,
+        kind: str,
+        content: str,
+        source: str = "assignment_chat",
+        json_data: str | dict | list | None = None,
+    ) -> int:
+        """Insert one task-local assignment memory item and index it in FTS."""
+        text = str(content or "").strip()
+        if not text:
+            return 0
+        payload = json_data
+        if isinstance(payload, (dict, list)):
+            payload = json.dumps(payload, ensure_ascii=False)
+        agent = str(agent_code or "").strip().lower() or None
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO assignment_memory (
+                    assignment_id, thread_id, agent_code, kind, content, source, json_data, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (
+                    int(assignment_id) if assignment_id is not None else None,
+                    int(thread_id) if thread_id is not None else None,
+                    agent,
+                    str(kind or "note").strip() or "note",
+                    text,
+                    str(source or "assignment_chat").strip() or "assignment_chat",
+                    payload,
+                ),
+            )
+            mem_id = int(cur.lastrowid or 0)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO assignment_memory_fts (
+                        mem_id, assignment_id, thread_id, agent_code, kind, content, source, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    """,
+                    (
+                        mem_id,
+                        int(assignment_id) if assignment_id is not None else None,
+                        int(thread_id) if thread_id is not None else None,
+                        agent,
+                        str(kind or "note").strip() or "note",
+                        text,
+                        str(source or "assignment_chat").strip() or "assignment_chat",
+                    ),
+                )
+            except Exception:
+                pass
+            conn.commit()
+            return mem_id
+
+    def assignment_memory_add_many(self, *, items: list[dict]) -> int:
+        """Insert many task-local assignment memory items. Returns count inserted."""
+        if not items:
+            return 0
+        added = 0
+        for it in items:
+            try:
+                self.assignment_memory_add(
+                    assignment_id=it.get("assignment_id"),
+                    thread_id=it.get("thread_id"),
+                    agent_code=it.get("agent_code"),
+                    kind=(it.get("kind") or "note"),
+                    content=(it.get("content") or ""),
+                    source=(it.get("source") or "assignment_chat"),
+                    json_data=it.get("json_data"),
+                )
+                added += 1
+            except Exception:
+                continue
+        return added
+
+    def assignment_memory_recent(
+        self,
+        *,
+        assignment_id: int | None = None,
+        thread_id: int | None = None,
+        agent_code: str | None = None,
+        kind: str | None = None,
+        limit: int = 20,
+    ) -> list[tuple]:
+        """
+        Return recent assignment_memory rows:
+        (id, assignment_id, thread_id, agent_code, kind, content, source, json_data, created_at)
+        """
+        with sqlite3.connect(self.db_name) as conn:
+            base = """
+                SELECT id, assignment_id, thread_id, agent_code, kind, content, source, json_data, created_at
+                FROM assignment_memory
+                WHERE 1=1
+            """
+            params: list[object] = []
+            if assignment_id is not None:
+                base += " AND assignment_id = ?"
+                params.append(int(assignment_id))
+            if thread_id is not None:
+                base += " AND thread_id = ?"
+                params.append(int(thread_id))
+            if str(agent_code or "").strip():
+                base += " AND agent_code = ?"
+                params.append(str(agent_code).strip().lower())
+            if kind is not None:
+                base += " AND kind = ?"
+                params.append(str(kind))
+            base += " ORDER BY created_at DESC, id DESC LIMIT ?"
+            params.append(int(limit))
+            return conn.execute(base, params).fetchall()
+
+    def assignment_memory_get(self, memory_id: int) -> tuple | None:
+        """
+        Return one assignment_memory row:
+        (id, assignment_id, thread_id, agent_code, kind, content, source, json_data, created_at)
+        """
+        with sqlite3.connect(self.db_name) as conn:
+            return conn.execute(
+                """
+                SELECT id, assignment_id, thread_id, agent_code, kind, content, source, json_data, created_at
+                FROM assignment_memory
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (int(memory_id),),
+            ).fetchone()
+
+    def assignment_memory_search(
+        self,
+        *,
+        query: str,
+        assignment_id: int | None = None,
+        thread_id: int | None = None,
+        agent_code: str | None = None,
+        kind: str | None = None,
+        limit: int = 10,
+    ) -> list[tuple]:
+        """
+        Full-text search over assignment_memory_fts. Returns rows:
+        (id, assignment_id, thread_id, agent_code, kind, content, source, json_data, created_at)
+        """
+        q = str(query or "").strip()
+        if not q:
+            return []
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                where = "assignment_memory_fts MATCH ?"
+                params: list[object] = [q]
+                if assignment_id is not None:
+                    where += " AND m.assignment_id = ?"
+                    params.append(int(assignment_id))
+                if thread_id is not None:
+                    where += " AND m.thread_id = ?"
+                    params.append(int(thread_id))
+                if str(agent_code or "").strip():
+                    where += " AND m.agent_code = ?"
+                    params.append(str(agent_code).strip().lower())
+                if kind is not None:
+                    where += " AND kind = ?"
+                    params.append(str(kind))
+                params.append(int(limit))
+                return conn.execute(
+                    f"""
+                    SELECT m.id, m.assignment_id, m.thread_id, m.agent_code, m.kind, m.content, m.source, m.json_data, m.created_at
+                    FROM assignment_memory_fts f
+                    JOIN assignment_memory m ON m.id = f.mem_id
+                    WHERE {where}
+                    ORDER BY bm25(assignment_memory_fts), m.created_at DESC
+                    LIMIT ?
+                    """,
+                    params,
+                ).fetchall()
+        except Exception:
+            like = f"%{q}%"
+            with sqlite3.connect(self.db_name) as conn:
+                base = """
+                    SELECT id, assignment_id, thread_id, agent_code, kind, content, source, json_data, created_at
+                    FROM assignment_memory
+                    WHERE (content LIKE ? OR source LIKE ?)
+                """
+                params: list[object] = [like, like]
+                if assignment_id is not None:
+                    base += " AND assignment_id = ?"
+                    params.append(int(assignment_id))
+                if thread_id is not None:
+                    base += " AND thread_id = ?"
+                    params.append(int(thread_id))
+                if str(agent_code or "").strip():
+                    base += " AND agent_code = ?"
+                    params.append(str(agent_code).strip().lower())
+                if kind is not None:
+                    base += " AND kind = ?"
+                    params.append(str(kind))
+                base += " ORDER BY created_at DESC, id DESC LIMIT ?"
+                params.append(int(limit))
+                return conn.execute(base, params).fetchall()
+
+    def assignment_memory_delete(self, memory_id: int) -> bool:
+        """Delete one assignment-memory row and its FTS entry."""
+        with sqlite3.connect(self.db_name) as conn:
+            try:
+                conn.execute("DELETE FROM assignment_memory_fts WHERE mem_id = ?", (int(memory_id),))
+            except Exception:
+                pass
+            cur = conn.execute("DELETE FROM assignment_memory WHERE id = ?", (int(memory_id),))
+            conn.commit()
+            return int(cur.rowcount or 0) > 0
 
     def memory_reflection_upsert(
         self,

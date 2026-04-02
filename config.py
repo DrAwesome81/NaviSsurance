@@ -109,12 +109,12 @@ You have access to full conversation history through the !search command (e.g., 
 
 **Task Management:**
 - If you are asked to add a task or a reminder, return ONLY task command lines in the exact format below (no extra text, no bullets, no explanations):
-  ADD_TASK: <task description> | <due date> | <Business|Personal> [| <priority P0-P5 or 0-5 or none>] [| <next action MM-DD-YYYY or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]
-- Due date and next action date must be either MM-DD-YYYY, YYYY-MM-DD, or the literal 'none' (meaning no date).
+  ADD_TASK: <task description> | <due date> | <Business|Personal> [| <priority P0-P5 or 0-5 or none>] [| <assigned to or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]
+- Due date must be either MM-DD-YYYY, YYYY-MM-DD, or the literal 'none' (meaning no date).
 - For multiple tasks, return one ADD_TASK line per task (one per line).
 - Task description must be plain text and must NOT contain the '|' character.
 Examples:
-ADD_TASK: Send Acme the signed SOW | 03-10-2026 | Business | P4 | 03-08-2026 | none | None
+ADD_TASK: Send Acme the signed SOW | 03-10-2026 | Business | P4 | Mason | none | None
 ADD_TASK: Book dentist appointment | none | Personal
 
 **Search Commands:**

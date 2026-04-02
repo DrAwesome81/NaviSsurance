@@ -375,6 +375,42 @@ class TestChiefOfStaffUtilityHelpers:
         assert calls[1] == ("2026-03-07T05:00:00Z", "2026-03-14T05:00:00Z")
         assert "**Calendar (today):**" in out
 
+    def test_memory_context_includes_referenced_agent_memory(self, cos_db):
+        from core.chief_of_staff_service import _memory_context
+
+        cos_db.agent_memory_add(
+            agent_code="atlas",
+            kind="fact",
+            content="Atlas already knows Acme prefers FDA-primary summaries.",
+            approval_status="approved",
+        )
+        cos_db.agent_memory_add(
+            agent_code="quill",
+            kind="fact",
+            content="Quill focuses on template-heavy drafting.",
+            approval_status="approved",
+        )
+
+        context = _memory_context(cos_db, "Ask Atlas to handle the Acme guidance update.", chat_id=None)
+
+        assert "Atlas already knows Acme prefers FDA-primary summaries." in context
+        assert "Quill focuses on template-heavy drafting." not in context
+
+    def test_memory_context_includes_referenced_assignment_memory(self, cos_db):
+        from core.chief_of_staff_service import _memory_context
+
+        cos_db.assignment_memory_add(
+            assignment_id=7,
+            thread_id=12,
+            agent_code="atlas",
+            kind="fact",
+            content="Predicate shortlist still needs confirmation.",
+        )
+
+        context = _memory_context(cos_db, "What is the current blocker on A-0007?", chat_id=None)
+
+        assert "Predicate shortlist still needs confirmation." in context
+
 
 class TestChiefOfStaffUiHelperFunctions:
     """Unit tests for CoS board helper utilities."""

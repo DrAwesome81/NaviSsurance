@@ -6,12 +6,14 @@ import time
 from typing import Iterable
 
 from config import get_system_prompt
+from core.agent_memory import build_supervisor_cross_memory_context
 from core.chief_of_staff_service import cos_response
 from core.local_llm import run_local_completion
 from core.user_memory import (
     auto_store_user_memory,
     build_user_memory_context,
     default_user_memory_llm,
+    store_teach_memory,
     store_teach_navi_memory,
 )
 
@@ -274,7 +276,7 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
     chat_id = _parse_chat_id(sid)
     route, route_reason = select_main_chat_route_details(db, message, sid, conversation_history)
     history_items = _normalize_history(conversation_history)
-    teach_response = store_teach_navi_memory(db, message)
+    teach_response = store_teach_memory(db, message) or store_teach_navi_memory(db, message)
     logger.info(
         "MAIN_CHAT_ROUTE session_id=%s chat_id=%s route=%s reason=%s chars=%s history_len=%s",
         sid,
@@ -294,6 +296,18 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
     elif route == "local_fast":
         # Keep the fast path fast: formatting/rewrite turns do not need durable recall.
         memory_context = build_user_memory_context(db, message, limit=5, recent_limit=2)
+        try:
+            cross_memory_context = build_supervisor_cross_memory_context(
+                db,
+                message,
+                limit_agents=2,
+                agent_memory_limit=3,
+                assignment_memory_limit=4,
+            )
+        except Exception:
+            cross_memory_context = ""
+        if cross_memory_context:
+            memory_context = "\n\n".join(part for part in (memory_context, cross_memory_context) if str(part).strip())
         try:
             response = local_fast_chat_response(
                 message,

@@ -16,6 +16,12 @@ class _FakeDB:
         self.updated_chat_ids = []
         self.user_memory_rows = []
         self.user_memory_added = []
+        self.agent_memory_rows = []
+        self.assignment_memory_rows = []
+        self._agents = [
+            {"code": "atlas", "display_name": "Atlas", "aliases_json": "[]"},
+            {"code": "quill", "display_name": "Quill", "aliases_json": "[]"},
+        ]
 
     def get_setting(self, key, default=None):
         if key == "cos_dashboard_chat_id":
@@ -59,6 +65,92 @@ class _FakeDB:
             rows = [row for row in rows if row[3] == source]
         if approval_status is not None:
             rows = [row for row in rows if row[5] == approval_status]
+        return rows[:limit]
+
+    def agents_list_active(self):
+        return list(self._agents)
+
+    def agent_memory_add(self, *, agent_code, kind, content, source="unknown", confidence=1.0, approval_status="approved", json_data=None, entity_refs=None):
+        payload = dict(json_data or {}) if isinstance(json_data, dict) else json_data
+        row = (
+            len(self.agent_memory_rows) + 1,
+            str(agent_code).strip().lower(),
+            kind,
+            content,
+            source,
+            confidence,
+            approval_status,
+            payload,
+            "now",
+            "now",
+        )
+        self.agent_memory_rows.insert(0, row)
+        return row[0]
+
+    def agent_memory_search(self, *, agent_code, query, kind=None, source=None, approval_status=None, limit=10):
+        matches = [
+            row
+            for row in self.agent_memory_rows
+            if row[1] == str(agent_code).strip().lower() and query.lower() in str(row[3]).lower()
+        ]
+        if kind is not None:
+            matches = [row for row in matches if row[2] == kind]
+        if source is not None:
+            matches = [row for row in matches if row[4] == source]
+        if approval_status is not None:
+            matches = [row for row in matches if row[6] == approval_status]
+        return matches[:limit]
+
+    def agent_memory_recent(self, *, agent_code, kind=None, source=None, approval_status=None, limit=20):
+        rows = [row for row in self.agent_memory_rows if row[1] == str(agent_code).strip().lower()]
+        if kind is not None:
+            rows = [row for row in rows if row[2] == kind]
+        if source is not None:
+            rows = [row for row in rows if row[4] == source]
+        if approval_status is not None:
+            rows = [row for row in rows if row[6] == approval_status]
+        return rows[:limit]
+
+    def agent_memory_search_by_entity(self, **kwargs):
+        return []
+
+    def assignment_memory_add(self, *, assignment_id=None, thread_id=None, agent_code=None, kind="note", content="", source="assignment_chat", json_data=None):
+        row = (
+            len(self.assignment_memory_rows) + 1,
+            assignment_id,
+            thread_id,
+            str(agent_code or "").strip().lower() or None,
+            kind,
+            content,
+            source,
+            json_data,
+            "now",
+        )
+        self.assignment_memory_rows.insert(0, row)
+        return row[0]
+
+    def assignment_memory_search(self, *, query, assignment_id=None, thread_id=None, agent_code=None, kind=None, limit=10):
+        matches = [row for row in self.assignment_memory_rows if query.lower() in str(row[5]).lower()]
+        if assignment_id is not None:
+            matches = [row for row in matches if row[1] == assignment_id]
+        if thread_id is not None:
+            matches = [row for row in matches if row[2] == thread_id]
+        if agent_code is not None:
+            matches = [row for row in matches if row[3] == str(agent_code).strip().lower()]
+        if kind is not None:
+            matches = [row for row in matches if row[4] == kind]
+        return matches[:limit]
+
+    def assignment_memory_recent(self, *, assignment_id=None, thread_id=None, agent_code=None, kind=None, limit=20):
+        rows = list(self.assignment_memory_rows)
+        if assignment_id is not None:
+            rows = [row for row in rows if row[1] == assignment_id]
+        if thread_id is not None:
+            rows = [row for row in rows if row[2] == thread_id]
+        if agent_code is not None:
+            rows = [row for row in rows if row[3] == str(agent_code).strip().lower()]
+        if kind is not None:
+            rows = [row for row in rows if row[4] == kind]
         return rows[:limit]
 
 
@@ -447,3 +539,30 @@ def test_run_main_chat_turn_injects_db_user_memory_into_local_prompt(monkeypatch
     assert "Q-sub means quality submission." in captured[0][0]["content"]
     assert "Prefer concise bullets." in captured[0][0]["content"]
     assert captured[0][0]["content"].count("Q-sub means quality submission.") == 1
+
+
+def test_run_main_chat_turn_injects_cross_agent_memory_into_local_prompt(monkeypatch):
+    db = _FakeDB(dashboard_chat_id=7)
+    db.agent_memory_add(
+        agent_code="atlas",
+        kind="fact",
+        content="Atlas remembers Acme prefers FDA-primary summaries.",
+        source="teach_agent",
+        approval_status="approved",
+    )
+    handler = _FakeHandler(db)
+    captured = []
+    monkeypatch.setattr(
+        "core.main_chat_router.run_local_completion",
+        lambda messages, session_id: captured.append(messages) or "Local answer",
+    )
+    monkeypatch.setattr(
+        "core.main_chat_router.cos_response",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("CoS should not be called")),
+    )
+
+    run_main_chat_turn(handler, "What does Atlas remember about Acme?", "main_session", [])
+
+    assert captured
+    content = captured[0][0]["content"]
+    assert "Atlas remembers Acme prefers FDA-primary summaries." in content

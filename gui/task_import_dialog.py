@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from datetime import datetime
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QDate, Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,9 +16,57 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
+    QDateEdit,
 )
 
 from core.task_extract import SuggestedTask
+
+
+def _qdate_from_mmddyyyy(value: str) -> QDate | None:
+    text = (value or "").strip()
+    if not text or text.lower() == "none":
+        return None
+    try:
+        dt = datetime.strptime(text, "%m-%d-%Y")
+    except Exception:
+        return None
+    return QDate(dt.year, dt.month, dt.day)
+
+
+def _mmddyyyy_from_qdate(value: QDate) -> str:
+    return value.toString("MM-dd-yyyy")
+
+
+class OptionalDateCell(QWidget):
+    """Calendar-backed due date widget that can also represent 'none'."""
+
+    def __init__(self, due_value: str, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 2, 6, 2)
+        layout.setSpacing(6)
+
+        parsed = _qdate_from_mmddyyyy(due_value)
+
+        self.none_checkbox = QCheckBox("None", self)
+        self.none_checkbox.setStyleSheet("color: #e8eaed;")
+        self.none_checkbox.setChecked(parsed is None)
+        layout.addWidget(self.none_checkbox)
+
+        self.date_edit = QDateEdit(self)
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat("MM-dd-yyyy")
+        self.date_edit.setDate(parsed if parsed else QDate.currentDate())
+        self.date_edit.setEnabled(parsed is not None)
+        layout.addWidget(self.date_edit, 1)
+
+        self.none_checkbox.toggled.connect(lambda checked: self.date_edit.setEnabled(not checked))
+
+    def value(self) -> str:
+        if self.none_checkbox.isChecked():
+            return "none"
+        return _mmddyyyy_from_qdate(self.date_edit.date())
 
 
 class TaskImportDialog(QDialog):
@@ -37,7 +85,7 @@ class TaskImportDialog(QDialog):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        header = QLabel("Review the extracted tasks. Edit titles/due dates/categories, then Apply.")
+        header = QLabel("Review the extracted tasks. Edit titles, due dates, categories, and priorities, then Apply.")
         header.setStyleSheet("color: #e8eaed; font-weight: 600;")
         layout.addWidget(header)
 
@@ -51,8 +99,8 @@ class TaskImportDialog(QDialog):
             layout.addWidget(warn_btn)
 
         self.table = QTableWidget(self)
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Import", "Task", "Due (MM-DD-YYYY or none)", "Category"])
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Import", "Task", "Due Date", "Category", "Priority"])
         self.table.setRowCount(len(self._tasks))
         self.table.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32;")
         self.table.verticalHeader().setVisible(False)
@@ -61,18 +109,20 @@ class TaskImportDialog(QDialog):
         self.table.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.SelectedClicked)
 
         for r, t in enumerate(self._tasks):
-            cb = QCheckBox()
-            cb.setChecked(True)
-            cb.setStyleSheet("color: #e8eaed;")
-            self.table.setCellWidget(r, 0, cb)
+            import_item = QTableWidgetItem()
+            import_item.setFlags(
+                Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+            )
+            import_item.setCheckState(Qt.CheckState.Checked)
+            self.table.setItem(r, 0, import_item)
 
             title_item = QTableWidgetItem(t.title)
             title_item.setFlags(title_item.flags() | Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(r, 1, title_item)
 
-            due_item = QTableWidgetItem(t.due_mmddyyyy)
-            due_item.setFlags(due_item.flags() | Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(r, 2, due_item)
+            self.table.setCellWidget(r, 2, OptionalDateCell(t.due_mmddyyyy, parent=self.table))
 
             cat = QComboBox()
             cat.addItems(["Business", "Personal"])
@@ -80,9 +130,18 @@ class TaskImportDialog(QDialog):
             cat.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32;")
             self.table.setCellWidget(r, 3, cat)
 
+            priority = QComboBox()
+            for value in range(0, 6):
+                priority.addItem(f"P{value}", value)
+            current_priority = max(0, min(5, int(getattr(t, "priority", 0) or 0)))
+            priority.setCurrentIndex(current_priority)
+            priority.setStyleSheet("background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32;")
+            self.table.setCellWidget(r, 4, priority)
+
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(1, max(420, self.table.columnWidth(1)))
-        self.table.setColumnWidth(2, max(200, self.table.columnWidth(2)))
+        self.table.setColumnWidth(2, max(220, self.table.columnWidth(2)))
+        self.table.setColumnWidth(4, max(92, self.table.columnWidth(4)))
         layout.addWidget(self.table)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel, parent=self)
@@ -106,35 +165,47 @@ class TaskImportDialog(QDialog):
         problems: List[str] = []
 
         for r in range(self.table.rowCount()):
-            cb = self.table.cellWidget(r, 0)
-            if isinstance(cb, QCheckBox) and not cb.isChecked():
+            import_item = self.table.item(r, 0)
+            if import_item is not None and import_item.checkState() != Qt.CheckState.Checked:
                 continue
 
             title = (self.table.item(r, 1).text() if self.table.item(r, 1) else "").strip()
-            due = (self.table.item(r, 2).text() if self.table.item(r, 2) else "").strip()
+
+            due_widget = self.table.cellWidget(r, 2)
+            due = "none"
+            if isinstance(due_widget, OptionalDateCell):
+                due = due_widget.value()
 
             cat_widget = self.table.cellWidget(r, 3)
             category = "Business"
             if isinstance(cat_widget, QComboBox):
                 category = (cat_widget.currentText() or "Business").strip()
 
+            priority_widget = self.table.cellWidget(r, 4)
+            priority = 0
+            if isinstance(priority_widget, QComboBox):
+                priority = int(priority_widget.currentData() or 0)
+
             if not title:
                 problems.append(f"Row {r+1}: empty task title.")
                 continue
-
-            if not due:
-                due = "none"
-            if due.lower() not in {"none"}:
-                # Keep validation lightweight here; core parser normalizes too.
-                if not _looks_like_mmddyyyy(due):
-                    problems.append(f"Row {r+1} ('{title}'): due date must be MM-DD-YYYY or 'none'.")
-                    continue
 
             if category not in {"Business", "Personal"}:
                 problems.append(f"Row {r+1} ('{title}'): category must be Business or Personal.")
                 continue
 
-            selected.append(SuggestedTask(title=title, due_mmddyyyy=due, category=category))
+            if priority < 0 or priority > 5:
+                problems.append(f"Row {r+1} ('{title}'): priority must be between P0 and P5.")
+                continue
+
+            selected.append(
+                SuggestedTask(
+                    title=title,
+                    due_mmddyyyy=due,
+                    category=category,
+                    priority=priority,
+                )
+            )
 
         if problems:
             QMessageBox.warning(self, "Fix issues before importing", "\n".join(problems[:25]))
@@ -146,8 +217,4 @@ class TaskImportDialog(QDialog):
 
         self._selected = selected
         self.accept()
-
-
-def _looks_like_mmddyyyy(s: str) -> bool:
-    return bool(__import__("re").match(r"^\d{2}-\d{2}-\d{4}$", (s or "").strip()))
 

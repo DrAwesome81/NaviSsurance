@@ -23,8 +23,8 @@ something
     tasks, warnings = parse_suggested_tasks(md)
     assert warnings == [] or all(isinstance(w, str) for w in warnings)
     assert tasks == [
-        SuggestedTask(title="Draft software architecture spec", due_mmddyyyy="03-15-2026", category="Business"),
-        SuggestedTask(title="Finalize design inputs", due_mmddyyyy="none", category="Business"),
+        SuggestedTask(title="Draft software architecture spec", due_mmddyyyy="03-15-2026", category="Business", priority=0),
+        SuggestedTask(title="Finalize design inputs", due_mmddyyyy="none", category="Business", priority=0),
     ]
 
 
@@ -68,4 +68,29 @@ def test_parse_suggested_tasks_category_case_insensitive():
     tasks, warnings = parse_suggested_tasks(md)
     assert len(tasks) == 1
     assert tasks[0].category == "Personal"
+
+
+def test_parse_suggested_tasks_priority_optional_and_normalized():
+    md = """
+## Suggested Tasks (importable)
+- [ ] Escalate open blocker | due: 03-20-2026 | category: Business | priority: P4
+- [ ] Light follow-up | due: none | category: Business | priority: 1
+""".strip()
+    tasks, warnings = parse_suggested_tasks(md)
+    assert warnings == []
+    assert tasks == [
+        SuggestedTask(title="Escalate open blocker", due_mmddyyyy="03-20-2026", category="Business", priority=4),
+        SuggestedTask(title="Light follow-up", due_mmddyyyy="none", category="Business", priority=1),
+    ]
+
+
+def test_parse_suggested_tasks_invalid_priority_becomes_p0_with_warning():
+    md = """
+## Suggested Tasks (importable)
+- [ ] Do thing | due: none | category: Business | priority: urgent
+""".strip()
+    tasks, warnings = parse_suggested_tasks(md)
+    assert len(tasks) == 1
+    assert tasks[0].priority == 0
+    assert any("invalid priority" in w.lower() for w in warnings)
 

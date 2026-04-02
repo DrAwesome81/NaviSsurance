@@ -92,7 +92,7 @@ class AddTaskCommand:
     due_date: Optional[str]  # MM-DD-YYYY or None
     category: TaskCategory
     priority: Optional[int] = None  # 0..5
-    next_action_date: Optional[str] = None  # MM-DD-YYYY or None
+    assigned_to: Optional[str] = None
     project_id: Optional[int] = None
     recurrence: str = "None"
 
@@ -115,9 +115,9 @@ class TaskSetDueCommand:
 
 
 @dataclass(frozen=True)
-class TaskSetNextActionCommand:
+class TaskSetAssignedToCommand:
     task_id: int
-    next_action_date: Optional[str]
+    assigned_to: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -166,7 +166,7 @@ AnyCommand = (
     | TaskUpdatePriorityCommand
     | TaskCompleteCommand
     | TaskSetDueCommand
-    | TaskSetNextActionCommand
+    | TaskSetAssignedToCommand
     | TaskSnoozeCommand
     | TaskDeleteCommand
     | TaskSetProjectCommand
@@ -187,8 +187,8 @@ _TASK_SET_DUE_LINE_RE = re.compile(
     r"^\s*TASK_SET_DUE:\s*(?P<id>\d+)\s*\|\s*(?P<due>[^|\n]+?)\s*$",
     re.IGNORECASE,
 )
-_TASK_SET_NEXT_ACTION_LINE_RE = re.compile(
-    r"^\s*TASK_SET_NEXT_ACTION:\s*(?P<id>\d+)\s*\|\s*(?P<date>[^|\n]+?)\s*$",
+_TASK_SET_ASSIGNED_TO_LINE_RE = re.compile(
+    r"^\s*TASK_SET_ASSIGNED_TO:\s*(?P<id>\d+)\s*\|\s*(?P<who>[^|\n]+?)\s*$",
     re.IGNORECASE,
 )
 _TASK_SNOOZE_LINE_RE = re.compile(
@@ -220,7 +220,7 @@ def parse_add_task_line(line: str) -> tuple[bool, Optional[AddTaskCommand], str]
     """
     Parse canonical ADD_TASK line (CoS/Mason contract):
 
-    ADD_TASK: <desc> | <MM-DD-YYYY or none> | <Business|Personal> [| priority] [| next_action] [| project_id] [| recurrence]
+    ADD_TASK: <desc> | <MM-DD-YYYY or none> | <Business|Personal> [| priority] [| assigned_to] [| project_id] [| recurrence]
     """
     m = _ADD_TASK_LINE_RE.match(line or "")
     if not m:
@@ -248,14 +248,26 @@ def parse_add_task_line(line: str) -> tuple[bool, Optional[AddTaskCommand], str]
         return True, None, "invalid_add_task_category"
 
     priority = parse_task_priority(parts[3] if len(parts) > 3 else None)
+    assigned_to: Optional[str] = None
+    project_part_idx = 4
+    recurrence_part_idx = 5
 
-    next_ok, next_norm = normalize_mmddyyyy(parts[4] if len(parts) > 4 else None)
-    if not next_ok:
-        return True, None, "invalid_add_task_next_action"
+    # Backward compatibility: old contract used the 5th field for next_action_date.
+    legacy_next_ok, _legacy_next = normalize_mmddyyyy(parts[4] if len(parts) > 4 else None)
+    if len(parts) > 4 and legacy_next_ok and (parts[4] or "").strip():
+        assigned_to = None
+        project_part_idx = 5
+        recurrence_part_idx = 6
+    elif len(parts) > 4:
+        raw_assigned = (parts[4] or "").strip()
+        if raw_assigned and raw_assigned.lower() not in {"none", "null", "n/a", "na"}:
+            assigned_to = raw_assigned
+        project_part_idx = 5
+        recurrence_part_idx = 6
 
-    project_id = parse_int_or_none(parts[5] if len(parts) > 5 else None)
+    project_id = parse_int_or_none(parts[project_part_idx] if len(parts) > project_part_idx else None)
 
-    recurrence = (parts[6] if len(parts) > 6 else "").strip() or "None"
+    recurrence = (parts[recurrence_part_idx] if len(parts) > recurrence_part_idx else "").strip() or "None"
     if recurrence.lower() in {"none", "null", "n/a", "na"}:
         recurrence = "None"
     if recurrence not in {"None", "Daily", "Weekly", "Monthly"}:
@@ -268,7 +280,7 @@ def parse_add_task_line(line: str) -> tuple[bool, Optional[AddTaskCommand], str]
             due_date=due_norm,
             category=cat,
             priority=priority,
-            next_action_date=next_norm,
+            assigned_to=assigned_to,
             project_id=project_id,
             recurrence=recurrence,
         ),
@@ -302,12 +314,11 @@ def parse_action_line(line: str) -> AnyCommand | None:
             return None
         return TaskSetDueCommand(task_id=int(m.group("id")), due_date=due_norm)
 
-    m = _TASK_SET_NEXT_ACTION_LINE_RE.match(line)
+    m = _TASK_SET_ASSIGNED_TO_LINE_RE.match(line)
     if m:
-        ok_dt, norm = normalize_mmddyyyy(m.group("date"))
-        if not ok_dt:
-            return None
-        return TaskSetNextActionCommand(task_id=int(m.group("id")), next_action_date=norm)
+        raw = (m.group("who") or "").strip()
+        assigned_to = None if raw.lower() in {"none", "null", "n/a", "na"} else raw
+        return TaskSetAssignedToCommand(task_id=int(m.group("id")), assigned_to=assigned_to)
 
     m = _TASK_SNOOZE_LINE_RE.match(line)
     if m:

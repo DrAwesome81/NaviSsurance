@@ -75,3 +75,40 @@ def test_agent_console_upload_artifact_links_file_to_assignment(qapp, cos_db, mo
     assert any(str(a.get("artifact_type") or "") == "uploaded_file" for a in arts)
     assert any(str(a.get("file_path") or "").endswith("packet.txt") for a in arts)
     assert any("Source packet" in str(a.get("content_md") or "") for a in arts)
+
+
+def test_agent_console_export_reply_strips_outer_markdown_fence(qapp, cos_db, monkeypatch, tmp_path):
+    from gui.agent_console import AgentConsole
+
+    out_path = tmp_path / "quill_reply.md"
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(out_path), "Markdown Files (*.md)"),
+    )
+
+    console = AgentConsole(cos_db, agent_code="quill")
+    console._last_assistant_message = "```markdown\n# Draft\n\nBody paragraph\n```"
+
+    console._export_latest_reply()
+
+    exported = out_path.read_text(encoding="utf-8")
+    assert "# Draft" in exported
+    assert "Body paragraph" in exported
+    assert "```" not in exported
+
+
+def test_agent_console_can_trigger_reviewed_workflow_with_last_user_message(qapp, cos_db):
+    from gui.agent_console import AgentConsole
+
+    captured = {}
+    console = AgentConsole(
+        cos_db,
+        agent_code="quill",
+        workflow_trigger_callback=lambda instruction: captured.setdefault("instruction", instruction),
+    )
+    console._last_user_message = "Regenerate this using the marked device info file."
+
+    console._trigger_reviewed_workflow()
+
+    assert captured["instruction"] == "Regenerate this using the marked device info file."

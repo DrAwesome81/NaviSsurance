@@ -267,12 +267,13 @@ class MeetingTaskExtractionWorker(QThread):
                         "You extract actionable tasks from meeting transcripts for NaviSsurance. "
                         "Return only a markdown section in this exact format:\n"
                         "## Suggested Tasks (importable)\n"
-                        "- [ ] <task title> | due: <MM-DD-YYYY or none> | category: <Business or Personal>\n\n"
+                        "- [ ] <task title> | due: <MM-DD-YYYY or none> | category: <Business or Personal> | priority: <P0-P5>\n\n"
                         "Rules:\n"
                         "- Include only concrete action items, follow-ups, deliverables, or commitments.\n"
                         "- Do not include vague topics, discussion summaries, or non-actionable ideas.\n"
                         "- Prefer category Business unless the transcript clearly indicates Personal.\n"
                         "- Use due: none unless an actual date or deadline is stated.\n"
+                        "- Use P0 for low priority, P3 for normal priority, and P5 only for clearly urgent items.\n"
                         "- Keep titles concise and imperative.\n"
                         "- If there are no actionable tasks, return exactly:\n"
                         "## Suggested Tasks (importable)\n"
@@ -723,6 +724,7 @@ class MeetingsTab(QWidget):
                         tags.append(f"meeting_{int(self._current_meeting_id)}")
                     db.update_task_by_id(
                         int(task_id),
+                        priority=int(task.priority or 0),
                         blockers=meeting_label,
                         tags_json=json.dumps(tags),
                     )

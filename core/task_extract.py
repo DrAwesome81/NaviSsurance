@@ -11,14 +11,15 @@ class SuggestedTask:
     title: str
     due_mmddyyyy: str  # "MM-DD-YYYY" or "none"
     category: str      # "Business" or "Personal"
+    priority: int = 0  # P0-P5, where higher is more urgent
 
 
 _SECTION_HEADER_RE = re.compile(r"^\s*##\s+Suggested Tasks\s*\(importable\)\s*$", re.IGNORECASE)
 _NEXT_SECTION_RE = re.compile(r"^\s*##\s+\S", re.IGNORECASE)
 
-# - [ ] Title | due: 02-27-2026 or none | category: Business
+# - [ ] Title | due: 02-27-2026 or none | category: Business [| priority: P3]
 _TASK_LINE_RE = re.compile(
-    r"^\s*-\s*\[\s*[xX ]?\s*\]\s*(?P<title>.+?)\s*\|\s*due:\s*(?P<due>[^|]+?)\s*\|\s*category:\s*(?P<cat>Business|Personal)\s*$",
+    r"^\s*-\s*\[\s*[xX ]?\s*\]\s*(?P<title>.+?)\s*\|\s*due:\s*(?P<due>[^|]+?)\s*\|\s*category:\s*(?P<cat>Business|Personal)(?:\s*\|\s*priority:\s*(?P<priority>[^|]+?))?\s*$",
     re.IGNORECASE,
 )
 
@@ -66,12 +67,22 @@ def _normalize_due_mmddyyyy(raw: str) -> Optional[str]:
     return None
 
 
+def _normalize_priority(raw: str | None) -> Optional[int]:
+    s = (raw or "").strip()
+    if not s or s.lower() in {"none", "n/a", "na", "unknown"}:
+        return 0
+    m = re.match(r"^[pP]?([0-5])$", s)
+    if not m:
+        return None
+    return int(m.group(1))
+
+
 def parse_suggested_tasks(markdown: str) -> Tuple[List[SuggestedTask], List[str]]:
     """
     Parse the importable section:
 
     ## Suggested Tasks (importable)
-    - [ ] Do thing | due: 02-27-2026 or none | category: Business
+    - [ ] Do thing | due: 02-27-2026 or none | category: Business | priority: P3
 
     Returns: (tasks, warnings)
     """
@@ -100,6 +111,7 @@ def parse_suggested_tasks(markdown: str) -> Tuple[List[SuggestedTask], List[str]
         title = (m.group("title") or "").strip()
         due_raw = (m.group("due") or "").strip()
         cat_raw = (m.group("cat") or "").strip()
+        priority_raw = (m.group("priority") or "").strip()
         category = "Business" if cat_raw.lower() == "business" else "Personal"
 
         if not title:
@@ -111,7 +123,12 @@ def parse_suggested_tasks(markdown: str) -> Tuple[List[SuggestedTask], List[str]
             warnings.append(f"Task '{title}': invalid due date '{due_raw}' (use MM-DD-YYYY or none).")
             due = "none"
 
-        tasks.append(SuggestedTask(title=title, due_mmddyyyy=due, category=category))
+        priority = _normalize_priority(priority_raw)
+        if priority is None:
+            warnings.append(f"Task '{title}': invalid priority '{priority_raw}' (use P0-P5 or 0-5).")
+            priority = 0
+
+        tasks.append(SuggestedTask(title=title, due_mmddyyyy=due, category=category, priority=priority))
 
     if not tasks:
         warnings.append("No parseable task lines found under the section header.")

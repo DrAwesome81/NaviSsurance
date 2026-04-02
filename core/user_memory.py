@@ -10,6 +10,10 @@ logger = logging.getLogger(__name__)
 _SEMANTIC_MODEL = None
 
 _TEACH_NAVI_RE = re.compile(r"^\s*teach\s+navi\s*:\s*(?P<body>.+?)\s*$", re.IGNORECASE | re.DOTALL)
+_TEACH_TARGET_RE = re.compile(
+    r"^\s*teach\s+(?P<target>[a-z0-9][a-z0-9 _-]{0,63})\s*:\s*(?P<body>.+?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 _ALIAS_PATTERNS = (
     re.compile(
@@ -215,6 +219,17 @@ def parse_teach_navi_command(message: str) -> str | None:
     return body or None
 
 
+def parse_teach_target_command(message: str) -> tuple[str, str] | None:
+    match = _TEACH_TARGET_RE.match(str(message or ""))
+    if not match:
+        return None
+    target = str(match.group("target") or "").strip()
+    body = str(match.group("body") or "").strip()
+    if not target or not body:
+        return None
+    return target, body
+
+
 def _strip_terminal_punctuation(text: str) -> str:
     return str(text or "").strip().rstrip(" \t\r\n.;:!?")
 
@@ -353,6 +368,47 @@ def store_teach_navi_memory(db, message: str) -> str | None:
     )
     preview = body if len(body) <= 120 else body[:117] + "..."
     return f"I'll remember that: {preview}"
+
+
+def store_teach_memory(db, message: str) -> str | None:
+    parsed = parse_teach_target_command(message)
+    if not parsed:
+        return None
+    target, body = parsed
+    if str(target).strip().lower() == "navi":
+        return store_teach_navi_memory(db, message)
+    agent = None
+    try:
+        agent = db.agent_resolve_by_name(target)
+    except Exception:
+        agent = None
+    if not agent:
+        return None
+    agent_code = str(agent.get("code") or "").strip().lower()
+    display_name = str(agent.get("display_name") or agent_code or target).strip() or str(target).strip()
+    alias_payload = parse_alias_memory(body)
+    if alias_payload:
+        db.agent_memory_add(
+            agent_code=agent_code,
+            kind="alias",
+            content=alias_payload["content"],
+            source="teach_agent",
+            confidence=1.0,
+            approval_status="approved",
+            json_data={"explicit": True, "alias": alias_payload, "target_agent": agent_code},
+        )
+        return f"I'll remember that for {display_name}: {alias_payload['term']} means {alias_payload['canonical']}."
+    db.agent_memory_add(
+        agent_code=agent_code,
+        kind="taught",
+        content=body,
+        source="teach_agent",
+        confidence=1.0,
+        approval_status="approved",
+        json_data={"explicit": True, "target_agent": agent_code},
+    )
+    preview = body if len(body) <= 120 else body[:117] + "..."
+    return f"I'll remember that for {display_name}: {preview}"
 
 
 def _dedupe_rows(rows: list[tuple], limit: int) -> list[tuple]:

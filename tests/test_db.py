@@ -18,7 +18,7 @@ def test_current_schema_and_core_tables_exist():
     os.close(fd)
     try:
         db = _db_for_temp_path(path)
-        assert db.current_schema_version >= 22
+        assert db.current_schema_version >= 26
         with sqlite3.connect(path) as conn:
             tables = {
                 row[0]
@@ -27,6 +27,7 @@ def test_current_schema_and_core_tables_exist():
                 ).fetchall()
             }
         assert "user_memory" in tables
+        assert "agent_memory" in tables
         assert "conversation_chunks" in tables
         assert "conversation_chunk_summaries" in tables
         assert "memory_reflections" in tables
@@ -78,6 +79,52 @@ def test_memory_reflection_round_trip():
         recent = db.memory_reflection_recent(scope="daily", limit=5)
         assert len(recent) == 1
         assert recent[0]["id"] == reflection_id
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def test_agent_memory_round_trip():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        db = _db_for_temp_path(path)
+        mem_id = db.agent_memory_add(
+            agent_code="atlas",
+            kind="preference",
+            content="Prefer FDA-primary sources for Acme work.",
+            source="agent_chat",
+            confidence=0.7,
+            approval_status="approved",
+            json_data={"note": "captured from agent chat"},
+            entity_refs=[{"entity_type": "client", "entity_key": "123", "label": "Acme"}],
+        )
+        assert mem_id > 0
+
+        recent = db.agent_memory_recent(agent_code="atlas", limit=5)
+        assert len(recent) == 1
+        assert recent[0][1] == "atlas"
+        assert "FDA-primary" in str(recent[0][3])
+
+        search = db.agent_memory_search(agent_code="atlas", query="FDA", approval_status="approved", limit=5)
+        assert len(search) == 1
+        assert int(search[0][0]) == mem_id
+
+        links = db.agent_memory_entity_links(memory_id=mem_id)
+        assert links == [{"entity_type": "client", "entity_key": "123", "created_at": links[0]["created_at"]}]
+
+        by_entity = db.agent_memory_search_by_entity(
+            agent_code="atlas",
+            entity_type="client",
+            entity_key="123",
+            query="Acme",
+            approval_status="approved",
+            limit=5,
+        )
+        assert len(by_entity) == 1
+        assert int(by_entity[0][0]) == mem_id
     finally:
         try:
             os.unlink(path)

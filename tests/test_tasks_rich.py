@@ -16,10 +16,11 @@ def test_tasks_rich_schema_and_filtering(tmp_path):
     assert int(t1) > 0 and int(t2) > 0
 
     # Enrich one task
-    db.update_task_by_id(int(t2), priority=4, tags_json=json.dumps(["lead", "urgent"]), next_action_date="02-23-2026")
+    db.update_task_by_id(int(t2), priority=4, tags_json=json.dumps(["lead", "urgent"]), assigned_to="Mason")
 
     rows = db.list_tasks_rich(include_completed=True, include_snoozed=True, limit=50)
     by_id = {int(r["id"]): r for r in rows}
     assert int(t2) in by_id
     assert int(by_id[int(t2)]["priority"]) == 4
+    assert by_id[int(t2)]["assigned_to"] == "Mason"
 
