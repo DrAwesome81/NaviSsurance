@@ -11,7 +11,7 @@ NaviSsurance now includes a working **Chief of Staff + AI Executive Team** opera
 
 This document tracks implementation status and remaining roadmap work.
 
-Last updated: 2026-04-01
+Last updated: 2026-04-03
 
 ## Current State (Implemented)
 
@@ -41,11 +41,17 @@ Last updated: 2026-04-01
   - additional utility/helper tests for due-date and bulk-mode parsing
 - **Memory / retrieval**
   - explicit `Teach Navi:` memory capture with approved global memory
+  - explicit `Teach <Agent>:` memory capture with approved per-agent durable memory
   - passive review-first memory extraction for stable facts, preferences, and aliases
+  - durable `agent_memory` for named specialists
+  - task-local `assignment_memory` for assignment/thread-specific working context
   - richer alias / glossary entries with synonyms and optional scope metadata
   - summary-first long-term retrieval over older chat turns with raw-turn grounding fallback
   - daily / weekly memory reflection summaries backed by approved memory and chunk summaries
   - entity-scoped memory links for client/project-aware recall
+  - promotion flows from:
+    - `agent_memory -> global Navi memory`
+    - `assignment_memory -> agent_memory`
 - **Runtime / integrations**
   - optional background runtime scheduler for queued and recurring jobs
   - optional local HTTP API for non-GUI integrations
@@ -70,6 +76,7 @@ AM Sweep is a **user-initiated morning triage loop** that gathers context (open 
 - Memory retrieval is still primarily lexical/structured, with semantic/entity-aware enhancements still maturing.
 - Delegation now has runtime scaffolding, but broader queue-backed execution still needs production hardening.
 - Calendar write operations are available via explicit command, but broader scheduling optimization remains limited.
+- Agent/assignment reflection summaries are still a follow-up opportunity beyond the current global reflection layer.
 
 ## Current Delegation UX
 
@@ -95,6 +102,49 @@ AM Sweep is a **user-initiated morning triage loop** that gathers context (open 
 3. Click `Open Assignee Chat`.
 4. Reply in the agent thread and/or use `Upload Artifact` to attach requested files.
 5. Return to the CoS board to confirm the assignment no longer needs input.
+
+## Current Memory Model
+
+### Memory layers
+The current CoS-adjacent memory model is now layered:
+
+- `user_memory`
+  - global Navi memory for durable user-wide facts, preferences, aliases, and curated promoted learnings
+- `cos_memory`
+  - CoS-specific planning memory and structured retrieval notes
+- `agent_memory`
+  - durable private memory for one named specialist such as `Atlas` or `Quill`
+- `assignment_memory`
+  - task-local, short-horizon memory attached to assignments and threads
+
+### Access model
+- direct agents read:
+  - their own `agent_memory`
+  - relevant `assignment_memory`
+  - filtered global memory when injected
+- Chief of Staff reads:
+  - `cos_memory`
+  - global Navi memory
+  - relevant agent memory
+  - relevant assignment memory
+- Navi reads:
+  - global memory directly
+  - selective supervisor slices from agent and assignment memory when relevant
+
+### Explicit teaching
+- `Teach Navi: ...`
+  - writes approved memory into global Navi memory
+- `Teach Atlas: ...`
+- `Teach Quill: ...`
+- `Teach <AgentName>: ...`
+  - writes approved memory into that agent's durable memory
+
+### Promotion paths
+CoS can now promote:
+- selected agent memory into global Navi memory
+- selected assignment memory into durable agent memory
+
+This keeps temporary task facts from polluting global memory while still allowing useful learnings to graduate upward.
 
 ## Current CoS Action Command Reference
 
@@ -214,7 +264,9 @@ Use a staged approach so retrieval stays small and relevant:
 5. **Guardrails**: retrieved text is treated as *untrusted reference*, not instructions; only user-approved actions cause side effects.
 
 Current implementation note:
-- `user_memory` is the structured durable store.
+- `user_memory` is the global durable store for Navi-wide recall.
+- `agent_memory` is the per-agent durable store.
+- `assignment_memory` is the task-local store for assignments and threads.
 - `chat_retrieval` handles summary-first long-term retrieval.
 - reflections are stored separately.
 - entity links now allow memory rows to be associated with clients and projects.

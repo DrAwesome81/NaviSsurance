@@ -1,6 +1,6 @@
 # NaviSsurance User Manual
 
-Last updated: 2026-03-30
+Last updated: 2026-04-03
 
 ## 1. What This App Is
 
@@ -263,42 +263,71 @@ When CoS or the board reports bulk changes, pay attention to counts such as:
 
 If `changed=0`, nothing was actually updated.
 
-## 6. Global Memory And Teach Navi
+## 6. Memory And Teaching
 
-Navi now has durable user memory that can influence future prompts.
+NaviSsurance now has layered memory that can influence future prompts and assignment work.
+
+### Memory layers you should know about
+- `Global memory`
+  - user-wide facts, preferences, aliases, and shared reference knowledge for Navi
+- `Chief of Staff memory`
+  - planning-oriented memory used by CoS
+- `Agent memory`
+  - durable private memory for one named specialist such as `Atlas` or `Quill`
+- `Assignment memory`
+  - task-local working memory tied to one assignment or thread
 
 ### What counts as memory
 The app can store:
 - durable facts,
 - preferences,
 - aliases and glossary terms,
+- client or project-specific conventions,
 - other stable reference information that should survive beyond one chat.
 
 ### Explicit memory capture
-Use `Teach Navi:` in chat when you want to save something intentionally.
+Use explicit teaching commands when you want to save something intentionally.
 
 Examples:
 - `Teach Navi: I prefer deep work before noon.`
 - `Teach Navi: PMCF means post-market clinical follow-up.`
+- `Teach Atlas: Acme means Acme Biotech.`
+- `Teach Quill: Prefer the client's template language unless told otherwise.`
 
 Alias or glossary entries are stored in a more structured way when Navi can detect the term and meaning clearly.
 
+### How the layers behave
+- `Teach Navi:` writes approved memory into Navi's global memory.
+- `Teach <Agent>:` writes approved memory into that named agent's durable memory.
+- Direct agent chats can also learn passively into their own agent memory.
+- Assignment-specific work can create short-horizon task-local memory that stays attached to the assignment unless promoted upward.
+
 ### Reviewing memory
-Open `Global Memory…` from `Chief of Staff` to:
+Open `Global Memory…` from `Chief of Staff`.
+
+That dialog can now inspect:
+- `Global` memory
+- `Agent` memory
+- `Assignment` memory
+
+From there you can:
 - search entries,
-- filter by status,
+- filter by status, scope, source, and agent,
 - add memory manually,
 - edit selected memory,
 - approve pending memory,
 - reject memory,
-- delete memory.
+- delete memory,
+- promote agent memory into Navi global memory,
+- promote assignment memory into durable agent memory.
 
 ### Pending memory review
 - Auto-learned memory may enter a `pending` review state before it starts influencing prompts.
 - If pending items exist, you will see a review prompt in the CoS UI such as `Review pending memory`.
 
 ### Practical guidance
-- Use `Teach Navi:` for anything you definitely want remembered.
+- Use `Teach Navi:` for anything you definitely want remembered globally.
+- Use `Teach <Agent>:` when the learning should belong to one specialist only.
 - Review pending memory regularly so weak or noisy auto-learned entries do not accumulate.
 
 ## 7. Workspace

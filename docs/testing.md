@@ -1,6 +1,6 @@
 # NaviSsurance Testing
 
-Last revised: 2026-04-01
+Last revised: 2026-04-03
 
 ## Active release path
 
@@ -47,6 +47,24 @@ These are developer/integration checks and should normally be validated by the t
 | `TC-COS-019` | automated where practical, manual spot-check optional | Logging format can be asserted automatically; one manual spot-check is optional after large logging changes |
 | `TC-BILL-003` | mixed | Idempotency should be automated; prompt timing/UX remains manual |
 
+### Memory-focused automated coverage
+
+The layered memory architecture is now partially covered by focused automated suites:
+
+- `tests/test_user_memory_entities.py`
+  - global memory entity links and retrieval behavior
+- `tests/test_agent_memory.py`
+  - per-agent durable memory
+  - assignment-local memory
+  - memory promotion flows
+  - main dialog filtering logic on supported platforms
+- `tests/test_main_chat_router.py`
+  - main Navi injection of relevant memory context
+- `tests/test_chief_of_staff.py`
+  - CoS retrieval of relevant agent and assignment memory
+
+On this Windows environment, a few Qt-backed dialog tests are intentionally skipped because PyQt teardown is unstable even when assertions pass. The non-UI logic remains covered.
+
 ### Prerequisites for automated optional integrations
 
 - Runtime scheduler:
@@ -82,6 +100,22 @@ These are the cases that still require a human because they depend on GUI judgme
 - Open assignee chat routing (`TC-COS-004`)
 - Bulk board action (`TC-COS-007`)
 - Assignment health filter (`TC-COS-010`)
+
+### Optional layered-memory manual checks
+
+Run these only when you specifically changed memory behavior:
+
+1. Teach Navi something global:
+   - Example: `Teach Navi: I prefer deep work before noon.`
+   - Expected: later Navi and CoS turns can use that preference.
+2. Teach one agent something private:
+   - Example: `Teach Atlas: Acme means Acme Biotech.`
+   - Expected: Atlas can recall it; unrelated agents should not receive it by default.
+3. Create assignment-local context in an assignee thread:
+   - Example: mention a temporary blocker or open loop in an assignment conversation.
+   - Expected: that context is available on the assignment path and can be promoted upward if useful.
+4. Use `Chief of Staff -> Global Memory...`:
+   - Verify `Global`, `Agent`, and `Assignment` scopes all load and filter correctly.
 
 ### Automated integration smoke reference
 

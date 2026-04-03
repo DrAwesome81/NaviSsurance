@@ -1,6 +1,6 @@
 # Roadmap Status
 
-Last updated: 2026-04-01
+Last updated: 2026-04-03
 
 ## Purpose
 This document is the visible roadmap/status companion to `TODO.md`. It exists so the repo has one current place to classify active, implemented, and historical roadmap work without requiring contributors to inspect private or historical plan files first.
@@ -11,6 +11,8 @@ This document is the visible roadmap/status companion to `TODO.md`. It exists so
 - Chief of Staff assignment and delegation workflows
 - AM Sweep
 - durable memory and memory reflections
+- layered memory with global, CoS, per-agent, and assignment-local scopes
+- explicit `Teach <Agent>:` plus promotion paths between memory layers
 - summary-first long-term retrieval
 - Deep Research workflow
 - Billing draft generation and exports
@@ -24,12 +26,14 @@ This document is the visible roadmap/status companion to `TODO.md`. It exists so
 - broader runtime hardening and real-world validation
 - deeper browser-backed workflows
 - more mature entity-aware and semantic retrieval
+- agent/assignment reflection summaries and broader memory UX polish
 - observability and operational controls for optional runtime/API surfaces
 - performance work, especially CoS latency and duplicate calls
 
 ### Current product-direction note
 - Built-in desktop chat is the intended user chat surface.
 - Remote chat integrations are not part of the active roadmap unless explicitly revived later.
+- Navi and CoS now act as supervisory readers across layered memory, while direct agents remain isolated to their own durable memory plus task-local memory by default.
 
 ### Historical or superseded planning themes
 - older multi-agent strategy plans that predate the current implementation

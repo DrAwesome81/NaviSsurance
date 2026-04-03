@@ -70,7 +70,7 @@ If the question is whether the app is already a full staff replacement, the hone
 #### Current NaviSsurance coverage
 
 - `Chief of Staff` already handles plan-of-day conversations, AM Sweep, task capture, assignment creation, and calendar-aware planning.
-- The app has durable memory, pending-memory review, and explicit `Teach Navi:` support.
+- The app has layered durable memory, pending-memory review, explicit `Teach Navi:` support, and explicit `Teach <Agent>:` support.
 - `Dashboard` centralizes briefing, schedule, tasks, and unreplied email context.
 - Meetings can produce transcripts and reviewable task drafts.
 - The delegation board provides a visible handoff and follow-up loop for specialist agents.

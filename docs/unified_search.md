@@ -2,7 +2,7 @@
 
 Status: roadmap / design document, not a full description of shipped behavior.
 
-Last updated: 2026-04-01
+Last updated: 2026-04-03
 
 ## Purpose
 Build a single search capability that lets the Chief of Staff assistant (and the UI) find relevant information across:
@@ -19,7 +19,8 @@ Today the repo primarily exposes:
 - `core/cos_doc_search.py` for note search, local markdown/text search, and optional Chroma search
 - `core/tools/internal_retrieval.py` for agent-facing Chroma retrieval
 - `core/chat_retrieval.py` for long-term chat retrieval
-- `core/user_memory.py` for durable memory retrieval
+- `core/user_memory.py` for global durable memory retrieval
+- `core/agent_memory.py` for per-agent and assignment-local memory retrieval
 
 Use this document as the target design for broader unified search rather than as a precise description of shipped behavior.
 

@@ -1,6 +1,6 @@
 # NaviSsurance Design
 
-Last updated: 2026-04-01
+Last updated: 2026-04-03
 
 Contributor note:
 - If this design doc, older plan files, and the codebase appear to disagree, use `docs/contributor_guide.md` to determine which source should win.
@@ -84,15 +84,31 @@ Legacy Selenium experiments in `core/fda_scraper.py` have been reduced to a wrap
 ## Memory And Retrieval
 NaviSsurance uses a layered retrieval architecture:
 
-### Durable memory
+### Layered durable memory
 - `core/user_memory.py`
+- `core/agent_memory.py`
 - `core/db.py`
 
-Durable memory stores:
-- preferences
-- facts
-- aliases / glossary entries
-- pending and approved memory rows
+The current durable memory layers are:
+- `user_memory`
+  - global Navi memory for user-wide preferences, facts, aliases, and curated shared recall
+- `cos_memory`
+  - Chief of Staff planning memory, decisions, tags, and open loops
+- `agent_memory`
+  - private durable memory for one named specialist agent
+- `assignment_memory`
+  - task-local memory keyed to assignments and threads, intended for short-horizon working context
+
+Current behaviors include:
+- explicit `Teach Navi:` writes to `user_memory`
+- explicit `Teach <Agent>:` writes to `agent_memory`
+- passive review-first extraction into:
+  - `user_memory` from main Navi / CoS paths
+  - `agent_memory` from direct agent chat paths
+  - `assignment_memory` from assignment/thread work
+- promotion flows:
+  - `agent_memory -> user_memory`
+  - `assignment_memory -> agent_memory`
 
 ### Long-term chat retrieval
 - `core/chat_retrieval.py`
@@ -108,11 +124,26 @@ This provides:
 This creates higher-level daily and weekly memory summaries.
 
 ### Entity-aware memory
-The current schema now supports entity-linked memory rows so memory can be scoped to:
+The current schema supports entity-linked memory rows so memory can be scoped to:
 - user
 - client
 - project
 - assignment / engagement
+
+### Supervisor retrieval model
+- direct agents read:
+  - their own `agent_memory`
+  - relevant `assignment_memory`
+  - filtered shared `user_memory`
+- Chief of Staff reads:
+  - `cos_memory`
+  - `user_memory`
+  - relevant `agent_memory`
+  - relevant `assignment_memory`
+- main Navi reads:
+  - `user_memory`
+  - selective supervisor slices from `agent_memory`
+  - selective supervisor slices from `assignment_memory`
 
 The system still uses SQLite as the source of truth. Semantic retrieval is added as an enhancement layer, not a replacement.
 
@@ -126,7 +157,7 @@ Major table families include:
 - agent threads, assignments, assignment events, and artifacts
 - billing clients, time entries, templates, and invoice drafts
 - leads and supporting evidence fields
-- durable user memory and reflections
+- durable user memory, agent memory, assignment memory, and reflections
 - runtime jobs and job runs
 - tool call audit
 - channel bindings
