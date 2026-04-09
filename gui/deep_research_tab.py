@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from PyQt6.QtCore import Qt, QSettings, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -29,6 +30,7 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QTabWidget,
 )
 
 from core.db import DatabaseManager
@@ -36,6 +38,7 @@ from core.workflow_engine import STATUS_AWAITING_RESEARCH_REVIEW, WorkflowEngine
 from gui.agent_console import AgentConsole
 from gui.document_export import export_markdownish_document
 from gui.notifications import notify_background_complete
+from gui.workspace_tab import WorkspaceTab
 
 logger = logging.getLogger(__name__)
 
@@ -160,15 +163,85 @@ def _format_artifact_for_display(artifact_type: str, content_json: str) -> str:
 class DeepResearchTab(QWidget):
     """Tab for running deep research (research -> review -> final research brief)."""
 
-    def __init__(self, db: DatabaseManager, parent=None):
+    def __init__(
+        self,
+        db: DatabaseManager,
+        parent=None,
+        *,
+        workspace_tab: WorkspaceTab | None = None,
+        main_tab_widget: QTabWidget | None = None,
+    ):
         super().__init__(parent)
         self.db = db
+        self._workspace_tab = workspace_tab
+        self._main_tab_widget = main_tab_widget
         self._current_project_id: int | None = None
         self._pipeline_worker: PipelineWorker | None = None
         self._brief_worker: ContinueBriefWorker | None = None
         self._settings = QSettings("NaviSsurance", "DeepResearchTab")
+        self.current_research_brief = ""
+        self.current_run_name: str | None = None
         self.setup_ui()
         self._load_state()
+
+    def _resolve_workspace_tab(self):
+        if self._workspace_tab is not None:
+            return self._workspace_tab
+        win = self.window()
+        if win is not None:
+            found = win.findChild(WorkspaceTab)
+            if found is not None:
+                return found
+        return None
+
+    def _resolve_main_tab_widget(self) -> QTabWidget | None:
+        if self._main_tab_widget is not None:
+            return self._main_tab_widget
+        parent = self.parent()
+        if isinstance(parent, QTabWidget):
+            return parent
+        return None
+
+    def _set_brief_actions_enabled(self, has_brief: bool):
+        self.export_brief_btn.setEnabled(bool(has_brief))
+        self.use_in_workspace_btn.setEnabled(bool(has_brief))
+
+    def _sync_current_research_brief_from_ui(self) -> None:
+        self.current_research_brief = (self.brief_browser.toPlainText() or "").strip()
+
+    def send_research_to_workspace(self) -> None:
+        self._sync_current_research_brief_from_ui()
+        if not self.current_research_brief:
+            self.status_label.setText("No research brief to send — generate a final brief first.")
+            return
+        ws = self._resolve_workspace_tab()
+        if ws is None:
+            QMessageBox.warning(self, "Workspace", "Could not find the Workspace tab.")
+            return
+        pid = int(self._current_project_id or 0)
+        run_label = (self.name_edit.text().strip() or self.current_run_name or "").strip() or "latest"
+        safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", run_label).strip("._-") or "latest"
+        display_name = f"Atlas_Research_{safe}.md"
+        title_line = f"Deep Research run {pid}: {run_label}" if pid else f"Deep Research: {run_label}"
+        slug = f"atlas-research-{pid}-{safe}.md" if pid else f"atlas-research-{safe}.md"
+        ws.add_virtual_file(
+            name=display_name,
+            content=self.current_research_brief,
+            source_type="atlas_research",
+            source_assignment_id=pid,
+            source_title=title_line,
+            marked=True,
+            path_slug=slug,
+        )
+        self.status_label.setText("Research sent to Workspace")
+        win = self.window()
+        tw = getattr(win, "tab_widget", None) if win is not None else None
+        if tw is not None:
+            tw.setCurrentWidget(ws)
+        else:
+            tabs = self._resolve_main_tab_widget()
+            if tabs is not None:
+                tabs.setCurrentWidget(ws)
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -252,12 +325,21 @@ class DeepResearchTab(QWidget):
         brief_layout = QVBoxLayout(brief_group)
         self.brief_browser = QTextBrowser()
         self.brief_browser.setOpenExternalLinks(True)
+        self.brief_browser.textChanged.connect(self._sync_current_research_brief_from_ui)
         brief_layout.addWidget(self.brief_browser)
         brief_actions = QHBoxLayout()
         self.export_brief_btn = QPushButton("Export brief...")
         self.export_brief_btn.setEnabled(False)
         self.export_brief_btn.clicked.connect(self.export_brief)
         brief_actions.addWidget(self.export_brief_btn)
+        self.use_in_workspace_btn = QPushButton("→ Send to Workspace for Drafting")
+        self.use_in_workspace_btn.setStyleSheet("background-color: #FD6262; color: white;")
+        self.use_in_workspace_btn.setToolTip(
+            "Add the final brief as a marked virtual file on the Workspace tab so you can run Generate Draft without copying."
+        )
+        self.use_in_workspace_btn.setEnabled(False)
+        self.use_in_workspace_btn.clicked.connect(self.send_research_to_workspace)
+        brief_actions.addWidget(self.use_in_workspace_btn)
         brief_actions.addStretch(1)
         brief_layout.addLayout(brief_actions)
         splitter.addWidget(brief_group)
@@ -410,10 +492,13 @@ class DeepResearchTab(QWidget):
 
         if brief_text:
             self.brief_browser.setPlainText(brief_text)
-            self.export_brief_btn.setEnabled(True)
+            self.current_run_name = self.name_edit.text().strip() or None
+            self._sync_current_research_brief_from_ui()
+            self._set_brief_actions_enabled(True)
         else:
             self.brief_browser.clear()
-            self.export_brief_btn.setEnabled(False)
+            self.current_research_brief = ""
+            self._set_brief_actions_enabled(False)
 
     def on_generate_brief(self):
         if self._current_project_id is None:

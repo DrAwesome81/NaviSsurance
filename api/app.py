@@ -40,10 +40,11 @@ def _db() -> DatabaseManager:
 
 @app.get("/health")
 def health() -> dict:
-    runtime_ok, runtime_reason = runtime_scheduler_status()
-    local_api_ok, local_api_reason = local_api_status()
+    db = _db()
+    runtime_ok, runtime_reason = runtime_scheduler_status(db)
+    local_api_ok, local_api_reason = local_api_status(db)
     browser_ok, browser_reason = browser_tools_available()
-    telegram_ok, telegram_reason = telegram_bot_available()
+    telegram_ok, telegram_reason = telegram_bot_available(db)
     return {
         "ok": True,
         "service": "navissurance-local-api",

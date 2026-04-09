@@ -3,6 +3,7 @@ Chief of Staff tab: chat on the left (≥70%), sidebar on the right with chat li
 All chats save automatically. Layout like Grok/ChatGPT but sidebar on the right.
 """
 
+import html
 import json
 import logging
 import re
@@ -14,10 +15,11 @@ from PyQt6.QtWidgets import (
     QTextBrowser, QListWidget, QListWidgetItem, QFormLayout, QSpinBox, QTabWidget,
     QMessageBox, QProgressBar, QDialog, QDialogButtonBox, QMenu, QToolButton,
     QSizePolicy, QComboBox, QLineEdit, QInputDialog, QFileDialog, QDateEdit, QCheckBox,
-    QDoubleSpinBox, QTimeEdit, QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView
+    QDoubleSpinBox, QTimeEdit, QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
+    QPlainTextEdit, QGroupBox,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QDate, QTimer
-from PyQt6.QtGui import QAction, QKeyEvent
+from PyQt6.QtGui import QAction, QKeyEvent, QColor, QBrush, QFont
 
 
 class ChatEntryEdit(QTextEdit):
@@ -35,7 +37,8 @@ class ChatEntryEdit(QTextEdit):
             super().keyPressEvent(event)
 
 from core.db import DatabaseManager
-from core.chief_of_staff_service import cos_response, cos_am_sweep
+from core.chief_of_staff_service import ChiefOfStaffService, cos_response, cos_am_sweep
+from core.grok_client import is_user_facing_llm_failure_message
 from core.agent_memory import promote_agent_memory_to_global, promote_assignment_memory_to_agent
 from core.user_memory import auto_store_user_memory, default_user_memory_llm, store_teach_memory
 from gui.agent_routing import route_for_agent
@@ -86,6 +89,24 @@ def _normalize_mmddyyyy_due_date_input(value: str) -> tuple[bool, Optional[str]]
     except Exception:
         return False, None
     return True, dt.strftime("%m-%d-%Y")
+
+
+def _normalize_proposal_due_for_db(value: str) -> tuple[bool, Optional[str]]:
+    """Accept YYYY-MM-DD, MM-DD-YYYY, or none; return canonical YYYY-MM-DD or None for DB."""
+    raw = (value or "").strip()
+    if not raw or raw.lower() in {"none", "null", "n/a"}:
+        return True, None
+    ok, d = _normalize_iso_due_date_input(raw)
+    if ok and d:
+        return True, d
+    ok_mm, mm = _normalize_mmddyyyy_due_date_input(raw)
+    if ok_mm and mm:
+        try:
+            dt = datetime.strptime(mm, "%m-%d-%Y")
+        except Exception:
+            return False, None
+        return True, dt.strftime("%Y-%m-%d")
+    return False, None
 
 
 def _parse_iso_datetime(value: str) -> Optional[datetime]:
@@ -320,7 +341,7 @@ class CosAskWorker(QThread):
                 self.finished_signal.emit(teach_response)
                 return
             result = cos_response(self.db, self.user_message, self.conversation_history, chat_id=self.chat_id)
-            if result.startswith("Error"):
+            if is_user_facing_llm_failure_message(result):
                 self.error_signal.emit(result)
                 return
             session_id = f"cos_{int(self.chat_id)}" if self.chat_id is not None else None
@@ -352,7 +373,7 @@ class CosAmSweepWorker(QThread):
     def run(self):
         try:
             result = cos_am_sweep(self.db, conversation_history=self.conversation_history, chat_id=self.chat_id)
-            if result.startswith("Error"):
+            if is_user_facing_llm_failure_message(result):
                 self.error_signal.emit(result)
                 return
             self.finished_signal.emit(result)
@@ -1584,6 +1605,7 @@ class ChiefOfStaffTab(QWidget):
         self._am_sweep_worker = None
         self._current_chat_id = None
         self._current_assignment_id = None
+        self._current_proposal: dict | None = None
         self._assignment_table_state_restoring = True
         self._assignment_filter_state_restoring = True
         self._setup_ui()
@@ -1798,6 +1820,19 @@ class ChiefOfStaffTab(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         # Top row: optional options button (right-aligned)
         top_row = QHBoxLayout()
+        self.am_sweep_queue_tasks_chat_btn = QPushButton("AM Sweep → tasks")
+        self.am_sweep_queue_tasks_chat_btn.setToolTip(
+            "Create dashboard tasks from the current assignment filters (same as Delegation Board). "
+            "Business category, one confirmation."
+        )
+        self.am_sweep_queue_tasks_chat_btn.clicked.connect(self._bulk_create_tasks_am_sweep_quick)
+        self.am_sweep_queue_tasks_chat_btn.setStyleSheet(
+            "QPushButton { color: #e8f5e9; background-color: #1b5e20; border: 1px solid #2e7d32; "
+            "padding: 6px 12px; border-radius: 6px; font-weight: 600; }"
+            "QPushButton:hover { background-color: #2e7d32; color: #ffffff; }"
+        )
+        self._apply_button_metrics(self.am_sweep_queue_tasks_chat_btn, min_width=168)
+        top_row.addWidget(self.am_sweep_queue_tasks_chat_btn)
         top_row.addStretch()
         self.pending_memory_btn = QPushButton("Review pending memory")
         self.pending_memory_btn.setVisible(False)
@@ -1975,15 +2010,11 @@ Calendar and task actions:
         chats_layout.addWidget(self.chat_list)
         tabs.addTab(chats_panel, "Chats")
 
-        # Assignments tab
+        # Assignments tab (suggested proposals → board → compact action toolbar)
         asg_panel = QWidget()
         asg_layout = QVBoxLayout(asg_panel)
-        asg_layout.setContentsMargins(0, 0, 0, 0)
-        asg_title_row = QHBoxLayout()
-        asg_title_row.setSpacing(8)
-        asg_title_row.addWidget(QLabel("Delegation Board"))
-        asg_title_row.addStretch()
-        asg_layout.addLayout(asg_title_row)
+        asg_layout.setSpacing(12)
+        asg_layout.setContentsMargins(12, 12, 12, 12)
         asg_head = QGridLayout()
         asg_head.setHorizontalSpacing(6)
         asg_head.setVerticalSpacing(6)
@@ -2027,12 +2058,62 @@ Calendar and task actions:
         self._apply_button_metrics(refresh_asg_btn, min_width=88)
         refresh_asg_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         asg_head.addWidget(refresh_asg_btn, 1, 3)
-        asg_layout.addLayout(asg_head)
+        self.am_sweep_queue_tasks_btn = QPushButton("AM Sweep → dashboard tasks")
+        self.am_sweep_queue_tasks_btn.setToolTip(
+            "One step after AM Sweep: create dashboard tasks for each filtered assignment (Business). "
+            "Skips done/cancelled and assignments that already have a linked task. Adjust filters below first."
+        )
+        self.am_sweep_queue_tasks_btn.clicked.connect(self._bulk_create_tasks_am_sweep_quick)
+        self.am_sweep_queue_tasks_btn.setStyleSheet(
+            "QPushButton { color: #e8f5e9; background-color: #1b5e20; border: 1px solid #2e7d32; "
+            "padding: 10px 14px; border-radius: 8px; font-weight: 600; font-size: 13px; }"
+            "QPushButton:hover { background-color: #2e7d32; color: #ffffff; }"
+            "QPushButton:pressed { background-color: #145214; }"
+        )
+        self._apply_button_metrics(self.am_sweep_queue_tasks_btn, min_width=280)
+        self.am_sweep_queue_tasks_btn.setMinimumHeight(self._control_min_height(extra_padding=18))
+        self.am_sweep_queue_tasks_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        asg_head.addWidget(self.am_sweep_queue_tasks_btn, 2, 0, 1, 4)
+
+        suggested_group = QGroupBox("Suggested Assignments")
+        suggested_group.setStyleSheet("QGroupBox { font-weight: bold; color: #FD6262; }")
+        suggested_layout = QVBoxLayout(suggested_group)
+        suggested_layout.setSpacing(8)
+        self.proposed_list = QListWidget()
+        self.proposed_list.setMinimumHeight(200)
+        self.proposed_list.setStyleSheet(
+            "QListWidget { background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 6px; }"
+        )
+        self.proposed_list.itemClicked.connect(self.on_proposed_clicked)
+        self.edit_proposal_btn = QPushButton("Edit")
+        self.approve_proposal_btn = QPushButton("Approve & Route")
+        self.reject_proposal_btn = QPushButton("Reject")
+        self.edit_proposal_btn.clicked.connect(self.edit_selected_proposal)
+        self.approve_proposal_btn.clicked.connect(self.approve_selected_proposal)
+        self.reject_proposal_btn.clicked.connect(self.reject_selected_proposal)
+        for _prop_btn in (self.edit_proposal_btn, self.approve_proposal_btn, self.reject_proposal_btn):
+            _prop_btn.setMinimumHeight(36)
+        proposal_btn_row = QHBoxLayout()
+        proposal_btn_row.addWidget(self.edit_proposal_btn)
+        proposal_btn_row.addWidget(self.approve_proposal_btn)
+        proposal_btn_row.addWidget(self.reject_proposal_btn)
+        self.proposal_status_label = QLabel("")
+        self.proposal_status_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        self.proposal_status_label.setWordWrap(True)
+        suggested_layout.addWidget(self.proposed_list)
+        suggested_layout.addLayout(proposal_btn_row)
+        suggested_layout.addWidget(self.proposal_status_label)
+        asg_layout.addWidget(suggested_group)
+
+        board_group = QGroupBox("Delegation Board")
+        board_layout = QVBoxLayout(board_group)
+        board_layout.setSpacing(8)
+        board_layout.addLayout(asg_head)
 
         filters = QGridLayout()
         filters.setContentsMargins(0, 0, 0, 0)
-        filters.setHorizontalSpacing(6)
-        filters.setVerticalSpacing(6)
+        filters.setHorizontalSpacing(4)
+        filters.setVerticalSpacing(4)
         self.assignment_scope_filter = QComboBox()
         self.assignment_scope_filter.addItem("Open only", "open")
         self.assignment_scope_filter.addItem("All (include done/cancelled)", "all")
@@ -2043,7 +2124,7 @@ Calendar and task actions:
 
         self.assignment_status_filter = QComboBox()
         self.assignment_status_filter.addItems(
-            ["All", "queued", "in_progress", "awaiting_review", "blocked", "done", "cancelled"]
+            ["All", "proposed", "queued", "in_progress", "awaiting_review", "blocked", "done", "cancelled"]
         )
         self.assignment_status_filter.currentTextChanged.connect(lambda _t: self._refresh_assignment_list())
         self.assignment_status_filter.currentIndexChanged.connect(self._save_assignment_filter_state)
@@ -2089,11 +2170,20 @@ Calendar and task actions:
         self.assignment_search_input.textChanged.connect(self._save_assignment_filter_state)
         self.assignment_search_input.setMinimumHeight(self._control_min_height(extra_padding=10))
         filters.addWidget(self.assignment_search_input, 3, 0, 1, 2)
-        asg_layout.addLayout(filters)
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(6)
+        _filters_lbl = QLabel("Filters:")
+        _filters_lbl.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        filter_row.addWidget(_filters_lbl, 0)
+        _filter_host = QWidget()
+        _filter_host.setLayout(filters)
+        filter_row.addWidget(_filter_host, 1)
+        board_layout.addLayout(filter_row)
 
         self.assignment_count_label = QLabel("")
         self.assignment_count_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
-        asg_layout.addWidget(self.assignment_count_label)
+        self.assignment_count_label.setWordWrap(True)
+        board_layout.addWidget(self.assignment_count_label)
 
         self.assignment_list = QTableWidget(0, 8)
         self.assignment_list.setHorizontalHeaderLabels(
@@ -2118,96 +2208,111 @@ Calendar and task actions:
         header.setSortIndicatorShown(True)
         header.sectionResized.connect(self._save_assignment_table_state)
         header.sortIndicatorChanged.connect(self._save_assignment_table_state)
-        asg_layout.addWidget(self.assignment_list, 1)
+        board_layout.addWidget(self.assignment_list, 1)
         self.assignment_details = QTextBrowser()
         self.assignment_details.setPlaceholderText("Select an assignment to view details.")
-        asg_layout.addWidget(self.assignment_details, 1)
-        btn_row = QGridLayout()
-        btn_row.setHorizontalSpacing(6)
-        btn_row.setVerticalSpacing(6)
+        board_layout.addWidget(self.assignment_details, 1)
+
         self.asg_start_btn = QPushButton("Start")
         self.asg_start_btn.clicked.connect(lambda: self._set_assignment_status("in_progress"))
         self._apply_button_metrics(self.asg_start_btn, min_width=92)
-        self.asg_start_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn_row.addWidget(self.asg_start_btn, 0, 0)
+        self.asg_start_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.asg_set_priority_btn = QPushButton("Set Priority")
         self.asg_set_priority_btn.clicked.connect(self._set_assignment_priority)
         self._apply_button_metrics(self.asg_set_priority_btn, min_width=110)
-        self.asg_set_priority_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn_row.addWidget(self.asg_set_priority_btn, 0, 1)
+        self.asg_set_priority_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.asg_set_due_btn = QPushButton("Set Due")
         self.asg_set_due_btn.clicked.connect(self._set_assignment_due)
         self._apply_button_metrics(self.asg_set_due_btn, min_width=96)
-        self.asg_set_due_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn_row.addWidget(self.asg_set_due_btn, 0, 2)
+        self.asg_set_due_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.asg_review_btn = QPushButton("Awaiting Review")
         self.asg_review_btn.clicked.connect(lambda: self._set_assignment_status("awaiting_review"))
         self._apply_button_metrics(self.asg_review_btn, min_width=138)
-        self.asg_review_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn_row.addWidget(self.asg_review_btn, 1, 0)
+        self.asg_review_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.asg_block_btn = QPushButton("Block")
         self.asg_block_btn.clicked.connect(lambda: self._set_assignment_status("blocked"))
         self._apply_button_metrics(self.asg_block_btn, min_width=92)
-        self.asg_block_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn_row.addWidget(self.asg_block_btn, 1, 1)
+        self.asg_block_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.asg_done_btn = QPushButton("Done")
         self.asg_done_btn.clicked.connect(lambda: self._set_assignment_status("done"))
         self._apply_button_metrics(self.asg_done_btn, min_width=92)
-        self.asg_done_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn_row.addWidget(self.asg_done_btn, 1, 2)
+        self.asg_done_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.asg_cancel_btn = QPushButton("Cancel")
         self.asg_cancel_btn.clicked.connect(lambda: self._set_assignment_status("cancelled"))
         self._apply_button_metrics(self.asg_cancel_btn, min_width=92)
-        self.asg_cancel_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn_row.addWidget(self.asg_cancel_btn, 2, 0, 1, 3)
-        asg_layout.addLayout(btn_row)
-        edit_row = QGridLayout()
-        edit_row.setHorizontalSpacing(6)
-        edit_row.setVerticalSpacing(6)
+        self.asg_cancel_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.asg_reopen_btn = QPushButton("Reopen")
         self.asg_reopen_btn.clicked.connect(lambda: self._set_assignment_status("queued"))
         self._apply_button_metrics(self.asg_reopen_btn, min_width=92)
-        self.asg_reopen_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        edit_row.addWidget(self.asg_reopen_btn, 0, 0)
+        self.asg_reopen_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.asg_edit_title_btn = QPushButton("Edit Title")
         self.asg_edit_title_btn.clicked.connect(self._edit_assignment_title)
         self._apply_button_metrics(self.asg_edit_title_btn, min_width=108)
-        self.asg_edit_title_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        edit_row.addWidget(self.asg_edit_title_btn, 0, 1)
+        self.asg_edit_title_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.asg_edit_brief_btn = QPushButton("Edit Brief")
         self.asg_edit_brief_btn.clicked.connect(self._edit_assignment_brief)
         self._apply_button_metrics(self.asg_edit_brief_btn, min_width=108)
-        self.asg_edit_brief_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        edit_row.addWidget(self.asg_edit_brief_btn, 1, 0)
+        self.asg_edit_brief_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.asg_edit_summary_btn = QPushButton("Edit Summary")
         self.asg_edit_summary_btn.clicked.connect(self._edit_assignment_summary)
         self._apply_button_metrics(self.asg_edit_summary_btn, min_width=122)
-        self.asg_edit_summary_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        edit_row.addWidget(self.asg_edit_summary_btn, 1, 1)
-        asg_layout.addLayout(edit_row)
-        artifact_row = QGridLayout()
-        artifact_row.setHorizontalSpacing(6)
-        artifact_row.setVerticalSpacing(6)
+        self.asg_edit_summary_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.asg_create_task_btn = QPushButton("Create Task")
         self.asg_create_task_btn.clicked.connect(self._create_task_from_assignment)
         self._apply_button_metrics(self.asg_create_task_btn, min_width=116)
-        self.asg_create_task_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        artifact_row.addWidget(self.asg_create_task_btn, 0, 0)
-        self.asg_bulk_create_tasks_btn = QPushButton("Bulk Create Tasks")
+        self.asg_create_task_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        self.asg_bulk_create_tasks_btn = QPushButton("Bulk tasks (custom)…")
+        self.asg_bulk_create_tasks_btn.setToolTip(
+            "Choose category, whether to include closed assignments, and an optional note—then confirm."
+        )
         self.asg_bulk_create_tasks_btn.clicked.connect(self._bulk_create_tasks_from_filtered_assignments)
         self._apply_button_metrics(self.asg_bulk_create_tasks_btn, min_width=152)
-        self.asg_bulk_create_tasks_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        artifact_row.addWidget(self.asg_bulk_create_tasks_btn, 0, 1)
+        self.asg_bulk_create_tasks_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.asg_view_artifact_btn = QPushButton("View Artifact")
         self.asg_view_artifact_btn.clicked.connect(self._view_selected_assignment_artifact)
         self._apply_button_metrics(self.asg_view_artifact_btn, min_width=118)
-        self.asg_view_artifact_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        artifact_row.addWidget(self.asg_view_artifact_btn, 1, 0, 1, 2)
-        asg_layout.addLayout(artifact_row)
+        self.asg_view_artifact_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.asg_open_chat_btn = QPushButton("Open Assignee Chat")
         self.asg_open_chat_btn.clicked.connect(self._open_assignment_in_assignee_console)
         self._apply_button_metrics(self.asg_open_chat_btn, min_width=160)
-        asg_layout.addWidget(self.asg_open_chat_btn)
+        self.asg_open_chat_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+
+        action_toolbar = QHBoxLayout()
+        action_toolbar.setSpacing(8)
+        status_group = QGroupBox("Status")
+        status_layout = QHBoxLayout(status_group)
+        for _sb in (
+            self.asg_start_btn,
+            self.asg_review_btn,
+            self.asg_block_btn,
+            self.asg_done_btn,
+            self.asg_cancel_btn,
+            self.asg_reopen_btn,
+        ):
+            status_layout.addWidget(_sb)
+        edit_group = QGroupBox("Edit")
+        edit_layout = QHBoxLayout(edit_group)
+        for _eb in (
+            self.asg_edit_title_btn,
+            self.asg_edit_brief_btn,
+            self.asg_edit_summary_btn,
+            self.asg_set_priority_btn,
+            self.asg_set_due_btn,
+        ):
+            edit_layout.addWidget(_eb)
+        tasks_group = QGroupBox("Tasks")
+        tasks_layout = QHBoxLayout(tasks_group)
+        tasks_layout.addWidget(self.asg_create_task_btn)
+        tasks_layout.addWidget(self.asg_bulk_create_tasks_btn)
+        tasks_layout.addWidget(self.asg_view_artifact_btn)
+        action_toolbar.addWidget(status_group)
+        action_toolbar.addWidget(edit_group)
+        action_toolbar.addWidget(tasks_group)
+        action_toolbar.addWidget(self.asg_open_chat_btn)
+        action_toolbar.addStretch(1)
+
+        asg_layout.addWidget(board_group, 1)
+        asg_layout.addLayout(action_toolbar)
         tabs.addTab(asg_panel, "Assignments")
 
         layout.addWidget(tabs)
@@ -2688,9 +2793,16 @@ Calendar and task actions:
     def _filtered_assignment_rows(self):
         status, assignee, query, health, followup, include_closed = self._assignment_filters()
         rows = self.db.agent_list_assignments(status=status, assignee_code=assignee, limit=500)
+        st_filter = (status or "").strip().lower()
         if not include_closed:
             rows = [
-                r for r in rows if str(r.get("status") or "").strip().lower() not in {"done", "cancelled"}
+                r
+                for r in rows
+                if str(r.get("status") or "").strip().lower() not in {"done", "cancelled"}
+            ]
+        if st_filter != "proposed":
+            rows = [
+                r for r in rows if str(r.get("status") or "").strip().lower() != "proposed"
             ]
         if query:
             qnorm = query.replace("a-", "").lstrip("0")
@@ -2739,6 +2851,178 @@ Calendar and task actions:
             rows = filtered
         return rows
 
+    def refresh_proposed_assignments(self) -> None:
+        """Load and display assignments in ``proposed`` status (Suggested Assignments panel)."""
+        if not hasattr(self, "proposed_list"):
+            return
+        self.proposed_list.clear()
+        rows = self.db.agent_list_assignments(status="proposed", limit=30)
+        for r in rows:
+            aid = int(r.get("id") or 0)
+            if aid <= 0:
+                continue
+            title = str(r.get("title") or "Untitled")[:80]
+            assignee = str(r.get("assignee_code") or "").strip().capitalize() or "Unknown"
+            prio = int(r.get("priority") or 3)
+            due = r.get("due_date") or "none"
+            item_text = f"P-{aid} | {title} → {assignee} | P{prio} | Due {due}"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, dict(r))
+            self.proposed_list.addItem(item)
+        if not rows:
+            self._current_proposal = None
+            if hasattr(self, "proposal_status_label"):
+                self.proposal_status_label.setText("")
+
+    def on_proposed_clicked(self, item: QListWidgetItem) -> None:
+        row = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(row, dict):
+            return
+        self._current_proposal = dict(row)
+        pid = int(row.get("id") or 0)
+        if hasattr(self, "proposal_status_label"):
+            self.proposal_status_label.setText(f"Selected proposal P-{pid}")
+
+    def edit_selected_proposal(self) -> None:
+        if not self._current_proposal:
+            QMessageBox.warning(self, "No Selection", "Select a proposal first.")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Edit Proposal")
+        dlg.setMinimumWidth(520)
+        outer = QVBoxLayout(dlg)
+        form = QFormLayout()
+        title_edit = QLineEdit(str(self._current_proposal.get("title") or ""))
+        brief_edit = QPlainTextEdit(str(self._current_proposal.get("brief_md") or ""))
+        brief_edit.setMinimumHeight(160)
+        assignee_edit = QLineEdit(str(self._current_proposal.get("assignee_code") or ""))
+        due_edit = QLineEdit(str(self._current_proposal.get("due_date") or ""))
+        due_edit.setPlaceholderText("YYYY-MM-DD, MM-DD-YYYY, or none")
+        form.addRow("Title:", title_edit)
+        form.addRow("Brief:", brief_edit)
+        form.addRow("Assignee:", assignee_edit)
+        form.addRow("Due date:", due_edit)
+        outer.addLayout(form)
+        btn_row = QHBoxLayout()
+        save_btn = QPushButton("Save Changes")
+        cancel_btn = QPushButton("Cancel")
+        btn_row.addStretch(1)
+        btn_row.addWidget(save_btn)
+        btn_row.addWidget(cancel_btn)
+        outer.addLayout(btn_row)
+        save_btn.clicked.connect(
+            lambda: self._save_proposal_edits_dialog(
+                dlg, title_edit, brief_edit, assignee_edit, due_edit
+            )
+        )
+        cancel_btn.clicked.connect(dlg.reject)
+        dlg.exec()
+
+    def _save_proposal_edits_dialog(
+        self,
+        dlg: QDialog,
+        title_edit: QLineEdit,
+        brief_edit: QPlainTextEdit,
+        assignee_edit: QLineEdit,
+        due_edit: QLineEdit,
+    ) -> None:
+        proposal_id = int(self._current_proposal.get("id") or 0)
+        if proposal_id <= 0:
+            dlg.reject()
+            return
+        title = title_edit.text().strip()
+        if not title:
+            QMessageBox.warning(self, "Invalid title", "Title cannot be empty.")
+            return
+        due_ok, due_norm = _normalize_proposal_due_for_db(due_edit.text())
+        if not due_ok:
+            QMessageBox.warning(
+                self,
+                "Invalid due date",
+                "Use YYYY-MM-DD, MM-DD-YYYY, or leave empty / none.",
+            )
+            return
+        assignee = assignee_edit.text().strip().lower()
+        if not assignee or not self.db.agent_get(assignee):
+            QMessageBox.warning(self, "Invalid assignee", "Unknown agent code.")
+            return
+        row = self.db.agent_get_assignment(proposal_id)
+        if not row or str(row.get("status") or "").strip().lower() != "proposed":
+            QMessageBox.warning(self, "Not editable", "This proposal is no longer in proposed status.")
+            dlg.reject()
+            self.refresh_proposed_assignments()
+            self._refresh_assignment_list()
+            return
+        old_asg = str(row.get("assignee_code") or "").strip().lower()
+        if old_asg != assignee:
+            if not self.db.agent_reassign_assignment(
+                assignment_id=proposal_id,
+                new_assignee_code=assignee,
+                actor_code="navi",
+                note="Edited before approval",
+            ):
+                QMessageBox.warning(self, "Update failed", "Could not update assignee.")
+                return
+        if not self.db.agent_update_assignment_fields(
+            assignment_id=proposal_id,
+            actor_code="navi",
+            title=title,
+            brief_md=brief_edit.toPlainText(),
+            due_date=due_norm,
+            note="Proposal edited",
+        ):
+            QMessageBox.warning(self, "Update failed", "Could not save proposal fields.")
+            return
+        dlg.accept()
+        self._current_proposal = self.db.agent_get_assignment(proposal_id) or self._current_proposal
+        self.refresh_proposed_assignments()
+        self._refresh_assignment_list()
+
+    def approve_selected_proposal(self) -> None:
+        if not self._current_proposal:
+            QMessageBox.warning(self, "No Selection", "Select a proposal first.")
+            return
+        proposal_id = int(self._current_proposal.get("id") or 0)
+        if proposal_id <= 0:
+            return
+        cos = ChiefOfStaffService(self.db, main_window=self.window())
+        result = cos.approve_proposal(proposal_id)
+        QMessageBox.information(self, "Approve proposal", result)
+        self._current_proposal = None
+        if hasattr(self, "proposal_status_label"):
+            self.proposal_status_label.setText("")
+        self.refresh_proposed_assignments()
+        self.refresh_assignments_board()
+
+    def reject_selected_proposal(self) -> None:
+        if not self._current_proposal:
+            QMessageBox.warning(self, "No Selection", "Select a proposal first.")
+            return
+        proposal_id = int(self._current_proposal.get("id") or 0)
+        if proposal_id <= 0:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Reject proposal",
+            f"Reject (cancel) proposal P-{proposal_id}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        cos = ChiefOfStaffService(self.db)
+        result = cos.reject_proposal(proposal_id)
+        QMessageBox.information(self, "Reject proposal", result)
+        self._current_proposal = None
+        if hasattr(self, "proposal_status_label"):
+            self.proposal_status_label.setText("")
+        self.refresh_proposed_assignments()
+        self.refresh_assignments_board()
+
+    def refresh_assignments_board(self) -> None:
+        """Refresh the main delegation / assignment table (and proposed list via inner hook)."""
+        self._refresh_assignment_list()
+
     def _refresh_assignment_list(self):
         if not hasattr(self, "assignment_list"):
             return
@@ -2760,9 +3044,9 @@ Calendar and task actions:
             pr = int(r.get("priority") or 3)
             due = str(r.get("due_date") or "")
             try:
-                followup = _assignment_agent_followup_snapshot(self.db, r)
+                followup_snap = _assignment_agent_followup_snapshot(self.db, r)
             except Exception:
-                followup = {}
+                followup_snap = {}
             health_flags = _assignment_health_flags(r, now=now)
             tag_map = {
                 "overdue": "OVERDUE",
@@ -2772,30 +3056,54 @@ Calendar and task actions:
             health_text = " | ".join(
                 [tag_map[h] for h in ("overdue", "stale_blocked", "stale_review") if h in health_flags]
             )
-            needs_input = "Yes" if followup.get("needs_input") else ""
+            needs_input_flag = bool(followup_snap.get("needs_input"))
+            needs_display = "⚠️ NEEDS INPUT" if needs_input_flag else ""
 
             values = [
                 (f"A-{aid:04d}", aid),
                 (status, status),
-                (needs_input, 1 if needs_input else 0),
+                (needs_display, 1 if needs_input_flag else 0),
                 (f"P{pr}", pr),
                 (assignee, assignee),
                 (due or "", due or "9999-12-31"),
                 (health_text, health_text),
                 (title, title.lower()),
             ]
+            needs_bg = QColor("#F59E0B")
+            needs_fg = QColor("#1a1a1a")
             for col, (display, sort_value) in enumerate(values):
-                item = QTableWidgetItem(str(display))
-                item.setData(Qt.ItemDataRole.UserRole, aid)
+                disp_str = str(display)
+                if needs_input_flag and col == 0:
+                    disp_str = f"⚠️ NEEDS INPUT — {disp_str}"
+                item = QTableWidgetItem(disp_str)
+                if col == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, aid)
                 item.setData(Qt.ItemDataRole.EditRole, sort_value)
+                item.setText(disp_str)
+                if needs_input_flag:
+                    item.setBackground(QBrush(needs_bg))
+                    item.setForeground(QBrush(needs_fg))
+                    bold_font = QFont(item.font())
+                    bold_font.setBold(True)
+                    item.setFont(bold_font)
+                    item.setToolTip("Agent is waiting on you for answers or files.")
                 self.assignment_list.setItem(row_idx, col, item)
         if hasattr(self, "assignment_count_label"):
-            self.assignment_count_label.setText(f"{len(rows)} assignment(s)")
+            if not rows:
+                self.assignment_count_label.setText(
+                    "No assignments yet. Ask Navi in Chief of Staff chat to create one."
+                )
+            else:
+                self.assignment_count_label.setText(f"{len(rows)} assignment(s)")
+        _, _, _, _, followup_filter, _ = self._assignment_filters()
         self.assignment_list.setSortingEnabled(True)
-        if 0 <= sort_col < self.assignment_list.columnCount():
+        if followup_filter == "needs_input":
+            self.assignment_list.sortByColumn(2, Qt.SortOrder.DescendingOrder)
+        elif 0 <= sort_col < self.assignment_list.columnCount():
             self.assignment_list.sortByColumn(sort_col, sort_order)
         if current_aid > 0:
             self._select_assignment_row(current_aid)
+        self.refresh_proposed_assignments()
 
     def _selected_assignment_id(self) -> int:
         if not hasattr(self, "assignment_list"):
@@ -3234,50 +3542,16 @@ Calendar and task actions:
         self._refresh_task_views()
         self._focus_assignment_by_id(int(self._current_assignment_id))
 
-    def _bulk_create_tasks_from_filtered_assignments(self):
-        rows = self._filtered_assignment_rows()
-        if not rows:
-            QMessageBox.information(self, "Assignments", "No assignments match the current filters.")
-            return
-
-        category, ok = QInputDialog.getItem(
-            self,
-            "Bulk Create Tasks",
-            "Category:",
-            ["Business", "Personal"],
-            0,
-            False,
-        )
-        if not ok or not category:
-            return
-
-        mode_label, ok = QInputDialog.getItem(
-            self,
-            "Bulk Create Tasks",
-            "Include closed assignments?",
-            ["Open only", "All (include done/cancelled)"],
-            0,
-            False,
-        )
-        if not ok or not mode_label:
-            return
-        include_closed = mode_label.startswith("All")
-        note_ok, custom_note = self._prompt_optional_bulk_note("Bulk Create Tasks")
-        if not note_ok:
-            return
-
-        confirm = QMessageBox.question(
-            self,
-            "Confirm Bulk Create Tasks",
-            f"Create dashboard tasks from {len(rows)} filtered assignment(s)?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
-
+    def _bulk_create_tasks_execute(
+        self,
+        rows: list,
+        *,
+        category: str,
+        include_closed: bool,
+        custom_note: str,
+    ) -> tuple[int, int, int, int]:
+        """Returns (created, skipped_existing, skipped_closed, failed)."""
         existing_assignment_task_ids = self._existing_assignment_task_ids()
-
         created = 0
         skipped_existing = 0
         skipped_closed = 0
@@ -3328,6 +3602,97 @@ Calendar and task actions:
                     pass
             except Exception:
                 failed += 1
+        return created, skipped_existing, skipped_closed, failed
+
+    def _bulk_create_tasks_am_sweep_quick(self):
+        """Default bulk path: Business, skip closed, no note—one confirmation."""
+        rows = self._filtered_assignment_rows()
+        if not rows:
+            QMessageBox.information(
+                self,
+                "Dashboard tasks",
+                "No assignments match the current filters. Adjust the board filters or run AM Sweep first.",
+            )
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Create dashboard tasks",
+            f"Create dashboard tasks for up to {len(rows)} assignment(s) in the current filtered list?\n\n"
+            "Category: Business\n"
+            "Skips done/cancelled assignments and assignments that already have a linked dashboard task.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        created, skipped_existing, skipped_closed, failed = self._bulk_create_tasks_execute(
+            rows,
+            category="Business",
+            include_closed=False,
+            custom_note="",
+        )
+        QMessageBox.information(
+            self,
+            "Dashboard tasks",
+            (
+                f"Created: {created}\n"
+                f"Skipped (already had task): {skipped_existing}\n"
+                f"Skipped (done/cancelled): {skipped_closed}\n"
+                f"Failed: {failed}"
+            ),
+        )
+        self._refresh_task_views()
+        if self._current_assignment_id:
+            self._focus_assignment_by_id(int(self._current_assignment_id))
+
+    def _bulk_create_tasks_from_filtered_assignments(self):
+        rows = self._filtered_assignment_rows()
+        if not rows:
+            QMessageBox.information(self, "Assignments", "No assignments match the current filters.")
+            return
+
+        category, ok = QInputDialog.getItem(
+            self,
+            "Bulk Create Tasks",
+            "Category:",
+            ["Business", "Personal"],
+            0,
+            False,
+        )
+        if not ok or not category:
+            return
+
+        mode_label, ok = QInputDialog.getItem(
+            self,
+            "Bulk Create Tasks",
+            "Include closed assignments?",
+            ["Open only", "All (include done/cancelled)"],
+            0,
+            False,
+        )
+        if not ok or not mode_label:
+            return
+        include_closed = mode_label.startswith("All")
+        note_ok, custom_note = self._prompt_optional_bulk_note("Bulk Create Tasks")
+        if not note_ok:
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Confirm Bulk Create Tasks",
+            f"Create dashboard tasks from {len(rows)} filtered assignment(s)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        created, skipped_existing, skipped_closed, failed = self._bulk_create_tasks_execute(
+            rows,
+            category=str(category),
+            include_closed=include_closed,
+            custom_note=custom_note or "",
+        )
 
         QMessageBox.information(
             self,
@@ -3657,6 +4022,14 @@ Calendar and task actions:
         self._am_sweep_worker = None
         self.ask_btn.setEnabled(True)
         self.ask_progress.setVisible(False)
+        if self._current_chat_id is not None:
+            session_id = f"cos_{self._current_chat_id}"
+            try:
+                self.db.save_message(session_id, "assistant", str(err or "").strip())
+                self.db.cos_update_chat(self._current_chat_id)
+            except Exception:
+                logger.exception("CoS: failed to persist assistant error message")
+        self._refresh_chat_list()
         scroll_state = self._capture_chat_scroll_state()
-        self.chat_display.append(f"<p style='color: #e07a7a;'>Error: {err}</p>")
+        self.chat_display.append(f"<p style='color: #e07a7a;'>{html.escape(str(err or ''))}</p>")
         self._restore_chat_scroll_state(scroll_state)

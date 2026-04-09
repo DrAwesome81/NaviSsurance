@@ -225,19 +225,21 @@ def test_tasks_tab_assignee_cell_updates_db(qapp, tmp_db):
     assert row["assigned_to"] == "Quill"
 
 
-def test_tasks_tab_snooze_sets_snoozed_until(qapp, tmp_db):
+def test_tasks_tab_snooze_bumps_due_date(qapp, tmp_db):
+    from core.db import bump_task_due_date_mmddyyyy
+
     tab = TasksTab(_Parent(tmp_db))
-    tab.new_task_input.setText("Snooze task")
+    tab.new_task_input.setText("Due bump task")
     tab.add_task()
     assert tab.table.rowCount() == 1
     task_id = int(tab.table.item(0, 0).text())
 
     tab._snooze_task(task_id, days=1)
-    # Validate via rich list API that snooze date is persisted.
-    rich_rows = tmp_db.list_tasks_rich(include_completed=True, include_snoozed=True, limit=100)
-    rich = next((r for r in rich_rows if int(r.get("id") or 0) == task_id), None)
-    assert rich is not None
-    assert str(rich.get("snoozed_until") or "").strip() != ""
+    row = tmp_db.get_task_by_id(task_id)
+    assert row is not None
+    expected = bump_task_due_date_mmddyyyy(None, days=1)
+    assert (row.get("due_date") or "").strip() == expected
+    assert not str(row.get("snoozed_until") or "").strip()
 
 
 # --- Mason (Project Manager) context and command parsing ---

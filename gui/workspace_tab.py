@@ -18,12 +18,15 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QComboBox,
     QMenu,
+    QPlainTextEdit,
+    QStackedWidget,
 )
 from PyQt6.QtCore import Qt, QMimeData, QThread, pyqtSignal, QTimer, QSize
-from PyQt6.QtGui import QDropEvent, QDragEnterEvent, QPainter, QColor
+from PyQt6.QtGui import QDropEvent, QDragEnterEvent, QPainter, QColor, QShortcut, QKeySequence
 # from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 import json
 import os
+import re
 import tempfile
 from datetime import datetime
 import logging
@@ -52,6 +55,7 @@ from core.workspace_templates import (
 from gui.task_import_dialog import TaskImportDialog
 from gui.agent_console import AgentConsole
 from gui.document_export import export_markdownish_document
+from gui.notifications import notify_background_complete
 from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
 
 logger = logging.getLogger(__name__)
@@ -66,6 +70,45 @@ _WORKSPACE_SUPPORTED_EXTS = {
 
 _WORKSPACE_MAX_FILES_PER_FOLDER = 800
 _VIRTUAL_WORKSPACE_PREFIX = "virtual://workspace/"
+
+# Save / Export: muted when disabled, accent when document actions are available
+_WORKSPACE_SAVE_BTN_STYLE = """
+QPushButton:enabled {
+    background-color: #FD6262;
+    color: #ffffff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-weight: 500;
+}
+QPushButton:disabled {
+    background-color: #2a2d33;
+    color: #6b7280;
+    border: 1px solid #3a3d44;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-weight: 500;
+}
+"""
+_WORKSPACE_EXPORT_BTN_STYLE = """
+QPushButton:enabled {
+    background-color: #3d6b4a;
+    color: #e8f5e9;
+    border: 1px solid #2e7d40;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-weight: 500;
+}
+QPushButton:disabled {
+    background-color: #2a2d33;
+    color: #6b7280;
+    border: 1px solid #3a3d44;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-weight: 500;
+}
+"""
+
 
 class CollaborationWorker(QThread):
     """Worker thread to run the AI collaboration workflow without freezing the UI."""
@@ -178,7 +221,8 @@ class WorkspaceTab(QWidget):
         self._previous_gap_snapshot: dict[str, list[str]] = {}
         self._resolved_gap_snapshot: dict[str, list[str]] = {}
         self._latest_merged_atlas_info: dict[str, object] = {}
-        
+        self._demo_full_cycle_pending_assignment = False
+
         self.setup_ui()
         self._refresh_document_templates()
         self._refresh_saved_workspaces()
@@ -282,6 +326,16 @@ class WorkspaceTab(QWidget):
         layout.addWidget(self.quill_chat_group)
         
         self.setLayout(layout)
+        self._install_workspace_prompt_shortcuts()
+
+    def _install_workspace_prompt_shortcuts(self):
+        for seq in ("Ctrl+Return", "Meta+Return"):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(self._submit_workspace_collaboration_prompt)
+
+    def _submit_workspace_collaboration_prompt(self):
+        self.run_ai_collaboration_workflow()
 
     def setup_file_selection(self, parent_splitter):
         file_widget = QWidget()
@@ -308,6 +362,18 @@ class WorkspaceTab(QWidget):
         self.progress_bar.setMinimumHeight(22)
         self.progress_bar.setVisible(False)
         status_layout.addWidget(self.progress_bar)
+        self.view_chief_of_staff_btn = QPushButton("→ Open in Chief of Staff")
+        self.view_chief_of_staff_btn.setVisible(False)
+        self.view_chief_of_staff_btn.setToolTip("Switch to the Chief of Staff tab to delegate imported tasks and assignments.")
+        self.view_chief_of_staff_btn.clicked.connect(self._open_chief_of_staff_tab)
+        self.view_chief_of_staff_btn.setMinimumHeight(32)
+        self.view_chief_of_staff_btn.setMinimumWidth(220)
+        self.view_chief_of_staff_btn.setStyleSheet(
+            "QPushButton { background-color: #FD6262; color: white; border: none; "
+            "padding: 8px 14px; border-radius: 6px; font-weight: 700; font-size: 12px; }"
+            "QPushButton:hover { background-color: #e85555; }"
+        )
+        status_layout.addWidget(self.view_chief_of_staff_btn)
         status_layout.addStretch()
         file_layout.addLayout(status_layout)
         
@@ -415,6 +481,22 @@ class WorkspaceTab(QWidget):
         file_layout.addWidget(self.include_task_suggestions_checkbox)
         self.max_rounds_spinbox.valueChanged.connect(self._on_workspace_state_changed)
         self.prompt_template_combo.currentIndexChanged.connect(self._on_workspace_state_changed)
+
+        prompt_label = QLabel("Collaboration prompt:")
+        prompt_label.setStyleSheet("color: #e8eaed; padding: 4px; font-size: 13px;")
+        file_layout.addWidget(prompt_label)
+        self.collaboration_prompt_edit = QPlainTextEdit()
+        self.collaboration_prompt_edit.setPlaceholderText(
+            "What should Grok + ChatGPT produce? Ctrl+Enter to run (⌘+Enter on macOS)."
+        )
+        self.collaboration_prompt_edit.setStyleSheet(
+            "background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; "
+            "border-radius: 6px; padding: 8px;"
+        )
+        self.collaboration_prompt_edit.setMinimumHeight(96)
+        self.collaboration_prompt_edit.setMaximumHeight(200)
+        self.collaboration_prompt_edit.textChanged.connect(self._on_workspace_state_changed)
+        file_layout.addWidget(self.collaboration_prompt_edit)
         
         # Select and Generate Draft buttons
         btn_layout = QHBoxLayout()
@@ -433,7 +515,11 @@ class WorkspaceTab(QWidget):
         btn_layout.addWidget(folder_btn)
         
         self.generate_draft_btn = QPushButton("Generate Draft")
-        self.generate_draft_btn.setStyleSheet("background-color: #FD6262; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 500;")
+        self.generate_draft_btn.setStyleSheet(
+            "QPushButton { background-color: #FD6262; color: white; border: none; padding: 8px 16px; "
+            "border-radius: 6px; font-weight: 500; }"
+            "QPushButton:disabled { background-color: #555; color: #c4c4c4; }"
+        )
         self.generate_draft_btn.setMinimumHeight(38)
         self.generate_draft_btn.setMinimumWidth(170)
         self.generate_draft_btn.clicked.connect(self.run_ai_collaboration_workflow)
@@ -448,7 +534,21 @@ class WorkspaceTab(QWidget):
         self.file_list.itemClicked.connect(self.on_file_selected)
         self.file_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.file_list.customContextMenuRequested.connect(self.show_file_context_menu)
-        file_layout.addWidget(self.file_list)
+        self.file_list_empty_hint = QLabel(
+            "Add files or send research from Deep Research tab to begin drafting."
+        )
+        self.file_list_empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.file_list_empty_hint.setWordWrap(True)
+        self.file_list_empty_hint.setStyleSheet(
+            "color: #9aa0a6; padding: 32px 16px; font-size: 13px; "
+            "background-color: #22252c; border: 1px solid #2e2f32; border-radius: 6px;"
+        )
+        self.file_list_empty_hint.setMinimumHeight(300)
+        self._workspace_file_stack = QStackedWidget()
+        self._workspace_file_stack.addWidget(self.file_list_empty_hint)
+        self._workspace_file_stack.addWidget(self.file_list)
+        file_layout.addWidget(self._workspace_file_stack)
+        self._sync_workspace_file_list_empty_state()
         
         file_widget.dragEnterEvent = self.dragEnterEvent
         file_widget.dropEvent = self.dropEvent
@@ -538,10 +638,7 @@ class WorkspaceTab(QWidget):
         # Save/Export button bar
         button_bar = QHBoxLayout()
         self.save_button = QPushButton("Save Markdown")
-        self.save_button.setStyleSheet(
-            "background-color: #FD6262; color: white; border: none; padding: 8px 16px; "
-            "border-radius: 6px; font-weight: 500;"
-        )
+        self.save_button.setStyleSheet(_WORKSPACE_SAVE_BTN_STYLE)
         self.save_button.setMinimumHeight(38)
         self.save_button.setMinimumWidth(160)
         self.save_button.clicked.connect(self.save_markdown)
@@ -549,10 +646,7 @@ class WorkspaceTab(QWidget):
         button_bar.addWidget(self.save_button)
         
         self.export_button = QPushButton("Export as...")
-        self.export_button.setStyleSheet(
-            "background-color: #3a3b3e; color: #e8eaed; border: 1px solid #2e2f32; "
-            "padding: 8px 16px; border-radius: 6px; font-weight: 500;"
-        )
+        self.export_button.setStyleSheet(_WORKSPACE_EXPORT_BTN_STYLE)
         self.export_button.setMinimumHeight(38)
         self.export_button.setMinimumWidth(120)
         self.export_button.clicked.connect(self.export_markdown)
@@ -682,6 +776,9 @@ class WorkspaceTab(QWidget):
                 if getattr(self, "include_task_suggestions_checkbox", None) is not None
                 else True
             ),
+            "collaboration_prompt": str(self.collaboration_prompt_edit.toPlainText() or "")
+            if getattr(self, "collaboration_prompt_edit", None) is not None
+            else "",
             "saved_at": datetime.now().isoformat(),
         }
 
@@ -704,6 +801,12 @@ class WorkspaceTab(QWidget):
                     self.db.workspace_state_set_last_used(self._current_workspace_id)
             except Exception as e:
                 logger.debug(f"Could not autosave named workspace state: {e}")
+
+    def _sync_workspace_file_list_empty_state(self) -> None:
+        stack = getattr(self, "_workspace_file_stack", None)
+        if stack is None:
+            return
+        stack.setCurrentIndex(0 if not self.selected_files else 1)
 
     def _template_label_for_key(self, key: str) -> str:
         spec = self._last_generated_template_spec
@@ -831,10 +934,28 @@ class WorkspaceTab(QWidget):
                 return idx
         return -1
 
-    def _upsert_virtual_workspace_file(self, *, path: str, name: str, content: str, marked: bool = True) -> bool:
+    def _upsert_virtual_workspace_file(
+        self,
+        *,
+        path: str,
+        name: str,
+        content: str,
+        marked: bool = True,
+        source_type: str | None = None,
+        source_assignment_id: int | None = None,
+        source_title: str | None = None,
+    ) -> bool:
         normalized_path = str(path or "").strip()
+        if source_type is None:
+            st = "atlas_research"
+            said = int((self._latest_merged_atlas_info or {}).get("assignment_id") or 0)
+            stitle = str((self._latest_merged_atlas_info or {}).get("title") or "")
+        else:
+            st = str(source_type or "").strip() or "other"
+            said = int(source_assignment_id or 0)
+            stitle = str(source_title or "")
         payload = {
-            "name": str(name or "Atlas Research Notes"),
+            "name": str(name or "Virtual document"),
             "path": normalized_path,
             "is_folder": False,
             "size": len(content or ""),
@@ -842,9 +963,9 @@ class WorkspaceTab(QWidget):
             "marked": bool(marked),
             "virtual": True,
             "content": str(content or "").strip(),
-            "source_type": "atlas_research",
-            "source_assignment_id": int((self._latest_merged_atlas_info or {}).get("assignment_id") or 0),
-            "source_title": str((self._latest_merged_atlas_info or {}).get("title") or ""),
+            "source_type": st,
+            "source_assignment_id": said,
+            "source_title": stitle,
         }
         existing_idx = self._find_selected_file_index(normalized_path)
         if existing_idx >= 0:
@@ -862,6 +983,38 @@ class WorkspaceTab(QWidget):
             self._on_workspace_state_changed()
             return False
         return self.add_file_to_list(payload)
+
+    def add_virtual_file(
+        self,
+        *,
+        name: str,
+        content: str,
+        source_type: str = "deep_research",
+        source_assignment_id: int = 0,
+        source_title: str = "",
+        marked: bool = True,
+        path_slug: str | None = None,
+    ) -> bool:
+        """
+        Add or replace a virtual file in the Workspace list (no on-disk path).
+        Returns True if a new row was added, False if an existing virtual path was refreshed.
+        """
+        slug = str(path_slug or "").strip()
+        if not slug:
+            base = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(name or "virtual").strip()).strip("._-") or "virtual"
+            if not base.lower().endswith(".md"):
+                base = f"{base}.md"
+            slug = base[:200]
+        vpath = self._virtual_workspace_path(slug)
+        return self._upsert_virtual_workspace_file(
+            path=vpath,
+            name=name,
+            content=content,
+            marked=marked,
+            source_type=source_type,
+            source_assignment_id=source_assignment_id,
+            source_title=source_title,
+        )
 
     def _matching_atlas_assignments(self) -> list[dict]:
         list_assignments = getattr(self.db, "agent_list_assignments", None)
@@ -1342,7 +1495,7 @@ class WorkspaceTab(QWidget):
     def _apply_workspace_state(self, payload: dict, *, workspace_id: int | None, workspace_name: str) -> int:
         self._restoring_workspace_state = True
         try:
-            self._clear_workspace_files(reset_saved_workspace=False)
+            self._clear_workspace_files(reset_saved_workspace=False, clear_collaboration_prompt=False)
             loaded = 0
             missing = 0
             for file_info in payload.get("files") or []:
@@ -1373,6 +1526,8 @@ class WorkspaceTab(QWidget):
                 self.document_template_combo.setCurrentIndex(doc_idx)
             self.max_rounds_spinbox.setValue(int(payload.get("max_rounds") or 3))
             self.include_task_suggestions_checkbox.setChecked(bool(payload.get("include_task_suggestions", True)))
+            if getattr(self, "collaboration_prompt_edit", None) is not None:
+                self.collaboration_prompt_edit.setPlainText(str(payload.get("collaboration_prompt") or ""))
             self._current_workspace_id = workspace_id
             self._current_workspace_name = str(workspace_name or payload.get("name") or "").strip()
             if self._current_workspace_id is not None and hasattr(self.db, "workspace_state_set_last_used"):
@@ -1383,8 +1538,9 @@ class WorkspaceTab(QWidget):
         finally:
             self._restoring_workspace_state = False
             self._on_workspace_state_changed()
+            self._sync_workspace_file_list_empty_state()
 
-    def _clear_workspace_files(self, *, reset_saved_workspace: bool = True):
+    def _clear_workspace_files(self, *, reset_saved_workspace: bool = True, clear_collaboration_prompt: bool = True):
         self.file_list.clear()
         self.selected_files = []
         self._seen_paths.clear()
@@ -1410,11 +1566,17 @@ class WorkspaceTab(QWidget):
         self.save_button.setEnabled(False)
         self.export_button.setEnabled(False)
         self.extract_tasks_button.setEnabled(False)
+        # Clear named-workspace identity before clearing the prompt field: prompt textChanged
+        # triggers autosave, and upserting under the old name with empty selected_files would
+        # overwrite the saved workspace JSON on disk.
         if reset_saved_workspace:
             self._current_workspace_id = None
             self._current_workspace_name = ""
             if hasattr(self.db, "workspace_state_set_last_used"):
                 self.db.workspace_state_set_last_used(None)
+        if clear_collaboration_prompt and getattr(self, "collaboration_prompt_edit", None) is not None:
+            self.collaboration_prompt_edit.clear()
+        self._sync_workspace_file_list_empty_state()
 
     def clear_workspace(self):
         self._clear_workspace_files(reset_saved_workspace=True)
@@ -1550,6 +1712,7 @@ class WorkspaceTab(QWidget):
             self._seen_paths.discard(path)
         self.status_label.setText(f"Removed {file_info.get('name', 'file')}")
         self._on_workspace_state_changed()
+        self._sync_workspace_file_list_empty_state()
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -1720,6 +1883,7 @@ class WorkspaceTab(QWidget):
         self.file_list.setItemWidget(item, widget)
         self.selected_files.append(file_info)
         self._on_workspace_state_changed()
+        self._sync_workspace_file_list_empty_state()
         return True
 
     def toggle_mark(self, file_info, state):
@@ -1918,6 +2082,130 @@ class WorkspaceTab(QWidget):
             return
         self.run_ai_collaboration_workflow(initial_instructions=prompt, prompt_source="Quill")
 
+    def _hide_chief_of_staff_followup(self) -> None:
+        btn = getattr(self, "view_chief_of_staff_btn", None)
+        if btn is not None:
+            btn.setVisible(False)
+
+    def _open_chief_of_staff_tab(self) -> None:
+        win = self.window()
+        tw = getattr(win, "tab_widget", None)
+        if tw is None:
+            return
+        cos = getattr(win, "chief_of_staff_tab", None)
+        if cos is not None:
+            tw.setCurrentWidget(cos)
+            return
+        for i in range(tw.count()):
+            if str(tw.tabText(i) or "").strip() == "Chief of Staff":
+                tw.setCurrentIndex(i)
+                return
+
+    def _demo_full_cycle_abort_if_pending(self, *, reason: str = "") -> None:
+        """Clear demo flags if Workspace collaboration failed before/during the demo chain."""
+        if not getattr(self, "_demo_full_cycle_pending_assignment", False):
+            return
+        self._demo_full_cycle_pending_assignment = False
+        win = self.window()
+        if win is not None:
+            setattr(win, "_demo_full_cycle_active", False)
+            msg = "Demo: Full Cycle aborted"
+            if reason.strip():
+                msg = f"{msg}: {reason.strip()}"
+            if hasattr(win, "show_toast"):
+                win.show_toast(msg, duration=6000)
+
+    def _demo_full_cycle_finish_after_collaboration(self) -> None:
+        """After demo Workspace draft completes: sample Atlas assignment + refresh CoS board."""
+        if not getattr(self, "_demo_full_cycle_pending_assignment", False):
+            return
+        self._demo_full_cycle_pending_assignment = False
+
+        win = self.window()
+        md = (self._current_markdown or "").strip()
+        excerpt = md[:4000] if md else "_No draft body was produced._"
+        title = "Demo: CEO memo follow-up (sample)"
+        brief = (
+            "Sample assignment created by **Demo: Full Cycle**.\n\n"
+            "Use the generated Workspace memo as the working packet; delegate the next regulatory execution steps.\n\n"
+            "---\n\n"
+            f"{excerpt}"
+        )
+        aid = 0
+        try:
+            aid = int(
+                self.db.agent_create_assignment(
+                    title=title,
+                    brief_md=brief,
+                    requester_code="navi",
+                    assignee_code="atlas",
+                    priority=3,
+                    due_date=None,
+                    context_json={"source": "demo_full_cycle"},
+                )
+                or 0
+            )
+        except Exception as e:
+            logger.warning("Demo full cycle: could not create sample assignment: %s", e)
+
+        if aid:
+            try:
+                thread_id = create_assignment_thread(
+                    self.db,
+                    assignment_id=int(aid),
+                    assignee_code="atlas",
+                    reason="demo_full_cycle",
+                    actor_code="navi",
+                    context_json={"source": "demo_full_cycle"},
+                )
+                if thread_id:
+                    prime_assignment_handoff(
+                        self.db,
+                        assignment_id=int(aid),
+                        thread_id=int(thread_id),
+                    )
+            except Exception:
+                pass
+
+        cos = getattr(win, "chief_of_staff_tab", None)
+        if cos is not None and hasattr(cos, "_refresh_assignment_list"):
+            try:
+                cos._refresh_assignment_list()
+            except Exception:
+                pass
+
+        if win is not None:
+            setattr(win, "_demo_full_cycle_active", False)
+            if hasattr(win, "notify_background_complete"):
+                win.notify_background_complete(
+                    "Demo: Full Cycle",
+                    "Research → memo → tasks → sample assignment on Chief of Staff.",
+                )
+            elif hasattr(win, "show_toast"):
+                win.show_toast("Demo: Full Cycle complete.", duration=5000)
+
+    def _offer_chief_of_staff_after_task_import(
+        self,
+        created_count: int,
+        *,
+        status_line: str | None = None,
+        toast_title: str = "Workspace",
+        toast_message: str | None = None,
+    ) -> None:
+        n = int(created_count)
+        if n <= 0:
+            return
+        if status_line:
+            self.status_label.setText(status_line)
+        notify_background_complete(
+            self,
+            toast_title,
+            toast_message or f"{n} task(s) imported. Open Chief of Staff to delegate.",
+        )
+        btn = getattr(self, "view_chief_of_staff_btn", None)
+        if btn is not None:
+            btn.setVisible(True)
+
     def run_ai_collaboration_workflow(self, initial_instructions: str | None = None, prompt_source: str = "Workspace"):
         """
         Run the dual-LLM collaboration workflow on the marked files.
@@ -1952,6 +2240,8 @@ class WorkspaceTab(QWidget):
                 default_instructions = ""
             
             provided_instructions = str(initial_instructions or "").strip()
+            if not provided_instructions and getattr(self, "collaboration_prompt_edit", None) is not None:
+                provided_instructions = str(self.collaboration_prompt_edit.toPlainText() or "").strip()
             if provided_instructions:
                 instructions = provided_instructions
                 ok = True
@@ -1964,6 +2254,7 @@ class WorkspaceTab(QWidget):
                 )
                 if not ok or not instructions.strip():
                     self.status_label.setText("AI collaboration cancelled")
+                    self._demo_full_cycle_abort_if_pending(reason="cancelled")
                     return
 
             # Convert marked_files into WorkspaceFile objects and extract content (if any)
@@ -2015,6 +2306,7 @@ class WorkspaceTab(QWidget):
                         self.grok_text.setPlainText("Source extraction failed for all marked files.")
                     if hasattr(self, 'chatgpt_text'):
                         self.chatgpt_text.setPlainText("Workflow did not start because no usable source content was available.")
+                    self._demo_full_cycle_abort_if_pending(reason="no usable source content")
                     return
             else:
                 # No files - just research request
@@ -2087,6 +2379,8 @@ class WorkspaceTab(QWidget):
             if hasattr(self, 'preview_text'):
                 self.preview_text.setPlainText("Generating document...")
             
+            self._hide_chief_of_staff_followup()
+
             # Disable save buttons until document is ready
             if hasattr(self, 'save_button'):
                 self.save_button.setEnabled(False)
@@ -2108,6 +2402,8 @@ class WorkspaceTab(QWidget):
             self._collaboration_worker.round_update_signal.connect(self._on_round_update)
             self._collaboration_worker.result_signal.connect(self._on_collaboration_complete)
             self._collaboration_worker.error_signal.connect(self._on_collaboration_error)
+            mr = max(1, int(self.max_rounds_spinbox.value()))
+            self._update_generate_draft_progress_btn(1, mr)
             self._collaboration_worker.start()
             
         except Exception as e:
@@ -2121,12 +2417,22 @@ class WorkspaceTab(QWidget):
                 self.grok_text.setPlainText(f"Error: {str(e)}")
             if hasattr(self, 'chatgpt_text'):
                 self.chatgpt_text.setPlainText("Workflow failed during setup.")
+            if hasattr(self, "generate_draft_btn"):
+                self.generate_draft_btn.setEnabled(True)
+                self.generate_draft_btn.setText("Generate Draft")
+            self._demo_full_cycle_abort_if_pending(reason="setup error")
 
     def _on_progress_update(self, message, progress):
         """Handle progress updates from worker thread (thread-safe, called on main thread)"""
         self.status_label.setText(message)
         self.progress_bar.setValue(progress)
         QApplication.processEvents()
+
+    def _update_generate_draft_progress_btn(self, current_round: int, max_rounds: int | str) -> None:
+        if not hasattr(self, "generate_draft_btn"):
+            return
+        self.generate_draft_btn.setEnabled(False)
+        self.generate_draft_btn.setText(f"Generating... Round {current_round}/{max_rounds}")
     
     def _on_round_update(self, round_data):
         """Handle round update signal from worker thread (thread-safe, called on main thread)"""
@@ -2139,19 +2445,30 @@ class WorkspaceTab(QWidget):
         template_blocks = round_data.get("template_blocks") or {}
         document_metadata = round_data.get("document_metadata") or {}
         coverage_summary = format_reference_pack_summary(ref_pack_stats)
-        
+        ts_spec = getattr(self, "_last_task_spec", None)
+        max_rounds_ui = ts_spec.max_rounds if ts_spec is not None else "?"
+        self._update_generate_draft_progress_btn(int(round_num or 0) or 1, max_rounds_ui)
+        if coverage_summary:
+            self.status_label.setText(f"Round {round_num}/{max_rounds_ui} · {coverage_summary}")
+        else:
+            self.status_label.setText(f"Round {round_num}/{max_rounds_ui} · AI collaboration…")
+
+        grok_body = grok_output
+        if coverage_summary:
+            grok_body = f"{grok_output}\n\n[Reference pack] {coverage_summary}"
+
         # Update Grok pane with current round
         if hasattr(self, 'grok_text'):
             current_text = self.grok_text.toPlainText()
             if "Round" in current_text or current_text.strip() == "Processing...":
                 # Append to existing or replace "Processing..."
                 if current_text.strip() == "Processing...":
-                    self.grok_text.setPlainText(f"--- Round {round_num} ---\n{grok_output}")
+                    self.grok_text.setPlainText(f"--- Round {round_num} ---\n{grok_body}")
                 else:
-                    self.grok_text.append(f"\n\n--- Round {round_num} ---\n{grok_output}")
+                    self.grok_text.append(f"\n\n--- Round {round_num} ---\n{grok_body}")
             else:
                 # First round
-                self.grok_text.setPlainText(f"--- Round {round_num} ---\n{grok_output}")
+                self.grok_text.setPlainText(f"--- Round {round_num} ---\n{grok_body}")
         
         # Update ChatGPT pane with current round
         if hasattr(self, 'chatgpt_text'):
@@ -2327,16 +2644,71 @@ class WorkspaceTab(QWidget):
             status_text = f"{status_text} | resolved {resolved_total} prior gap(s)"
         if latest_coverage:
             status_text = f"{status_text} | {latest_coverage}"
-        self.status_label.setText(status_text)
+
+        selected = []
+        spec = getattr(self, "_last_task_spec", None)
+        if spec and "Suggested Tasks (importable)" in (getattr(spec, "context", "") or ""):
+            md_import = (self._current_markdown or "").strip()
+            if md_import:
+                try:
+                    tasks, _warnings = parse_suggested_tasks(md_import)
+                    for t in tasks:
+                        try:
+                            task_id = self.db.add_task(
+                                "workspace_import",
+                                t.title,
+                                t.due_mmddyyyy,
+                                category=t.category,
+                            )
+                            if hasattr(self.db, "update_task_by_id"):
+                                try:
+                                    self.db.update_task_by_id(int(task_id), priority=int(t.priority or 0))
+                                except Exception:
+                                    pass
+                            selected.append(t)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.warning(f"Workspace auto task import skipped: {e}")
+
+        if selected:
+            demo_fc = getattr(self, "_demo_full_cycle_pending_assignment", False)
+            st_import = (
+                f"✓ Draft ready + {len(selected)} tasks imported. Check Tasks tab or Chief of Staff."
+            )
+            if demo_fc:
+                # Single completion toast/notify is sent from _demo_full_cycle_finish_after_collaboration.
+                self.status_label.setText(st_import)
+                btn = getattr(self, "view_chief_of_staff_btn", None)
+                if btn is not None:
+                    btn.setVisible(True)
+            else:
+                self._offer_chief_of_staff_after_task_import(
+                    len(selected),
+                    status_line=st_import,
+                    toast_title="Workspace draft",
+                    toast_message=(
+                        f"{len(selected)} task(s) imported. Check Tasks tab or Chief of Staff."
+                    ),
+                )
+        else:
+            self.status_label.setText(status_text)
+
+        self._demo_full_cycle_finish_after_collaboration()
+
         self.progress_bar.setValue(100)
         QApplication.processEvents()
         self.progress_bar.setVisible(False)
+        if hasattr(self, "generate_draft_btn"):
+            self.generate_draft_btn.setEnabled(True)
+            self.generate_draft_btn.setText("Generate Draft")
 
     def extract_suggested_tasks(self):
         """
         Parse the current markdown for a '## Suggested Tasks (importable)' section,
         then open a review dialog that lets the user accept/decline/edit before insertion.
         """
+        self._hide_chief_of_staff_followup()
         md = (self._current_markdown or "").strip()
         if not md:
             QMessageBox.information(self, "Suggested Tasks", "No markdown document is available yet.")
@@ -2377,6 +2749,22 @@ class WorkspaceTab(QWidget):
             except Exception:
                 failed += 1
 
+        if created > 0:
+            st = f"✓ {created} task(s) imported. Open Chief of Staff to delegate."
+            if failed:
+                st = f"{st} ({failed} failed)"
+            self._offer_chief_of_staff_after_task_import(
+                created,
+                status_line=st,
+                toast_title="Suggested tasks",
+                toast_message=(
+                    f"{created} task(s) imported. Open Chief of Staff to delegate."
+                    + (f" ({failed} could not be saved.)" if failed else "")
+                ),
+            )
+        elif failed:
+            self.status_label.setText(f"Task import failed ({failed} error(s))")
+
         if failed:
             QMessageBox.warning(
                 self,
@@ -2384,13 +2772,6 @@ class WorkspaceTab(QWidget):
                 f"Imported {created} task(s), but {failed} failed to insert.\n\n"
                 "Open the Tasks tab to confirm what was created.",
             )
-        else:
-            QMessageBox.information(
-                self,
-                "Suggested Tasks",
-                f"Imported {created} task(s).\n\nOpen the Tasks tab (or Dashboard) to view them.",
-            )
-        self.status_label.setText(f"Imported {created} task(s){' (some failed)' if failed else ''}")
     
     def _on_collaboration_error(self, error_msg):
         """Handle errors from collaboration workflow"""
@@ -2398,6 +2779,7 @@ class WorkspaceTab(QWidget):
     
     def _on_collaboration_error_safe(self, error_msg):
         """Thread-safe error handler"""
+        self._demo_full_cycle_abort_if_pending(reason="workspace collaboration failed")
         logger.error(f"Error in AI collaboration workflow: {error_msg}")
         self.status_label.setText("Error during workflow")
         self.progress_bar.setVisible(False)
@@ -2408,6 +2790,9 @@ class WorkspaceTab(QWidget):
             self.grok_text.setPlainText(f"Error: {error_msg}")
         if hasattr(self, 'chatgpt_text'):
             self.chatgpt_text.setPlainText("Workflow failed before ChatGPT step.")
+        if hasattr(self, "generate_draft_btn"):
+            self.generate_draft_btn.setEnabled(True)
+            self.generate_draft_btn.setText("Generate Draft")
     
     def save_markdown(self):
         """Save the current markdown document to a file"""

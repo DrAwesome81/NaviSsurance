@@ -75,8 +75,9 @@ def test_load_daily_briefing_disabled_routes_to_disabled_message(monkeypatch, qa
     called = {"disabled": 0}
     d._show_briefing_disabled = lambda: called.__setitem__("disabled", called["disabled"] + 1)
 
-    import config as config_mod
-    monkeypatch.setattr(config_mod, "BRIEFING_AND_EMAIL_DISABLED", True)
+    import core.app_preferences as ap
+
+    monkeypatch.setattr(ap, "is_briefing_and_email_disabled", lambda db=None: True)
 
     d.load_daily_briefing()
     assert called["disabled"] == 1
@@ -86,8 +87,9 @@ def test_load_daily_briefing_running_thread_keeps_loading_message(monkeypatch, q
     d = _dash_stub()
     d.chat_handler = object()
 
-    import config as config_mod
-    monkeypatch.setattr(config_mod, "BRIEFING_AND_EMAIL_DISABLED", False)
+    import core.app_preferences as ap
+
+    monkeypatch.setattr(ap, "is_briefing_and_email_disabled", lambda db=None: False)
 
     class _Running:
         def isRunning(self):
@@ -102,8 +104,9 @@ def test_refresh_daily_briefing_running_thread_keeps_generating_message(monkeypa
     d = _dash_stub()
     d.chat_handler = object()
 
-    import config as config_mod
-    monkeypatch.setattr(config_mod, "BRIEFING_AND_EMAIL_DISABLED", False)
+    import core.app_preferences as ap
+
+    monkeypatch.setattr(ap, "is_briefing_and_email_disabled", lambda db=None: False)
 
     class _Running:
         def isRunning(self):

@@ -110,6 +110,33 @@ def test_workspace_has_single_generate_draft_button(workspace_tab):
     assert not hasattr(workspace_tab, "actions_menu")
 
 
+def test_workspace_add_virtual_file_inserts_and_upserts(workspace_tab):
+    added = workspace_tab.add_virtual_file(
+        name="DeepResearch_9.md",
+        content="# Brief\n",
+        source_type="deep_research",
+        source_title="Deep Research run 9: test",
+        path_slug="deep-research-9.md",
+    )
+    assert added is True
+    assert workspace_tab.file_list.count() == 1
+    info = workspace_tab.selected_files[0]
+    assert info["virtual"] is True
+    assert info["source_type"] == "deep_research"
+    assert "Brief" in info["content"]
+    assert info["marked"] is True
+
+    added2 = workspace_tab.add_virtual_file(
+        name="DeepResearch_9.md",
+        content="# Brief v2\n",
+        source_type="deep_research",
+        path_slug="deep-research-9.md",
+    )
+    assert added2 is False
+    assert workspace_tab.file_list.count() == 1
+    assert "v2" in workspace_tab.selected_files[0]["content"]
+
+
 def test_workspace_generate_draft_button_click_triggers_workflow(monkeypatch, workspace_tab):
     monkeypatch.setattr(
         QInputDialog,

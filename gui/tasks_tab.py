@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
 )
 
-from core.db import DatabaseManager
+from core.db import DatabaseManager, bump_task_due_date_mmddyyyy
 from core.task_command_contract import (
     AddProjectCommand,
     AddTaskCommand,
@@ -698,7 +698,8 @@ class TasksTab(QWidget):
                     btn_toggle.setMinimumWidth(68)
                     btn_toggle.clicked.connect(lambda _=False, tid=task_id, cur=done: self._toggle_done(tid, cur))
                     row.addWidget(btn_toggle)
-                    btn_snooze = QPushButton("Snooze 1d")
+                    btn_snooze = QPushButton("Due +1d")
+                    btn_snooze.setToolTip("Move due date forward by one day (clears snooze hide).")
                     btn_snooze.setStyleSheet(_btn_style)
                     btn_snooze.setMinimumWidth(72)
                     btn_snooze.clicked.connect(lambda _=False, tid=task_id: self._snooze_task(tid, days=1))
@@ -820,8 +821,15 @@ class TasksTab(QWidget):
                 continue
             if isinstance(cmd, TaskSnoozeCommand):
                 try:
-                    until = (datetime.now() + timedelta(days=max(1, int(cmd.days)))).strftime("%m-%d-%Y")
-                    self.db.update_task_by_id(int(cmd.task_id), snoozed_until=until)
+                    row = self.db.get_task_by_id(int(cmd.task_id))
+                    due = (row or {}).get("due_date")
+                    new_due = bump_task_due_date_mmddyyyy(
+                        str(due) if due is not None else None,
+                        days=max(1, int(cmd.days)),
+                    )
+                    self.db.update_task_by_id(
+                        int(cmd.task_id), due_date=new_due, snoozed_until=None
+                    )
                 except Exception as e:
                     logger.warning("Mason TASK_SNOOZE failed: %s", e)
                 continue
@@ -1037,7 +1045,7 @@ class TasksTab(QWidget):
             lines.append("TASK_COMPLETE: <task_id>")
             lines.append("TASK_SET_DUE: <task_id> | <MM-DD-YYYY or none>")
             lines.append("TASK_SET_ASSIGNED_TO: <task_id> | <agent name, custom name, or none>")
-            lines.append("TASK_SNOOZE: <task_id> | <days>")
+            lines.append("TASK_SNOOZE: <task_id> | <days>  (push due date forward by this many days; clears snooze hide)")
             lines.append("TASK_DELETE: <task_id> (requires confirmation; you may propose it)")
             lines.append("TASK_SET_PROJECT: <task_id> | <project_id or none>")
             lines.append("Projects: ADD_PROJECT: <name> | <client> | Active|Waiting|On Hold|Done|Cancelled")
@@ -1062,12 +1070,15 @@ class TasksTab(QWidget):
 
     def _snooze_task(self, task_id: int, days: int = 1):
         try:
-            from datetime import timedelta
-
-            d = (datetime.now() + timedelta(days=int(days))).strftime("%m-%d-%Y")
-            self.db.update_task_by_id(int(task_id), snoozed_until=d)
+            row = self.db.get_task_by_id(int(task_id))
+            due = (row or {}).get("due_date")
+            new_due = bump_task_due_date_mmddyyyy(
+                str(due) if due is not None else None,
+                days=max(1, int(days)),
+            )
+            self.db.update_task_by_id(int(task_id), due_date=new_due, snoozed_until=None)
         except Exception as e:
-            QMessageBox.warning(self, "Tasks", f"Could not snooze task:\n\n{type(e).__name__}: {e}")
+            QMessageBox.warning(self, "Tasks", f"Could not update due date:\n\n{type(e).__name__}: {e}")
             return
         self.refresh_tasks()
 

@@ -23,6 +23,13 @@ class _FakeScheduler:
         self.shutdown_calls.append(bool(wait))
 
 
+def test_runtime_scheduler_status_disabled_when_runtime_flag_off(monkeypatch):
+    monkeypatch.setattr(runtime_service, "is_runtime_enabled", lambda db=None: False)
+    ok, reason = runtime_service.runtime_scheduler_status()
+    assert ok is False
+    assert "Settings" in reason
+
+
 def test_runtime_service_start_returns_false_when_scheduler_unavailable(tmp_path, monkeypatch):
     db = DatabaseManager(str(tmp_path / "runtime_unavailable.db"))
     monkeypatch.setattr(runtime_service, "runtime_scheduler_available", lambda: (False, "missing"))

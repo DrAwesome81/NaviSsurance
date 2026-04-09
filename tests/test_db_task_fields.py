@@ -1,6 +1,6 @@
 import sqlite3
 
-from core.db import DatabaseManager
+from core.db import DatabaseManager, bump_task_due_date_mmddyyyy
 
 
 def _task_columns(db_path: str) -> set[str]:
@@ -83,4 +83,10 @@ def test_add_task_defaults_new_fields_when_not_provided(tmp_path):
     assert int(r.get("estimate_minutes") or 0) == 0
     assert (r.get("blockers") or "") == ""
     assert (r.get("depends_on_json") or "").strip() == "[]"
+
+
+def test_bump_task_due_date_mmddyyyy():
+    assert bump_task_due_date_mmddyyyy("04-07-2026", days=1) == "04-08-2026"
+    assert bump_task_due_date_mmddyyyy("04-07-2026", days=3) == "04-10-2026"
+    assert bump_task_due_date_mmddyyyy("12-31-2026", days=1) == "01-01-2027"
 

@@ -469,6 +469,29 @@ class TestChiefOfStaffUiHelperFunctions:
         assert _assignment_health_flags(closed_row, now=now) == []
 
 
+class TestAgentProposalDb:
+    """Proposed assignment IDs and approval on the DB layer."""
+
+    def test_parse_assignment_ref_accepts_p_prefix(self, cos_db):
+        from core.chief_of_staff_service import _parse_assignment_ref
+
+        assert _parse_assignment_ref("P-0007") == 7
+        assert _parse_assignment_ref("p-99") == 99
+
+    def test_agent_approve_proposal_sets_queued(self, cos_db):
+        pid = cos_db.agent_create_proposed_assignment(
+            title="P",
+            brief_md="B",
+            assignee_code="atlas",
+            proposed_by="navi",
+        )
+        assert pid
+        assert cos_db.agent_approve_proposal(int(pid), actor_code="navi")
+        row = cos_db.agent_get_assignment(int(pid))
+        assert str(row.get("status") or "") == "queued"
+        assert cos_db.agent_approve_proposal(int(pid), actor_code="navi") is False
+
+
 # -----------------------------------------------------------------------------
 # Service layer tests (mocked Grok, no network)
 # -----------------------------------------------------------------------------
@@ -500,17 +523,7 @@ class TestChiefOfStaffService:
         mock_grok.side_effect = Exception("API error")
         from core.chief_of_staff_service import cos_response
         result = cos_response(cos_db, "Help")
-        assert "Error" in result
-
-
-def test_local_time_context_preserves_supplied_naive_datetime():
-    from core.chief_of_staff_service import _local_time_context
-
-    result = _local_time_context(datetime(2026, 3, 7, 21, 15, 0))
-
-    assert "2026-03-07" in result
-    assert "9:15 PM" in result
-    assert "UTC" in result
+        assert "API error" in result
 
     def test_cos_response_injects_dashboard_tasks_into_prompt(self, mock_grok, cos_db):
         """Dashboard tasks are included in the prompt sent to Grok."""
@@ -550,7 +563,7 @@ def test_local_time_context_preserves_supplied_naive_datetime():
         """Multiple ADD_TASK lines in one reply add multiple tasks."""
         mock_grok.return_value = (
             "I've added these:\n"
-            "ADD_TASK: Call dentist | none | Personal\n"
+            "ADD_TASK: Call dentist | none | Personal | P3\n"
             "ADD_TASK: Review Q1 numbers | 02-28-2026 | Business\n"
             "Done."
         )
@@ -562,6 +575,63 @@ def test_local_time_context_preserves_supplied_naive_datetime():
         assert "Call dentist" in texts
         assert "Review Q1 numbers" in texts
         assert "Added 2 task(s)" in result
+
+    def test_cos_response_synthesizes_add_task_when_model_omits_command(
+        self, mock_grok, cos_db, monkeypatch
+    ):
+        """Dashboard/CoS chat (chat_id set): plain-language task request persists even if the model omits ADD_TASK."""
+        from datetime import datetime
+
+        monkeypatch.setattr(
+            "core.chief_of_staff_service._now_local", lambda: datetime(2026, 4, 7, 12, 0, 0)
+        )
+        mock_grok.return_value = "I've noted that for you."
+        from core.chief_of_staff_service import cos_response
+
+        cid = cos_db.cos_create_chat(title="Test chat", project=None)
+        result = cos_response(
+            cos_db,
+            "add a task to send the Q1 deck to Legal, priority 4, by tomorrow",
+            chat_id=cid,
+        )
+        tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+        assert len(tasks) == 1
+        assert "Q1 deck" in tasks[0][1] and "Legal" in tasks[0][1]
+        assert tasks[0][2] == "04-08-2026"
+        assert tasks[0][3] == "Business"
+        assert "Added 1 task" in result
+
+    def test_cos_response_skips_synthesis_when_chat_id_none(self, mock_grok, cos_db, monkeypatch):
+        from datetime import datetime
+
+        monkeypatch.setattr(
+            "core.chief_of_staff_service._now_local", lambda: datetime(2026, 4, 7, 12, 0, 0)
+        )
+        mock_grok.return_value = "Ok."
+        from core.chief_of_staff_service import cos_response
+
+        cos_response(cos_db, "add a task to buy milk by tomorrow", chat_id=None)
+        tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+        assert len(tasks) == 0
+
+    def test_cos_response_prepends_notice_when_model_claims_task_saved_but_none_persisted(
+        self, mock_grok, cos_db, monkeypatch
+    ):
+        """Model prose often claims a dashboard save without ADD_TASK; user should see a truthful correction."""
+        from datetime import datetime
+
+        monkeypatch.setattr(
+            "core.chief_of_staff_service._now_local", lambda: datetime(2026, 4, 7, 12, 0, 0)
+        )
+        mock_grok.return_value = "Done — I've added that to your dashboard."
+        from core.chief_of_staff_service import cos_response
+
+        cid = cos_db.cos_create_chat(title="Test chat", project=None)
+        # Synthesis needs task description length >= 2; "X" yields no ADD_TASK line and no persistence.
+        result = cos_response(cos_db, "add a task to X", chat_id=cid)
+        tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+        assert len(tasks) == 0
+        assert "No task was added to your dashboard" in result
 
     def test_cos_response_add_task_without_priority_prompts_for_clarification(self, mock_grok, cos_db):
         """Ambiguous ADD_TASK without a usable priority should ask for clarification instead of defaulting to P0."""
@@ -673,7 +743,7 @@ def test_local_time_context_preserves_supplied_naive_datetime():
         assert "Could not schedule 1 calendar block(s)" in result
 
     def test_cos_response_parses_assign_and_creates_assignment(self, mock_grok, cos_db):
-        """ASSIGN line creates one delegation assignment and strips command line from output."""
+        """ASSIGN line creates one proposed delegation row (no thread) and strips command line from output."""
         mock_grok.return_value = (
             "Done.\n"
             "ASSIGN: Atlas | FDA PCCP research brief | Summarize latest FDA PCCP guidance with citations. | P1 | 2026-03-01"
@@ -686,11 +756,10 @@ def test_local_time_context_preserves_supplied_naive_datetime():
         assert rows[0]["title"] == "FDA PCCP research brief"
         assert rows[0]["priority"] == 1
         assert rows[0]["due_date"] == "2026-03-01"
-        assert rows[0]["source_thread_id"] is not None
-        thread = cos_db.agent_get_thread(int(rows[0]["source_thread_id"]))
-        assert thread is not None
-        assert str(thread[1]).lower() == "atlas"
-        assert "Created 1 assignment(s)" in result
+        assert str(rows[0].get("status") or "") == "proposed"
+        assert rows[0]["source_thread_id"] is None
+        assert "Proposal(s) created for review" in result
+        assert "Suggested Assignments" in result
         assert "ASSIGN:" not in result
 
     def test_cos_response_assign_unknown_agent_reports_failure(self, mock_grok, cos_db):
@@ -726,7 +795,30 @@ def test_local_time_context_preserves_supplied_naive_datetime():
         rows = cos_db.agent_list_assignments(assignee_code="atlas", limit=10)
         assert len(rows) == 1
         assert str(rows[0].get("due_date") or "") == "2026-03-01"
-        assert "Created 1 assignment(s)" in result
+        assert str(rows[0].get("status") or "") == "proposed"
+        assert "Proposal(s) created for review" in result
+        assert "Suggested Assignments" in result
+
+    def test_cos_response_parses_approve_proposal_line(self, mock_grok, cos_db):
+        """APPROVE_PROPOSAL line queues the assignment (thread creation may be patched)."""
+        from unittest.mock import patch
+
+        from core.chief_of_staff_service import cos_response
+
+        pid = cos_db.agent_create_proposed_assignment(
+            title="Approve me",
+            brief_md="Body",
+            assignee_code="atlas",
+            proposed_by="navi",
+        )
+        assert pid is not None
+        mock_grok.return_value = f"Done.\nAPPROVE_PROPOSAL: P-{int(pid)}"
+        with patch("core.chief_of_staff_service.create_assignment_thread", return_value=42):
+            result = cos_response(cos_db, "Approve the proposal.")
+        row = cos_db.agent_get_assignment(int(pid))
+        assert str(row.get("status") or "") == "queued"
+        assert "approved" in result.lower()
+        assert "proposal" in result.lower()
 
     def test_cos_response_updates_assignment_status(self, mock_grok, cos_db):
         """UPDATE_ASSIGNMENT_STATUS updates assignment state by reference id."""
@@ -863,6 +955,37 @@ def test_local_time_context_preserves_supplied_naive_datetime():
         row = cos_db.agent_get_assignment(int(atlas_aid))
         assert row is not None and str(row.get("status") or "") == "blocked"
         assert "changed=1" in result
+        assert mock_grok.call_count == 0
+
+    def test_cos_explicit_add_task_skips_all_grok_calls(self, mock_grok, cos_db):
+        from core.chief_of_staff_service import cos_response
+
+        result = cos_response(
+            cos_db,
+            "ADD_TASK: Quick win from command line | none | Business | P3",
+        )
+        tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+        assert len(tasks) == 1
+        assert "Quick win from command line" in (tasks[0][1] or "")
+        assert mock_grok.call_count == 0
+        assert "Added 1 task(s)" in result
+
+    def test_cos_short_model_reply_skips_memory_extraction(self, mock_grok, cos_db):
+        """Transactional short replies should not trigger the passive memory JSON pass."""
+        mock_grok.return_value = "OK."
+        from core.chief_of_staff_service import cos_response
+
+        cos_response(cos_db, "Ping.")
+        assert mock_grok.call_count == 1
+
+    def test_cos_user_memory_hint_triggers_passive_extraction(self, mock_grok, cos_db):
+        empty_memory_json = '{"summary":"","facts":[],"tags":[],"open_loops":[],"decisions":[]}'
+        mock_grok.side_effect = ["Understood.", empty_memory_json]
+        from core.chief_of_staff_service import cos_response
+
+        with patch("core.chief_of_staff_service.grok_available", return_value=(True, "")):
+            cos_response(cos_db, "I prefer client calls before noon.")
+        assert mock_grok.call_count == 2
 
     def test_cos_response_direct_bulk_status_repeat_reports_zero_changed(self, mock_grok, cos_db):
         """Repeating same target status should report changed=0 and unchanged>0."""
@@ -1372,6 +1495,16 @@ def test_local_time_context_preserves_supplied_naive_datetime():
         assert any(f"[A-{int(atlas_new):04d}] Atlas new title" in tx for tx in texts)
         assert "1 skipped existing" in result
         assert "BULK_ADD_TASKS_FROM_ASSIGNMENTS:" not in result
+
+
+def test_local_time_context_preserves_supplied_naive_datetime():
+    from core.chief_of_staff_service import _local_time_context
+
+    result = _local_time_context(datetime(2026, 3, 7, 21, 15, 0))
+
+    assert "2026-03-07" in result
+    assert "9:15 PM" in result
+    assert "UTC" in result
 
 
 @patch("core.chief_of_staff_service.grok_completion_messages")
@@ -2030,7 +2163,7 @@ def test_chief_of_staff_assignment_details_show_agent_followup_and_needs_input(q
             vals.append(item.text() if item is not None else "")
         rows.append(vals)
     assert any(
-        row[0] == f"A-{int(aid):04d}" and row[2] == "Yes"
+        row[0] == f"A-{int(aid):04d}" and row[2] == "Needs Input"
         for row in rows
     )
 

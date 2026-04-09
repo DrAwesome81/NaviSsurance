@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 
 from core.agent_chat_service import agent_chat_response
 from core.db import DatabaseManager
+from core.grok_client import is_user_facing_llm_failure_message
 from core.file_handler import extract_text_from_file
 from gui.document_export import export_markdownish_document
 from gui.notifications import notify_chat_response
@@ -792,7 +793,12 @@ class AgentConsole(QWidget):
             self._refresh_inbox()
             self._refresh_assignment_label()
             self._load_current_history()
-            notify_chat_response(self, str(self.agent.get("display_name") or self.agent_code or "Agent"))
+            if self._last_assistant_message and not is_user_facing_llm_failure_message(
+                self._last_assistant_message
+            ):
+                notify_chat_response(
+                    self, str(self.agent.get("display_name") or self.agent_code or "Agent")
+                )
 
     def _on_ask_error(self, err: str):
         self._worker = None

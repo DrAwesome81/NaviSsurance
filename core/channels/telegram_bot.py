@@ -6,12 +6,13 @@ import threading
 
 import requests
 
-from config import (
-    LOCAL_API_ENABLED,
-    LOCAL_API_HOST,
-    LOCAL_API_PORT,
-    TELEGRAM_ALLOWED_CHAT_IDS,
-    TELEGRAM_BOT_TOKEN,
+from config import TELEGRAM_BOT_TOKEN
+from core.app_preferences import (
+    get_local_api_host,
+    get_local_api_port,
+    get_telegram_allowed_chat_ids,
+    is_local_api_enabled,
+    is_telegram_bot_feature_enabled,
 )
 from core.db import DatabaseManager
 
@@ -26,18 +27,22 @@ except Exception:  # pragma: no cover - depends on optional install
     Message = None
 
 
-def telegram_bot_available() -> tuple[bool, str]:
-    if not LOCAL_API_ENABLED:
-        return False, "Local API is disabled."
+def telegram_bot_available(db: DatabaseManager | None = None) -> tuple[bool, str]:
+    d = db or DatabaseManager()
+    if not is_local_api_enabled(d):
+        return False, "Local API is disabled in Settings."
+    if not is_telegram_bot_feature_enabled(d):
+        return False, "Telegram bot is disabled in Settings."
     if Bot is None or Dispatcher is None:
         return False, "aiogram is not installed."
     if not TELEGRAM_BOT_TOKEN:
-        return False, "Telegram bot token is not configured."
+        return False, "Telegram bot token is not set in config/.env (NAVI_TELEGRAM_BOT_TOKEN)."
     return True, "available"
 
 
-def _api_base() -> str:
-    return f"http://{LOCAL_API_HOST}:{int(LOCAL_API_PORT)}"
+def _api_base(db: DatabaseManager | None = None) -> str:
+    d = db or DatabaseManager()
+    return f"http://{get_local_api_host(d)}:{int(get_local_api_port(d))}"
 
 
 class TelegramBotService:
@@ -78,10 +83,11 @@ class TelegramBotService:
         if not text:
             return
         chat_id = str(message.chat.id)
-        if TELEGRAM_ALLOWED_CHAT_IDS and chat_id not in TELEGRAM_ALLOWED_CHAT_IDS:
+        db = DatabaseManager()
+        allowed = get_telegram_allowed_chat_ids(db)
+        if allowed and chat_id not in allowed:
             return
 
-        db = DatabaseManager()
         binding = db.channel_binding_get(channel_name="telegram", external_chat_id=chat_id)
         session_id = str((binding or {}).get("session_id") or f"telegram_{chat_id}").strip()
         db.channel_binding_upsert(
@@ -93,7 +99,7 @@ class TelegramBotService:
 
         try:
             response = requests.post(
-                f"{_api_base()}/chat/main-turn",
+                f"{_api_base(db)}/chat/main-turn",
                 json={"message": text, "session_id": session_id},
                 timeout=180,
             )

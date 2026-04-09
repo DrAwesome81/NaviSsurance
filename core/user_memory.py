@@ -343,6 +343,16 @@ def _alias_payload_from_row(row: tuple) -> dict | None:
     return parse_alias_memory(row[2] if len(row) > 2 else "")
 
 
+def _emit_teach_memory_toast(scope_label: str) -> None:
+    try:
+        from core.chief_of_staff_service import emit_cos_toast
+
+        label = (scope_label or "Navi").strip() or "Navi"
+        emit_cos_toast(f"✓ Saved to {label} memory")
+    except Exception:
+        pass
+
+
 def store_teach_navi_memory(db, message: str) -> str | None:
     body = parse_teach_navi_command(message)
     if not body:
@@ -357,6 +367,7 @@ def store_teach_navi_memory(db, message: str) -> str | None:
             approval_status="approved",
             json_data={"explicit": True, "alias": alias_payload},
         )
+        _emit_teach_memory_toast("Navi")
         return f"I'll remember that alias: {alias_payload['term']} means {alias_payload['canonical']}."
     db.user_memory_add(
         kind="taught",
@@ -366,6 +377,7 @@ def store_teach_navi_memory(db, message: str) -> str | None:
         approval_status="approved",
         json_data={"explicit": True},
     )
+    _emit_teach_memory_toast("Navi")
     preview = body if len(body) <= 120 else body[:117] + "..."
     return f"I'll remember that: {preview}"
 
@@ -397,6 +409,7 @@ def store_teach_memory(db, message: str) -> str | None:
             approval_status="approved",
             json_data={"explicit": True, "alias": alias_payload, "target_agent": agent_code},
         )
+        _emit_teach_memory_toast(display_name)
         return f"I'll remember that for {display_name}: {alias_payload['term']} means {alias_payload['canonical']}."
     db.agent_memory_add(
         agent_code=agent_code,
@@ -407,6 +420,7 @@ def store_teach_memory(db, message: str) -> str | None:
         approval_status="approved",
         json_data={"explicit": True, "target_agent": agent_code},
     )
+    _emit_teach_memory_toast(display_name)
     preview = body if len(body) <= 120 else body[:117] + "..."
     return f"I'll remember that for {display_name}: {preview}"
 

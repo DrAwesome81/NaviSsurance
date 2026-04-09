@@ -2,13 +2,39 @@
 import sqlite3
 from datetime import datetime, UTC
 import json
+import logging
 import sys
 import os
+
+logger = logging.getLogger(__name__)
 
 # Import centralized database path and artifact store
 from config import DATABASE_PATH, ARTIFACTS_DIR
 
 _UNSET = object()
+
+
+def bump_task_due_date_mmddyyyy(due_date: str | None, *, days: int) -> str:
+    """
+    Shift a task due date forward by `days` calendar days (stored as MM-DD-YYYY).
+    If due is missing or unparsable, start from today's local date at midnight.
+    """
+    from datetime import timedelta
+
+    n = max(1, int(days))
+    raw = (due_date or "").strip()
+    base: datetime | None = None
+    if raw and raw.lower() not in {"none", "null", "n/a", "unknown"}:
+        for fmt in ("%m-%d-%Y", "%Y-%m-%d"):
+            try:
+                base = datetime.strptime(raw, fmt)
+                break
+            except Exception:
+                continue
+    if base is None:
+        base = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    return (base + timedelta(days=n)).strftime("%m-%d-%Y")
+
 
 class DatabaseManager:
     def __init__(self, db_name: str | None = None):
@@ -6974,6 +7000,116 @@ class DatabaseManager:
             conn.commit()
             return assignment_id
 
+    def agent_create_proposed_assignment(
+        self,
+        *,
+        title: str,
+        brief_md: str,
+        assignee_code: str,
+        priority: int = 3,
+        due_date: str | None = None,
+        proposed_by: str = "navi",
+        context_json: str | dict | list | None = None,
+    ) -> int | None:
+        """Create an assignment in ``proposed`` status for user review (no agent thread yet)."""
+        now = self._now_iso()
+        rq = (proposed_by or "navi").strip().lower()
+        asg = (assignee_code or "").strip().lower()
+        if not rq or not asg:
+            return None
+        if not self.agent_get(rq):
+            return None
+        if not self.agent_get(asg):
+            return None
+
+        p = int(priority or 3)
+        if p < 1:
+            p = 1
+        if p > 5:
+            p = 5
+
+        ctx = context_json
+        if isinstance(ctx, (dict, list)):
+            ctx = json.dumps(ctx, ensure_ascii=False)
+        if ctx is not None:
+            ctx = str(ctx)
+
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                cur = conn.execute(
+                    """
+                    INSERT INTO agent_assignments
+                        (title, brief_md, requester_code, assignee_code, priority, due_date, status,
+                         source_thread_id, source_project_id, context_json, result_summary_md, created_at, updated_at, completed_at)
+                    VALUES
+                        (?, ?, ?, ?, ?, ?, 'proposed', NULL, NULL, ?, NULL, ?, ?, NULL)
+                    """,
+                    (
+                        str(title or "").strip() or "Untitled assignment",
+                        str(brief_md or "").strip(),
+                        rq,
+                        asg,
+                        p,
+                        due_date,
+                        ctx,
+                        now,
+                        now,
+                    ),
+                )
+                assignment_id = int(cur.lastrowid)
+                conn.execute(
+                    """
+                    INSERT INTO agent_assignment_events
+                        (assignment_id, event_type, from_status, to_status, actor_code, note, created_at)
+                    VALUES
+                        (?, 'created', NULL, 'proposed', ?, NULL, ?)
+                    """,
+                    (assignment_id, rq, now),
+                )
+                conn.commit()
+                return assignment_id
+        except Exception as e:
+            logger.error("Failed to create proposed assignment: %s", e)
+            return None
+
+    def agent_approve_proposal(self, proposal_id: int, *, actor_code: str = "navi") -> bool:
+        """Move a ``proposed`` assignment to ``queued`` and log a status event."""
+        pid = int(proposal_id)
+        current = self.agent_get_assignment(pid)
+        if not current:
+            return False
+        if str(current.get("status") or "").strip().lower() != "proposed":
+            return False
+        now = self._now_iso()
+        act = (actor_code or "navi").strip().lower() or "navi"
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                cur = conn.execute(
+                    """
+                    UPDATE agent_assignments
+                    SET status = 'queued', updated_at = ?
+                    WHERE id = ? AND status = 'proposed'
+                    """,
+                    (now, pid),
+                )
+                if getattr(cur, "rowcount", 0) != 1:
+                    conn.rollback()
+                    return False
+                conn.execute(
+                    """
+                    INSERT INTO agent_assignment_events
+                        (assignment_id, event_type, from_status, to_status, actor_code, note, created_at)
+                    VALUES
+                        (?, 'status_changed', 'proposed', 'queued', ?, NULL, ?)
+                    """,
+                    (pid, act, now),
+                )
+                conn.commit()
+            return True
+        except Exception as e:
+            logger.error("Failed to approve proposal %s: %s", pid, e)
+            return False
+
     def agent_list_assignments(
         self,
         *,
@@ -7005,13 +7141,14 @@ class DatabaseManager:
                 WHERE {' AND '.join(where)}
                 ORDER BY
                     CASE status
-                        WHEN 'in_progress' THEN 0
-                        WHEN 'queued' THEN 1
-                        WHEN 'awaiting_review' THEN 2
-                        WHEN 'blocked' THEN 3
-                        WHEN 'done' THEN 4
-                        WHEN 'cancelled' THEN 5
-                        ELSE 6
+                        WHEN 'proposed' THEN 0
+                        WHEN 'in_progress' THEN 1
+                        WHEN 'queued' THEN 2
+                        WHEN 'awaiting_review' THEN 3
+                        WHEN 'blocked' THEN 4
+                        WHEN 'done' THEN 5
+                        WHEN 'cancelled' THEN 6
+                        ELSE 7
                     END,
                     priority DESC,
                     COALESCE(due_date, '9999-12-31') ASC,

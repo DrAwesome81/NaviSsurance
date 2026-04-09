@@ -1,79 +1,83 @@
-# 7-minute CEO demo script (NaviSsurance)
+# 7-Minute CEO Demo – “From Vague Idea to Execution in One Flow”
 
-Goal: show a CEO that this is a **decision-cycle compressor**: research → strategy → execution plan → operational follow-through.
+## Pre-demo setup (do this 2 min before the call)
 
-## Pre-demo setup (2 minutes before the call)
-- Ensure `OPENAI_API_KEY` is set if you want live web research.
-- Have one small example input ready (1–2 pages):
-  - a short “product brief” doc (even a mock) or a redacted deck excerpt
-- Optional: have 2–3 time entries already logged in Billing (for a smoother Billing segment).
+- Have one clean, short product brief ready (even a 1-page mock is fine).
+- Make sure **Grok** and **OpenAI** keys are set (for live Deep Research + Workspace).
+- Have the app open on the **Chief of Staff** tab, with **Dashboard** and **Workspace** ready in other tabs.
 
-## Demo narrative (say this up front, 20 seconds)
-“In ~10 minutes, I’ll show you how we go from your rough product description to a **cited regulatory brief**, a **founder-ready strategy memo**, and an **importable execution plan**—so you can move from ‘unsure’ to ‘executing’ in days.”
+## Opening (20 seconds)
 
-## 1) Deep Research (2 minutes)
-Tab: `Deep Research`
-- Enter objective (example):
-  - “Regulatory path options for an AI triage tool that flags high-risk ECGs for clinician review; US first; likely De Novo vs 510(k); include competitor signals and evidence expectations.”
-- Start the run.
-- While it runs, point out:
-  - iterative rounds + timebox
-  - artifacts saved (reusable for later updates)
-- If API keys are not set, don’t run live; instead:
-  - open a previous run and show artifacts + final brief
+> Good morning. In the next 7 minutes I’m going to show you how NaviSsurance compresses the entire decision-to-execution cycle.  
+> I’ll take a rough product idea, turn it into cited research and a board-ready strategy memo, extract an importable execution plan, and hand it off to specialist agents — all inside one connected system.
 
-What you’re proving:
-- you can produce a **cited** brief quickly
-- it’s not a black box: intermediate artifacts are visible
+## 1. Deep Research → Strategy Input (1.5 minutes)
 
-## 2) Workspace: strategy memo drafting (2 minutes)
-Tab: `Workspace`
-- Add the short product brief file/folder (or a redacted sample).
-- Mark it in scope.
-- Generate draft with a tight instruction prompt, e.g.:
-  - “Draft a CEO memo: executive summary; recommended regulatory path; evidence plan; timeline; top risks; and include a section `## Suggested Tasks (importable)` with 12 tasks.”
-- Show the three panes:
-  - Grok output
-  - ChatGPT review/edit
-  - Markdown Document (final living draft)
+1. Switch to the **Deep Research** tab.
+2. Paste objective:
+   ```text
+   Regulatory path options for an AI triage tool that flags high-risk ECGs for clinician review; US first; likely De Novo vs 510(k); include competitor signals and evidence expectations.
+   ```
+3. Click **Start deep research**.
+4. While it runs, say:
+   > This is Atlas doing iterative web research. You’ll see intermediate artifacts and a final brief with citations.
 
-What you’re proving:
-- you can turn messy inputs into a **CEO-readable memo**
-- the memo includes a structured execution plan
+**When done:**
 
-## 3) Convert to execution: import tasks (1 minute)
-Still in `Workspace`
-- Click `Extract Suggested Tasks…`
-- In the import dialog:
-  - adjust a due date or category on one task (to show control)
-  - accept/import
+> Atlas just gave us a reusable research brief. We’ll feed this straight into drafting.
 
-What you’re proving:
-- AI output becomes **actionable work**, not just text
+## 2. Workspace: From Research + Brief → CEO Memo (2.5 minutes)
 
-## 4) Tasks: show the plan is real (45 seconds)
-Tab: `Tasks`
-- Filter/search for the imported tasks
-- Mark one complete / adjust priority / snooze one
+1. Switch to the **Workspace** tab.
+2. Add the product brief file **and** the Atlas research brief (as a virtual file if needed).
+3. Mark **both** in scope.
+4. Click **Generate Draft**.
+5. Use this instruction prompt (Collaboration prompt or dialog):
+   ```text
+   Draft a CEO strategy memo: executive summary, recommended regulatory path, evidence plan, timeline, top risks, and include a section ## Suggested Tasks (importable) with realistic tasks.
+   ```
 
-What you’re proving:
-- the plan is trackable and operational (not “a PDF that dies in email”)
+While the three panes fill, say:
 
-## 5) Billing: show it supports a real business (45 seconds)
-Tab: `Billing`
-- Show time entry (start/stop or manual add)
-- Generate an invoice draft from a template
-- Show draft preview and “review/export” positioning (no auto-send)
+> Grok does the heavy research synthesis…  
+> ChatGPT reviews and polishes for CEO tone…  
+> The final markdown is a living document you can edit directly.
 
-What you’re proving:
-- delivery is **repeatable and monetizable**
-- it’s designed for professional services reality
+**When complete:**
+
+> Watch this — we now have a clean, cited CEO memo in under two minutes.
+
+## 3. Turn Words Into Action (1 minute)
+
+Still in **Workspace**:
+
+1. Click **Extract Suggested Tasks…**
+2. In the dialog:
+   - Show you can edit a due date or priority.
+   - Click **Apply**.
+3. Switch to the **Tasks** tab → filter to show the newly imported tasks.
+4. Switch to the **Chief of Staff** tab → show the assignment board now reflects the new work.
+
+> AI output is no longer dead text. It becomes real, trackable tasks and assignments.
+
+## 4. Delegation & Visibility (1 minute)
+
+In **Chief of Staff**:
+
+> Assign Atlas to expand the evidence plan for the top risk.
+
+- Show the new assignment appear on the board.
+- Select it → show **NEEDS_INPUT** if Atlas would ask questions, or the latest agent reply.
+
+> This is the delegation board. I can see exactly who is blocked on me and what artifacts have been delivered.
+
+## 5. Billing Reality Check (45 seconds)
+
+- Quick switch to the **Billing** tab.
+
+> We also track time and generate invoice drafts from the same system — so the work is both strategic and monetizable.
 
 ## Close (30 seconds)
-“The point is speed *with defensibility*: cited research, a clear recommended path, and a plan you can execute. If you want, we can run a fixed-scope 10‑business‑day sprint and hand you these artifacts for your board and your team.”
 
-## Q&A pivots (if asked)
-- “Is this just ChatGPT?” → “No. It’s a workflow: artifacts, reviews, task conversion, and operational tracking; plus we tune prompts and structure for MedTech/regulatory outputs.”
-- “Do you guarantee clearance?” → “No. We guarantee clarity, traceability, and an execution-ready plan.”
-- “Can my team use it?” → “We typically deliver the sprint first; licensing/team access can follow once the workflow is proven in your context.”
-
+> That’s the loop: vague idea → cited research → CEO memo → importable tasks → delegated execution, all visible and trackable.  
+> This is how we move from “unsure” to “executing” in days instead of weeks. If this resonates, we can run a fixed 10-business-day Regulatory Strategy Sprint and deliver exactly these artifacts for your board.

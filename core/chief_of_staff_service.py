@@ -8,8 +8,9 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Callable
 from dateutil.tz import tzlocal
 
 from core.db import DatabaseManager
@@ -18,6 +19,7 @@ from core.grok_client import (
     grok_completion_messages,
     grok_web_search,
     grok_available,
+    format_grok_user_facing_error,
     MODEL_COS,
     MODEL_FAST,
 )
@@ -34,8 +36,77 @@ from core.agent_memory import build_agent_memory_context, build_assignment_memor
 from core.user_memory import build_user_memory_context
 from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
 from core.tool_registry import invoke_tool
+from core.app_preferences import (
+    get_cos_calendar_max_chars,
+    get_cos_context_budget_chars,
+    get_cos_history_max_chars_per_message,
+    get_cos_history_max_messages,
+    get_cos_max_assignment_lines,
+    get_cos_max_output_tokens,
+    get_cos_max_task_lines,
+    get_cos_memory_context_max_chars,
+    get_cos_memory_max_output_tokens,
+    get_cos_preferences_max_chars,
+    get_cos_emails_context_max_chars,
+    is_cos_passive_memory_extraction_enabled,
+)
 
 logger = logging.getLogger(__name__)
+
+# When memory context is injected below, nudge the model to acknowledge reliance in reasoning only (not in user-visible text).
+_COS_MEMORY_REASONING_HINT = (
+    "Memory (reasoning only):\n"
+    "When a stored preference, fact, or alias from the memory/context blocks in this turn meaningfully shapes your answer, "
+    "note that only in your private reasoning—prefix that sentence with `[Memory] `. "
+    "Do this occasionally when it matters, not mechanically every time. "
+    "Never put `[Memory]`, thinking tags, or meta-commentary about memory in what Adam reads; keep the delivered reply natural.\n"
+)
+
+# Optional GUI hook (registered from the main window) for lightweight toasts after CoS-related memory saves.
+_cos_toast_callback: Optional[Callable[[str], None]] = None
+
+
+def set_cos_toast_callback(fn: Optional[Callable[[str], None]]) -> None:
+    """Register a notifier for short user-visible messages (e.g. main-window status toast). Cleared when fn is None."""
+    global _cos_toast_callback
+    _cos_toast_callback = fn
+
+
+def emit_cos_toast(message: str) -> None:
+    """Invoke the registered toast callback; no-op if unset or on failure."""
+    fn = _cos_toast_callback
+    text = (message or "").strip()
+    if not fn or not text:
+        return
+    try:
+        fn(text)
+    except Exception:
+        logger.debug("emit_cos_toast callback failed", exc_info=True)
+
+
+# Substrings that suggest the user is stating durable preferences/facts (always run memory extraction).
+_MEMORY_HINT_SUBSTRINGS: tuple[str, ...] = (
+    "teach navi",
+    "teach atlas",
+    "remember ",
+    "remember:",
+    "preference",
+    "prefer not",
+    "always schedule",
+    "never book",
+    "call me ",
+    "don't forget",
+    "dont forget",
+    "going forward",
+    "from now on",
+    "i prefer",
+    "we decided",
+    "client prefers",
+    "important to me",
+    "note:",
+    "learn that",
+    "keep in mind",
+)
 
 
 def _log_timing(event: str, t0: float, **fields) -> None:
@@ -49,6 +120,80 @@ def _log_timing(event: str, t0: float, **fields) -> None:
             logger.info("TIMING %s elapsed_ms=%s", event, elapsed_ms)
     except Exception:
         return
+
+
+def _truncate_cos_text(text: str, max_chars: int) -> str:
+    t = (text or "").strip()
+    if max_chars <= 0 or not t:
+        return ""
+    if len(t) <= max_chars:
+        return t
+    if max_chars <= 1:
+        return "…"
+    return t[: max_chars - 1].rstrip() + "…"
+
+
+def _apply_cos_context_budget(
+    prefs: str,
+    cal: str,
+    mem: str,
+    tasks: str,
+    assign: str,
+    budget: int,
+    *,
+    emails: str = "",
+) -> tuple[str, str, str, str, str, str]:
+    """
+    Keep total character count across CoS context blocks under `budget`.
+    Shrinks lowest-priority blocks first (memory, AM Sweep emails, preferences, calendar,
+    assignments, tasks). `emails` is empty for normal CoS chat (not AM Sweep).
+    """
+    cur: dict[str, str] = {
+        "mem": (mem or "").strip(),
+        "emails": (emails or "").strip(),
+        "prefs": (prefs or "").strip(),
+        "cal": (cal or "").strip(),
+        "assign": (assign or "").strip(),
+        "tasks": (tasks or "").strip(),
+    }
+    order = ["mem", "emails", "prefs", "cal", "assign", "tasks"]
+
+    def total() -> int:
+        return sum(len(s) for s in cur.values())
+
+    safety = 0
+    while total() > budget and safety < 300:
+        safety += 1
+        over = total() - budget
+        if over <= 0:
+            break
+        progressed = False
+        for k in order:
+            if total() <= budget:
+                break
+            if len(cur[k]) <= 120:
+                continue
+            take = min(len(cur[k]), over + 80)
+            new_max = max(0, len(cur[k]) - take)
+            nxt = _truncate_cos_text(cur[k], new_max) if new_max > 0 else ""
+            if nxt != cur[k]:
+                cur[k] = nxt
+                progressed = True
+        if not progressed:
+            cur["mem"] = ""
+            cur["emails"] = _truncate_cos_text(cur["emails"], 800)
+            cur["prefs"] = _truncate_cos_text(cur["prefs"], 600)
+            if total() > budget:
+                cur["cal"] = _truncate_cos_text(cur["cal"], 400)
+            break
+    return (
+        cur["prefs"],
+        cur["cal"],
+        cur["mem"],
+        cur["emails"],
+        cur["tasks"],
+        cur["assign"],
+    )
 
 # Pattern for CoS to add a task:
 # ADD_TASK: text | due_date (MM-DD-YYYY or none) | category (Business or Personal) [| priority(P0-P5|0-5|none)] [| assigned_to|none] [| project_id|none] [| recurrence]
@@ -75,6 +220,9 @@ ADD_CAL_BLOCK_PATTERN = re.compile(
 # Pattern for CoS delegation action:
 # ASSIGN: agent | title | brief | P1..P5 | due_date_or_none
 ASSIGN_PATTERN = re.compile(r"^\s*ASSIGN:\s*(.+?)\s*$", re.IGNORECASE)
+
+# APPROVE_PROPOSAL: assignment_ref (e.g. P-0007, A-0007, or 7)
+APPROVE_PROPOSAL_PATTERN = re.compile(r"^\s*APPROVE_PROPOSAL:\s*(.+?)\s*$", re.IGNORECASE)
 # Pattern for CoS assignment status updates:
 # UPDATE_ASSIGNMENT_STATUS: assignment_ref | status | optional_note
 UPDATE_ASSIGNMENT_STATUS_PATTERN = re.compile(
@@ -161,6 +309,7 @@ ACTION_COMMAND_PREFIXES: tuple[str, ...] = (
     "ADD_TASK:",
     "ADD_CAL_BLOCK:",
     "ASSIGN:",
+    "APPROVE_PROPOSAL:",
     "UPDATE_ASSIGNMENT_STATUS:",
     "BULK_UPDATE_ASSIGNMENT_STATUS:",
     "UPDATE_ASSIGNMENT_PRIORITY:",
@@ -253,9 +402,10 @@ def _parse_calendar_datetime(value: str) -> Optional[datetime]:
     return None
 
 
-def _tasks_context(db: DatabaseManager) -> str:
+def _tasks_context(db: DatabaseManager, *, max_lines: int = 40) -> str:
     """Format current dashboard tasks for CoS context. Uses same list as dashboard (all, no date filter)."""
     try:
+        cap = max(5, min(80, int(max_lines)))
         tasks = db.get_tasks(category=None, date_filter=None, specific_date=None)
         if not tasks:
             return "**Dashboard tasks:** (none)"
@@ -264,7 +414,7 @@ def _tasks_context(db: DatabaseManager) -> str:
             done = " [DONE]" if completed else ""
             due = f" due {due_date}" if due_date else ""
             lines.append(f"- {task_text}{due} ({category}){done}")
-        return "**Dashboard tasks:**\n" + "\n".join(lines[:50])  # cap at 50
+        return "**Dashboard tasks:**\n" + "\n".join(lines[:cap])
     except Exception as e:
         logger.warning("Could not load tasks for CoS context: %s", e)
         return "**Dashboard tasks:** (unable to load)"
@@ -350,9 +500,10 @@ def _tasks_context_rich(db: DatabaseManager, *, limit: int = 80) -> str:
         return "**Dashboard tasks (rich):** (unable to load)"
 
 
-def _assignments_context(db: DatabaseManager) -> str:
+def _assignments_context(db: DatabaseManager, *, max_lines: int = 45) -> str:
     """Format open delegation assignments for CoS context."""
     try:
+        cap = max(5, min(100, int(max_lines)))
         rows = db.agent_list_assignments(limit=300)
         if not rows:
             return "**Delegated assignments:** (none)"
@@ -366,7 +517,7 @@ def _assignments_context(db: DatabaseManager) -> str:
             return "**Delegated assignments:** (all closed)"
 
         lines = []
-        for r in open_rows[:60]:
+        for r in open_rows[:cap]:
             aid = int(r.get("id") or 0)
             title = str(r.get("title") or "Untitled")
             assignee = str(r.get("assignee_code") or "agent")
@@ -585,16 +736,31 @@ def cos_am_sweep(
     Reuses the same action parser as cos_response so ASSIGN/ADD_TASK/ADD_CAL_BLOCK side effects work.
     """
     t0 = time.monotonic()
+    hist_max_msg = get_cos_history_max_messages(db)
+    hist_max_ch = get_cos_history_max_chars_per_message(db)
     now = _now_local()
     local_time_ctx = _local_time_context(now)
     prefs = db.cos_get_preferences()
-    prefs_ctx = _preferences_context(prefs)
-
-    tasks_ctx = _tasks_context_rich(db)
-    assignments_ctx = _assignments_context(db)
-    cal_ctx = _calendar_context()
-    emails_ctx = _emails_context(db)
+    prefs_ctx = _truncate_cos_text(
+        _preferences_context(prefs),
+        get_cos_preferences_max_chars(db),
+    )
+    tl = get_cos_max_task_lines(db)
+    al = get_cos_max_assignment_lines(db)
+    tasks_ctx = _tasks_context_rich(db, limit=tl)
+    assignments_ctx = _assignments_context(db, max_lines=al)
+    cal_ctx = _truncate_cos_text(_calendar_context(), get_cos_calendar_max_chars(db))
+    emails_ctx = _truncate_cos_text(_emails_context(db), get_cos_emails_context_max_chars(db))
     mem_ctx = _memory_context(db, "AM Sweep", chat_id)
+    prefs_ctx, cal_ctx, mem_ctx, emails_ctx, tasks_ctx, assignments_ctx = _apply_cos_context_budget(
+        prefs_ctx,
+        cal_ctx,
+        mem_ctx,
+        tasks_ctx,
+        assignments_ctx,
+        get_cos_context_budget_chars(db),
+        emails=emails_ctx,
+    )
 
     cal_ok, cal_reason = calendar_write_available()
     if cal_ok:
@@ -652,6 +818,7 @@ Assignment brief templates (use these patterns so outputs are consistent):
 - Archive brief must include: (1) what to update; (2) structure; (3) output: clean notes + action items + links to source items.
 - Sentinel brief must include: (1) what to QA; (2) checklist (clarity, missing info, contradictions, risky wording); (3) output: issues + suggested fixes.
 
+{_COS_MEMORY_REASONING_HINT}
 Output format requirements:
 1) Start with a short executive summary (3-6 bullets max).
 2) Then four sections in this order with bullet lists: Dispatch, Prep, Yours, Skip.
@@ -667,6 +834,7 @@ Action commands you may output:
 - TASK_SET_TAGS: <task_id> | <json array of tags>    (example: TASK_SET_TAGS: 123 | [\"triage:dispatch\",\"source:am_sweep\"])
 - TASK_SET_ESTIMATE: <task_id> | <minutes>           (0-600, example: TASK_SET_ESTIMATE: 123 | 45)
 - ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>
+  (Each ASSIGN creates a **proposal** for Adam to review in Suggested Assignments; it does not start agent work until approved.)
 {calendar_instructions}
 
 Do not use P0 as a placeholder for "unspecified." Include a real best-effort priority whenever you can infer it from urgency, due date, or surrounding High/Medium/Low context.
@@ -693,8 +861,13 @@ Always interpret and communicate schedule/time references in Adam's local timezo
 
     try:
         if conversation_history:
+            recent_history = _compact_conversation_history(
+                conversation_history,
+                max_messages=hist_max_msg,
+                max_chars_per_message=hist_max_ch,
+            )
             messages = [{"role": "system", "content": system + "\n\n" + time_ctx}]
-            for role, content in conversation_history:
+            for role, content in recent_history:
                 if role in ("user", "assistant") and content:
                     messages.append({"role": role, "content": content})
             messages.append({"role": "user", "content": user_prompt})
@@ -714,7 +887,7 @@ Always interpret and communicate schedule/time references in Adam's local timezo
     except Exception as e:
         logger.exception("CoS AM Sweep failed: %s", e)
         _log_timing("cos_am_sweep_error", t0, chat_id=chat_id)
-        return f"Error: {e}"
+        return format_grok_user_facing_error(e)
 
 def _memory_context(db: DatabaseManager, user_message: str, chat_id: Optional[int]) -> str:
     """
@@ -723,14 +896,21 @@ def _memory_context(db: DatabaseManager, user_message: str, chat_id: Optional[in
     q = (user_message or "").strip()
     if not q:
         return ""
+    light = len(q) < 96
+    mem_limit = 4 if light else 6
+    chunk_limit = 2 if light else 3
+    raw_turn_limit = 4 if light else 6
+    fts_limit = 4 if light else 6
+    user_mem_limit = 3 if light else 4
+    user_mem_recent = 1 if light else 2
     parts = []
     try:
-        mem_rows = db.cos_memory_search(query=q, chat_id=chat_id, limit=6)
+        mem_rows = db.cos_memory_search(query=q, chat_id=chat_id, limit=mem_limit)
     except Exception:
         mem_rows = []
     if mem_rows:
         lines = []
-        for _id, _chat_id, kind, content, _json_data, created_at in mem_rows[:6]:
+        for _id, _chat_id, kind, content, _json_data, created_at in mem_rows[:mem_limit]:
             lines.append(f"- ({kind}) {content}")
         parts.append("**Relevant memory (structured):**\n" + "\n".join(lines))
 
@@ -740,8 +920,8 @@ def _memory_context(db: DatabaseManager, user_message: str, chat_id: Optional[in
             db,
             q,
             session_id=session_id,
-            chunk_limit=3,
-            raw_turn_limit=6,
+            chunk_limit=chunk_limit,
+            raw_turn_limit=raw_turn_limit,
         )
     except Exception:
         retrieval_context = ""
@@ -749,12 +929,12 @@ def _memory_context(db: DatabaseManager, user_message: str, chat_id: Optional[in
         parts.append(retrieval_context)
     else:
         try:
-            conv_rows = db.search_conversations(q)[:6]
+            conv_rows = db.search_conversations(q)[:fts_limit]
         except Exception:
             conv_rows = []
         if conv_rows:
             lines = []
-            for role, content, ts in conv_rows[:6]:
+            for role, content, ts in conv_rows[:fts_limit]:
                 excerpt = (content or "").strip()
                 if len(excerpt) > 180:
                     excerpt = excerpt[:177] + "..."
@@ -762,7 +942,9 @@ def _memory_context(db: DatabaseManager, user_message: str, chat_id: Optional[in
             parts.append("**Relevant past chat snippets (FTS):**\n" + "\n".join(lines))
 
     try:
-        global_memory = build_user_memory_context(db, q, limit=4, recent_limit=2)
+        global_memory = build_user_memory_context(
+            db, q, limit=user_mem_limit, recent_limit=user_mem_recent
+        )
     except Exception:
         global_memory = ""
     if global_memory:
@@ -821,10 +1003,16 @@ def _memory_context(db: DatabaseManager, user_message: str, chat_id: Optional[in
             break
     parts.extend(section for section in agent_sections if section.strip())
 
-    return "\n\n".join(parts)
+    joined = "\n\n".join(parts)
+    max_mc = get_cos_memory_context_max_chars(db)
+    return _truncate_cos_text(joined, max_mc) if joined else ""
 
 
 def _extract_and_store_memory(db: DatabaseManager, *, chat_id: Optional[int], user_message: str, assistant_message: str) -> None:
+    if not is_cos_passive_memory_extraction_enabled(db):
+        return
+    if _should_skip_passive_memory_extraction(user_message, assistant_message):
+        return
     ok, _msg = grok_available()
     if not ok:
         return
@@ -833,12 +1021,14 @@ def _extract_and_store_memory(db: DatabaseManager, *, chat_id: Optional[int], us
             "You extract durable memory for a Chief of Staff assistant. "
             "Return ONLY valid JSON. No markdown."
         )
+        um = _truncate_cos_text(user_message, 6000)
+        am = _truncate_cos_text(assistant_message, 12000)
         user = f"""
 Extract durable memory items from the interaction.
 
 Input:
-- user_message: {user_message}
-- assistant_message: {assistant_message}
+- user_message: {um}
+- assistant_message: {am}
 
 Return JSON with keys:
 - summary: string (1-2 sentences)
@@ -851,7 +1041,12 @@ Hard rules:
 - Do not invent facts not present.
 - Keep each item short.
 """.strip()
-        raw = grok_completion(system, user, model=MODEL_FAST)
+        raw = grok_completion(
+            system,
+            user,
+            model=MODEL_FAST,
+            max_tokens=get_cos_memory_max_output_tokens(db),
+        )
         if not raw:
             return
         data = json.loads(raw)
@@ -877,7 +1072,7 @@ def _parse_assignment_ref(value: str) -> Optional[int]:
     s = (value or "").strip().upper()
     if not s:
         return None
-    m = re.match(r"^A-(\d+)$", s)
+    m = re.match(r"^[AP]-(\d+)$", s)
     if m:
         try:
             aid = int(m.group(1))
@@ -915,6 +1110,8 @@ def _normalize_assignment_status(value: str) -> str:
         return ""
     normalized = s.replace("-", "_").replace(" ", "_")
     aliases = {
+        "proposal": "proposed",
+        "proposed": "proposed",
         "queue": "queued",
         "queued": "queued",
         "backlog": "queued",
@@ -1104,6 +1301,211 @@ def _infer_task_priority(
     return None
 
 
+_DASHBOARD_TASK_USER_INTENT_RE = re.compile(
+    r"(?is)\b(?:add\s+(?:a\s+)?task\s+to|remind\s+me\s+(?:to\s+)?)(.+)$"
+)
+
+# Broader than synthesis regex: used only to detect when we should contradict model prose that claims a save.
+_DASHBOARD_TASK_ADD_INTENT_FOR_HONESTY_RE = re.compile(
+    r"(?is)\b("
+    r"add\s+(?:a\s+)?task\b|"
+    r"add\s+(?:these|those)\s+tasks\b|"
+    r"put\s+(?:this|that|it)\s+on\s+(?:my\s+)?(?:task\s+)?list\b|"
+    r"create\s+(?:a\s+)?task\b|"
+    r"add\s+(?:this|that|it)\s+to\s+(?:my\s+)?dashboard\b|"
+    r"new\s+task\b"
+    r")"
+)
+
+
+def _user_requested_dashboard_task_add(user_message: str) -> bool:
+    msg = (user_message or "").strip()
+    if not msg:
+        return False
+    if synthesize_add_task_line_from_user_text(msg):
+        return True
+    return bool(_DASHBOARD_TASK_ADD_INTENT_FOR_HONESTY_RE.search(msg))
+
+
+@dataclass(frozen=True)
+class CoSTaskActionParseResult:
+    """Outcome of parsing machine-action lines (ADD_TASK, etc.) out of a model reply."""
+
+    text: str
+    added_dashboard_tasks: int
+    ambiguous_priority_pending: bool
+
+
+def _maybe_prepend_no_dashboard_task_saved_notice(
+    user_message: str, parse_result: CoSTaskActionParseResult
+) -> str:
+    """
+    When the user clearly asked to add a dashboard task but nothing was persisted (and we are not
+    waiting on priority clarification), prepend a truthful note so model hallucinated confirmations
+    do not stand alone.
+    """
+    text = parse_result.text
+    if parse_result.added_dashboard_tasks > 0:
+        return text
+    if parse_result.ambiguous_priority_pending:
+        return text
+    if not _user_requested_dashboard_task_add(user_message):
+        return text
+    notice = (
+        "**No task was added to your dashboard** in this turn. "
+        "If you still want a row on the Tasks tab, say what to do with due date, Business or Personal, and priority.\n\n"
+    )
+    return notice + text
+
+
+def _next_named_weekday_mmddyyyy(name: str, base: datetime) -> Optional[str]:
+    names = {
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+        "sunday": 6,
+    }
+    key = (name or "").strip().lower()
+    target = names.get(key)
+    if target is None:
+        return None
+    current = base.weekday()
+    delta_days = (target - current) % 7
+    d = base.date() + timedelta(days=delta_days)
+    return d.strftime("%m-%d-%Y")
+
+
+def synthesize_add_task_line_from_user_text(
+    user_message: str, *, now: Optional[datetime] = None
+) -> Optional[str]:
+    """
+    When the user asks in plain language to add a task or set a reminder, build one ADD_TASK line
+    so _parse_and_add_tasks can persist it. Returns None if the message does not match.
+    """
+    text = (user_message or "").strip()
+    if not text:
+        return None
+    if text.lstrip().upper().startswith("ADD_TASK:"):
+        return None
+    m = _DASHBOARD_TASK_USER_INTENT_RE.search(text)
+    if not m:
+        return None
+    rest = (m.group(1) or "").strip()
+    if not rest:
+        return None
+
+    base = now or _now_local()
+    if getattr(base, "tzinfo", None):
+        local_base = base
+    else:
+        local_base = base.replace(tzinfo=tzlocal())
+
+    lower = rest.lower()
+    category = "Personal" if re.search(r"\bpersonal\b", lower) else "Business"
+
+    priority_explicit: Optional[int] = None
+    pm = re.search(r"(?i)\b(?:priority|prio\.?)\s*[:\s]*(?:p)?([0-5])\b", rest)
+    if pm:
+        priority_explicit = int(pm.group(1))
+    if priority_explicit is None:
+        pm2 = re.search(r"(?i)(?:^|[\s,;])\bp([0-5])\b", rest)
+        if pm2:
+            priority_explicit = int(pm2.group(1))
+
+    due_norm: Optional[str] = None
+    if re.search(r"\b(?:by|due)\s+(?:the\s+)?next\s+week\b", lower):
+        due_norm = (local_base.date() + timedelta(days=7)).strftime("%m-%d-%Y")
+    elif "tomorrow" in lower or re.search(r"\b(?:by|due)\s+tomorrow\b", lower):
+        due_norm = (local_base.date() + timedelta(days=1)).strftime("%m-%d-%Y")
+    elif re.search(r"\b(?:by|due)\s+today\b", lower) or re.search(
+        r"(?:^|[\s,;])(?:today|tonight)\b", lower
+    ):
+        due_norm = local_base.strftime("%m-%d-%Y")
+    else:
+        dm = re.search(r"\b(\d{1,2}-\d{1,2}-\d{4})\b", rest)
+        if dm:
+            due_ok, parsed = _normalize_dashboard_mmddyyyy(dm.group(1))
+            if due_ok:
+                due_norm = parsed
+        wdm = re.search(
+            r"\b(?:by|due)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+            lower,
+        )
+        if wdm and due_norm is None:
+            due_norm = _next_named_weekday_mmddyyyy(wdm.group(1), local_base)
+
+    desc = rest
+    desc = re.sub(r"(?i)[,;]?\s*(?:priority|prio\.?)\s*[:\s]*(?:p)?[0-5]\b", "", desc)
+    desc = re.sub(r"(?i)(?:^|[\s,;])\bp[0-5]\b(?=\s*(?:,|;|$))", "", desc)
+    desc = re.sub(r"(?i)[,;]?\s*\b(?:by|due)\s+(?:the\s+)?next\s+week\b", "", desc)
+    desc = re.sub(r"(?i)[,;]?\s*\b(?:by|due)\s+tomorrow\b", "", desc)
+    desc = re.sub(r"(?i)[,;]?\s*\b(?:by|due)\s+today\b", "", desc)
+    desc = re.sub(
+        r"(?i)[,;]?\s*\b(?:by|due)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        "",
+        desc,
+    )
+    desc = re.sub(r"(?i)\b(?:today|tonight)\b", "", desc)
+    desc = re.sub(r"\b\d{1,2}-\d{1,2}-\d{4}\b", "", desc)
+    desc = desc.strip(" ,.;-\t")
+    desc = re.sub(r"\s+", " ", desc).strip()
+    if len(desc) < 2:
+        return None
+
+    if priority_explicit is not None:
+        p = priority_explicit
+    else:
+        inferred = _infer_task_priority(desc, due_date=due_norm, raw_context=text)
+        p = inferred if inferred is not None else 3
+
+    due_part = due_norm if due_norm else "none"
+    return f"ADD_TASK: {desc} | {due_part} | {category} | P{p}"
+
+
+def _cos_cleaned_indicates_dashboard_tasks_applied(cleaned: str) -> bool:
+    """True when the parsed CoS reply already recorded tasks or is waiting on priority clarification."""
+    t = cleaned or ""
+    if not t.strip():
+        return False
+    if re.search(r"(?is)—\s*\*added\s+\d+\s+task", t):
+        return True
+    if "Priority clarification needed" in t:
+        return True
+    lc = t.lower()
+    if "dashboard task" in lc and re.search(
+        r"(?is)—\s*\*(?:added|created|skipped|bulk-created)\s+\d+", t
+    ):
+        return True
+    return False
+
+
+def apply_dashboard_task_intent_fallback(
+    db: DatabaseManager,
+    user_message: str,
+    raw_model_out: str,
+    parse_result: CoSTaskActionParseResult,
+    *,
+    chat_id: Optional[int],
+) -> CoSTaskActionParseResult:
+    """
+    If a CoS/dashboard turn clearly asked to add a task but nothing was persisted, append a
+    synthesized ADD_TASK line and re-run the action parser once.
+    """
+    if chat_id is None:
+        return parse_result
+    if _cos_cleaned_indicates_dashboard_tasks_applied(parse_result.text):
+        return parse_result
+    line = synthesize_add_task_line_from_user_text(user_message)
+    if not line:
+        return parse_result
+    return _parse_task_actions(
+        db, (parse_result.text + "\n" + line).strip(), chat_id=chat_id
+    )
+
+
 def _resolve_bulk_scope(db: DatabaseManager, scope_raw: str) -> tuple[bool, Optional[str], str]:
     """
     Resolve a bulk-update scope value into (ok, assignee_code_or_none, display_label).
@@ -1187,6 +1589,28 @@ def _extract_explicit_action_lines(message: str) -> list[str]:
     return lines
 
 
+def _is_cos_command_only_message(message: str) -> bool:
+    return bool(_extract_explicit_action_lines(message))
+
+
+def _memory_hints_in_message(text: str) -> bool:
+    t = (text or "").strip().casefold()
+    if not t:
+        return False
+    return any(s in t for s in _MEMORY_HINT_SUBSTRINGS)
+
+
+def _should_skip_passive_memory_extraction(user_message: str, assistant_message: str) -> bool:
+    """Avoid the extra MODEL_FAST round-trip when it is unlikely to yield durable memory."""
+    if _is_cos_command_only_message(user_message or ""):
+        return True
+    um = (user_message or "").strip()
+    am = (assistant_message or "").strip()
+    if _memory_hints_in_message(um):
+        return False
+    return len(um) < 120 and len(am) < 72
+
+
 def _cos_tool_results_for_trigger(db: DatabaseManager, out: str, *, chat_id: Optional[int] = None) -> Optional[tuple[str, str]]:
     """
     If out is a tool trigger, return (tool_name, tool_result_text). Else None.
@@ -1268,12 +1692,14 @@ def _cos_run_tool_loop_single(
     user_text: str,
     *,
     chat_id: Optional[int] = None,
+    max_tokens: Optional[int] = None,
 ) -> str:
     """Tool loop for single-turn CoS flows using grok_completion."""
     user_aug = user_text
     out = ""
+    mt = int(max_tokens) if max_tokens is not None else get_cos_max_output_tokens(db)
     for _ in range(3):
-        out = grok_completion(system_text, user_aug, model=MODEL_COS)
+        out = grok_completion(system_text, user_aug, model=MODEL_COS, max_tokens=mt)
         out = (out or "").strip()
         if not out:
             return out
@@ -1290,12 +1716,14 @@ def _cos_run_tool_loop_messages(
     messages: list[dict],
     *,
     chat_id: Optional[int] = None,
+    max_tokens: Optional[int] = None,
 ) -> str:
     """Tool loop for multi-turn CoS flows using grok_completion_messages."""
     msgs = list(messages)
     out = ""
+    mt = int(max_tokens) if max_tokens is not None else get_cos_max_output_tokens(db)
     for _ in range(3):
-        out = grok_completion_messages(msgs, model=MODEL_COS)
+        out = grok_completion_messages(msgs, model=MODEL_COS, max_tokens=mt)
         out = (out or "").strip()
         if not out:
             return out
@@ -1321,7 +1749,8 @@ def cos_response(
     explicit_action_lines = _extract_explicit_action_lines(user_message or "")
     if explicit_action_lines:
         try:
-            response = _parse_and_add_tasks(db, "\n".join(explicit_action_lines), chat_id=chat_id)
+            parsed = _parse_task_actions(db, "\n".join(explicit_action_lines), chat_id=chat_id)
+            response = _maybe_prepend_no_dashboard_task_saved_notice(user_message, parsed)
             _extract_and_store_memory(
                 db,
                 chat_id=chat_id,
@@ -1335,15 +1764,32 @@ def cos_response(
             _log_timing("cos_response_error", t0, mode="explicit", chat_id=chat_id)
             return f"Error: {e}"
 
+    cos_out_tokens = get_cos_max_output_tokens(db)
+    hist_max_msg = get_cos_history_max_messages(db)
+    hist_max_ch = get_cos_history_max_chars_per_message(db)
+
     now = _now_local()
     local_time_ctx = _local_time_context(now)
     prefs = db.cos_get_preferences()
-    prefs_ctx = _preferences_context(prefs)
-
-    tasks_ctx = _tasks_context(db)
-    assignments_ctx = _assignments_context(db)
-    cal_ctx = _calendar_context()
+    prefs_ctx = _truncate_cos_text(
+        _preferences_context(prefs),
+        get_cos_preferences_max_chars(db),
+    )
+    tl = get_cos_max_task_lines(db)
+    al = get_cos_max_assignment_lines(db)
+    tasks_ctx = _tasks_context(db, max_lines=tl)
+    assignments_ctx = _assignments_context(db, max_lines=al)
+    cal_ctx = _truncate_cos_text(_calendar_context(), get_cos_calendar_max_chars(db))
     mem_ctx = _memory_context(db, user_message, chat_id)
+    prefs_ctx, cal_ctx, mem_ctx, _, tasks_ctx, assignments_ctx = _apply_cos_context_budget(
+        prefs_ctx,
+        cal_ctx,
+        mem_ctx,
+        tasks_ctx,
+        assignments_ctx,
+        get_cos_context_budget_chars(db),
+        emails="",
+    )
 
     cal_ok, cal_reason = calendar_write_available()
     if cal_ok:
@@ -1377,11 +1823,16 @@ When adding a task, include priority whenever you can infer it from urgency, tim
 Omit ADD_TASK lines if you are not adding any tasks.
 {calendar_instructions}
 
-You may also delegate work to named team members by writing one or more lines in this exact format:
+You may also propose delegation to named team members by writing one or more lines in this exact format (each line creates a **proposal** for review, not a live assignment):
 ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>
 Example: ASSIGN: Atlas | FDA PCCP research brief | Research latest guidance and summarize with citations. | P5 | 2026-03-01
 Available agent names: Atlas, Quill, Sentinel, Lex, Scout, Mason, Ledger, Archive, Pulse, Shield.
-Omit ASSIGN lines if you are not delegating work.
+Omit ASSIGN lines if you are not proposing delegation.
+
+You may approve a proposed assignment (queues it and routes work to the assignee). Use only when Adam has confirmed approval in chat:
+APPROVE_PROPOSAL: <P-0007 or A-0007 or numeric id>
+Example: APPROVE_PROPOSAL: P-0003
+Omit APPROVE_PROPOSAL lines if you are not approving a proposal.
 
 You may update assignment status:
 UPDATE_ASSIGNMENT_STATUS: <A-0007 or 7> | <queued|in_progress|awaiting_review|blocked|done|cancelled> | <optional note>
@@ -1460,6 +1911,7 @@ Omit BULK_ADD_TASKS_FROM_ASSIGNMENTS lines if you are not bulk-creating tasks fr
 
 In ongoing chats, you may only see a compact recent window of the conversation by default. If older context matters, request chat history instead of guessing.
 
+{_COS_MEMORY_REASONING_HINT}
 If you need more information to answer well, you may request one of these tools by returning EXACTLY ONE line with one of:
 - WEB_SEARCH:<query>
 - DOC_SEARCH:<query>   (searches local docs/notes and optional RAG index)
@@ -1550,7 +2002,12 @@ Always interpret and communicate schedule/time references in the user's local ti
         user_aug = user_text
         out = ""
         for _ in range(3):
-            out = grok_completion(system_text, user_aug, model=MODEL_COS)
+            out = grok_completion(
+                system_text,
+                user_aug,
+                model=MODEL_COS,
+                max_tokens=cos_out_tokens,
+            )
             out = (out or "").strip()
             if not out:
                 return out
@@ -1568,7 +2025,11 @@ Always interpret and communicate schedule/time references in the user's local ti
         msgs = list(messages)
         out = ""
         for _ in range(3):
-            out = grok_completion_messages(msgs, model=MODEL_COS)
+            out = grok_completion_messages(
+                msgs,
+                model=MODEL_COS,
+                max_tokens=cos_out_tokens,
+            )
             out = (out or "").strip()
             if not out:
                 return out
@@ -1605,7 +2066,11 @@ Always interpret and communicate schedule/time references in the user's local ti
 {user_message or "What should I focus on right now?"}"""
         try:
             out = _run_tool_loop_single(system, user)
-            cleaned = _parse_and_add_tasks(db, out, chat_id=chat_id)
+            parsed = _parse_task_actions(db, out, chat_id=chat_id)
+            parsed = apply_dashboard_task_intent_fallback(
+                db, user_message, out, parsed, chat_id=chat_id
+            )
+            cleaned = _maybe_prepend_no_dashboard_task_saved_notice(user_message, parsed)
             _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=cleaned)
             _log_timing(
                 "cos_response",
@@ -1620,7 +2085,7 @@ Always interpret and communicate schedule/time references in the user's local ti
         except Exception as e:
             logger.exception("CoS response failed: %s", e)
             _log_timing("cos_response_error", t0, mode="llm_single", chat_id=chat_id)
-            return f"Error: {e}"
+            return format_grok_user_facing_error(e)
 
     # Multi-turn: build messages list. Caller must have saved the current user message and included it in conversation_history.
     time_ctx = local_time_ctx
@@ -1631,7 +2096,11 @@ Always interpret and communicate schedule/time references in the user's local ti
     if mem_ctx:
         time_ctx += f"\n\n{mem_ctx}"
     time_ctx += f"\n\n{tasks_ctx}\n\n{assignments_ctx}"
-    recent_history = _compact_conversation_history(conversation_history)
+    recent_history = _compact_conversation_history(
+        conversation_history,
+        max_messages=hist_max_msg,
+        max_chars_per_message=hist_max_ch,
+    )
     messages = [{"role": "system", "content": system + "\n\n" + time_ctx}]
     for role, content in recent_history:
         if role in ("user", "assistant") and content:
@@ -1639,7 +2108,11 @@ Always interpret and communicate schedule/time references in the user's local ti
 
     try:
         out = _run_tool_loop_messages(messages)
-        cleaned = _parse_and_add_tasks(db, (out or "").strip(), chat_id=chat_id)
+        parsed = _parse_task_actions(db, (out or "").strip(), chat_id=chat_id)
+        parsed = apply_dashboard_task_intent_fallback(
+            db, user_message, out, parsed, chat_id=chat_id
+        )
+        cleaned = _maybe_prepend_no_dashboard_task_saved_notice(user_message, parsed)
         _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=cleaned)
         _log_timing(
             "cos_response",
@@ -1655,19 +2128,134 @@ Always interpret and communicate schedule/time references in the user's local ti
     except Exception as e:
         logger.exception("CoS response failed: %s", e)
         _log_timing("cos_response_error", t0, mode="llm_multi", chat_id=chat_id)
-        return f"Error: {e}"
+        return format_grok_user_facing_error(e)
 
 
-def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optional[int] = None) -> str:
+def approve_assignment_proposal(
+    db: DatabaseManager,
+    proposal_id: int,
+    *,
+    actor_code: str = "navi",
+) -> tuple[bool, str]:
+    """
+    Approve a proposed assignment: set status to queued, create assignee thread, prime handoff
+    (kickoff + bootstrap). Falls back to execution-only bootstrap if thread creation fails.
+    """
+    pid = int(proposal_id)
+    if not db.agent_approve_proposal(pid, actor_code=actor_code):
+        return False, f"Failed to approve proposal P-{pid}."
+
+    row = db.agent_get_assignment(pid) or {}
+    assignee = str(row.get("assignee_code") or "").strip().lower()
+    if not assignee:
+        return True, f"Proposal P-{pid} approved (queued) but assignee was missing; open the assignment to fix."
+
+    try:
+        tid = create_assignment_thread(
+            db,
+            assignment_id=pid,
+            assignee_code=assignee,
+            reason="proposal_approved",
+            actor_code=actor_code,
+            context_json={"source": "chief_of_staff", "proposal_approved": True},
+        )
+        if tid:
+            prime_assignment_handoff(db, assignment_id=pid, thread_id=int(tid))
+        else:
+            from core.agent_execution import bootstrap_assignment_execution
+
+            bootstrap_assignment_execution(db, assignment_id=pid)
+    except Exception:
+        logger.exception("Proposal approve: thread/handoff failed for P-%s", pid)
+        try:
+            from core.agent_execution import bootstrap_assignment_execution
+
+            bootstrap_assignment_execution(db, assignment_id=pid)
+        except Exception:
+            logger.exception("Proposal approve: bootstrap fallback failed for P-%s", pid)
+
+    ag = db.agent_get(assignee) or {}
+    assignee_label = str(ag.get("display_name") or ag.get("code") or assignee).strip() or assignee
+    return True, f"Proposal P-{pid} approved and routed to {assignee_label}."
+
+
+class ChiefOfStaffService:
+    """GUI-facing helpers for Chief of Staff workflows (e.g. proposal approval from the tab)."""
+
+    def __init__(self, db: DatabaseManager, main_window: object | None = None):
+        self.db = db
+        self.main_window = main_window
+
+    def approve_proposal(self, proposal_id: int) -> str:
+        pid = int(proposal_id)
+        _ok, msg = approve_assignment_proposal(self.db, pid, actor_code="navi")
+        mw = self.main_window
+        if mw is not None and hasattr(mw, "show_toast"):
+            if _ok:
+                try:
+                    mw.show_toast(
+                        f"Assignment A-{pid:04d} approved and routed",
+                        duration_ms=4000,
+                        color="#22C55E",
+                    )
+                except TypeError:
+                    try:
+                        mw.show_toast(f"Proposal P-{pid} approved and routed", duration=4000)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            else:
+                brief = (msg or "Could not approve proposal").strip()
+                try:
+                    mw.show_toast(
+                        f"Approve failed: {brief[:120]}",
+                        duration_ms=6000,
+                        color="#EF4444",
+                    )
+                except TypeError:
+                    try:
+                        mw.show_toast(f"Approve failed: {brief[:120]}", duration=6000)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        return msg
+
+    def reject_proposal(self, proposal_id: int) -> str:
+        pid = int(proposal_id)
+        row = self.db.agent_get_assignment(pid)
+        if not row:
+            return f"Proposal P-{pid} not found."
+        if str(row.get("status") or "").strip().lower() != "proposed":
+            return f"P-{pid} is not a proposed assignment."
+        ok = self.db.agent_update_assignment_status(
+            assignment_id=pid,
+            to_status="cancelled",
+            actor_code="navi",
+            note="Proposal rejected",
+        )
+        if ok:
+            return f"Proposal P-{pid} rejected (cancelled)."
+        return f"Failed to reject proposal P-{pid}."
+
+
+def _parse_task_actions(
+    db: DatabaseManager, response: str, *, chat_id: Optional[int] = None
+) -> CoSTaskActionParseResult:
     """
     Parse action lines from the model response:
     - ADD_TASK: add dashboard tasks
     - ADD_CAL_BLOCK: create Google Calendar events
-    - ASSIGN: create delegation assignments
-    Return cleaned response text with action lines removed.
+    - ASSIGN: create proposed delegation assignments (user approves in Suggested Assignments)
+    Return cleaned user-visible text (action lines removed) plus counts in CoSTaskActionParseResult.
     """
     if not response:
-        return response
+        return CoSTaskActionParseResult(
+            text=response,
+            added_dashboard_tasks=0,
+            ambiguous_priority_pending=False,
+        )
     session_id = f"dashboard_cos_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     added_tasks = 0
     added_tasks_from_assignments = 0
@@ -1676,6 +2264,9 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
     updated_task_estimates = 0
     task_update_failures: list[str] = []
     created_assignments: list[str] = []
+    proposed_assignments: list[str] = []
+    proposal_detail_lines: list[str] = []
+    approved_proposals: list[str] = []
     updated_assignments: list[str] = []
     updated_assignment_priorities: list[str] = []
     updated_assignment_due_dates: list[str] = []
@@ -2043,7 +2634,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 if aid <= 0:
                     continue
                 st = str(row.get("status") or "").strip().lower()
-                if (not include_closed) and st in {"done", "cancelled"}:
+                if (not include_closed) and st in {"done", "cancelled", "proposed"}:
                     skipped_closed += 1
                     continue
                 title = str(row.get("title") or "").strip() or f"Assignment A-{aid:04d}"
@@ -2165,47 +2756,50 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                 logger.warning("CoS ASSIGN failed: unknown agent %r", assignee_name)
                 continue
 
-            context_obj = {"source": "chief_of_staff"}
+            context_obj = {"source": "chief_of_staff", "proposal": True}
             if chat_id is not None:
                 context_obj["cos_chat_id"] = int(chat_id)
             assignee_code = str(agent.get("code") or "").strip().lower()
+            proposal_id: int | None = None
             try:
-                assignment_id = db.agent_create_assignment(
+                proposal_id = db.agent_create_proposed_assignment(
                     title=title,
                     brief_md=brief,
-                    requester_code="navi",
                     assignee_code=assignee_code,
                     priority=priority,
                     due_date=due_date,
-                    status="queued",
+                    proposed_by="navi",
                     context_json=context_obj,
                 )
             except Exception as e:
-                assignment_id = 0
-                logger.warning("CoS ASSIGN create failed: %s", e)
+                proposal_id = None
+                logger.warning("CoS ASSIGN proposal create failed: %s", e)
 
-            if assignment_id:
-                try:
-                    source_thread_id = create_assignment_thread(
-                        db,
-                        assignment_id=int(assignment_id),
-                        assignee_code=assignee_code,
-                        reason="chief_of_staff_assign",
-                        actor_code="navi",
-                        context_json=context_obj,
-                    )
-                    if source_thread_id:
-                        prime_assignment_handoff(
-                            db,
-                            assignment_id=int(assignment_id),
-                            thread_id=int(source_thread_id),
-                        )
-                except Exception as e:
-                    logger.warning("CoS ASSIGN thread prime failed for A-%04d: %s", int(assignment_id), e)
+            if proposal_id:
                 disp = str(agent.get("display_name") or agent.get("code") or assignee_name).strip()
-                created_assignments.append(f"{disp} (A-{int(assignment_id):04d})")
+                proposed_assignments.append(f"{disp} (A-{int(proposal_id):04d})")
+                brief_prev = (brief[:250] + "...") if len(brief) > 250 else brief
+                proposal_detail_lines.append(
+                    f"**{title.strip()}** (A-{int(proposal_id):04d}) — assignee **{disp}**; priority **P{priority}**; "
+                    f"due **{due_date or 'none'}**.\nBrief: {brief_prev}"
+                )
             else:
-                assignment_failures.append(f"failed creating assignment for {assignee_name}")
+                assignment_failures.append(f"failed creating proposal for {assignee_name}")
+            continue
+
+        m_appr = APPROVE_PROPOSAL_PATTERN.match(stripped)
+        if m_appr:
+            payload = (m_appr.group(1) or "").strip()
+            aid = _parse_assignment_ref(payload)
+            if aid is None:
+                assignment_failures.append(f"invalid proposal id '{payload}'")
+                logger.warning("CoS APPROVE_PROPOSAL invalid id: %r", payload)
+                continue
+            ok_apr, apr_msg = approve_assignment_proposal(db, int(aid), actor_code="navi")
+            if ok_apr:
+                approved_proposals.append(f"P-{int(aid)}")
+            else:
+                assignment_failures.append(apr_msg or f"failed approving P-{int(aid)}")
             continue
 
         m_upd = UPDATE_ASSIGNMENT_STATUS_PATTERN.match(stripped)
@@ -2283,7 +2877,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     continue
                 matched_count += 1
                 current_status = str(r.get("status") or "").strip().lower()
-                if bulk_mode == "open" and current_status in {"done", "cancelled"}:
+                if bulk_mode == "open" and current_status in {"done", "cancelled", "proposed"}:
                     skipped_closed += 1
                     continue
                 eligible_count += 1
@@ -2364,7 +2958,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     continue
                 matched_count += 1
                 current_status = str(r.get("status") or "").strip().lower()
-                if bulk_mode == "open" and current_status in {"done", "cancelled"}:
+                if bulk_mode == "open" and current_status in {"done", "cancelled", "proposed"}:
                     skipped_closed += 1
                     continue
                 eligible_count += 1
@@ -2446,7 +3040,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     continue
                 matched_count += 1
                 current_status = str(r.get("status") or "").strip().lower()
-                if bulk_mode == "open" and current_status in {"done", "cancelled"}:
+                if bulk_mode == "open" and current_status in {"done", "cancelled", "proposed"}:
                     skipped_closed += 1
                     continue
                 eligible_count += 1
@@ -2534,7 +3128,7 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
                     continue
                 matched_count += 1
                 current_status = str(r.get("status") or "").strip().lower()
-                if bulk_mode == "open" and current_status in {"done", "cancelled"}:
+                if bulk_mode == "open" and current_status in {"done", "cancelled", "proposed"}:
                     skipped_closed += 1
                     continue
                 eligible_count += 1
@@ -2986,6 +3580,26 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
         action_notes.append(
             f"— *Could not schedule {block_failures} calendar block(s): {reason}.*"
         )
+    if proposal_detail_lines:
+        body = "\n\n".join(proposal_detail_lines[:5])
+        if len(proposal_detail_lines) > 5:
+            body += "\n\n…"
+        action_notes.append(
+            "— *Proposal(s) created for review* — open **Suggested Assignments** to approve or edit:\n\n" + body
+        )
+    elif proposed_assignments:
+        preview = ", ".join(proposed_assignments[:3])
+        more = " ..." if len(proposed_assignments) > 3 else ""
+        action_notes.append(
+            f"— *Created {len(proposed_assignments)} proposal(s) for review: {preview}{more}. "
+            "Review them in **Suggested Assignments** above the delegation board.*"
+        )
+    if approved_proposals:
+        preview = ", ".join(approved_proposals[:5])
+        more = " ..." if len(approved_proposals) > 5 else ""
+        action_notes.append(
+            f"— *Approved {len(approved_proposals)} proposal(s) and routed to agents: {preview}{more}.*"
+        )
     if created_assignments:
         preview = ", ".join(created_assignments[:3])
         more = " ..." if len(created_assignments) > 3 else ""
@@ -3078,4 +3692,13 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
         if out:
             out += "\n\n"
         out += "\n".join(action_notes)
-    return out
+    return CoSTaskActionParseResult(
+        text=out,
+        added_dashboard_tasks=added_tasks,
+        ambiguous_priority_pending=bool(ambiguous_task_priorities),
+    )
+
+
+def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optional[int] = None) -> str:
+    """Parse action lines from the model response; returns visible text only (see _parse_task_actions for stats)."""
+    return _parse_task_actions(db, response, chat_id=chat_id).text

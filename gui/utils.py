@@ -68,6 +68,12 @@ def setup_shortcuts(window: 'ChatWindow') -> None:
     exit_action.triggered.connect(window.close)
     window.addAction(exit_action)
 
+    # Developer / demo: full chain (Deep Research → Workspace → tasks → sample assignment)
+    demo_full_cycle_action = QAction("Demo: Full Cycle", window)
+    demo_full_cycle_action.setShortcut("Ctrl+Shift+D")
+    demo_full_cycle_action.triggered.connect(window.run_demo_full_cycle)
+    window.addAction(demo_full_cycle_action)
+
 def setup_status_bar(window: 'ChatWindow') -> None:
     """Set up status bar with various indicators."""
     window.statusBar = window.statusBar()

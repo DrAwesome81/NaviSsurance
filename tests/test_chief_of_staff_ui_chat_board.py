@@ -413,13 +413,19 @@ def test_cos_assignment_sidebar_uses_grid_layouts_for_dense_actions(qapp, cos_db
     tab = ChiefOfStaffTab(cos_db)
     asg_layout = tab.sidebar_tabs.widget(1).layout()
 
-    assert isinstance(asg_layout.itemAt(1).layout(), QGridLayout)
-    assert isinstance(asg_layout.itemAt(6).layout(), QGridLayout)
-    assert isinstance(asg_layout.itemAt(7).layout(), QGridLayout)
-    assert isinstance(asg_layout.itemAt(8).layout(), QGridLayout)
+    # Delegation Board wraps the dense New / bulk / AM Sweep grid plus filters and table.
+    board_widget = asg_layout.itemAt(1).widget()
+    assert board_widget is not None
+    board_layout = board_widget.layout()
+    assert isinstance(board_layout.itemAt(0).layout(), QGridLayout)
 
-    assert tab.asg_start_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
-    assert tab.asg_bulk_create_tasks_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    # Former vertical assignment-action grids are a compact horizontal toolbar under the board.
+    action_lay = asg_layout.itemAt(2).layout()
+    assert isinstance(action_lay, QHBoxLayout)
+    assert action_lay.count() >= 4
+
+    assert tab.asg_start_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Minimum
+    assert tab.asg_bulk_create_tasks_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Minimum
 
 
 def test_cos_assignment_filters_use_grid_layout_and_scaled_search_height(qapp, cos_db):
@@ -427,7 +433,12 @@ def test_cos_assignment_filters_use_grid_layout_and_scaled_search_height(qapp, c
 
     tab = ChiefOfStaffTab(cos_db)
     asg_layout = tab.sidebar_tabs.widget(1).layout()
-    filters_layout = asg_layout.itemAt(2).layout()
+    board_widget = asg_layout.itemAt(1).widget()
+    board_layout = board_widget.layout()
+    filter_row = board_layout.itemAt(1).layout()
+    assert isinstance(filter_row, QHBoxLayout)
+    filter_host = filter_row.itemAt(1).widget()
+    filters_layout = filter_host.layout()
 
     assert isinstance(filters_layout, QGridLayout)
     assert filters_layout.itemAtPosition(0, 0).widget() is tab.assignment_scope_filter

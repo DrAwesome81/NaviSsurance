@@ -11,6 +11,7 @@ data/
 logs/
 models/
 .vscode/
+!.vscode/settings.json
 codebase_export.txt
 *.jsonl
 COMMIT_MESSAGE.txt

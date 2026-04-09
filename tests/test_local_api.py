@@ -35,9 +35,17 @@ def client(db, monkeypatch):
 def test_local_api_health_and_tools(client):
     health = client.get("/health")
     assert health.status_code == 200
-    assert health.json()["ok"] is True
-    assert "capabilities" in health.json()
-    assert "browser_tools" in health.json()["capabilities"]
+    body = health.json()
+    assert body["ok"] is True
+    assert "capabilities" in body
+    caps = body["capabilities"]
+    assert "browser_tools" in caps
+    assert "runtime_scheduler" in caps
+    assert "local_api_host" in caps
+    assert "telegram_bot" in caps
+    for key in ("runtime_scheduler", "local_api_host", "browser_tools", "telegram_bot"):
+        assert "available" in caps[key]
+        assert "reason" in caps[key]
 
     tools = client.get("/tools")
     assert tools.status_code == 200
@@ -121,6 +129,27 @@ def test_local_api_jobs_round_trip(client, db, monkeypatch):
     filtered = client.get("/jobs", params={"status": "queued"})
     assert filtered.status_code == 200
     assert len(filtered.json()["jobs"]) == 1
+
+
+def test_local_api_jobs_list_completed_excludes_from_queued(client, db):
+    job_id = db.runtime_job_enqueue(job_type="daily_briefing_refresh", payload_json={"probe": True})
+    claimed = db.runtime_job_claim_due(runner_id="pytest_manual", lease_seconds=120)
+    assert claimed is not None
+    db.runtime_job_complete(
+        job_id=job_id,
+        run_id=int(claimed["run_id"]),
+        result_json={"ok": True},
+    )
+
+    done = client.get("/jobs", params={"status": "completed"})
+    assert done.status_code == 200
+    ids_done = {int(r["id"]) for r in done.json()["jobs"]}
+    assert job_id in ids_done
+
+    queued = client.get("/jobs", params={"status": "queued"})
+    assert queued.status_code == 200
+    ids_q = {int(r["id"]) for r in queued.json()["jobs"]}
+    assert job_id not in ids_q
 
 
 def test_local_api_invoke_tool_returns_model_dump(client, monkeypatch):

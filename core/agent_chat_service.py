@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Iterable
+from typing import Callable, Iterable, Optional
 
 from core.agent_execution import bootstrap_assignment_execution
 from core.agent_memory import (
@@ -12,10 +12,32 @@ from core.agent_memory import (
     build_assignment_memory_context,
 )
 from core.db import DatabaseManager
-from core.grok_client import MODEL_FAST, grok_available, grok_completion_messages
+from core.grok_client import (
+    MODEL_FAST,
+    format_grok_user_facing_error,
+    grok_available,
+    grok_completion_messages,
+)
 from core.user_memory import build_user_memory_context, default_user_memory_llm, store_teach_memory
 
 logger = logging.getLogger(__name__)
+
+# Optional GUI hook: (assignment_id, assistant_plain_text) — set from ChatWindow.
+_agent_reply_toast_cb: Optional[Callable[[Optional[int], str], None]] = None
+# Optional GUI hook: Grok completion failure (plain text for toast) — set from MainWindow.
+_agent_grok_failure_toast_cb: Optional[Callable[[str], None]] = None
+
+
+def set_agent_reply_toast_callback(
+    fn: Optional[Callable[[Optional[int], str], None]],
+) -> None:
+    global _agent_reply_toast_cb
+    _agent_reply_toast_cb = fn
+
+
+def set_agent_grok_failure_toast_callback(fn: Optional[Callable[[str], None]]) -> None:
+    global _agent_grok_failure_toast_cb
+    _agent_grok_failure_toast_cb = fn
 
 
 _AGENT_SYSTEM_PROMPTS: dict[str, str] = {
@@ -428,8 +450,20 @@ def agent_chat_response(
     try:
         out = grok_completion_messages(messages, model=MODEL_FAST)
     except Exception as e:
-        logger.exception("agent_chat_response failed for %s: %s", code, e)
-        return f"Error: {e}"
+        logger.error(
+            "Grok completion failed in agent_chat_response for %s: %s",
+            code,
+            e,
+            exc_info=True,
+        )
+        user_msg = format_grok_user_facing_error(e)
+        fn = _agent_grok_failure_toast_cb
+        if fn:
+            try:
+                fn(f"❌ Grok failed: {user_msg[:120]}")
+            except Exception:
+                pass
+        return f"❌ {user_msg}"
 
     out = (out or "").strip()
     if not out:
@@ -472,6 +506,13 @@ def agent_chat_response(
             db.agent_touch_thread(int(thread_id), bump_last_message=True)
         except Exception:
             pass
+
+    cb = _agent_reply_toast_cb
+    if cb is not None and assignment_id is not None:
+        try:
+            cb(int(assignment_id), out)
+        except Exception:
+            logger.debug("agent reply toast callback failed", exc_info=True)
 
     return out
 

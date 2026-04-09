@@ -64,21 +64,25 @@
 
 ## Performance / Efficiency
 
-- [ ] Optional performance pass:
-  - reduce CoS task-capture latency (observed ~20-30s for a single task)
-  - reduce duplicate LLM calls
-  - add context windowing/summarization
-  - tune token caps
+- [x] Optional performance pass:
+  - CoS / AM Sweep: configurable context budget with ordered shrinking (memory → emails → prefs → calendar → assignments → tasks)
+  - per-block caps (preferences, calendar, memory retrieval, email list, task/assignment line counts)
+  - multi-turn history windowing (`max_messages` + `max_chars_per_message` from app preferences)
+  - Grok `max_tokens` caps for CoS replies and for the memory-extraction pass
+  - Settings → App preferences: “Chief of Staff — performance” controls (+ legacy env migration in `core/app_preferences.migrate_legacy_env_preferences`)
+  - further latency wins (e.g. skipping redundant tool rounds) remain opportunistic / environment-dependent
 
 ## Runtime / Integration Hardening
 
-- [ ] Remaining runtime validation:
-  - repeat end-to-end validation with any production-style deployment settings you decide to keep enabled by default
+- [x] Remaining runtime validation:
+  - production-style checklist in `docs/runtime_operator.md` (restart, job queue, billing drain, local API, clean shutdown)
+  - startup logs in `main.py` when runtime is disabled vs started (includes poll interval)
 
-- [ ] Runtime follow-through:
-  - move more ad hoc timer/background flows onto the shared runtime where it improves consistency
-  - broaden automated coverage for runtime jobs, browser tools, and local API surfaces
-  - add clearer operator-facing setup guidance for env-gated integrations
+- [x] Runtime follow-through:
+  - GUI billing tick always drains `process_due_jobs()` when using the runtime path; monthly guard applies only to the review dialog (`gui/interface.py`)
+  - local API: `GET /jobs` status filter covered in tests (`tests/test_local_api.py`)
+  - operator docs: Settings vs `config/.env`, legacy env seeding, and validation checklist (`docs/runtime_operator.md`); `docs/api.md` links to same
+  - restored `.vscode/settings.json` for pytest discovery
 
 ## Workspace / Execution Verification
 
@@ -116,6 +120,49 @@
 - [x] Completed Chief of Staff UX polish for preferences, priority handling, scroll behavior, sizing, and host-shell layout
 - [x] Added optional runtime scheduler, local API, browser tool registry, entity-linked memory scaffolding, and Telegram integration scaffolding
 - [x] Installed and validated APScheduler, local API startup, Playwright browser tooling, and runtime/job execution on the current workstation
+- [x] Runtime operator guide: `docs/runtime_operator.md` (env flags, recurring jobs, health check); linked from `docs/api.md` and `docs/roadmap_status.md`
+- [x] Billing autorun GUI: when the shared runtime scheduler is running, enqueue stays on the runtime; GUI tick drains jobs and prompts on a 30-minute cadence (fallback path unchanged)
+- [x] Tests: `runtime_scheduler_status` when `NAVI_RUNTIME_ENABLED=0`; `execute_runtime_job` for `billing_autorun` (due vs not-due)
+- [x] Chief of Staff performance pass: shared context budget, per-block caps, multi-turn history limits, Grok output caps, AM Sweep email context cap (Settings + optional env migration)
+- [x] Runtime hardening closeout: GUI job drain fix, startup logging, operator docs (Settings vs `.env`), local API job-list test, pytest VS Code settings
+
+## Planned: Client Dossier / Client Memory
+
+**Priority:** Medium–High · **Status:** Not implemented yet
+
+- [ ] **Client Dossier / Client Memory function:** centralized, rich memory and workspace per client.
+
+**Description:** A dedicated Client Dossier acts as the single place for everything tied to a client—memory, work, documents, and activity—instead of hunting across assignments, memory, notes, and workspace.
+
+**What it should include:**
+
+- A new **Clients** tab (or section in Chief of Staff / Library).
+- For each client, a unified view with:
+  - Key facts and preferences from global + entity-linked memory.
+  - Active and past assignments for this client.
+  - Linked projects and tasks.
+  - Important documents / artifacts (Workspace, Deep Research, Notes, etc.).
+  - Recent activity and memory entries, with a path to teach client-specific knowledge.
+  - Quick actions: **New Assignment**, **New Note**, **Add to Memory**, **View Full History**.
+
+**Goals:**
+
+- One source of truth when working with a client.
+- Automatically surface relevant client context when CoS or agents work on related tasks.
+- Easy teaching of client-specific preferences, style, history, and constraints.
+
+**Technical notes:**
+
+- Leverage existing entity-aware memory infrastructure.
+- Extend `user_memory` and agent memory with stronger client scoping.
+- New `clients` table (or enhance existing) with rich profile fields.
+- UI: clean, dashboard-like, similar to the current Assignment board.
+
+**Acceptance criteria:**
+
+- Selecting a client shows a coherent dossier view.
+- CoS and sub-agents can pull relevant client memory/context automatically.
+- User can add/teach client-specific information that persists and surfaces later.
 
 ## Intentionally Manual / Not Targeted for Deterministic Automation
 

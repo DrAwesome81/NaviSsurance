@@ -146,6 +146,7 @@ def test_on_generate_brief_project_not_found_warns(monkeypatch, projects_tab):
 def test_on_pipeline_finished_enables_continue_for_review_state(projects_tab):
     pid = 3
     projects_tab.db.projects[pid] = (pid, "Proj", "web_only", STATUS_AWAITING_RESEARCH_REVIEW, "", None)
+    projects_tab.auto_generate_checkbox.setChecked(False)
     projects_tab.on_pipeline_finished(pid)
 
     assert projects_tab._current_project_id == pid

@@ -12,7 +12,14 @@ from gui.interface import ChatWindow, EnhancedSplashScreen
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor
 
 # Import centralized paths
-from config import LOCAL_API_ENABLED, LOGS_DIR, RUNTIME_ENABLED, TELEGRAM_BOT_ENABLED
+from config import LOGS_DIR, TELEGRAM_BOT_TOKEN
+from core.app_preferences import (
+    get_runtime_poll_interval_s,
+    is_local_api_enabled,
+    is_runtime_enabled,
+    is_telegram_bot_feature_enabled,
+    migrate_legacy_env_preferences,
+)
 
 # Create logs directory if it doesn't exist
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -81,6 +88,10 @@ if __name__ == "__main__":
                 except Exception:
                     pass
             logger.info("ChatWindow created successfully")
+            try:
+                migrate_legacy_env_preferences(chatWindow.db)
+            except Exception as e:
+                logger.warning("Preference migration skipped: %s", e)
             splash.update_progress(80, "Main window ready", "ChatWindow created successfully")
         except Exception as e:
             logger.error(f"Error creating ChatWindow: {e}", exc_info=True)
@@ -91,23 +102,36 @@ if __name__ == "__main__":
         runtime_service = None
         local_api_service = None
         telegram_bot_service = None
-        if RUNTIME_ENABLED:
+        _db = getattr(chatWindow, "db", None)
+        if is_runtime_enabled(_db):
             try:
                 from core.runtime.service import get_runtime_service
 
-                runtime_service = get_runtime_service(db=getattr(chatWindow, "db", None))
-                runtime_service.start()
+                runtime_service = get_runtime_service(db=_db)
+                if runtime_service.start():
+                    try:
+                        poll_s = max(5, int(get_runtime_poll_interval_s(_db)))
+                    except Exception:
+                        poll_s = 30
+                    logger.info("Runtime service started (job poll interval %ss).", poll_s)
             except Exception as e:
                 logger.warning(f"Runtime service failed to start: {e}")
-        if LOCAL_API_ENABLED:
+        else:
+            logger.info("Background runtime scheduler disabled in App preferences; recurring jobs are not auto-enqueued by the worker.")
+        if is_local_api_enabled(_db):
             try:
                 from core.service.local_api import get_local_api_service
 
-                local_api_service = get_local_api_service()
+                local_api_service = get_local_api_service(db=_db)
                 local_api_service.start()
+                logger.info("Local HTTP API started (see Settings → App preferences for host/port).")
             except Exception as e:
                 logger.warning(f"Local API failed to start: {e}")
-        if TELEGRAM_BOT_ENABLED and LOCAL_API_ENABLED:
+        if (
+            is_telegram_bot_feature_enabled(_db)
+            and is_local_api_enabled(_db)
+            and bool(str(TELEGRAM_BOT_TOKEN or "").strip())
+        ):
             try:
                 from core.channels.telegram_bot import get_telegram_bot_service
 

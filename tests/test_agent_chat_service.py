@@ -187,6 +187,36 @@ def test_agent_chat_response_empty_output_uses_fallback(monkeypatch):
     assert "no output right now" in out.lower()
 
 
+def test_agent_chat_response_grok_transient_error_user_message(monkeypatch):
+    monkeypatch.setattr(svc, "grok_available", lambda: (True, "ok"))
+
+    def _boom(_messages, model):
+        raise RuntimeError('StatusCode.INTERNAL "Service temporarily unavailable."')
+
+    monkeypatch.setattr(svc, "grok_completion_messages", _boom)
+    out = svc.agent_chat_response(_DbStub(), agent_code="atlas", user_message="hello")
+    assert "❌" in out
+    assert "temporarily unavailable" in out.lower()
+
+
+def test_agent_chat_response_grok_error_invokes_failure_toast_callback(monkeypatch):
+    monkeypatch.setattr(svc, "grok_available", lambda: (True, "ok"))
+    toasts: list[str] = []
+
+    def _boom(_messages, model):
+        raise RuntimeError("quota exceeded")
+
+    monkeypatch.setattr(svc, "grok_completion_messages", _boom)
+    svc.set_agent_grok_failure_toast_callback(lambda m: toasts.append(m))
+    try:
+        out = svc.agent_chat_response(_DbStub(), agent_code="atlas", user_message="hello")
+    finally:
+        svc.set_agent_grok_failure_toast_callback(None)
+    assert "❌" in out
+    assert len(toasts) == 1
+    assert toasts[0].startswith("❌ Grok failed:")
+
+
 def test_agent_chat_response_includes_runtime_context(monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(svc, "grok_available", lambda: (True, "ok"))

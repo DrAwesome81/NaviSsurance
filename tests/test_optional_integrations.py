@@ -39,8 +39,8 @@ def test_runtime_and_local_api_status_report_disabled(monkeypatch):
     import core.runtime.service as runtime_service
     import core.service.local_api as local_api
 
-    monkeypatch.setattr(runtime_service, "RUNTIME_ENABLED", False)
-    monkeypatch.setattr(local_api, "LOCAL_API_ENABLED", False)
+    monkeypatch.setattr(runtime_service, "is_runtime_enabled", lambda db=None: False)
+    monkeypatch.setattr(local_api, "is_local_api_enabled", lambda db=None: False)
 
-    assert runtime_service.runtime_scheduler_status() == (False, "Disabled via NAVI_RUNTIME_ENABLED=0.")
-    assert local_api.local_api_status() == (False, "Disabled via NAVI_LOCAL_API_ENABLED=0.")
+    assert runtime_service.runtime_scheduler_status() == (False, "Disabled in Settings (runtime scheduler).")
+    assert local_api.local_api_status() == (False, "Disabled in Settings (local API).")

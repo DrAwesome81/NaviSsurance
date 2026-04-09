@@ -65,6 +65,7 @@ These are not part of the current NaviSsurance core roadmap and should be treate
 
 ## Canonical references
 - `TODO.md`: operational backlog and remaining work
+- `docs/runtime_operator.md`: env flags, recurring jobs, and local API verification
 - `docs/overview.md`: current product baseline
 - `docs/design.md`: architecture baseline
 - `docs/api.md`: local API plus third-party integrations

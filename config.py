@@ -23,39 +23,18 @@ LOCAL_LLM_MODEL_PATH = os.path.join(
     "Qwen3-14B-Q5_K_M.gguf",
 )
 LOCAL_LLM_CHAT_TEMPLATE = "chatml"
-LOCAL_LLM_GPU_LAYERS = int(os.getenv("LOCAL_LLM_GPU_LAYERS", "33"))
-LOCAL_LLM_CTX_SIZE = int(os.getenv("LOCAL_LLM_CTX_SIZE", "8192"))
-LOCAL_LLM_TIMEOUT_S = int(os.getenv("LOCAL_LLM_TIMEOUT_S", "180"))
 
-# Load environment variables from config folder
+# Load environment variables from config folder (secrets only — keys, tokens, passwords).
 load_dotenv(ENV_FILE)
-
-
-def _env_flag(name: str, default: str = "0") -> bool:
-    return str(os.getenv(name, default)).strip().lower() in ("1", "true", "yes", "y", "on")
 
 # Deepseek usage removed - now using Llama model directly via llama_cpp
 USE_DEEPSEEK = False
 
-# Runtime / service configuration
-RUNTIME_ENABLED = _env_flag("NAVI_RUNTIME_ENABLED", "1")
-RUNTIME_POLL_INTERVAL_S = max(5, int(os.getenv("NAVI_RUNTIME_POLL_INTERVAL_S", "30")))
-RUNTIME_JOB_LEASE_S = max(30, int(os.getenv("NAVI_RUNTIME_JOB_LEASE_S", "300")))
-LOCAL_API_ENABLED = _env_flag("NAVI_LOCAL_API_ENABLED", "0")
-LOCAL_API_HOST = str(os.getenv("NAVI_LOCAL_API_HOST", "127.0.0.1")).strip() or "127.0.0.1"
-LOCAL_API_PORT = int(os.getenv("NAVI_LOCAL_API_PORT", "8765"))
-LOCAL_API_LOG_LEVEL = str(os.getenv("NAVI_LOCAL_API_LOG_LEVEL", "warning")).strip() or "warning"
-TELEGRAM_BOT_ENABLED = _env_flag("NAVI_TELEGRAM_BOT_ENABLED", "0")
+# Telegram bot token (secret only). Enable/disable and allowlist are in Settings → App preferences.
 TELEGRAM_BOT_TOKEN = str(os.getenv("NAVI_TELEGRAM_BOT_TOKEN", "")).strip()
-TELEGRAM_ALLOWED_CHAT_IDS = [
-    item.strip()
-    for item in str(os.getenv("NAVI_TELEGRAM_ALLOWED_CHAT_IDS", "")).split(",")
-    if item.strip()
-]
 
-# Daily briefing and email checking (Gmail/Outlook/Yahoo fetch)
-# Default is enabled; set BRIEFING_AND_EMAIL_DISABLED=1 to disable without code edits.
-BRIEFING_AND_EMAIL_DISABLED = str(os.getenv("BRIEFING_AND_EMAIL_DISABLED", "0")).strip().lower() in ("1", "true", "yes", "y")
+# Non-secret runtime, local API, CoS, briefing, and local-LLM tuning live in SQLite via
+# core.app_preferences (edited from the in-app Settings dialog).
 
 API_KEY = os.getenv('GROK_API_KEY')
 if API_KEY is None:

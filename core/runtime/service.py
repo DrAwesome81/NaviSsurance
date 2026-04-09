@@ -6,7 +6,11 @@ import threading
 from functools import lru_cache
 from datetime import datetime, UTC
 
-from config import RUNTIME_ENABLED, RUNTIME_JOB_LEASE_S, RUNTIME_POLL_INTERVAL_S
+from core.app_preferences import (
+    get_runtime_job_lease_s,
+    get_runtime_poll_interval_s,
+    is_runtime_enabled,
+)
 from core.db import DatabaseManager
 from core.runtime.jobs import (
     enqueue_assignment_followup_scan,
@@ -29,9 +33,9 @@ def runtime_scheduler_available() -> tuple[bool, str]:
     return True, "available"
 
 
-def runtime_scheduler_status() -> tuple[bool, str]:
-    if not bool(RUNTIME_ENABLED):
-        return False, "Disabled via NAVI_RUNTIME_ENABLED=0."
+def runtime_scheduler_status(db: DatabaseManager | None = None) -> tuple[bool, str]:
+    if not bool(is_runtime_enabled(db)):
+        return False, "Disabled in Settings (runtime scheduler)."
     return runtime_scheduler_available()
 
 
@@ -53,7 +57,7 @@ class RuntimeService:
         self._scheduler.add_job(
             self.process_due_jobs,
             "interval",
-            seconds=max(5, int(RUNTIME_POLL_INTERVAL_S)),
+            seconds=max(5, int(get_runtime_poll_interval_s(self.db))),
             id="runtime_process_due_jobs",
             replace_existing=True,
             coalesce=True,
@@ -98,7 +102,7 @@ class RuntimeService:
             while True:
                 claimed = self.db.runtime_job_claim_due(
                     runner_id=self.runner_id,
-                    lease_seconds=RUNTIME_JOB_LEASE_S,
+                    lease_seconds=get_runtime_job_lease_s(self.db),
                 )
                 if not claimed:
                     break

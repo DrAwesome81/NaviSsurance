@@ -8,7 +8,7 @@ Uses xai_sdk.Client for chat and optional web_search tool for live search.
 import logging
 import os
 import time
-from typing import List, Optional
+from typing import List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,76 @@ def grok_available() -> tuple:
     return True, ""
 
 
+_TRANSIENT_GROK_MARKERS: tuple[str, ...] = (
+    "service temporarily unavailable",
+    "statuscode.internal",
+    "statuscode.unavailable",
+    "deadline exceeded",
+    "deadline_exceeded",
+    "resource exhausted",
+    "dns resolution failed",
+    "no such host is known",
+    "socket is null",
+)
+
+
+def is_transient_grok_error(exc: BaseException) -> bool:
+    """True when the exception string matches known flaky gRPC/network patterns."""
+    error_str = str(exc).lower()
+    return any(marker in error_str for marker in _TRANSIENT_GROK_MARKERS)
+
+
+def format_grok_user_facing_error(exc: BaseException) -> str:
+    """
+    Map common gRPC/xAI failures to a short user-visible message.
+    Used by agent chat and Chief of Staff when Grok raises after logging.
+    """
+    err_str = str(exc).lower()
+    if "deadline exceeded" in err_str or "deadline_exceeded" in err_str:
+        return "Request timed out. Try a shorter prompt or try again."
+    if "resource_exhausted" in err_str or "resource exhausted" in err_str:
+        return "Rate limit or quota reached. Check your xAI credits."
+    if (
+        "service temporarily unavailable" in err_str
+        or "internal" in err_str
+        or is_transient_grok_error(exc)
+    ):
+        return (
+            "xAI/Grok service is temporarily unavailable. Please wait 1–2 minutes and try again."
+        )
+    msg = str(exc).strip()
+    tail = msg[:150] if len(msg) > 150 else msg
+    return f"Grok error: {tail}"
+
+
+def is_user_facing_llm_failure_message(text: str | None) -> bool:
+    """
+    True when `text` is a standardized failure reply (not normal model prose).
+    Used by GUI workers to route to error handling / avoid success notifications.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    tl = t.lstrip().lower()
+    if t.startswith("Failed to process request:"):
+        return True
+    if t.startswith("Could not complete the request"):
+        return True
+    if t.startswith("Grok error:"):
+        return True
+    if "xai/grok service is temporarily unavailable" in tl:
+        return True
+    if tl.startswith("request timed out"):
+        return True
+    if "rate limit or quota reached" in tl:
+        return True
+    if tl.startswith("error:") or tl.startswith("error "):
+        return True
+    if t.lstrip().startswith("❌"):
+        return True
+    return False
+
+
 def _get_client():
     """Lazy singleton Client. Requires xai_sdk."""
     from xai_sdk import Client
@@ -45,11 +115,21 @@ def _get_client():
     return Client(api_key=key, timeout=300)
 
 
+def _grok_completion_max_attempts() -> int:
+    raw = (os.getenv("GROK_COMPLETION_MAX_ATTEMPTS") or "3").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 3
+    return max(1, min(n, 8))
+
+
 def grok_completion(
     system: str,
     user: str,
     model: str = MODEL_CHAT,
     store: bool = False,
+    max_tokens: Optional[int] = None,
 ) -> str:
     """
     Single turn: system + user message, return assistant content.
@@ -67,24 +147,47 @@ def grok_completion(
         logger.warning("Grok API key not available")
         return ""
 
-    try:
-        client = Client(api_key=key, timeout=300)
-        chat = client.chat.create(
-            model=model,
-            messages=[sys_msg(system), user_msg(user)],
-            store_messages=store,
-        )
-        response = chat.sample()
-        return (response.content or "").strip()
-    except Exception as e:
-        logger.exception("Grok completion failed: %s", e)
-        raise
+    create_kw: dict[str, Any] = {
+        "model": model,
+        "messages": [sys_msg(system), user_msg(user)],
+        "store_messages": store,
+    }
+    if max_tokens is not None:
+        create_kw["max_tokens"] = int(max_tokens)
+
+    attempts = _grok_completion_max_attempts()
+    last_err: BaseException | None = None
+    for attempt in range(attempts):
+        try:
+            client = Client(api_key=key, timeout=300)
+            chat = client.chat.create(**create_kw)
+            response = chat.sample()
+            return (response.content or "").strip()
+        except Exception as e:
+            last_err = e
+            if attempt < attempts - 1 and is_transient_grok_error(e):
+                sleep_s = 1.5 * (2**attempt)
+                logger.warning(
+                    "Grok completion transient failure; retrying in %.1fs (%s/%s): %s",
+                    sleep_s,
+                    attempt + 1,
+                    attempts,
+                    e,
+                )
+                time.sleep(sleep_s)
+                continue
+            logger.exception("Grok completion failed: %s", e)
+            raise
+    if last_err:
+        raise last_err
+    return ""
 
 
 def grok_completion_messages(
     messages: List[dict],
     model: str = MODEL_CHAT,
     store: bool = False,
+    max_tokens: Optional[int] = None,
 ) -> str:
     """
     Multi-message turn. messages = [{"role": "system", "content": "..."}, ...].
@@ -102,26 +205,49 @@ def grok_completion_messages(
         logger.warning("Grok API key not available")
         return ""
 
-    try:
-        from xai_sdk.chat import assistant as assistant_msg
-        client = Client(api_key=key, timeout=300)
-        chat = client.chat.create(model=model, store_messages=store)
-        for m in messages:
-            role = (m.get("role") or "").strip().lower()
-            content = (m.get("content") or "").strip()
-            if not content:
+    from xai_sdk.chat import assistant as assistant_msg
+
+    create_kw: dict[str, Any] = {"model": model, "store_messages": store}
+    if max_tokens is not None:
+        create_kw["max_tokens"] = int(max_tokens)
+
+    attempts = _grok_completion_max_attempts()
+    last_err: BaseException | None = None
+    for attempt in range(attempts):
+        try:
+            client = Client(api_key=key, timeout=300)
+            chat = client.chat.create(**create_kw)
+            for m in messages:
+                role = (m.get("role") or "").strip().lower()
+                content = (m.get("content") or "").strip()
+                if not content:
+                    continue
+                if role == "system":
+                    chat.append(sys_msg(content))
+                elif role == "user":
+                    chat.append(user_msg(content))
+                elif role == "assistant":
+                    chat.append(assistant_msg(content))
+            response = chat.sample()
+            return (response.content or "").strip()
+        except Exception as e:
+            last_err = e
+            if attempt < attempts - 1 and is_transient_grok_error(e):
+                sleep_s = 1.5 * (2**attempt)
+                logger.warning(
+                    "Grok completion (messages) transient failure; retrying in %.1fs (%s/%s): %s",
+                    sleep_s,
+                    attempt + 1,
+                    attempts,
+                    e,
+                )
+                time.sleep(sleep_s)
                 continue
-            if role == "system":
-                chat.append(sys_msg(content))
-            elif role == "user":
-                chat.append(user_msg(content))
-            elif role == "assistant":
-                chat.append(assistant_msg(content))
-        response = chat.sample()
-        return (response.content or "").strip()
-    except Exception as e:
-        logger.exception("Grok completion (messages) failed: %s", e)
-        raise
+            logger.exception("Grok completion (messages) failed: %s", e)
+            raise
+    if last_err:
+        raise last_err
+    return ""
 
 
 def grok_web_search(

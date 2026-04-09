@@ -4,13 +4,11 @@ import re
 import subprocess
 from typing import Iterable
 
-from config import (
-    LOCAL_LLM_CHAT_TEMPLATE,
-    LOCAL_LLM_CLI_PATH,
-    LOCAL_LLM_CTX_SIZE,
-    LOCAL_LLM_GPU_LAYERS,
-    LOCAL_LLM_MODEL_PATH,
-    LOCAL_LLM_TIMEOUT_S,
+from config import LOCAL_LLM_CHAT_TEMPLATE, LOCAL_LLM_CLI_PATH, LOCAL_LLM_MODEL_PATH
+from core.app_preferences import (
+    get_local_llm_ctx_size,
+    get_local_llm_gpu_layers,
+    get_local_llm_timeout_s,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,7 +70,7 @@ def session_profile(session_id: str | None) -> dict[str, int | str]:
     profile = _SESSION_PROFILES.get(sid)
     if profile:
         return dict(profile)
-    return {"class": "local_fast", "max_tokens": 500, "timeout_s": LOCAL_LLM_TIMEOUT_S}
+    return {"class": "local_fast", "max_tokens": 500, "timeout_s": get_local_llm_timeout_s()}
 
 
 def verify_local_runtime() -> None:
@@ -130,7 +128,7 @@ def build_local_prompt(messages: Iterable[dict] | None, session_id: str | None) 
 def run_local_completion(messages: Iterable[dict] | None, session_id: str | None) -> str:
     verify_local_runtime()
     profile = session_profile(session_id)
-    timeout_s = int(profile.get("timeout_s", LOCAL_LLM_TIMEOUT_S))
+    timeout_s = int(profile.get("timeout_s", get_local_llm_timeout_s()))
     prompt = build_local_prompt(messages, session_id)
     command = [
         LOCAL_LLM_CLI_PATH,
@@ -143,9 +141,9 @@ def run_local_completion(messages: Iterable[dict] | None, session_id: str | None
         "--device",
         "CUDA0",
         "--gpu-layers",
-        str(LOCAL_LLM_GPU_LAYERS),
+        str(get_local_llm_gpu_layers()),
         "--ctx-size",
-        str(LOCAL_LLM_CTX_SIZE),
+        str(get_local_llm_ctx_size()),
         "--simple-io",
         "--single-turn",
         "--reasoning-budget",

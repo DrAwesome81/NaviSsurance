@@ -9,6 +9,7 @@ import time
 
 # Import centralized database path
 from config import DATABASE_PATH
+from core.db import bump_task_due_date_mmddyyyy
 
 class NewsWorker(QThread):
     """Worker thread for loading news without blocking the UI."""
@@ -190,13 +191,14 @@ class DashboardTab(QWidget):
 
         # Briefing/email mode
         try:
-            from config import BRIEFING_AND_EMAIL_DISABLED
+            from core.app_preferences import is_briefing_and_email_disabled
 
+            off = bool(is_briefing_and_email_disabled(self.db))
             items.append(
                 (
                     "Briefing/email",
-                    not bool(BRIEFING_AND_EMAIL_DISABLED),
-                    "Enabled" if not bool(BRIEFING_AND_EMAIL_DISABLED) else "Disabled via BRIEFING_AND_EMAIL_DISABLED=1",
+                    not off,
+                    "Disabled in Settings" if off else "Enabled",
                 )
             )
         except Exception:
@@ -381,10 +383,12 @@ class DashboardTab(QWidget):
         if skip_briefing:
             return
         try:
-            from config import BRIEFING_AND_EMAIL_DISABLED
-        except ImportError:
-            BRIEFING_AND_EMAIL_DISABLED = False
-        if not BRIEFING_AND_EMAIL_DISABLED:
+            from core.app_preferences import is_briefing_and_email_disabled
+
+            briefing_off = bool(is_briefing_and_email_disabled(self.db))
+        except Exception:
+            briefing_off = False
+        if not briefing_off:
             QTimer.singleShot(2000, self.load_daily_briefing)
         else:
             QTimer.singleShot(500, self._show_briefing_disabled)
@@ -503,10 +507,12 @@ class DashboardTab(QWidget):
         Returns True when briefing is available (cached or generated), False otherwise.
         """
         try:
-            from config import BRIEFING_AND_EMAIL_DISABLED
-        except ImportError:
-            BRIEFING_AND_EMAIL_DISABLED = False
-        if BRIEFING_AND_EMAIL_DISABLED:
+            from core.app_preferences import is_briefing_and_email_disabled
+
+            briefing_off = bool(is_briefing_and_email_disabled(self.db))
+        except Exception:
+            briefing_off = False
+        if briefing_off:
             self._show_briefing_disabled()
             return False
 
@@ -857,8 +863,9 @@ class DashboardTab(QWidget):
             edit_btn.clicked.connect(lambda checked, r=row_position, tid=task_id: self.edit_task(r, tid))
             actions_layout.addWidget(edit_btn)
 
-            # Snooze button (1 day)
-            snooze_btn = QPushButton("Snooze")
+            # Move due date forward by one day (clears hide-until snooze)
+            snooze_btn = QPushButton("Due +1d")
+            snooze_btn.setToolTip("Move the due date forward by one day (clears snooze hide).")
             snooze_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             snooze_btn.setMinimumSize(60, 35)
             snooze_btn.setMaximumSize(90, 45)
@@ -878,14 +885,18 @@ class DashboardTab(QWidget):
                     background-color: #4a4a4e;
                 }
             """)
+
             def _snooze_one_day():
                 try:
-                    from datetime import timedelta
-                    d = (datetime.now() + timedelta(days=1)).strftime("%m-%d-%Y")
-                    self.db.update_task_by_id(int(task_id), snoozed_until=d)
+                    cur_due = due_date
+                    new_due = bump_task_due_date_mmddyyyy(cur_due, days=1)
+                    self.db.update_task_by_id(
+                        int(task_id), due_date=new_due, snoozed_until=None
+                    )
                     self.load_tasks_filtered()
                 except Exception:
                     return
+
             snooze_btn.clicked.connect(_snooze_one_day)
             actions_layout.addWidget(snooze_btn)
 
@@ -1376,27 +1387,34 @@ class DashboardTab(QWidget):
         edit_action.triggered.connect(lambda: self.edit_task(row, 0))
         context_menu.addAction(edit_action)
 
-        # Snooze actions
-        from datetime import timedelta
-        try:
-            today = datetime.now()
-            snooze_1 = (today + timedelta(days=1)).strftime("%m-%d-%Y")
-            snooze_3 = (today + timedelta(days=3)).strftime("%m-%d-%Y")
-        except Exception:
-            snooze_1, snooze_3 = None, None
+        # Push due date forward (same as Due +1d / +3d on the row)
+        due_raw = str(task_widget.task_data.get("due_date") or "").strip()
 
-        if snooze_1:
-            snooze1_action = QAction("Snooze 1 day", self)
-            snooze1_action.triggered.connect(
-                lambda: (self.db.update_task_by_id(task_id, snoozed_until=snooze_1), self.load_tasks_filtered())
+        snooze1_action = QAction("Due date +1 day", self)
+        snooze1_action.triggered.connect(
+            lambda: (
+                self.db.update_task_by_id(
+                    task_id,
+                    due_date=bump_task_due_date_mmddyyyy(due_raw, days=1),
+                    snoozed_until=None,
+                ),
+                self.load_tasks_filtered(),
             )
-            context_menu.addAction(snooze1_action)
-        if snooze_3:
-            snooze3_action = QAction("Snooze 3 days", self)
-            snooze3_action.triggered.connect(
-                lambda: (self.db.update_task_by_id(task_id, snoozed_until=snooze_3), self.load_tasks_filtered())
+        )
+        context_menu.addAction(snooze1_action)
+
+        snooze3_action = QAction("Due date +3 days", self)
+        snooze3_action.triggered.connect(
+            lambda: (
+                self.db.update_task_by_id(
+                    task_id,
+                    due_date=bump_task_due_date_mmddyyyy(due_raw, days=3),
+                    snoozed_until=None,
+                ),
+                self.load_tasks_filtered(),
             )
-            context_menu.addAction(snooze3_action)
+        )
+        context_menu.addAction(snooze3_action)
 
         unsnooze_action = QAction("Unsnooze", self)
         unsnooze_action.triggered.connect(lambda: (self.db.update_task_by_id(task_id, snoozed_until=None), self.load_tasks_filtered()))
@@ -2324,7 +2342,7 @@ class DashboardTab(QWidget):
                 self.news_display.setHtml(f"<div style='color: #e8eaed;'>Error loading news: {str(e)}</div>")
     
     def _show_briefing_disabled(self):
-        """Show disabled message in briefing widget (when BRIEFING_AND_EMAIL_DISABLED is True)."""
+        """Show disabled message when briefing/email is turned off in Settings."""
         try:
             if hasattr(self, 'briefing_display'):
                 self.briefing_display.setHtml(
@@ -2336,8 +2354,9 @@ class DashboardTab(QWidget):
     def load_daily_briefing(self):
         """Load and display daily briefing if it hasn't been shown today (runs in background thread)."""
         try:
-            from config import BRIEFING_AND_EMAIL_DISABLED
-            if BRIEFING_AND_EMAIL_DISABLED:
+            from core.app_preferences import is_briefing_and_email_disabled
+
+            if is_briefing_and_email_disabled(self.db):
                 self._show_briefing_disabled()
                 return
             cached_html = self._get_cached_briefing_html_for_today()
@@ -2443,8 +2462,9 @@ class DashboardTab(QWidget):
     def refresh_daily_briefing(self):
         """Force refresh the daily briefing (bypasses date check, runs in background thread)."""
         try:
-            from config import BRIEFING_AND_EMAIL_DISABLED
-            if BRIEFING_AND_EMAIL_DISABLED:
+            from core.app_preferences import is_briefing_and_email_disabled
+
+            if is_briefing_and_email_disabled(self.db):
                 self._show_briefing_disabled()
                 return
             # Check if briefing widget exists

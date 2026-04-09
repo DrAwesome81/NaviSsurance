@@ -1,6 +1,6 @@
 # NaviSsurance APIs And Integrations
 
-Last updated: 2026-04-01
+Last updated: 2026-04-03
 
 ## Overview
 NaviSsurance now has two different API layers:
@@ -23,11 +23,7 @@ The local API creates a non-GUI entry point into the same SQLite-backed system u
 - `core/service/local_api.py`
 
 ### Enablement
-The local API is optional and controlled via `config.py` environment flags:
-- `NAVI_LOCAL_API_ENABLED`
-- `NAVI_LOCAL_API_HOST`
-- `NAVI_LOCAL_API_PORT`
-- `NAVI_LOCAL_API_LOG_LEVEL`
+The local API is optional. Prefer **Settings → App preferences** (stored in SQLite `app_settings`); legacy `NAVI_LOCAL_API_*` env vars may seed the DB once via `migrate_legacy_env_preferences`. See [Runtime operator notes](./runtime_operator.md#where-toggles-live-app-preferences-vs-configenv).
 
 ### Current endpoints
 - `GET /health`
@@ -41,6 +37,7 @@ The local API is optional and controlled via `config.py` environment flags:
 - The local API uses the same SQLite database and orchestration logic as the desktop app.
 - It is designed as a local-only service surface, not a public multi-user web product.
 - It is not intended to replace the built-in desktop chat as the main user interaction surface.
+- For background jobs, env flags, and how the GUI relates to the scheduler, see [runtime_operator.md](./runtime_operator.md).
 
 ## Local Model Runtime
 

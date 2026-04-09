@@ -58,8 +58,8 @@ Return only the relevant emails, nothing else."""
 
     def daily_briefing(self):
         """Generate comprehensive daily briefing with improved data collection and formatting."""
-        from config import BRIEFING_AND_EMAIL_DISABLED
-        if BRIEFING_AND_EMAIL_DISABLED:
+        from core.app_preferences import is_briefing_and_email_disabled
+        if is_briefing_and_email_disabled(self.db):
             self.db.update_last_run()  # Update timestamp even when disabled to avoid repeated calls
             return "Daily briefing and email checking are currently disabled."
         last_run = self.db.get_last_run()

@@ -122,6 +122,8 @@ class TaskSetAssignedToCommand:
 
 @dataclass(frozen=True)
 class TaskSnoozeCommand:
+    """Push the task's due date forward by `days` calendar days (clears snoozed_until)."""
+
     task_id: int
     days: int
 
