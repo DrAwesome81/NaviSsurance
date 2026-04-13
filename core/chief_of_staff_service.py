@@ -35,6 +35,7 @@ from core.chat_retrieval import build_long_term_retrieval_context, format_chat_h
 from core.agent_memory import build_agent_memory_context, build_assignment_memory_context
 from core.user_memory import build_user_memory_context
 from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
+from core.local_llm import run_local_completion
 from core.tool_registry import invoke_tool
 from core.app_preferences import (
     get_cos_calendar_max_chars,
@@ -64,6 +65,7 @@ _COS_MEMORY_REASONING_HINT = (
 
 # Optional GUI hook (registered from the main window) for lightweight toasts after CoS-related memory saves.
 _cos_toast_callback: Optional[Callable[[str], None]] = None
+_cos_task_change_serial = 0
 
 
 def set_cos_toast_callback(fn: Optional[Callable[[str], None]]) -> None:
@@ -82,6 +84,17 @@ def emit_cos_toast(message: str) -> None:
         fn(text)
     except Exception:
         logger.debug("emit_cos_toast callback failed", exc_info=True)
+
+
+def get_cos_task_change_serial() -> int:
+    """Monotonic counter incremented whenever CoS confirmed dashboard task persistence."""
+    return int(_cos_task_change_serial)
+
+
+def _record_confirmed_task_persistence(parse_result: "CoSTaskActionParseResult") -> None:
+    global _cos_task_change_serial
+    if int(parse_result.added_dashboard_tasks or 0) > 0:
+        _cos_task_change_serial += 1
 
 
 # Substrings that suggest the user is stating durable preferences/facts (always run memory extraction).
@@ -1322,9 +1335,39 @@ def _user_requested_dashboard_task_add(user_message: str) -> bool:
     msg = (user_message or "").strip()
     if not msg:
         return False
+    if re.search(r"(?im)^\s*ADD_TASK\s*:", msg):
+        return True
     if synthesize_add_task_line_from_user_text(msg):
         return True
     return bool(_DASHBOARD_TASK_ADD_INTENT_FOR_HONESTY_RE.search(msg))
+
+
+def _user_requested_direct_dashboard_task_add(user_message: str) -> bool:
+    msg = (user_message or "").strip()
+    if not msg:
+        return False
+    if re.search(r"(?im)^\s*ADD_TASK\s*:", msg):
+        return True
+    if synthesize_add_task_line_from_user_text(msg):
+        return True
+    if re.search(r"(?is)^\s*(?:add\s+(?:a\s+)?task\s+to|remind\s+me\s+(?:to\s+)?)\b", msg):
+        return True
+    if re.search(
+        r"(?is)^\s*(?:create\s+(?:a\s+)?task|new\s+task|put\s+(?:this|that|it)\s+on\s+(?:my\s+)?(?:task\s+)?list|add\s+(?:this|that|it)\s+to\s+(?:my\s+)?dashboard)\b",
+        msg,
+    ):
+        if re.search(r"\bfrom\s+(?:that\s+)?assignment\b", msg, flags=re.IGNORECASE):
+            return False
+        return True
+    return False
+
+
+_TASK_CAPTURE_CONFIRMATION_FAILURE_MESSAGE = (
+    "I tried to add the task but didn't get confirmation from the backend — can you repeat the request?"
+)
+_TASK_CAPTURE_GROK_FAILURE_MESSAGE = (
+    "Grok is temporarily unavailable. I couldn't create the task right now — please try again in a minute or tell me the details again."
+)
 
 
 @dataclass(frozen=True)
@@ -1334,6 +1377,29 @@ class CoSTaskActionParseResult:
     text: str
     added_dashboard_tasks: int
     ambiguous_priority_pending: bool
+    added_task_items: tuple[tuple[str, Optional[str]], ...] = ()
+
+
+def _format_dashboard_task_due_label(due_date: Optional[str]) -> str:
+    return str(due_date or "none").strip() or "none"
+
+
+def _merge_task_parse_results(
+    base: CoSTaskActionParseResult, extra: CoSTaskActionParseResult
+) -> CoSTaskActionParseResult:
+    merged_text = base.text
+    extra_text = (extra.text or "").strip()
+    if extra_text and extra_text != merged_text:
+        if merged_text:
+            merged_text += "\n\n" + extra_text
+        else:
+            merged_text = extra_text
+    return CoSTaskActionParseResult(
+        text=merged_text,
+        added_dashboard_tasks=int(base.added_dashboard_tasks) + int(extra.added_dashboard_tasks),
+        ambiguous_priority_pending=bool(base.ambiguous_priority_pending or extra.ambiguous_priority_pending),
+        added_task_items=tuple(base.added_task_items) + tuple(extra.added_task_items),
+    )
 
 
 def _maybe_prepend_no_dashboard_task_saved_notice(
@@ -1345,17 +1411,37 @@ def _maybe_prepend_no_dashboard_task_saved_notice(
     do not stand alone.
     """
     text = parse_result.text
-    if parse_result.added_dashboard_tasks > 0:
+    if not _user_requested_direct_dashboard_task_add(user_message):
         return text
+    if parse_result.added_dashboard_tasks > 0:
+        confirmations: list[str] = []
+        seen: set[tuple[str, Optional[str]]] = set()
+        for desc, due_date in parse_result.added_task_items:
+            desc_text = str(desc or "").strip()
+            if not desc_text:
+                continue
+            key = (desc_text.casefold(), due_date)
+            if key in seen:
+                continue
+            seen.add(key)
+            confirmations.append(
+                f"Task added: {desc_text} (due {_format_dashboard_task_due_label(due_date)})"
+            )
+            if len(confirmations) >= 3:
+                break
+        if parse_result.added_dashboard_tasks > len(confirmations):
+            confirmations.append(f"Added {parse_result.added_dashboard_tasks} task(s) total.")
+        prefix = "\n".join(confirmations).strip()
+        if not prefix:
+            return text
+        if text:
+            return prefix + "\n\n" + text
+        return prefix
     if parse_result.ambiguous_priority_pending:
         return text
-    if not _user_requested_dashboard_task_add(user_message):
-        return text
-    notice = (
-        "**No task was added to your dashboard** in this turn. "
-        "If you still want a row on the Tasks tab, say what to do with due date, Business or Personal, and priority.\n\n"
-    )
-    return notice + text
+    if text:
+        return _TASK_CAPTURE_CONFIRMATION_FAILURE_MESSAGE + "\n\n" + text
+    return _TASK_CAPTURE_CONFIRMATION_FAILURE_MESSAGE
 
 
 def _next_named_weekday_mmddyyyy(name: str, base: datetime) -> Optional[str]:
@@ -1463,6 +1549,153 @@ def synthesize_add_task_line_from_user_text(
 
     due_part = due_norm if due_norm else "none"
     return f"ADD_TASK: {desc} | {due_part} | {category} | P{p}"
+
+
+def _build_local_task_capture_messages(user_message: str) -> list[dict]:
+    now = _now_local()
+    current_date = now.strftime("%B %d, %Y")
+    current_time = now.strftime("%I:%M %p").lstrip("0")
+    tz_name = now.tzname() or "local time"
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a strict task-intake assistant for NaviSsurance. "
+                "The user is asking to add one or more dashboard tasks or reminders. "
+                "Return ONLY ADD_TASK lines in this exact format:\n"
+                "ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal> | <P0-P5>\n"
+                "Infer Business vs Personal and a best-effort priority from urgency and timing. "
+                "If you truly cannot form a valid task line, return exactly TASK_CAPTURE_FAILED.\n\n"
+                f"Current local date/time: {current_date}, {current_time} ({tz_name})."
+            ),
+        },
+        {"role": "user", "content": str(user_message or "").strip()},
+    ]
+
+
+def _recover_partial_add_task_lines(user_message: str, raw_model_out: str) -> list[str]:
+    """
+    Best-effort salvage for truncated/partial ADD_TASK output.
+    This only runs when the model already emitted ADD_TASK but strict parsing produced zero tasks.
+    """
+    text = str(raw_model_out or "")
+    if "ADD_TASK:" not in text.upper():
+        return []
+    recovered: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"(?is)ADD_TASK:\s*(.+?)(?=(?:\n[A-Z_]+:)|(?:ADD_TASK:)|\Z)", text):
+        payload = re.sub(r"\s+", " ", str(match.group(1) or "").strip())
+        if not payload:
+            continue
+        parts = [p.strip() for p in payload.split("|")]
+        desc = (parts[0] if parts else "").strip(" -*•\t\r\n")
+        if not desc:
+            continue
+        due_part = "none"
+        if len(parts) > 1:
+            due_ok, due_norm = _normalize_dashboard_mmddyyyy(parts[1])
+            if due_ok and due_norm:
+                due_part = due_norm
+        category = ""
+        if len(parts) > 2:
+            candidate = (parts[2] or "").strip().title()
+            if candidate in {"Business", "Personal"}:
+                category = candidate
+        if not category:
+            category = (
+                "Personal"
+                if re.search(r"\bpersonal\b", f"{payload}\n{user_message}", flags=re.IGNORECASE)
+                else "Business"
+            )
+        priority = _parse_task_priority_value(parts[3] if len(parts) > 3 else "")
+        if priority is None:
+            priority = _infer_task_priority(
+                desc,
+                due_date=(None if due_part == "none" else due_part),
+                raw_context=f"{payload}\n{user_message}",
+            )
+        line = f"ADD_TASK: {desc} | {due_part} | {category}"
+        if priority is not None:
+            line += f" | P{int(priority)}"
+        key = line.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        recovered.append(line)
+    return recovered
+
+
+def _apply_partial_add_task_recovery(
+    db: DatabaseManager,
+    user_message: str,
+    raw_model_out: str,
+    parse_result: CoSTaskActionParseResult,
+    *,
+    chat_id: Optional[int],
+) -> CoSTaskActionParseResult:
+    if parse_result.added_dashboard_tasks > 0:
+        return parse_result
+    recovered_lines = _recover_partial_add_task_lines(user_message, raw_model_out)
+    if not recovered_lines:
+        return parse_result
+    recovered = _parse_task_actions(db, "\n".join(recovered_lines), chat_id=chat_id)
+    return _merge_task_parse_results(parse_result, recovered)
+
+
+def _log_task_capture_debug(
+    source: str,
+    user_message: str,
+    raw_model_out: str,
+    parse_result: CoSTaskActionParseResult,
+) -> None:
+    if not _user_requested_direct_dashboard_task_add(user_message):
+        return
+    if parse_result.added_dashboard_tasks > 0 or parse_result.ambiguous_priority_pending:
+        return
+    logger.debug(
+        "TASK_CAPTURE_UNCONFIRMED source=%s raw_model_output=%r",
+        source,
+        raw_model_out,
+    )
+
+
+def _handle_direct_task_capture(
+    db: DatabaseManager,
+    user_message: str,
+    *,
+    chat_id: Optional[int],
+) -> Optional[str]:
+    """
+    Local-first fast lane for direct task/reminder capture.
+    Use deterministic synthesis first, then a strict local structured model prompt.
+    """
+    if chat_id is None:
+        return None
+    if not _user_requested_direct_dashboard_task_add(user_message):
+        return None
+    raw_out = synthesize_add_task_line_from_user_text(user_message)
+    if raw_out is None:
+        try:
+            raw_out = run_local_completion(
+                _build_local_task_capture_messages(user_message),
+                "task_capture_structured",
+            ).strip()
+        except Exception as e:
+            logger.warning("Local structured task capture failed: %s", e)
+            return _TASK_CAPTURE_CONFIRMATION_FAILURE_MESSAGE
+    if not raw_out or raw_out.strip().upper() == "TASK_CAPTURE_FAILED":
+        return _TASK_CAPTURE_CONFIRMATION_FAILURE_MESSAGE
+    parsed = _parse_task_actions(db, raw_out, chat_id=chat_id)
+    parsed = _apply_partial_add_task_recovery(
+        db,
+        user_message,
+        raw_out,
+        parsed,
+        chat_id=chat_id,
+    )
+    _record_confirmed_task_persistence(parsed)
+    _log_task_capture_debug("local_task_capture", user_message, raw_out, parsed)
+    return _maybe_prepend_no_dashboard_task_saved_notice(user_message, parsed)
 
 
 def _cos_cleaned_indicates_dashboard_tasks_applied(cleaned: str) -> bool:
@@ -1763,6 +1996,17 @@ def cos_response(
             logger.exception("CoS explicit command handling failed: %s", e)
             _log_timing("cos_response_error", t0, mode="explicit", chat_id=chat_id)
             return f"Error: {e}"
+
+    direct_task_response = _handle_direct_task_capture(db, user_message, chat_id=chat_id)
+    if direct_task_response is not None:
+        _extract_and_store_memory(
+            db,
+            chat_id=chat_id,
+            user_message=user_message,
+            assistant_message=direct_task_response,
+        )
+        _log_timing("cos_response", t0, mode="local_task_capture", chat_id=chat_id, chars=len(user_message or ""))
+        return direct_task_response
 
     cos_out_tokens = get_cos_max_output_tokens(db)
     hist_max_msg = get_cos_history_max_messages(db)
@@ -2067,9 +2311,14 @@ Always interpret and communicate schedule/time references in the user's local ti
         try:
             out = _run_tool_loop_single(system, user)
             parsed = _parse_task_actions(db, out, chat_id=chat_id)
+            parsed = _apply_partial_add_task_recovery(
+                db, user_message, out, parsed, chat_id=chat_id
+            )
             parsed = apply_dashboard_task_intent_fallback(
                 db, user_message, out, parsed, chat_id=chat_id
             )
+            _record_confirmed_task_persistence(parsed)
+            _log_task_capture_debug("cos_grok_single", user_message, out, parsed)
             cleaned = _maybe_prepend_no_dashboard_task_saved_notice(user_message, parsed)
             _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=cleaned)
             _log_timing(
@@ -2085,6 +2334,11 @@ Always interpret and communicate schedule/time references in the user's local ti
         except Exception as e:
             logger.exception("CoS response failed: %s", e)
             _log_timing("cos_response_error", t0, mode="llm_single", chat_id=chat_id)
+            if _user_requested_direct_dashboard_task_add(user_message):
+                fallback = _handle_direct_task_capture(db, user_message, chat_id=chat_id)
+                if fallback and fallback != _TASK_CAPTURE_CONFIRMATION_FAILURE_MESSAGE:
+                    return fallback
+                return _TASK_CAPTURE_GROK_FAILURE_MESSAGE
             return format_grok_user_facing_error(e)
 
     # Multi-turn: build messages list. Caller must have saved the current user message and included it in conversation_history.
@@ -2109,9 +2363,14 @@ Always interpret and communicate schedule/time references in the user's local ti
     try:
         out = _run_tool_loop_messages(messages)
         parsed = _parse_task_actions(db, (out or "").strip(), chat_id=chat_id)
+        parsed = _apply_partial_add_task_recovery(
+            db, user_message, out, parsed, chat_id=chat_id
+        )
         parsed = apply_dashboard_task_intent_fallback(
             db, user_message, out, parsed, chat_id=chat_id
         )
+        _record_confirmed_task_persistence(parsed)
+        _log_task_capture_debug("cos_grok_multi", user_message, out, parsed)
         cleaned = _maybe_prepend_no_dashboard_task_saved_notice(user_message, parsed)
         _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=cleaned)
         _log_timing(
@@ -2128,6 +2387,11 @@ Always interpret and communicate schedule/time references in the user's local ti
     except Exception as e:
         logger.exception("CoS response failed: %s", e)
         _log_timing("cos_response_error", t0, mode="llm_multi", chat_id=chat_id)
+        if _user_requested_direct_dashboard_task_add(user_message):
+            fallback = _handle_direct_task_capture(db, user_message, chat_id=chat_id)
+            if fallback and fallback != _TASK_CAPTURE_CONFIRMATION_FAILURE_MESSAGE:
+                return fallback
+            return _TASK_CAPTURE_GROK_FAILURE_MESSAGE
         return format_grok_user_facing_error(e)
 
 
@@ -2258,6 +2522,7 @@ def _parse_task_actions(
         )
     session_id = f"dashboard_cos_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     added_tasks = 0
+    added_task_items: list[tuple[str, Optional[str]]] = []
     added_tasks_from_assignments = 0
     added_blocks = 0
     updated_task_tags = 0
@@ -2519,6 +2784,7 @@ def _parse_task_actions(
                         priority=priority if priority is not None else db._UNSET,  # type: ignore[attr-defined]
                     )
                 added_tasks += 1
+                added_task_items.append((task_text, due_norm))
             except Exception as e:
                 logger.warning("CoS add_task failed: %s", e)
             continue
@@ -2571,6 +2837,7 @@ def _parse_task_actions(
                     completed=0,
                 )
                 added_tasks += 1
+                added_task_items.append((task_text, due_date))
                 added_tasks_from_assignments += 1
                 existing_ids.add(int(aid))
                 try:
@@ -3489,6 +3756,7 @@ def _parse_task_actions(
                     if inferred_priority is not None:
                         db.update_task_by_id(int(task_id), priority=int(inferred_priority))
                     added_tasks += 1
+                    added_task_items.append((task_text, due_date))
                 except Exception as e:
                     logger.warning("CoS rich-task fallback add_task failed: %s", e)
 
@@ -3538,6 +3806,7 @@ def _parse_task_actions(
                     if inferred_priority is not None:
                         db.update_task_by_id(int(task_id), priority=int(inferred_priority))
                     added_tasks += 1
+                    added_task_items.append((task_text, due_date))
                 except Exception as e:
                     logger.warning("CoS rich-pipe fallback add_task failed: %s", e)
         except Exception as e:
@@ -3696,6 +3965,7 @@ def _parse_task_actions(
         text=out,
         added_dashboard_tasks=added_tasks,
         ambiguous_priority_pending=bool(ambiguous_task_priorities),
+        added_task_items=tuple(added_task_items),
     )
 
 

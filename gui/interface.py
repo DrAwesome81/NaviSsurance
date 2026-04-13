@@ -31,7 +31,7 @@ from gui.notes_tab import NoteTakingSystem, NoteProcessingThread
 from gui.notifications import play_notification_sound
 import html
 from core.app_preferences import get_chat_history_render_limit, is_runtime_enabled
-from core.chief_of_staff_service import set_cos_toast_callback
+from core.chief_of_staff_service import get_cos_task_change_serial, set_cos_toast_callback
 from core.agent_chat_service import (
     set_agent_grok_failure_toast_callback,
     set_agent_reply_toast_callback,
@@ -625,6 +625,7 @@ class ChatWindow(QMainWindow):
         self.load_chat_history()
         self._setup_notification_tray()
         self._toast_overlay: QLabel | None = None
+        self._last_cos_task_change_serial = get_cos_task_change_serial()
         set_cos_toast_callback(lambda msg: self.show_toast(msg, duration=3000))
         set_agent_reply_toast_callback(self._on_agent_assignment_reply_toast)
         set_agent_grok_failure_toast_callback(
@@ -1402,10 +1403,9 @@ class ChatWindow(QMainWindow):
             self.notify_chat_response("Navi")
         # If Navi changed tasks via CoS chat, refresh task views immediately.
         try:
-            if isinstance(response, str) and (
-                re.search(r"\bAdded\s+\d+\s+task", response)
-                or re.search(r"\bdashboard task\(s\)\b", response, re.IGNORECASE)
-            ):
+            current_task_change_serial = get_cos_task_change_serial()
+            if current_task_change_serial > int(getattr(self, "_last_cos_task_change_serial", 0)):
+                self._last_cos_task_change_serial = current_task_change_serial
                 if hasattr(self, "dashboard_tab") and hasattr(self.dashboard_tab, "load_tasks_filtered"):
                     QTimer.singleShot(0, self.dashboard_tab.load_tasks_filtered)
                 if hasattr(self, "tasks_tab") and hasattr(self.tasks_tab, "refresh_tasks"):

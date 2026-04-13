@@ -274,6 +274,8 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
     started = time.monotonic()
     sid = str(session_id or "").strip()
     chat_id = _parse_chat_id(sid)
+    if chat_id is None and is_dashboard_chat_session(db, sid):
+        chat_id = _dashboard_chat_id(db)
     route, route_reason = select_main_chat_route_details(db, message, sid, conversation_history)
     history_items = _normalize_history(conversation_history)
     teach_response = store_teach_memory(db, message) or store_teach_navi_memory(db, message)

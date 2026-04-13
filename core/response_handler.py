@@ -439,14 +439,21 @@ class ResponseHandler:
             # Return the processed response, not the raw grok_response
             if added_tasks:
                 logger.debug("Returning processed task result count=%s", len(added_tasks))
-                return f"Added {', '.join(added_tasks)}"
+                confirmations = [
+                    f"Task added: {desc} (due {due or 'none'})"
+                    for desc, due, _cat in created[:3]
+                ]
+                if len(created) > 3:
+                    confirmations.append(f"Added {len(created)} task(s) total.")
+                return "\n".join(confirmations)
             else:
                 # If no tasks were added but ADD_TASK was in response, we need to handle it
                 # Don't return raw ADD_TASK: string - ChatThread will try to parse it for old system
                 if "ADD_TASK:" in (grok_response or ""):
                     logger.warning("ADD_TASK: found in response but no tasks were parsed")
+                    logger.debug("TASK_CAPTURE_UNCONFIRMED source=response_handler raw_model_output=%r", grok_response)
                     # Return a message instead of raw ADD_TASK to prevent ChatThread from parsing it
-                    return "I received a task creation request, but couldn't parse it. Please try again with a clearer task description and due date."
+                    return "I tried to add the task but didn't get confirmation from the backend — can you repeat the request?"
                 logger.debug("Returning normal response path without task side effects.")
                 return grok_response
         except Exception as e:

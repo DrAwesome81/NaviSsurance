@@ -23,6 +23,7 @@ _SESSION_PROFILES: dict[str, dict[str, int | str]] = {
     "briefing_session": {"class": "local_fast", "max_tokens": 260},
     "task_detection": {"class": "local_fast", "max_tokens": 8},
     "task_query": {"class": "local_fast", "max_tokens": 220},
+    "task_capture_structured": {"class": "local_fast", "max_tokens": 120, "timeout_s": 12},
     "user_memory_extract": {"class": "local_fast", "max_tokens": 180, "timeout_s": 12},
     "conversation_chunk_summarize": {"class": "local_fast", "max_tokens": 260, "timeout_s": 16},
     "memory_reflection": {"class": "local_fast", "max_tokens": 260, "timeout_s": 16},

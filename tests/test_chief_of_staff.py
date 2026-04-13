@@ -631,7 +631,72 @@ class TestChiefOfStaffService:
         result = cos_response(cos_db, "add a task to X", chat_id=cid)
         tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
         assert len(tasks) == 0
-        assert "No task was added to your dashboard" in result
+        assert "I tried to add the task but didn't get confirmation from the backend" in result
+
+    def test_cos_response_direct_task_capture_bypasses_grok_for_simple_task_request(
+        self, mock_grok, cos_db, monkeypatch
+    ):
+        from datetime import datetime
+
+        monkeypatch.setattr(
+            "core.chief_of_staff_service._now_local", lambda: datetime(2026, 4, 7, 12, 0, 0)
+        )
+        mock_grok.side_effect = AssertionError("Grok should not run for direct task capture")
+        from core.chief_of_staff_service import cos_response
+
+        cid = cos_db.cos_create_chat(title="Test chat", project=None)
+        result = cos_response(
+            cos_db,
+            "add a task to send the revised SOW tomorrow, priority 4",
+            chat_id=cid,
+        )
+        tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+        assert len(tasks) == 1
+        assert "Task added:" in result
+        assert "revised SOW" in result
+
+    def test_cos_response_direct_task_capture_increments_task_change_serial(
+        self, mock_grok, cos_db, monkeypatch
+    ):
+        from datetime import datetime
+
+        monkeypatch.setattr(
+            "core.chief_of_staff_service._now_local", lambda: datetime(2026, 4, 7, 12, 0, 0)
+        )
+        mock_grok.side_effect = AssertionError("Grok should not run for direct task capture")
+        from core.chief_of_staff_service import cos_response, get_cos_task_change_serial
+
+        before = get_cos_task_change_serial()
+        cid = cos_db.cos_create_chat(title="Test chat", project=None)
+        result = cos_response(
+            cos_db,
+            "add a task to send the revised SOW tomorrow, priority 4",
+            chat_id=cid,
+        )
+        after = get_cos_task_change_serial()
+        assert after == before + 1
+        assert "Task added:" in result
+
+    def test_cos_response_direct_task_capture_uses_local_llm_when_rule_synthesis_does_not_match(
+        self, mock_grok, cos_db, monkeypatch
+    ):
+        mock_grok.side_effect = AssertionError("Grok should not run for direct task capture")
+        monkeypatch.setattr(
+            "core.chief_of_staff_service.run_local_completion",
+            lambda messages, session_id: "ADD_TASK: Call Bob | 04-08-2026 | Business | P3",
+        )
+        from core.chief_of_staff_service import cos_response
+
+        cid = cos_db.cos_create_chat(title="Test chat", project=None)
+        result = cos_response(
+            cos_db,
+            "Create a task for me to call Bob tomorrow about the signed SOW.",
+            chat_id=cid,
+        )
+        tasks = cos_db.get_tasks(category=None, date_filter=None, specific_date=None)
+        assert len(tasks) == 1
+        assert tasks[0][1] == "Call Bob"
+        assert "Task added: Call Bob" in result
 
     def test_cos_response_add_task_without_priority_prompts_for_clarification(self, mock_grok, cos_db):
         """Ambiguous ADD_TASK without a usable priority should ask for clarification instead of defaulting to P0."""

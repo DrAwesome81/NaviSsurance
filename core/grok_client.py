@@ -116,12 +116,34 @@ def _get_client():
 
 
 def _grok_completion_max_attempts() -> int:
-    raw = (os.getenv("GROK_COMPLETION_MAX_ATTEMPTS") or "3").strip()
+    raw = (os.getenv("GROK_COMPLETION_MAX_ATTEMPTS") or "5").strip()
     try:
         n = int(raw)
     except ValueError:
-        n = 3
+        n = 5
     return max(1, min(n, 8))
+
+
+def _grok_retry_sleep_s(attempt: int) -> float:
+    """
+    Exponential backoff for transient Grok failures.
+    Defaults to a slightly slower curve than before to ride out short xAI outages.
+    """
+    base_raw = (os.getenv("GROK_RETRY_BASE_SECONDS") or "2.0").strip()
+    try:
+        base = float(base_raw)
+    except ValueError:
+        base = 2.0
+    if base <= 0:
+        base = 2.0
+    cap_raw = (os.getenv("GROK_RETRY_MAX_SECONDS") or "20").strip()
+    try:
+        cap = float(cap_raw)
+    except ValueError:
+        cap = 20.0
+    if cap <= 0:
+        cap = 20.0
+    return min(cap, base * (2**attempt))
 
 
 def grok_completion(
@@ -166,7 +188,7 @@ def grok_completion(
         except Exception as e:
             last_err = e
             if attempt < attempts - 1 and is_transient_grok_error(e):
-                sleep_s = 1.5 * (2**attempt)
+                sleep_s = _grok_retry_sleep_s(attempt)
                 logger.warning(
                     "Grok completion transient failure; retrying in %.1fs (%s/%s): %s",
                     sleep_s,
@@ -233,7 +255,7 @@ def grok_completion_messages(
         except Exception as e:
             last_err = e
             if attempt < attempts - 1 and is_transient_grok_error(e):
-                sleep_s = 1.5 * (2**attempt)
+                sleep_s = _grok_retry_sleep_s(attempt)
                 logger.warning(
                     "Grok completion (messages) transient failure; retrying in %.1fs (%s/%s): %s",
                     sleep_s,

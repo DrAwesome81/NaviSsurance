@@ -357,6 +357,23 @@ def test_run_main_chat_turn_uses_local_fast_and_persists(monkeypatch):
     assert db.updated_chat_ids == [7]
 
 
+def test_run_main_chat_turn_resolves_dashboard_chat_id_for_main_session(monkeypatch):
+    db = _FakeDB(dashboard_chat_id=7)
+    handler = _FakeHandler(db)
+    captured: dict = {}
+    def _fake_cos(db, message, conversation_history=None, chat_id=None):
+        captured["chat_id"] = chat_id
+        return "CoS answer"
+
+    monkeypatch.setattr("core.main_chat_router.cos_response", _fake_cos)
+
+    out = run_main_chat_turn(handler, "Add a task to send the SOW tomorrow.", "main_session", [])
+
+    assert out == "CoS answer"
+    assert captured["chat_id"] == 7
+    assert db.updated_chat_ids == [7]
+
+
 def test_run_main_chat_turn_falls_back_to_cos_when_local_errors(monkeypatch):
     db = _FakeDB(dashboard_chat_id=7)
     handler = _FakeHandler(db)
