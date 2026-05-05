@@ -40,7 +40,13 @@ API_KEY = os.getenv('GROK_API_KEY')
 if API_KEY is None:
     API_KEY = ""
 
-# Using Grok 4 API via xAI SDK (gRPC / Responses API)
+# Using Grok 4 API via xAI SDK (gRPC / Responses API); REST endpoint retained for legacy callers.
+API_ENDPOINT = "https://api.x.ai/v1/chat/completions"
+GROK_MODEL = os.getenv("GROK_MODEL", "grok-latest")
+
+CLAUDE_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+if CLAUDE_API_KEY is None:
+    CLAUDE_API_KEY = ""
 
 DROPBOX_APP_KEY = os.getenv('DROPBOX_APP_KEY')
 DROPBOX_APP_SECRET = os.getenv('DROPBOX_APP_SECRET')

@@ -169,3 +169,7 @@
 - [ ] True cross-session UX verification requiring real restart/runtime state
 - [ ] Live external integrations (email providers, model/network behavior)
 - [ ] Heavier async multi-service orchestration flows that are brittle in CI-style tests
+
+## Personal / project todos
+
+- [ ] Look into training or fine-tuning a model to generate lead outreach emails in my voice and style, using my past emails.
