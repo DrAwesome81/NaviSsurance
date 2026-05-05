@@ -4,7 +4,7 @@ import re
 import logging
 from dateutil import parser
 from datetime import datetime
-from config import headers, API_ENDPOINT, base_system_message, CLAUDE_API_KEY
+from config import headers, API_ENDPOINT, base_system_message, CLAUDE_API_KEY, GROK_MODEL
 from core.file_handler import search_dropbox_index
 from anthropic import Anthropic
 
@@ -151,7 +151,7 @@ class ResponseHandler:
         all_messages = [base_system_message] + messages
         data = {
             "messages": all_messages,
-            "model": "grok-4-latest",
+            "model": GROK_MODEL,
             "stream": False
         }
         try:

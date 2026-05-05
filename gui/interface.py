@@ -3,17 +3,16 @@ import logging
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QSplashScreen, 
                             QTextBrowser, QLineEdit, QPushButton, QListWidget, QDateEdit, QTableWidget, 
                             QTableWidgetItem, QCheckBox, QComboBox, QLabel, QSplitter, QTextEdit, QDialog, QDialogButtonBox, QHeaderView, QMessageBox, QFileDialog, QMenu)
-from PyQt6.QtCore import Qt, QDate, QTimer, pyqtSlot, QUrl
-from PyQt6.QtGui import QPixmap, QAction, QDesktopServices, QColor
+from PyQt6.QtCore import Qt, QDate, QTimer, pyqtSlot
+from PyQt6.QtGui import QPixmap, QAction
 from core.db import DatabaseManager
 from gui.chat_window import ChatThread, ResponseHandler, sendMessage, saveChat, loadChat
 from gui.todo_list import TodoList
 from core.chat import ChatManager
 import os
 import json
-from anthropic import Anthropic, AnthropicError
-from anthropic.types import ToolUseBlock
 from datetime import datetime
+from config import headers, API_ENDPOINT, GROK_MODEL
 from PyQt6.QtWidgets import QApplication
 import PyPDF2
 from bs4 import BeautifulSoup
@@ -57,7 +56,7 @@ class SettingsDialog(QDialog):
                 logger.error(f"Error loading system message: {e}")
                 self.system_message_input.setText("")  # Default empty if load fails
         
-        layout.addWidget(QLabel("Claude System Message:"))
+        layout.addWidget(QLabel("Lead search instructions (saved to config):"))
         layout.addWidget(self.system_message_input)
         
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -168,9 +167,8 @@ class ChatWindow(QMainWindow):
         logger.info("Main window shown")
 
     def search_leads(self):
-        """Run Claude API search for leads based on system message."""
+        """Run xAI Grok chat completions for leads (same stack as core/response_handler)."""
         try:
-            # Load system message from config
             config_path = 'C:/Users/adamo/Dropbox/_Consulting/NaviSsurance/config/lead_gen_config.json'
             if not os.path.exists(config_path):
                 logger.error("Lead gen config not found.")
@@ -178,187 +176,107 @@ class ChatWindow(QMainWindow):
             with open(config_path, 'r') as f:
                 config = json.load(f)
             user_system_message = config.get('system_message', '')
-            
-            # If no user system message, use default context
+
             if not user_system_message:
-                user_system_message = "You are a lead generation assistant for a medical device regulatory consulting firm. Focus on companies in the AI SaMD and/or IVD/LDT space."
+                user_system_message = (
+                    "Focus on companies in the AI SaMD and/or IVD/LDT space that may need "
+                    "FDA/EU regulatory consulting."
+                )
 
-            # Append required format and verification instructions
-            system_message = f"""{user_system_message}
+            system_instructions = (
+                "You assist NaviSure Consulting with B2B lead research for medical device regulatory "
+                "consulting (AI SaMD, IVD/LDT, MedTech).\n"
+                "1. Prefer accurate, verifiable information; note uncertainty in rationale if needed.\n"
+                "2. Include a clear rationale for each lead.\n"
+                "3. Draft a short, personalized outreach message (email or DM tone) for each lead.\n"
+                "4. Respond with ONLY a JSON array (no markdown fences, no commentary outside the array). "
+                "Each object must include exactly these string fields:\n"
+                '   "name", "company", "title", "rationale", "message"\n'
+                "Omit entries you cannot support."
+            )
 
-IMPORTANT: When processing search results:
-1. Verify each company's current status and leadership team
-2. Include a clear rationale for why each lead is relevant
-3. Generate a personalized LinkedIn message for each lead based on your research
-4. Return results as a JSON array with the following fields for each lead:
-   - name: Full name of the key decision maker
-   - company: Company name
-   - title: Their current title
-   - rationale: Why this person/company is a good lead
-   - linkedin_url: Their LinkedIn profile URL (if found)
-   - message: A personalized LinkedIn message referencing their specific regulatory needs and how NaviSure can help
-Only include leads that have been verified through the search results.
+            user_content = f"Lead criteria and focus:\n{user_system_message}\n\nReturn the JSON array now."
 
-"""
+            payload = {
+                "model": GROK_MODEL,
+                "stream": False,
+                "messages": [
+                    {"role": "system", "content": system_instructions},
+                    {"role": "user", "content": user_content},
+                ],
+            }
 
-            # Initialize Claude client
-            api_key = os.getenv('ANTHROPIC_API_KEY', '')
-            if not api_key:
-                logger.error("Anthropic API key not found.")
-                return
-            client = Anthropic(api_key=api_key)
-
-            # Start the conversation with the system message
-            messages = [
-                {
-                    "role": "user",
-                    "content": user_system_message
-                }
-            ]
-
-            # Make the initial API call
+            resp = requests.post(API_ENDPOINT, headers=headers, json=payload, timeout=180)
             try:
-                response = client.messages.create(
-                    model="claude-3-7-sonnet-20250219",
-                    max_tokens=10000,
-                    system=system_message,
-                    messages=messages,
-                    tools=[{
-                        "type": "web_search_20250305",
-                        "name": "web_search"
-                    }]
+                resp.raise_for_status()
+            except requests.exceptions.RequestException as e:
+                detail = resp.text[:800] if resp is not None else ""
+                logger.error(f"Grok API error: {e} {detail}")
+                QMessageBox.warning(
+                    self,
+                    "Lead search failed",
+                    f"{e}\n{detail}" if detail else str(e),
                 )
-            except AnthropicError as e:
-                if "overloaded_error" in str(e):
-                    logger.error("API is currently overloaded. Please try again in a few minutes.")
-                    QMessageBox.warning(self, "API Overloaded", "The API is currently experiencing high load. Please try again in 5-10 minutes.")
-                    return
-                raise e
+                return
 
-            # Log the initial response
-            logger.info("Initial Claude API Response:")
-            logger.info(f"Response type: {type(response)}")
-            logger.info(f"Response content: {response.content}")
+            body = resp.json()
+            text = body["choices"][0]["message"]["content"]
 
-            # Write raw response to file for inspection
-            response_file = os.path.join(self.data_dir, 'claude_response.txt')
-            with open(response_file, 'w', encoding='utf-8') as f:
-                f.write("Response type: " + str(type(response)) + "\n\n")
-                f.write("Response content:\n")
-                for block in response.content:
-                    if hasattr(block, 'text'):
-                        f.write(block.text + "\n")
-                    else:
-                        f.write(str(block) + "\n")
-            logger.info(f"Raw response written to {response_file}")
+            response_file = os.path.join(self.data_dir, "lead_gen_grok_last.txt")
+            with open(response_file, "w", encoding="utf-8") as f:
+                f.write(text)
+            logger.info("Raw Grok response written to %s", response_file)
 
-            # Add the response to the conversation
-            messages.append({
-                "role": "assistant",
-                "content": response.content
-            })
+            start_idx = text.find("[")
+            end_idx = text.rfind("]") + 1
+            if start_idx == -1 or end_idx <= 0:
+                logger.error("No JSON array found in Grok response")
+                logger.error("Raw text: %s", text[:2000])
+                return
 
-            # Check if there's a tool use in the response
-            if response.content and any(isinstance(block, ToolUseBlock) for block in response.content):
-                # Find the tool use block
-                tool_use = next(block for block in response.content if isinstance(block, ToolUseBlock))
-                
-                # Make another API call to get the final response after tool use
-                response = client.messages.create(
-                    model="claude-3-7-sonnet-20250219",
-                    max_tokens=1000,
-                    system=system_message,
-                    messages=messages
-                )
+            json_str = text[start_idx:end_idx].strip()
+            json_str = json_str.replace("```json", "").replace("```", "")
 
-                # Log the final response
-                logger.info("Final Claude API Response:")
-                logger.info(f"Response type: {type(response)}")
-                logger.info(f"Response content: {response.content}")
+            try:
+                new_leads = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON: {e}")
+                logger.error(f"Raw JSON string: {json_str[:2000]}")
+                return
 
-            # Write raw response to file for inspection
-            response_file = os.path.join(self.data_dir, 'claude_response.txt')
-            with open(response_file, 'w', encoding='utf-8') as f:
-                f.write("Response type: " + str(type(response)) + "\n\n")
-                f.write("Response content:\n")
-                for block in response.content:
-                    if hasattr(block, 'text'):
-                        f.write(block.text + "\n")
-                    else:
-                        f.write(str(block) + "\n")
-            logger.info(f"Raw response written to {response_file}")
+            logger.info(f"Parsed leads: {new_leads}")
 
-            # Try to find JSON array in the response
-            json_str = None
-            for block in response.content:
-                if hasattr(block, 'text'):
-                    text = block.text.strip()
-                    logger.info(f"Processing block text: {text}")
-                    # Look for JSON array pattern
-                    start_idx = text.find('[')
-                    end_idx = text.rfind(']') + 1
-                    if start_idx != -1 and end_idx > 0:
-                        json_str = text[start_idx:end_idx]
-                        logger.info(f"Found JSON string: {json_str}")
-                        break
+            if not isinstance(new_leads, list):
+                logger.error("Grok response JSON is not an array")
+                return
 
-            if json_str:
-                try:
-                    # Clean up the JSON string
-                    json_str = json_str.strip()
-                    # Remove any markdown code block markers
-                    json_str = json_str.replace('```json', '').replace('```', '')
-                    logger.info(f"Cleaned JSON string: {json_str}")
-                    
-                    new_leads = json.loads(json_str)
-                    logger.info(f"Parsed leads: {new_leads}")
-                    
-                    if isinstance(new_leads, list):
-                        # Successfully parsed JSON array
-                        logger.info(f"Successfully parsed JSON array with {len(new_leads)} leads")
-                        
-                        # Load existing leads
-                        leads_file = os.path.join(self.data_dir, 'leads.json')
-                        existing_leads = []
-                        if os.path.exists(leads_file):
-                            with open(leads_file, 'r') as f:
-                                existing_leads = json.load(f)
-                        
-                        # Create a set of existing lead identifiers (name + company)
-                        existing_identifiers = {(lead['name'], lead['company']) for lead in existing_leads}
-                        
-                        # Add new leads to the beginning of the list, avoiding duplicates
-                        for lead in new_leads:
-                            if not all(k in lead for k in ['name', 'company', 'title', 'rationale', 'message']):
-                                logger.warning(f"Skipping lead with missing required fields: {lead}")
-                                continue
-                            lead['contacted'] = False
-                            lead['contact_date'] = None
-                            lead['linkedin_url'] = lead.get('linkedin_url', '')
-                            
-                            # Check for duplicates
-                            if (lead['name'], lead['company']) not in existing_identifiers:
-                                existing_leads.insert(0, lead)
-                                existing_identifiers.add((lead['name'], lead['company']))
-                                logger.info(f"Added new lead: {lead['name']} from {lead['company']}")
-                        
-                        # Save updated leads
-                        with open(leads_file, 'w') as f:
-                            json.dump(existing_leads, f, indent=2)
-                        
-                        # Update table
-                        self.update_leads_table(existing_leads)
-                        logger.info(f"Successfully loaded {len(new_leads)} new leads")
-                        return
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse JSON: {e}")
-                    logger.error(f"Raw JSON string: {json_str}")
-            else:
-                logger.error("No JSON array found in response blocks")
-                logger.error(f"Raw response blocks: {[block.text if hasattr(block, 'text') else str(block) for block in response.content]}")
-                
-        except AnthropicError as e:
-            logger.error(f"Claude API error: {e}")
+            leads_file = os.path.join(self.data_dir, "leads.json")
+            existing_leads = []
+            if os.path.exists(leads_file):
+                with open(leads_file, "r") as f:
+                    existing_leads = json.load(f)
+
+            existing_identifiers = {(lead["name"], lead["company"]) for lead in existing_leads}
+
+            for lead in new_leads:
+                if not all(k in lead for k in ["name", "company", "title", "rationale", "message"]):
+                    logger.warning(f"Skipping lead with missing required fields: {lead}")
+                    continue
+                lead["contacted"] = False
+                lead["contact_date"] = None
+                lead.pop("linkedin_url", None)
+
+                if (lead["name"], lead["company"]) not in existing_identifiers:
+                    existing_leads.insert(0, lead)
+                    existing_identifiers.add((lead["name"], lead["company"]))
+                    logger.info(f"Added new lead: {lead['name']} from {lead['company']}")
+
+            with open(leads_file, "w") as f:
+                json.dump(existing_leads, f, indent=2)
+
+            self.update_leads_table(existing_leads)
+            logger.info(f"Successfully merged {len(new_leads)} leads from Grok response")
+
         except Exception as e:
             logger.error(f"Search leads error: {e}")
 
@@ -366,15 +284,7 @@ Only include leads that have been verified through the search results.
         """Update the leads table with the provided leads data."""
         self.leadsTable.setRowCount(len(leads))
         for row, lead in enumerate(leads):
-            # Name (as hyperlink if LinkedIn URL exists)
-            name_item = QTableWidgetItem(lead.get('name', ''))
-            if lead.get('linkedin_url'):
-                name_item.setData(Qt.ItemDataRole.UserRole, lead['linkedin_url'])
-                name_item.setData(Qt.ItemDataRole.UserRole + 1, "linkedin")
-                name_item.setForeground(QColor("#0077B5"))  # LinkedIn blue
-                font = name_item.font()
-                font.setUnderline(True)
-                name_item.setFont(font)
+            name_item = QTableWidgetItem(lead.get("name", ""))
             self.leadsTable.setItem(row, 0, name_item)
             
             # Company
@@ -407,22 +317,6 @@ Only include leads that have been verified through the search results.
             view_rationale_button = QPushButton("View")
             view_rationale_button.clicked.connect(lambda _, r=row: self.show_rationale(r))
             self.leadsTable.setCellWidget(row, 7, view_rationale_button)
-            
-        # Connect cell click event for LinkedIn links
-        self.leadsTable.cellClicked.connect(self.handle_cell_click)
-
-    def handle_cell_click(self, row, column):
-        """Handle cell clicks, specifically for LinkedIn links."""
-        if column == 0:  # Name column
-            item = self.leadsTable.item(row, column)
-            if item and item.data(Qt.ItemDataRole.UserRole + 1) == "linkedin":
-                url = item.data(Qt.ItemDataRole.UserRole)
-                if url:
-                    # Disconnect the signal temporarily to prevent multiple triggers
-                    self.leadsTable.cellClicked.disconnect(self.handle_cell_click)
-                    QDesktopServices.openUrl(QUrl(url))
-                    # Reconnect the signal
-                    self.leadsTable.cellClicked.connect(self.handle_cell_click)
 
     def show_rationale(self, row):
         """Show the rationale in a popup dialog."""
@@ -591,7 +485,8 @@ Only include leads that have been verified through the search results.
 
     # Existing methods (unchanged)
     def refresh_leads(self):
-        print("Weekly lead refresh TBD (Grok 3 API pending)")
+        """Reserved for a future scheduled job; use Run Search on the Leads tab for now."""
+        pass
 
     def save_document(self):
         # Example: Save to crm.py with schema {lead: str, issue: str, action: str}
@@ -1039,14 +934,6 @@ Only include leads that have been verified through the search results.
             }
             QCheckBox {
                 color: white;
-            }
-            QTableWidget::item[linkedin="true"] {
-                color: #0077B5;
-                text-decoration: underline;
-                cursor: pointer;
-            }
-            QTableWidget::item[linkedin="true"]:hover {
-                color: #005582;
             }
         """)
         

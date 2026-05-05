@@ -11,6 +11,9 @@ if API_KEY is None:
 
 API_ENDPOINT = 'https://api.x.ai/v1/chat/completions'
 
+# Lead generation, chat, etc. — override in .env if you use a different xAI model name.
+GROK_MODEL = os.getenv('GROK_MODEL', 'grok-latest')
+
 # Comment out Brave search configuration
 # BRAVE_TOKEN = os.getenv('BRAVE_API_KEY')
 # if BRAVE_TOKEN is None:
