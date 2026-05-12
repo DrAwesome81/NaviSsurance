@@ -19,10 +19,10 @@ def test_export_codebase_recurses_and_includes_root_files(tmp_path):
 
     text = Path(output_path).read_text(encoding="utf-8")
     assert "BEGIN FILE: main.py" in text
+    assert "BEGIN FILE: README.md" in text
     assert "BEGIN FILE: core/service.py" in text
     assert "BEGIN FILE: core/nested/deep.py" in text
-    assert "README.md" not in text
-    assert set(exported) == {"main.py", "core/service.py", "core/nested/deep.py"}
+    assert set(exported) == {"main.py", "README.md", "core/service.py", "core/nested/deep.py"}
 
 
 def test_export_codebase_honors_simple_gitignore_patterns(tmp_path):

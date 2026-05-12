@@ -1021,7 +1021,8 @@ class DualLLMOrchestrator:
 # ------------------------------------------------------------------
 
 def call_grok_api(task_spec: WorkspaceTaskSpec, file_contents: Dict[str, str], 
-                  feedback: str = None, round_num: int = 1, previous_markdown: str = None) -> Dict[str, str]:
+                  feedback: str = None, round_num: int = 1, previous_markdown: str = None,
+                  rag_context: str | None = None) -> Dict[str, str]:
     """
     Call Grok API as the 'Research Agent'.
     
@@ -1059,6 +1060,13 @@ def call_grok_api(task_spec: WorkspaceTaskSpec, file_contents: Dict[str, str],
         has_files_content = bool(ref_pack_text and "### File:" in ref_pack_text)
         template_spec = WorkspaceTemplateSpec.from_payload(task_spec.document_template)
         template_contract = build_template_contract(template_spec) if template_spec else ""
+
+        rag_block = ""
+        if rag_context and str(rag_context).strip():
+            rag_block = (
+                "\n\nRAG Index Context (grounding from local knowledge base):\n"
+                f"{str(rag_context).strip()}\n"
+            )
         
         # Warn if files were expected but none were found
         if task_spec.files and not has_files_content:
@@ -1092,7 +1100,7 @@ Collaboration Round: {round_num}
 
 Reference Pack:
 {ref_pack_text or "(no files provided)"}
-
+{rag_block}
 Current Markdown (may be empty on round 1):
 {previous_markdown or ""}
 
@@ -1133,7 +1141,8 @@ Return STRICT JSON only with:
 
 
 def call_chatgpt_api(task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str], 
-                     file_contents: Dict[str, str] = None, round_num: int = 1) -> Dict[str, str]:
+                     file_contents: Dict[str, str] = None, round_num: int = 1,
+                     rag_context: str | None = None) -> Dict[str, str]:
     """
     Call ChatGPT/OpenAI API as the 'Reviewer / Editor'.
     
@@ -1156,7 +1165,7 @@ def call_chatgpt_api(task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str],
         if not openai_api_key:
             # Fallback to Grok if OpenAI not configured
             logger.info("OpenAI API key not found, using Grok for review")
-            return call_grok_review(task_spec, grok_result, file_contents)
+            return call_grok_review(task_spec, grok_result, file_contents, rag_context=rag_context)
         
         grok_markdown = grok_result.get("markdown", "")
         grok_explanation = grok_result.get("explanation", "")
@@ -1199,6 +1208,13 @@ CRITICAL:
         
         # Get current date for context
         current_date = datetime.now().strftime("%B %d, %Y")
+
+        rag_block = ""
+        if rag_context and str(rag_context).strip():
+            rag_block = (
+                "\n\nRAG Index Context (grounding from local knowledge base):\n"
+                f"{str(rag_context).strip()}\n"
+            )
         
         user_message = f"""Original Goal: {task_spec.goal}
 Context: {task_spec.context or 'No additional context provided.'}
@@ -1210,7 +1226,7 @@ Research Agent's Explanation:
 
 Reference Pack:
 {ref_pack_text or "(no files provided)"}
-
+{rag_block}
 Draft Markdown Document:
 {grok_markdown}
 
@@ -1335,11 +1351,11 @@ Return STRICT JSON only with:
         logger.error(f"Error calling ChatGPT API: {e}")
         # Fallback to Grok review
         logger.info("Falling back to Grok for review")
-        return call_grok_review(task_spec, grok_result, file_contents)
+        return call_grok_review(task_spec, grok_result, file_contents, rag_context=rag_context)
 
 
 def call_grok_review(task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str], 
-                     file_contents: Dict[str, str] = None) -> Dict[str, str]:
+                     file_contents: Dict[str, str] = None, rag_context: str | None = None) -> Dict[str, str]:
     """
     Fallback: Use Grok for review if OpenAI not available. Uses xAI SDK.
     """
@@ -1384,12 +1400,19 @@ CRITICAL:
         # Get current date for context
         current_date = datetime.now().strftime("%B %d, %Y")
 
+        rag_block = ""
+        if rag_context and str(rag_context).strip():
+            rag_block = (
+                "\n\nRAG Index Context (grounding from local knowledge base):\n"
+                f"{str(rag_context).strip()}\n"
+            )
+
         user_message = f"""Original Goal: {task_spec.goal}
 
 Current Date: {current_date}
 Reference Pack:
 {ref_pack_text or "(no files provided)"}
-
+{rag_block}
 Draft Markdown Document:
 {grok_markdown}
 

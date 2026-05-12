@@ -38,7 +38,8 @@ def test_build_agent_memory_context_uses_only_requested_agent_memory():
 
         from core.agent_memory import build_agent_memory_context
 
-        atlas_context = build_agent_memory_context(db, "atlas", "Need Acme regulatory help", limit=5, recent_limit=2)
+        # FTS-only retrieval: query must match indexed agent_memory content (recent list no longer merged).
+        atlas_context = build_agent_memory_context(db, "atlas", "Acme FDA regulatory", limit=5, recent_limit=2)
         assert "Atlas has prior Acme context" in atlas_context
         assert "Quill prefers style-guide-heavy" not in atlas_context
     finally:

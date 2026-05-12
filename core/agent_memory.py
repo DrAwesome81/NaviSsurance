@@ -5,6 +5,8 @@ import logging
 import re
 from collections.abc import Callable
 
+from core.mem0_config import MEM0_USER_ID
+from core.mem0_memory import format_mem0_results, search_memory
 from core.user_memory import (
     _dedupe_rows,
     _semantic_rerank_rows,
@@ -64,48 +66,47 @@ def build_agent_memory_context(
     limit: int = 5,
     recent_limit: int = 2,
 ) -> str:
+    """Hybrid: SQLite + Mem0"""
     agent = str(agent_code or "").strip().lower()
     text = str(query or "").strip()
     if not agent or not text:
         return ""
-    rows: list[tuple] = []
+
+    parts: list[str] = []
+
+    # --- SQLite agent_memory ---
     try:
-        rows.extend(db.agent_memory_search(agent_code=agent, query=text, approval_status="approved", limit=limit))
-    except Exception as exc:
-        logger.debug("agent_memory search failed for %s: %s", agent, exc)
+        rows = db.agent_memory_search(agent_code=agent, query=text, approval_status="approved", limit=limit)
+        if rows:
+            lines = [f"- {r[3]}" for r in rows if r[3]]  # content
+            if lines:
+                parts.append(f"Relevant durable memory for {agent} (SQLite):\n" + "\n".join(lines))
+    except Exception as e:
+        logger.debug("agent_memory search failed for %s: %s", agent, e)
+
+    # --- Mem0 per-agent memory ---
     try:
-        rows.extend(db.agent_memory_recent(agent_code=agent, approval_status="approved", limit=recent_limit))
-    except Exception as exc:
-        logger.debug("agent_memory recent failed for %s: %s", agent, exc)
-    rows = _semantic_rerank_rows(text, _dedupe_rows(rows, max(limit, 12)), limit=limit)
-    entity_refs = infer_entity_memory_refs(db, text)
-    entity_sections: list[str] = []
-    for ref in entity_refs[:4]:
-        try:
-            entity_rows = db.agent_memory_search_by_entity(
-                agent_code=agent,
-                entity_type=ref.get("entity_type") or "",
-                entity_key=ref.get("entity_key") or "",
-                query=text,
-                approval_status="approved",
-                limit=3,
-            )
-        except Exception as exc:
-            logger.debug("agent entity memory lookup failed for %s: %s", agent, exc)
-            entity_rows = []
-        if not entity_rows:
-            continue
-        lines = _format_agent_memory_lines(_semantic_rerank_rows(text, entity_rows, limit=3))
-        entity_sections.append(
-            f"Relevant {agent} memory for {ref.get('label')}:\n" + "\n".join(lines)
+        mem0_results = search_memory(
+            query=text,
+            user_id=MEM0_USER_ID,
+            agent_id=agent,
+            limit=limit,
         )
-    if not rows and not entity_sections:
-        return ""
-    sections: list[str] = []
-    if rows:
-        sections.append(f"Relevant durable memory for {agent}:\n" + "\n".join(_format_agent_memory_lines(rows)))
-    sections.extend(entity_sections)
-    return "\n\n".join(section for section in sections if section.strip())
+        mem0_text = format_mem0_results(
+            mem0_results,
+            section_title=f"Long-term memory for {agent} (Mem0):",
+        )
+        if mem0_text:
+            parts.append(mem0_text)
+    except Exception as e:
+        logger.debug("Mem0 agent memory search failed for %s: %s", agent, e)
+
+    formatted_parts: list[str] = []
+    for part in parts:
+        if part.strip():
+            formatted_parts.append(part.strip())
+
+    return "\n\n".join(formatted_parts)
 
 
 def auto_store_agent_memory(

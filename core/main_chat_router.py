@@ -9,6 +9,7 @@ from config import get_system_prompt
 from core.agent_memory import build_supervisor_cross_memory_context
 from core.chief_of_staff_service import cos_response
 from core.local_llm import run_local_completion
+from core.mem0_memory import handle_explicit_memory_command
 from core.user_memory import (
     auto_store_user_memory,
     build_user_memory_context,
@@ -279,6 +280,7 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
     route, route_reason = select_main_chat_route_details(db, message, sid, conversation_history)
     history_items = _normalize_history(conversation_history)
     teach_response = store_teach_memory(db, message) or store_teach_navi_memory(db, message)
+    explicit_reply = handle_explicit_memory_command(message) if not teach_response else None
     logger.info(
         "MAIN_CHAT_ROUTE session_id=%s chat_id=%s route=%s reason=%s chars=%s history_len=%s",
         sid,
@@ -295,6 +297,22 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
     if teach_response:
         response = teach_response
         final_source = "teach_navi"
+    elif explicit_reply:
+        response = explicit_reply
+        final_source = "explicit_memory_command"
+        try:
+            from core.mem0_config import MEM0_USER_ID
+            from core.mem0_memory import add_memory
+
+            add_memory(
+                messages=[
+                    {"role": "user", "content": message},
+                    {"role": "assistant", "content": explicit_reply},
+                ],
+                user_id=MEM0_USER_ID,
+            )
+        except Exception:
+            pass
     elif route == "local_fast":
         # Keep the fast path fast: formatting/rewrite turns do not need durable recall.
         memory_context = build_user_memory_context(db, message, limit=5, recent_limit=2)
@@ -336,7 +354,7 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
     else:
         response = cos_response(db, message, conversation_history=history_items, chat_id=chat_id)
 
-    if response and not teach_response:
+    if response and not teach_response and final_source != "explicit_memory_command":
         llm_callable = getattr(getattr(chat_handler, "response_handler", None), "chat_with_llama", None)
         if llm_callable is None:
             llm_callable = default_user_memory_llm
@@ -349,6 +367,19 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
             chat_id=chat_id,
             route=final_source,
         )
+        try:
+            from core.mem0_config import MEM0_USER_ID
+            from core.mem0_memory import add_memory
+
+            add_memory(
+                messages=[
+                    {"role": "user", "content": message},
+                    {"role": "assistant", "content": response},
+                ],
+                user_id=MEM0_USER_ID,
+            )
+        except Exception as e:
+            logger.debug("Mem0 main chat storage failed: %s", e)
 
     try:
         chat_handler.save_message(sid, "assistant", response)

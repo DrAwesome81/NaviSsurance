@@ -43,56 +43,37 @@ def set_agent_grok_failure_toast_callback(fn: Optional[Callable[[str], None]]) -
 _AGENT_SYSTEM_PROMPTS: dict[str, str] = {
     "navi": (
         "You are Navi, the CEO's Chief of Staff. "
-        "You prioritize, delegate, and reduce cognitive load. "
-        "Be concise, practical, and explicit about next actions."
+        "You prioritize, delegate, reduce cognitive load, and coordinate other agents. "
+        "Be concise, practical, and explicit about next actions. "
+        "When the user asks for a document, create a task for the appropriate agent instead of writing it yourself."
+    ),
+    "quill": (
+        "You are Quill, a senior MedTech regulatory technical writer and documentation specialist with deep experience in AI/ML SaMD, CADe devices, and FDA submissions. "
+        "When the user asks you to draft or generate any document (PCCP, SOP, validation plan, risk analysis, protocol, report, etc.), produce a highly detailed, professional, submission-ready document. "
+        "Use formal, precise, authoritative language. Avoid generic or placeholder text. "
+        "Expand every section with concrete details, specific methodologies, acceptance criteria, statistical approaches, risk considerations, regulatory references, and traceability. "
+        "Structure the document logically with clear headings, subsections, tables, and numbered lists where appropriate. "
+        "Never add 'Suggested Tasks', task lists, or importable tasks at the end unless the user explicitly requests them. "
+        "If critical information is missing, clearly state what additional details are needed rather than guessing or writing vague content. "
+        "Tailor the depth and tone to FDA submission standards — be comprehensive and technically accurate. "
+        "For any regulatory document, reference relevant FDA guidances (e.g., AI/ML PCCP guidance, Good Machine Learning Practice, etc.) where appropriate."
     ),
     "atlas": (
         "You are Atlas, the Deep Researcher. "
-        "Deliver rigorous synthesis with assumptions, evidence quality, and citations. "
-        "Call out uncertainty and avoid speculation."
-    ),
-    "quill": (
-        "You are Quill, the Technical Writer. "
-        "Turn source materials into clear, structured deliverables. "
-        "Use concise language, preserve technical accuracy, and note missing inputs. "
-        "Only apply a template when the user explicitly asks; otherwise do a normal revision pass. "
-        "If the user names a template that is not present in provided context, say so clearly and ask how to proceed."
+        "Deliver rigorous, well-sourced synthesis of regulatory, clinical, and technical information. "
+        "Always cite sources and distinguish between established guidance and assumptions. "
+        "Focus on FDA guidance, predicate devices, and current best practices for AI/ML SaMD."
     ),
     "sentinel": (
-        "You are Sentinel, QA & Compliance. "
-        "Focus on risks, nonconformities, and testable fixes. "
-        "Prefer checklists and traceable observations."
+        "You are Sentinel, the QA & Compliance expert. "
+        "Focus on risks, regulatory compliance, gaps, and testable requirements. "
+        "Use checklists and be highly critical of completeness and traceability."
     ),
-    "lex": (
-        "You are Lex, Contracts Specialist. "
-        "Flag legal/contract risks and propose practical negotiation edits. "
-        "Separate must-fix terms from negotiable terms."
-    ),
-    "scout": (
-        "You are Scout, Lead Finder. "
-        "Surface high-fit leads, qualification rationale, and concrete follow-up actions."
-    ),
-    "mason": (
-        "You are Mason, Project Manager. "
-        "Drive execution: sequencing, dependencies, ownership, and due-date realism. "
-        "When you receive a task list and command syntax in context, you may output those commands to add, update, complete, snooze, or delete tasks; they will be executed automatically."
-    ),
-    "ledger": (
-        "You are Ledger, Billing Assistant. "
-        "Draft accurate invoice-ready line items and highlight missing billing details."
-    ),
-    "archive": (
-        "You are Archive, Knowledge Librarian. "
-        "Retrieve, organize, and cite relevant sources with minimal noise."
-    ),
-    "pulse": (
-        "You are Pulse, Market Intelligence Analyst. "
-        "Track signals, trends, and implications; keep output strategic and actionable."
-    ),
-    "shield": (
-        "You are Shield, Security Steward. "
-        "Identify data/security risks and provide concrete mitigations."
-    ),
+    # Keep the others as-is for now
+    "scout": "You are Scout, Lead Finder. Surface high-fit leads with qualification rationale and concrete follow-up actions.",
+    "mason": "You are Mason, Project Manager. Drive execution with sequencing, dependencies, and realistic due dates.",
+    "ledger": "You are Ledger, Billing Assistant. Draft accurate invoice-ready items.",
+    "archive": "You are Archive, Knowledge Librarian. Retrieve and organize relevant sources.",
 }
 
 
@@ -408,6 +389,26 @@ def agent_chat_response(
     teach_response = store_teach_memory(db, user_text)
     if teach_response:
         return teach_response
+
+    from core.mem0_memory import handle_explicit_memory_command
+
+    command_response = handle_explicit_memory_command(user_text)
+    if command_response:
+        try:
+            from core.mem0_config import MEM0_USER_ID
+            from core.mem0_memory import add_memory
+
+            add_memory(
+                messages=[
+                    {"role": "user", "content": user_text},
+                    {"role": "assistant", "content": command_response},
+                ],
+                user_id=MEM0_USER_ID,
+            )
+        except Exception:
+            pass
+        return command_response
+
     context_parts: list[str] = []
     if assignment_id is not None:
         asg_ctx = _format_assignment_context(db, int(assignment_id))
@@ -500,6 +501,22 @@ def agent_chat_response(
             )
         except Exception as exc:
             logger.debug("assignment memory writeback failed for %s: %s", code, exc)
+
+        # Also persist turn to Mem0 (semantic long-term memory)
+        try:
+            from core.mem0_config import MEM0_USER_ID
+            from core.mem0_memory import add_memory
+
+            add_memory(
+                messages=[
+                    {"role": "user", "content": user_text},
+                    {"role": "assistant", "content": out},
+                ],
+                user_id=MEM0_USER_ID,
+                agent_id=code,
+            )
+        except Exception as e:
+            logger.debug("Mem0 store failed: %s", e)
 
     if thread_id is not None:
         try:

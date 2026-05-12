@@ -5,7 +5,7 @@ import fnmatch
 from pathlib import Path
 
 
-DEFAULT_EXTENSIONS = (".py",)
+DEFAULT_EXTENSIONS = (".py", ".md")
 DEFAULT_IGNORE_DIRS = {
     ".git",
     ".hg",
@@ -132,7 +132,7 @@ def export_codebase_to_txt(
     Args:
     - root_dir: Project root directory.
     - output_file: Output file path. Relative paths are resolved from root_dir.
-    - extensions: Iterable of file extensions to include (default: .py).
+    - extensions: Iterable of file extensions to include (default: .py, .md).
     - subfolders: Optional top-level folders/files to recurse into. Root-level matching files are always included.
       If None, recurse through the whole project.
     - include_gitignore: If True, honor simple ignore patterns from `.gitignore`.
@@ -193,7 +193,7 @@ def main() -> None:
         "--ext",
         nargs="+",
         default=list(DEFAULT_EXTENSIONS),
-        help="File extensions to include, e.g. --ext .py .md",
+        help="File extensions to include (default: .py .md), e.g. --ext .py .ts",
     )
     parser.add_argument(
         "--subfolders",

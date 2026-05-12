@@ -5,6 +5,8 @@ import re
 from collections.abc import Callable
 
 from core.local_llm import run_local_completion
+from core.mem0_config import MEM0_USER_ID
+from core.mem0_memory import format_mem0_results, search_memory
 
 logger = logging.getLogger(__name__)
 _SEMANTIC_MODEL = None
@@ -501,50 +503,67 @@ def _format_alias_memory_lines(rows: list[tuple]) -> list[str]:
     return lines
 
 
-def build_user_memory_context(db, query: str, *, limit: int = 5, recent_limit: int = 2) -> str:
+def build_user_memory_context(
+    db,
+    query: str,
+    *,
+    limit: int = 6,
+    recent_limit: int = 3,
+) -> str:
+    """Hybrid: SQLite + Mem0"""
     text = str(query or "").strip()
     if not text:
         return ""
-    alias_rows = _load_alias_rows(db, text, limit=max(1, min(3, limit)), recent_limit=max(1, recent_limit))
-    alias_ids = {int(row[0]) for row in alias_rows}
-    rows: list[tuple] = []
+
+    parts: list[str] = []
+
+    search_rows: list[tuple] = []
+    recent_rows: list[tuple] = []
     try:
-        rows.extend(db.user_memory_search(query=text, approval_status="approved", limit=limit))
-    except Exception as exc:
-        logger.debug("user_memory search failed: %s", exc)
+        search_rows = list(db.user_memory_search(query=text, approval_status="approved", limit=limit))
+    except Exception as e:
+        logger.debug("user_memory search failed: %s", e)
     try:
-        rows.extend(db.user_memory_recent(approval_status="approved", limit=recent_limit))
-    except Exception as exc:
-        logger.debug("user_memory recent failed: %s", exc)
-    rows = [row for row in _dedupe_rows(rows, max(limit, 12)) if int(row[0]) not in alias_ids]
-    rows = _semantic_rerank_rows(text, rows, limit=limit)
-    entity_refs = infer_entity_memory_refs(db, text)
-    entity_sections: list[str] = []
-    for ref in entity_refs[:4]:
-        try:
-            entity_rows = db.user_memory_search_by_entity(
-                entity_type=ref.get("entity_type") or "",
-                entity_key=ref.get("entity_key") or "",
-                query=text,
-                approval_status="approved",
-                limit=3,
-            )
-        except Exception as exc:
-            logger.debug("entity memory lookup failed: %s", exc)
-            entity_rows = []
-        if not entity_rows:
-            continue
-        lines = _format_generic_memory_lines(_semantic_rerank_rows(text, entity_rows, limit=3))
-        entity_sections.append(f"Relevant {ref.get('entity_type')} memory for {ref.get('label')}:\n" + "\n".join(lines))
-    if not rows and not alias_rows:
-        return "\n\n".join(section for section in entity_sections if section.strip())
-    sections: list[str] = []
+        recent_rows = list(db.user_memory_recent(approval_status="approved", limit=recent_limit))
+    except Exception as e:
+        logger.debug("user_memory recent failed: %s", e)
+
+    alias_api_rows: list[tuple] = []
+    try:
+        alias_search = getattr(db, "user_memory_alias_search", None)
+        if callable(alias_search):
+            alias_api_rows.extend(alias_search(query=text, approval_status="approved", limit=limit))
+    except Exception as e:
+        logger.debug("user_memory_alias_search failed: %s", e)
+    try:
+        alias_recent = getattr(db, "user_memory_alias_recent", None)
+        if callable(alias_recent):
+            alias_api_rows.extend(alias_recent(approval_status="approved", limit=recent_limit))
+    except Exception as e:
+        logger.debug("user_memory_alias_recent failed: %s", e)
+
+    merged_cap = max(limit + recent_limit, len(search_rows) + len(recent_rows) + len(alias_api_rows))
+    merged = _dedupe_rows(search_rows + recent_rows + alias_api_rows, merged_cap)
+    alias_rows = [r for r in merged if str(r[1] or "").strip() == "alias"]
+    other_rows = [r for r in merged if str(r[1] or "").strip() != "alias"]
+
     if alias_rows:
-        sections.append("Approved aliases / glossary:\n" + "\n".join(_format_alias_memory_lines(alias_rows)))
-    if rows:
-        sections.append("Relevant durable user memory:\n" + "\n".join(_format_generic_memory_lines(rows)))
-    sections.extend(entity_sections)
-    return "\n\n".join(section for section in sections if section.strip())
+        lines = _format_alias_memory_lines(alias_rows)
+        parts.append("Approved aliases / glossary:\n" + "\n".join(lines))
+    if other_rows:
+        lines = _format_generic_memory_lines(other_rows)
+        parts.append("Relevant durable user memory (SQLite):\n" + "\n".join(lines))
+
+    # --- Mem0 semantic memory ---
+    try:
+        mem0_results = search_memory(query=text, user_id=MEM0_USER_ID, limit=limit)
+        mem0_text = format_mem0_results(mem0_results)
+        if mem0_text:
+            parts.append(mem0_text)
+    except Exception as e:
+        logger.debug("Mem0 user memory search failed: %s", e)
+
+    return "\n\n".join(parts)
 
 
 def _extract_json_object(raw: str) -> dict | None:
@@ -584,24 +603,41 @@ def extract_user_memory_items(
     assistant_text = str(assistant_message or "").strip()
     if not user_text or not assistant_text:
         return []
+
+    _MEM_KINDS_FROM_LLM = frozenset(
+        {"preference", "fact", "client", "regulation", "project", "constraint", "alias"}
+    )
+
+    system_prompt = """You are an expert memory extractor for a medical device regulatory consultant (Dr. Adam Odeh).
+
+Extract durable facts, preferences, constraints, client details, project information, and regulatory references from the conversation.
+
+Rules:
+- Only extract things that are likely to be useful in future conversations.
+- Capture: client names/companies, specific regulations/guidances (FDA, EU MDR, etc.), project names, preferences about response style, constraints, recurring instructions.
+- Be specific and concise.
+- Return ONLY valid JSON in this exact format:
+{
+  "memories": [
+    {"kind": "preference|fact|client|regulation|project|constraint", "content": "the actual fact or preference"}
+  ]
+}
+
+If nothing important should be remembered, return: {"memories": []}
+"""
+
     prompt = [
         {
             "role": "system",
-            "content": (
-                "Extract durable user memory from a chat turn. "
-                "Return JSON only with keys facts, preferences, aliases. "
-                "Only include stable facts, durable preferences, and repeatable glossary/alias terms the assistant should remember later. "
-                "Do not include ephemeral requests, temporary plans, one-off scheduling details, or anything uncertain."
-            ),
+            "content": system_prompt,
         },
         {
             "role": "user",
             "content": (
                 f"user_message: {user_text}\n"
                 f"assistant_message: {assistant_text}\n\n"
-                "Return JSON like "
-                '{"facts":["..."],"preferences":["..."],"aliases":[{"term":"...","canonical":"...","synonyms":["..."],"scope":{"client":"..."}}]}. '
-                "Aliases may also be simple strings if structure is unclear."
+                "Return JSON only. Prefer the {\"memories\": [...]} shape above. "
+                "You may also use legacy keys facts, preferences, and aliases when appropriate."
             ),
         },
     ]
@@ -616,6 +652,42 @@ def extract_user_memory_items(
     items: list[dict] = []
     seen: set[tuple[str, str]] = set()
     base_metadata = dict(metadata or {})
+
+    def _append_simple_item(kind: str, content: str, item_json: dict | None = None) -> None:
+        text = str(content or "").strip()
+        if not text or len(text) > 220:
+            return
+        k = str(kind or "fact").strip().lower()
+        if k not in _MEM_KINDS_FROM_LLM:
+            k = "fact"
+        marker = (k, text.casefold())
+        if marker in seen:
+            return
+        seen.add(marker)
+        merged = dict(base_metadata)
+        if item_json:
+            merged.update(item_json)
+        items.append(
+            {
+                "kind": k,
+                "content": text,
+                "source": "auto_chat",
+                "confidence": 0.65,
+                "approval_status": "pending",
+                "json_data": merged,
+                "entity_refs": list(entity_refs or []),
+            }
+        )
+
+    memories_list = data.get("memories")
+    if isinstance(memories_list, list):
+        for entry in memories_list[:10]:
+            if not isinstance(entry, dict):
+                continue
+            kind_raw = str(entry.get("kind") or "fact").strip().lower()
+            content_raw = str(entry.get("content") or "").strip()
+            _append_simple_item(kind_raw, content_raw)
+
     for key, kind in (("facts", "fact"), ("preferences", "preference"), ("aliases", "alias")):
         values = data.get(key) or []
         if not isinstance(values, list):

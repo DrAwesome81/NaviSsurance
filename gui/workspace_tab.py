@@ -40,7 +40,6 @@ from core.workspace_orchestrator import (
     call_chatgpt_api,
     format_reference_pack_summary,
 )
-from core.file_handler import extract_text_from_file
 from core.task_extract import parse_suggested_tasks
 from core.billing.word_integration import export_docx_to_pdf
 from core.workspace_templates import (
@@ -1938,34 +1937,77 @@ class WorkspaceTab(QWidget):
             self.progress_bar.setVisible(False)
 
     def get_file_content(self, file_info):
-        """Get file content with caching to avoid repeated disk I/O."""
+        """Get file content with caching and robust extraction for .docx, .pdf, .xlsx, .txt, .md"""
         if bool(file_info.get("virtual")):
             return str(file_info.get("content") or "")
-        if 'content' not in file_info:
-            try:
-                # Use file_handler for proper extraction
-                content = extract_text_from_file(file_info['path'])
-                if not content or content.strip() == "":
-                    # Fallback for unsupported file types
-                    file_ext = os.path.splitext(file_info['name'])[1].lower()
-                    if file_ext in {'.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml', '.csv'}:
-                        with open(file_info['path'], 'r', encoding='utf-8', errors='ignore') as f:
-                            content = f.read()
-                    else:
-                        content = f"[File: {file_info['name']} - content extraction not available for this file type]"
-                        logger.warning(f"Could not extract content from {file_info['name']} (type: {file_ext})")
-                
-                if not content or content.strip() == "":
-                    logger.warning(f"Empty content extracted from {file_info['name']}")
-                    
-            except Exception as e:
-                logger.error(f"Error extracting content from {file_info['path']}: {e}")
-                content = f"[Error extracting content from {file_info['name']}: {str(e)}]"
-            
-            # Cache the content for future use
+
+        # Use cached content if available
+        if 'content' in file_info and file_info['content']:
+            return file_info['content']
+
+        path = str(file_info.get('path') or "")
+        name = str(file_info.get('name') or os.path.basename(path))
+        if not path or not os.path.exists(path):
+            content = f"[File not found: {name}]"
             file_info['content'] = content
-        
-        return file_info['content']
+            return content
+
+        ext = os.path.splitext(name)[1].lower()
+
+        try:
+            if ext == '.docx':
+                from docx import Document
+                doc = Document(path)
+                content = "\n".join([para.text for para in doc.paragraphs if para.text.strip()])
+                if not content.strip():
+                    content = "[DOCX file appears empty or has no readable text]"
+                
+            elif ext == '.pdf':
+                try:
+                    from PyPDF2 import PdfReader
+                    reader = PdfReader(path)
+                    content = ""
+                    for page in reader.pages:
+                        page_text = page.extract_text() or ""
+                        content += page_text + "\n"
+                    if not content.strip():
+                        content = "[PDF file appears empty or has no extractable text]"
+                except ImportError:
+                    content = "[PyPDF2 not installed - cannot read PDF]"
+                except Exception as e:
+                    content = f"[Error reading PDF: {str(e)}]"
+
+            elif ext == '.xlsx':
+                try:
+                    import pandas as pd
+                    df = pd.read_excel(path)
+                    content = df.to_string(index=False)
+                    if not content.strip():
+                        content = "[Excel file appears empty]"
+                except ImportError:
+                    content = "[pandas not installed - cannot read XLSX]"
+                except Exception as e:
+                    content = f"[Error reading XLSX: {str(e)}]"
+
+            elif ext in {'.txt', '.md'}:
+                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+
+            else:
+                content = f"[Unsupported file type: {ext}]"
+
+            # Final fallback check
+            if not content or content.strip() == "":
+                content = f"[No readable text extracted from {name}]"
+                logger.warning(f"Empty content extracted from {name}")
+
+        except Exception as e:
+            logger.error(f"Error extracting content from {name}: {e}")
+            content = f"[Error extracting content from {name}: {str(e)}]"
+
+        # Cache the result
+        file_info['content'] = content
+        return content
 
     @staticmethod
     def _has_usable_source_content(content: str) -> bool:
@@ -1975,6 +2017,14 @@ class WorkspaceTab(QWidget):
         if text.startswith("[Error"):
             return False
         if text.startswith("[File:"):
+            return False
+        if text.startswith("[File not found:"):
+            return False
+        if text.startswith("[Unsupported file type:"):
+            return False
+        if text.startswith("[No readable text"):
+            return False
+        if text.startswith(("[DOCX file", "[PDF file", "[Excel file", "[PyPDF2", "[pandas not")):
             return False
         return True
 
@@ -2208,88 +2258,71 @@ class WorkspaceTab(QWidget):
 
     def run_ai_collaboration_workflow(self, initial_instructions: str | None = None, prompt_source: str = "Workspace"):
         """
-        Run the dual-LLM collaboration workflow on the marked files.
-
-        For now this:
-        - Collects marked files
-        - Asks the user what they want the AI to do
-        - Calls DualLLMOrchestrator.run_once(...)
-        - Shows the resulting Markdown in the preview pane
-        - Shows Grok and ChatGPT outputs in their respective panes
+        Run the dual-LLM collaboration workflow with RAG grounding.
         """
         try:
+            from core.rag_retriever import rag_retriever
+
             self.merge_latest_atlas_research()
             marked_files = [f for f in self.selected_files if f.get("marked")]
             selected_template_spec = self._selected_document_template_spec()
             self._capture_gap_baseline_for_next_run()
-            
-            # Ask the user what they want Grok + ChatGPT to do
+
+            # Ask for instructions
             if marked_files:
                 prompt_text = f"Describe what you want Grok + ChatGPT to do with these {len(marked_files)} file(s):"
             else:
-                prompt_text = "Describe what you want Grok + ChatGPT to research and create (no files uploaded):"
+                prompt_text = "Describe what you want Grok + ChatGPT to research and create:"
 
-            default_instructions = ""
-            try:
-                template_key = None
-                if getattr(self, "prompt_template_combo", None) is not None:
-                    template_key = self.prompt_template_combo.currentData()
-                if template_key and template_key != "custom":
-                    default_instructions = str(self._prompt_templates().get(str(template_key), {}).get("prompt") or "")
-            except Exception:
-                default_instructions = ""
-            
             provided_instructions = str(initial_instructions or "").strip()
             if not provided_instructions and getattr(self, "collaboration_prompt_edit", None) is not None:
                 provided_instructions = str(self.collaboration_prompt_edit.toPlainText() or "").strip()
+
             if provided_instructions:
                 instructions = provided_instructions
-                ok = True
             else:
                 instructions, ok = QInputDialog.getText(
-                    self,
-                    "AI Collaboration Instructions",
-                    prompt_text,
-                    text=default_instructions,
+                    self, "AI Collaboration Instructions", prompt_text
                 )
                 if not ok or not instructions.strip():
                     self.status_label.setText("AI collaboration cancelled")
                     self._demo_full_cycle_abort_if_pending(reason="cancelled")
                     return
 
-            # Convert marked_files into WorkspaceFile objects and extract content (if any)
+            # Force document-only mode when a document is requested
+            if any(word in instructions.lower() for word in ["draft", "write", "create", "generate", "pccp", "sop", "plan", "protocol", "report"]):
+                instructions = instructions + "\n\nIMPORTANT: Produce ONLY the requested document. Do not add any task lists, suggested tasks, or importable tasks at the end."
+
+            # === Get RAG context ===
+            self.status_label.setText("Retrieving relevant documents from RAG...")
+            QApplication.processEvents()
+            rag_context = rag_retriever.get_context_string(instructions, k=8)
+            if "No relevant documents" in rag_context:
+                rag_context = ""
+
             workspace_files = []
-            file_contents = {}  # Map file paths to their content
-            
+            file_contents = {}
             if marked_files:
                 self.status_label.setText("Extracting file contents...")
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(0)
                 QApplication.processEvents()
-                
                 total_files = len(marked_files)
                 for idx, f in enumerate(marked_files):
                     self.status_label.setText(f"Extracting content from {f['name']}... ({idx+1}/{total_files})")
-                    self.progress_bar.setValue(int((idx / total_files) * 30))  # First 30% for extraction
+                    self.progress_bar.setValue(int((idx / total_files) * 30))
                     QApplication.processEvents()
-                    
-                    # Extract and cache file content
                     content = self.get_file_content(f)
-                    # Normalize file path for consistent matching
                     file_path = str(f["path"] or "").strip()
                     if not bool(f.get("virtual")):
                         file_path = os.path.abspath(file_path)
-                    
-                    # Validate content extraction
                     if not content or content.startswith("[Error") or content.startswith("[File:"):
                         logger.warning(f"Empty or error content for {f['name']}: {content[:100] if content else 'No content'}")
-                    
                     logger.info(f"Extracted {len(content)} chars from {file_path}")
                     file_contents[file_path] = content
-                    
                     workspace_files.append(
                         WorkspaceFile(
-                            path=file_path,  # Use normalized path
+                            path=file_path,
                             display_name=f["name"],
                             file_type=self._guess_file_type(f["name"]),
                         )
@@ -2302,32 +2335,24 @@ class WorkspaceTab(QWidget):
                         "No usable source content could be extracted from the marked files. "
                         "Try a supported text/PDF/DOCX source or check the extraction warnings."
                     )
-                    if hasattr(self, 'grok_text'):
+                    if hasattr(self, "grok_text"):
                         self.grok_text.setPlainText("Source extraction failed for all marked files.")
-                    if hasattr(self, 'chatgpt_text'):
+                    if hasattr(self, "chatgpt_text"):
                         self.chatgpt_text.setPlainText("Workflow did not start because no usable source content was available.")
                     self._demo_full_cycle_abort_if_pending(reason="no usable source content")
                     return
             else:
-                # No files - just research request
                 self.status_label.setText("Starting research collaboration...")
                 self.progress_bar.setVisible(True)
                 self.progress_bar.setValue(10)
                 QApplication.processEvents()
 
-            # Build the task spec with user-defined max_rounds
+            # Build task spec
             max_rounds = self.max_rounds_spinbox.value()
             context = ""
             if getattr(self, "include_task_suggestions_checkbox", None) and self.include_task_suggestions_checkbox.isChecked():
-                context = (
-                    "Output contract:\n"
-                    "- The markdown MUST include a section exactly titled: '## Suggested Tasks (importable)'.\n"
-                    "- Under that header, include one task per line in this exact format:\n"
-                    "  - [ ] <task title> | due: <MM-DD-YYYY or none> | category: <Business or Personal> | priority: <P0-P5>\n"
-                    "- Use realistic due dates; if unknown, use 'none'.\n"
-                    "- Use P0 for low priority, P3 for normal priority, and P5 only for clearly urgent items.\n"
-                    "- Keep task titles short and action-oriented.\n"
-                )
+                context = "Output contract:\n- Include a section exactly titled '## Suggested Tasks (importable)' with tasks in the exact format shown earlier."
+
             task_spec = WorkspaceTaskSpec(
                 goal=instructions.strip(),
                 context=context,
@@ -2336,7 +2361,6 @@ class WorkspaceTab(QWidget):
                 document_template=selected_template_spec.to_payload() if selected_template_spec else None,
             )
 
-            # Save context for persistence on completion
             self._last_task_spec = task_spec
             self._last_workspace_files = [
                 {"path": wf.path, "display_name": wf.display_name, "file_type": wf.file_type}
@@ -2349,54 +2373,47 @@ class WorkspaceTab(QWidget):
             self._current_unresolved_fields = []
             self._current_research_gaps = []
             self._current_user_questions = []
-
-            # Store file contents for use in API calls
             self._current_file_contents = file_contents
 
-            # Log file contents being passed to orchestrator
             logger.info(f"Passing {len(file_contents)} file(s) to orchestrator")
             logger.debug(f"File paths: {list(file_contents.keys())}")
             logger.debug(f"Task spec files: {[f.path for f in task_spec.files]}")
 
-            # Update UI for API calls
-            if marked_files:
-                self.status_label.setText("Calling Grok API (Research Agent)...")
-                self.progress_bar.setValue(30)
-            else:
-                self.status_label.setText("Starting AI collaboration (Research Mode)...")
-                self.progress_bar.setValue(20)
-            if selected_template_spec:
-                self.status_label.setText(f"Generating structured draft with template: {selected_template_spec.display_name}")
-            elif provided_instructions:
-                self.status_label.setText(f"Starting reviewed workflow from {prompt_source}...")
+            self.status_label.setText("Starting AI collaboration with RAG grounding...")
             QApplication.processEvents()
-            
-            # Clear previous outputs
-            if hasattr(self, 'grok_text'):
-                self.grok_text.setPlainText("Processing...")
-            if hasattr(self, 'chatgpt_text'):
-                self.chatgpt_text.setPlainText("Waiting for Grok to complete...")
-            if hasattr(self, 'preview_text'):
-                self.preview_text.setPlainText("Generating document...")
-            
-            self._hide_chief_of_staff_followup()
 
-            # Disable save buttons until document is ready
-            if hasattr(self, 'save_button'):
+            if hasattr(self, "grok_text"):
+                self.grok_text.clear()
+            if hasattr(self, "chatgpt_text"):
+                self.chatgpt_text.clear()
+            if hasattr(self, "preview_text"):
+                self.preview_text.clear()
+
+            self._hide_chief_of_staff_followup()
+            if hasattr(self, "save_button"):
                 self.save_button.setEnabled(False)
-            if hasattr(self, 'export_button'):
+            if hasattr(self, "export_button"):
                 self.export_button.setEnabled(False)
 
-            # Create orchestrator (progress callback will be set by worker thread)
             orchestrator = DualLLMOrchestrator(
                 logger=logger,
-                grok_call=lambda task_spec, file_contents, feedback, round_num, previous_markdown: 
-                    call_grok_api(task_spec, file_contents or self._current_file_contents, feedback, round_num, previous_markdown),
-                chatgpt_call=lambda task_spec, grok_result, file_contents, round_num: 
-                    call_chatgpt_api(task_spec, grok_result, file_contents or self._current_file_contents, round_num)
+                grok_call=lambda task_spec, file_contents, feedback, round_num, previous_markdown: call_grok_api(
+                    task_spec,
+                    file_contents or self._current_file_contents,
+                    feedback,
+                    round_num,
+                    previous_markdown,
+                    rag_context=rag_context,
+                ),
+                chatgpt_call=lambda task_spec, grok_result, file_contents, round_num: call_chatgpt_api(
+                    task_spec,
+                    grok_result,
+                    file_contents or self._current_file_contents,
+                    round_num,
+                    rag_context=rag_context,
+                ),
             )
 
-            # Run orchestrator in background thread to prevent UI freezing
             self._collaboration_worker = CollaborationWorker(orchestrator, task_spec, file_contents)
             self._collaboration_worker.progress_signal.connect(self._on_progress_update)
             self._collaboration_worker.round_update_signal.connect(self._on_round_update)
@@ -2405,17 +2422,16 @@ class WorkspaceTab(QWidget):
             mr = max(1, int(self.max_rounds_spinbox.value()))
             self._update_generate_draft_progress_btn(1, mr)
             self._collaboration_worker.start()
-            
+
         except Exception as e:
-            # Handle errors that occur before starting the worker thread
-            logger.error(f"Error setting up AI collaboration workflow: {e}")
-            error_msg = f"Error setting up AI collaboration workflow: {str(e)}"
-            self.status_label.setText("Error during setup")
+            logger.error(f"Error in run_ai_collaboration_workflow: {e}")
+            self.status_label.setText(f"Error: {str(e)}")
             self.progress_bar.setVisible(False)
-            self.preview_text.setPlainText(error_msg)
-            if hasattr(self, 'grok_text'):
+            if hasattr(self, "preview_text"):
+                self.preview_text.setPlainText(f"Error: {str(e)}")
+            if hasattr(self, "grok_text"):
                 self.grok_text.setPlainText(f"Error: {str(e)}")
-            if hasattr(self, 'chatgpt_text'):
+            if hasattr(self, "chatgpt_text"):
                 self.chatgpt_text.setPlainText("Workflow failed during setup.")
             if hasattr(self, "generate_draft_btn"):
                 self.generate_draft_btn.setEnabled(True)

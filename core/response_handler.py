@@ -9,13 +9,13 @@ import requests
 import re
 from dateutil import parser
 os.environ["TORCH_DYNAMO_DISABLE"] = "1"
-from config import PROJECT_ROOT
+from config import PROJECT_ROOT, get_system_prompt
 # Dropbox indexing removed - using RAG index instead
 from core.chat_retrieval import build_long_term_retrieval_context
 from core.local_llm import session_profile
 from core.task_command_contract import AddTaskCommand, normalize_mmddyyyy, parse_actions
 from core.agent_memory import build_supervisor_cross_memory_context
-from core.user_memory import auto_store_user_memory, build_user_memory_context, store_teach_memory
+from core.user_memory import auto_store_user_memory, build_user_memory_context, store_teach_memory, store_teach_navi_memory
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +188,9 @@ class ResponseHandler:
         )
         conversation_history.append({"role": "user", "content": message})
         try:
-            teach_response = store_teach_memory(self.chat_handler.db, message)
+            teach_response = store_teach_memory(self.chat_handler.db, message) or store_teach_navi_memory(
+                self.chat_handler.db, message
+            )
             if teach_response:
                 return teach_response
 
@@ -317,7 +319,10 @@ class ResponseHandler:
                 chunk_limit=2,
                 raw_turn_limit=4,
             )
-            system_messages = []
+            memory_block = str(user_memory_context or "").strip()
+            system_messages = [
+                get_system_prompt(memory_context=memory_block if memory_block else None),
+            ]
             if navi_context:
                 system_messages.append(
                     {
@@ -325,13 +330,11 @@ class ResponseHandler:
                         "content": "Current tasks and projects (use for planning and priorities when the user asks):\n" + navi_context,
                     }
                 )
-            if user_memory_context:
-                system_messages.append({"role": "system", "content": user_memory_context})
             if cross_memory_context:
                 system_messages.append({"role": "system", "content": cross_memory_context})
             if long_term_context:
                 system_messages.append({"role": "system", "content": long_term_context})
-            messages_for_llm = system_messages + list(conversation_history) if system_messages else conversation_history
+            messages_for_llm = system_messages + list(conversation_history)
             grok_response = self.hybrid_wrapper(messages_for_llm, session_id)
             logger.debug("hybrid_wrapper returned chars=%s", len(str(grok_response or "")))
             added_tasks = []
@@ -436,7 +439,7 @@ class ResponseHandler:
                     session_id=session_id,
                     route="legacy_response_handler",
                 )
-            # Return the processed response, not the raw grok_response
+            # Final reply text shown to the user (task confirmations vs normal model output)
             if added_tasks:
                 logger.debug("Returning processed task result count=%s", len(added_tasks))
                 confirmations = [
@@ -445,17 +448,32 @@ class ResponseHandler:
                 ]
                 if len(created) > 3:
                     confirmations.append(f"Added {len(created)} task(s) total.")
-                return "\n".join(confirmations)
+                reply = "\n".join(confirmations)
+            elif "ADD_TASK:" in (grok_response or ""):
+                logger.warning("ADD_TASK: found in response but no tasks were parsed")
+                logger.debug("TASK_CAPTURE_UNCONFIRMED source=response_handler raw_model_output=%r", grok_response)
+                reply = (
+                    "I tried to add the task but didn't get confirmation from the backend — can you repeat the request?"
+                )
             else:
-                # If no tasks were added but ADD_TASK was in response, we need to handle it
-                # Don't return raw ADD_TASK: string - ChatThread will try to parse it for old system
-                if "ADD_TASK:" in (grok_response or ""):
-                    logger.warning("ADD_TASK: found in response but no tasks were parsed")
-                    logger.debug("TASK_CAPTURE_UNCONFIRMED source=response_handler raw_model_output=%r", grok_response)
-                    # Return a message instead of raw ADD_TASK to prevent ChatThread from parsing it
-                    return "I tried to add the task but didn't get confirmation from the backend — can you repeat the request?"
                 logger.debug("Returning normal response path without task side effects.")
-                return grok_response
+                reply = grok_response
+
+            try:
+                from core.mem0_config import MEM0_USER_ID
+                from core.mem0_memory import add_memory
+
+                add_memory(
+                    messages=[
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": reply},
+                    ],
+                    user_id=MEM0_USER_ID,
+                )
+            except Exception as e:
+                logger.debug("Mem0 main chat store failed: %s", e)
+
+            return reply
         except Exception as e:
             logger.exception("ERROR in get_response: %s", e)
             return "I encountered an issue—try again, doc!"

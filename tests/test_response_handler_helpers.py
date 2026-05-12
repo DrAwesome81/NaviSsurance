@@ -179,10 +179,10 @@ def test_get_response_injects_navi_context_when_nonempty(monkeypatch):
     msgs = captured[0]
     assert len(msgs) >= 2
     assert msgs[0]["role"] == "system"
-    assert "Current tasks and projects" in msgs[0]["content"]
-    assert "Ship report" in msgs[0]["content"]
-    assert msgs[1]["role"] == "user"
-    assert "What should I focus on today?" in msgs[1]["content"]
+    assert any(m["role"] == "system" and "Current tasks and projects" in m["content"] for m in msgs)
+    assert any(m["role"] == "system" and "Ship report" in m["content"] for m in msgs)
+    assert msgs[-1]["role"] == "user"
+    assert "What should I focus on today?" in msgs[-1]["content"]
 
 
 def test_get_response_injects_user_memory_context(monkeypatch):
@@ -219,7 +219,7 @@ def test_get_response_injects_user_memory_context(monkeypatch):
     rh.get_response("Draft a client reply.", "main_session", [])
 
     msgs = captured[0]
-    assert any(m["role"] == "system" and "Relevant durable user memory" in m["content"] for m in msgs)
+    assert any(m["role"] == "system" and "**Durable User Memory:**" in m["content"] for m in msgs)
     assert any(m["role"] == "system" and "Approved aliases / glossary" in m["content"] for m in msgs)
     assert any(m["role"] == "system" and "Q-sub means quality submission." in m["content"] for m in msgs)
     assert any(m["role"] == "system" and "Prefer concise bullets." in m["content"] for m in msgs)
@@ -248,10 +248,11 @@ def test_get_response_no_injection_when_context_empty(monkeypatch):
     rh.get_response("Hello", "main_session", history)
     assert len(captured) == 1
     msgs = captured[0]
-    # No system injection when context is empty: only the user message (appended in get_response)
-    assert len(msgs) == 1
-    assert msgs[0]["role"] == "user"
-    assert msgs[0]["content"] == "Hello"
+    # Base Navi system prompt is always present; optional blocks omitted when empty.
+    assert len(msgs) == 2
+    assert msgs[0]["role"] == "system"
+    assert msgs[1]["role"] == "user"
+    assert msgs[1]["content"] == "Hello"
 
 
 def test_get_response_handles_teach_navi_deterministically(monkeypatch):

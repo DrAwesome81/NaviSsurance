@@ -52,6 +52,31 @@ class ChatManager(QObject):  # Inherit QObject for signals
             return None
 
     def get_response(self, message, session_id, conversation_history):
+        # Teach / explicit memory before legacy ResponseHandler (Grok) pipeline.
+        from core.mem0_config import MEM0_USER_ID
+        from core.mem0_memory import add_memory, handle_explicit_memory_command
+        from core.user_memory import store_teach_memory, store_teach_navi_memory
+
+        teach_response = store_teach_memory(self.chat_handler.db, message) or store_teach_navi_memory(
+            self.chat_handler.db, message
+        )
+        if teach_response:
+            return teach_response
+
+        command_response = handle_explicit_memory_command(message)
+        if command_response:
+            try:
+                add_memory(
+                    messages=[
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": command_response},
+                    ],
+                    user_id=MEM0_USER_ID,
+                )
+            except Exception:
+                pass
+            return command_response
+
         return self.response_handler.get_response(message, session_id, conversation_history)
 
     def save_message(self, session_id, role, content):

@@ -208,9 +208,13 @@ def _apply_cos_context_budget(
         cur["assign"],
     )
 
-# Pattern for CoS to add a task:
-# ADD_TASK: text | due_date (MM-DD-YYYY or none) | category (Business or Personal) [| priority(P0-P5|0-5|none)] [| assigned_to|none] [| project_id|none] [| recurrence]
-ADD_TASK_PATTERN = re.compile(r"^\s*ADD_TASK:\s*(.+?)\s*$", re.IGNORECASE)
+# ============================================================
+# ROBUST TASK ADDITION PARSER — CoS ADD_TASK lines & fallbacks
+# ============================================================
+# ADD_TASK: text | due_date (MM-DD-YYYY or none) | category (Business or Personal)
+#   [| priority(P0-P5|0-5|none)] [| assigned_to|none] [| project_id|none] [| recurrence]
+# search() allows leading text on the same line; payload is the rest of the line after ADD_TASK:
+ADD_TASK_PATTERN = re.compile(r"ADD_TASK:\s*(.+)$", re.IGNORECASE)
 # Fallback for rich prose task lists, e.g.:
 # 1. **Task text** (Business) – Due Friday (03-06-2026).
 RICH_TASK_LINE_PATTERN = re.compile(
@@ -2712,25 +2716,29 @@ def _parse_task_actions(
                 task_update_failures.append(f"TASK_SET_ESTIMATE update failed for task {task_id}: {e}")
             continue
 
-        m = ADD_TASK_PATTERN.match(stripped)
+        # --- ROBUST ADD_TASK HANDLER (.search allows leading text on the same line) ---
+        # Rich numbered / pipe triplets are handled after this loop (see finditer below) so we do not
+        # misclassify lines like ADD_TASK_FROM_ASSIGNMENT: ... | ... as pipe prose.
+        m = ADD_TASK_PATTERN.search(stripped)
         if m:
             explicit_add_task_seen = True
             payload = (m.group(1) or "").strip()
             parts = [p.strip() for p in payload.split("|")]
             if len(parts) < 3:
-                logger.warning("CoS ADD_TASK rejected due to invalid format: %r", stripped)
+                logger.warning("CoS ADD_TASK rejected - not enough parts: %r", stripped)
                 continue
 
             task_text = (parts[0] or "").strip()
             due_raw = (parts[1] or "").strip()
             category = (parts[2] or "").strip().title()
+
             if not task_text or category not in {"Business", "Personal"}:
-                logger.warning("CoS ADD_TASK rejected due to invalid task/category: %r", stripped)
+                logger.warning("CoS ADD_TASK rejected - bad task or category: %r", stripped)
                 continue
 
             due_ok, due_norm = _normalize_dashboard_mmddyyyy(due_raw)
             if not due_ok:
-                logger.warning("CoS ADD_TASK rejected due to invalid due date: %r", due_raw)
+                logger.warning("CoS ADD_TASK rejected - bad due date: %r", due_raw)
                 continue
 
             priority = _parse_task_priority_value(parts[3] if len(parts) > 3 else "")
@@ -2740,6 +2748,7 @@ def _parse_task_actions(
                 ambiguous_task_priorities.append(task_text)
                 logger.info("CoS ADD_TASK deferred pending priority clarification: %r", task_text)
                 continue
+
             assigned_to: Optional[str] = None
             project_part_idx = 4
             recurrence_part_idx = 5
@@ -2756,7 +2765,6 @@ def _parse_task_actions(
             recurrence = recurrence_raw if recurrence_raw else "None"
             if recurrence.lower() in {"none", "null", "n/a"}:
                 recurrence = "None"
-            # Keep recurrence constrained to known UI options unless explicitly custom.
             if recurrence not in {"None", "Daily", "Weekly", "Monthly"}:
                 recurrence = "None"
 
@@ -2777,7 +2785,6 @@ def _parse_task_actions(
                     cos_project_id=cos_project_id,
                     assigned_to=assigned_to,
                 )
-                # Apply optional richer fields available in the Tasks table.
                 if priority is not None:
                     db.update_task_by_id(
                         task_id=int(task_id),
@@ -2785,8 +2792,9 @@ def _parse_task_actions(
                     )
                 added_tasks += 1
                 added_task_items.append((task_text, due_norm))
+                logger.info("CoS added task via ADD_TASK: %s", task_text)
             except Exception as e:
-                logger.warning("CoS add_task failed: %s", e)
+                logger.error("Failed to add task from ADD_TASK: %s", e)
             continue
 
         m_task_from_asg = ADD_TASK_FROM_ASSIGNMENT_PATTERN.match(stripped)

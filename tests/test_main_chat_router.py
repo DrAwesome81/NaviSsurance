@@ -88,10 +88,19 @@ class _FakeDB:
         return row[0]
 
     def agent_memory_search(self, *, agent_code, query, kind=None, source=None, approval_status=None, limit=10):
+        qraw = str(query or "").strip().lower()
+        blob_ref = str(agent_code).strip().lower()
+
+        def _matches_content(content: str) -> bool:
+            c = str(content or "").lower()
+            if not qraw or qraw in c:
+                return True
+            return any(len(tok) > 1 and tok in c for tok in qraw.replace("?", " ").split())
+
         matches = [
             row
             for row in self.agent_memory_rows
-            if row[1] == str(agent_code).strip().lower() and query.lower() in str(row[3]).lower()
+            if row[1] == blob_ref and _matches_content(str(row[3] or ""))
         ]
         if kind is not None:
             matches = [row for row in matches if row[2] == kind]
