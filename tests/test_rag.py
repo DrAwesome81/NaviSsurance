@@ -1,14 +1,23 @@
-import sys
+# Manual RAG retriever smoke check (run from repo root: python tests/test_rag.py)
+
+from __future__ import annotations
+
 import os
+import sys
 
-# Add the project root to Python path so it can find 'core'
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-from core.rag_retriever import rag_retriever
 
-print("✅ RAG retriever imported successfully!")
+def main() -> None:
+    from core.rag_retriever import rag_retriever
 
-# This will say no documents found — that's expected right now
-context = rag_retriever.get_context_string("GDPR requirements for medical device data")
-print("\nTest result:")
-print(context)
+    print("✅ RAG retriever imported successfully!")
+    context = rag_retriever.get_context_string("GDPR requirements for medical device data")
+    print("\nTest result:")
+    print(context)
+
+
+if __name__ == "__main__":
+    main()
