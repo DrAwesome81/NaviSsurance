@@ -1,6 +1,6 @@
 # NaviSsurance Testing Results Log
 
-Record the **result** and **date** for each test item. Aligned with [testing.md](testing.md).
+Record the **result** and **date** for each test item. Aligned with [testing.md](testing.md). (The long legacy TC scratch list was removed from `testing.md`; use the structured sections there and this log for ongoing tracking.)
 
 - **Result:** `Pass` | `Fail` | `Skip` | `Pending` — what you type after running the test.
 - **Date:** YYYY-MM-DD (when the test was run).

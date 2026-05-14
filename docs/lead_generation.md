@@ -1,6 +1,8 @@
-## Lead Generation (Leads Tab)
+# Lead Generation (Leads Tab)
 
-### What it does
+Last updated: 2026-05-12
+
+## What it does
 The **Leads** tab finds MedTech decision-makers (AI SaMD / IVD / regulatory-adjacent) and produces:
 - **verifiable** leads (each lead must have sources)
 - a **personalized outreach message** (copy/paste)

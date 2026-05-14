@@ -280,7 +280,7 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
     route, route_reason = select_main_chat_route_details(db, message, sid, conversation_history)
     history_items = _normalize_history(conversation_history)
     teach_response = store_teach_memory(db, message) or store_teach_navi_memory(db, message)
-    explicit_reply = handle_explicit_memory_command(message) if not teach_response else None
+    explicit_cmd = handle_explicit_memory_command(message) if not teach_response else None
     logger.info(
         "MAIN_CHAT_ROUTE session_id=%s chat_id=%s route=%s reason=%s chars=%s history_len=%s",
         sid,
@@ -297,8 +297,8 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
     if teach_response:
         response = teach_response
         final_source = "teach_navi"
-    elif explicit_reply:
-        response = explicit_reply
+    elif explicit_cmd:
+        response = explicit_cmd["response"]
         final_source = "explicit_memory_command"
         try:
             from core.mem0_config import MEM0_USER_ID
@@ -307,9 +307,10 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
             add_memory(
                 messages=[
                     {"role": "user", "content": message},
-                    {"role": "assistant", "content": explicit_reply},
+                    {"role": "assistant", "content": explicit_cmd["response"]},
                 ],
                 user_id=MEM0_USER_ID,
+                metadata=explicit_cmd.get("metadata") or {},
             )
         except Exception:
             pass

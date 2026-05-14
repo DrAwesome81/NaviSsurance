@@ -1,6 +1,6 @@
 # NaviSsurance APIs And Integrations
 
-Last updated: 2026-04-03
+Last updated: 2026-05-12
 
 ## Overview
 NaviSsurance now has two different API layers:
@@ -45,22 +45,21 @@ The local API is optional. Prefer **Settings → App preferences** (stored in SQ
 The local model is used for narrower structured and formatting-heavy tasks, especially where local execution is preferred for privacy, speed, or cost.
 
 ### Current configuration source
-- `config.py`
-- `docs/llm_routing.md`
-- `docs/local_model_validation.md`
+- **Paths and CLI wiring**: `config.py` (`LOCAL_LLM_MODEL_PATH`, `LOCAL_LLM_CLI_PATH`, `LOCAL_LLM_CHAT_TEMPLATE`, runtime directory)
+- **Tuning (ctx size, GPU layers, timeout)**: **Settings → App preferences** (`core/app_preferences.py`), with optional one-time seeding from legacy env vars `LOCAL_LLM_CTX_SIZE`, `LOCAL_LLM_GPU_LAYERS`, `LOCAL_LLM_TIMEOUT_S`
+- **Routing rationale**: `docs/llm_routing.md`
+- **Historical benchmarks**: `docs/local_model_validation.md`
 
 ### Current model path
-- `Qwen3-14B-Q5_K_M.gguf`
+- `Qwen3-14B-Q5_K_M.gguf` (see `LOCAL_LLM_MODEL_PATH` in `config.py`)
 
-### Related config
-- `LOCAL_LLM_MODEL_PATH`
-- `LOCAL_LLM_CTX_SIZE`
-- `LOCAL_LLM_GPU_LAYERS`
-- `LOCAL_LLM_TIMEOUT_S`
+### Related config keys
+- `LOCAL_LLM_MODEL_PATH`, `LOCAL_LLM_CLI_PATH`, `LOCAL_LLM_CHAT_TEMPLATE` in `config.py`
+- SQLite-backed: `local_llm_ctx_size`, `local_llm_gpu_layers`, `local_llm_timeout_s` (via app preferences; legacy env names above may seed once)
 
 ### Notes
 - This replaces older documentation that described the local path primarily as Llama 3.1-8B.
-- The app still contains legacy local-model pathways and worker-style patterns, but the current documented local target is the Qwen3-based runtime configured in `config.py`.
+- The app routes structured local work through `core/local_llm.py` (standalone `llama-cli` subprocess). Legacy `core/llama_worker.py` remains for some compatibility paths but is not the documented primary runtime.
 
 ## xAI Grok
 

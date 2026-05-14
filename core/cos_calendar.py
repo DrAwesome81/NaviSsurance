@@ -117,8 +117,7 @@ def get_calendar_events(
                 .get("items", [])
             )
             for event in events:
-                if event.get("transparency") == "transparent":
-                    continue
+                # Include transparent (free) events so Navi-created planning blocks appear in context.
                 event["calendarName"] = cal.get("summary", "Unknown Calendar")
                 all_events.append(event)
         except Exception:
@@ -142,6 +141,10 @@ def create_calendar_event(
 ) -> tuple[bool, str, dict[str, Any] | None]:
     """
     Create a Google Calendar event.
+
+    Events are created with ``transparency: "transparent"`` (Show as free / not busy)
+    so focus and planning blocks reserve visible time without blocking availability.
+
     Returns (ok, message, created_event_dict_or_none).
     """
     ok, msg = calendar_write_available()
@@ -172,6 +175,8 @@ def create_calendar_event(
             "summary": title,
             "start": {"dateTime": start_dt.isoformat()},
             "end": {"dateTime": end_dt.isoformat()},
+            # Google Calendar: "transparent" = Show as free; omit or "opaque" = busy
+            "transparency": "transparent",
         }
         if description:
             event_body["description"] = str(description).strip()

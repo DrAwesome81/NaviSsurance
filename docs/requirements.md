@@ -1,4 +1,7 @@
 NaviSsurance Requirements
+
+Last updated: 2026-05-12
+
 Functional Requirements
 
 Dashboard Tab (IMPLEMENTED)
@@ -48,9 +51,9 @@ Lead Generation (IMPLEMENTED)
 User Story: As a consultant, I want to generate leads for AI SaMD, IVD, or non-AI MedTech companies, so I can initiate outreach via LinkedIn or other methods.
 Acceptance Criteria:
 xAI Grok outputs JSON ({name, company, title, LinkedIn_url, rationale}) in Leads Tab.
-Display leads with copy/paste personalized LinkedIn messages.
+Display leads with copy/paste personalized LinkedIn messages (LinkedIn DM sending is not automated in-app).
 Allow marking leads as contacted, saving status to database.
-Send LinkedIn messages directly from the UI, or schedule them to be sent for later.
+Schedule follow-up tasks from the UI (task reminder hook); outbound messaging remains operator-driven.
 
 Clinical Study Design Optimizer (PLANNED)
 
@@ -73,20 +76,21 @@ Notes:
 - Folders/labels are configured via `config/.env`:
   - `EMAIL_GMAIL_LABELS`, `EMAIL_YAHOO_FOLDERS`, `EMAIL_OUTLOOK_FOLDERS`
 - Client/potential classification is configured via `EMAIL_CLIENT_DOMAINS`, `EMAIL_POTENTIAL_DOMAINS`, `EMAIL_CLIENT_LABELS`, `EMAIL_POTENTIAL_LABELS`.
-- DistilBERT training/export to `data/email_labels.csv` is not implemented in the current Workspace branch.
+- DistilBERT training/export to `data/email_labels.csv` is not implemented in the current codebase.
 
 Meeting Transcription (IMPLEMENTED)
 
 User Story: As a consultant, I want to transcribe client meetings, so I can reference discussions for compliance or planning.
 Acceptance Criteria:
-AssemblyAI transcribes audio files, outputting speaker-separated text (interface.py, lines 248–312).
+AssemblyAI transcribes audio files, outputting speaker-separated text (`gui/meetings_tab.py` and related flows).
 Save transcripts to database with client metadata.
+Optional export of transcripts as plain text or DOCX from the Meetings UI.
 
 Task Management (IMPLEMENTED WITH ENHANCEMENTS)
 
 User Story: As a consultant, I want to manage tasks manually or via chat, so I can track project priorities.
 Acceptance Criteria:
-Add, archive, and view tasks in UI (interface.py) or chat (core/chat.py).
+Add, archive, and view tasks in UI (`gui/interface.py`) or chat (`core/response_handler.py` / `core/main_chat_router.py`).
 Persist tasks in core.db.DatabaseManager.
 Support interactive dashboard integration with double-click completion.
 Real-time status updates and task counter display.
@@ -157,10 +161,11 @@ Document Generation (PARTIALLY IMPLEMENTED)
 
 User Story: As a consultant, I want to generate client-specific documentation (e.g., compliance reports, study protocols), so I can deliver professional deliverables.
 Acceptance Criteria:
-Generate PDF/JSON reports from Grok outputs (e.g., compliance JSON, study protocols) in UI (interface.py).
+Generate PDF/JSON reports from Grok outputs (e.g., compliance JSON, study protocols) in UI (`gui/interface.py` and feature tabs).
 Use workspace documents as context for generation.
 Save reports to database with client metadata.
 Allow export or email sharing of reports.
+Deep Research and related briefing flows support markdown plus **DOCX and PDF export** where implemented in the GUI.
 
 Non-Functional Requirements
 

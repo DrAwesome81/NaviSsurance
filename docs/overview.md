@@ -1,6 +1,6 @@
 # NaviSsurance Overview
 
-Last updated: 2026-04-03
+Last updated: 2026-05-12
 
 ## Purpose
 NaviSsurance is a desktop-first MedTech consulting operations platform. It combines planning, delegation, drafting, research, billing, note-taking, compliance review, lead generation, and durable memory into one local application oriented around regulatory and client-service work.
@@ -22,7 +22,7 @@ The app is not just a chat shell. Its core value is domain workflow support for 
 - **Meetings**: Audio transcription and downstream task/document workflows.
 
 ### Specialist-agent operating model
-NaviSsurance includes a working Chief of Staff plus named specialists such as `Atlas`, `Quill`, `Scout`, `Ledger`, `Archive`, `Pulse`, and `Shield`. These agents are surfaced through assignment workflows, direct agent threads, artifacts, and board-level state rather than as abstract hidden subagents.
+NaviSsurance includes a working Chief of Staff plus named specialists (directory in `core/db.py:seed_default_agents`), including `Atlas`, `Quill`, `Sentinel`, `Lex`, `Scout`, `Mason`, `Ledger`, `Archive`, `Pulse`, and `Shield`. These agents are surfaced through assignment workflows, direct agent threads, artifacts, and board-level state rather than as abstract hidden subagents.
 
 ## Runtime And Integration Surface
 The application now includes optional platform infrastructure beyond the PyQt UI:
@@ -47,7 +47,7 @@ NaviSsurance now uses a layered memory system:
 - daily/weekly memory reflections
 - entity-scoped links for client and project-aware recall
 
-The memory system remains SQLite-backed and auditable. Semantic retrieval is layered onto the structured stores rather than replacing them.
+The memory system remains SQLite-backed and auditable. Semantic retrieval is layered onto the structured stores rather than replacing them. When Mem0 is configured, **Mem0** (`core/mem0_memory.py`, local Qdrant path under `data/`) can supplement search and the Memory viewer; approved durable facts still live in `user_memory` / agent / assignment stores as the system of record.
 
 ### Current memory behavior
 - `Teach Navi:` writes approved memory into global Navi memory.
@@ -100,6 +100,7 @@ The memory system remains SQLite-backed and auditable. Semantic retrieval is lay
 - production-grade remote operations and observability
 - clinical study design productization
 - full CRM unification
+- unified Client Dossier / client-scoped workspace (planned; see `TODO.md`)
 
 ## Related Docs
 - `docs/user_manual.md` for user-facing workflows

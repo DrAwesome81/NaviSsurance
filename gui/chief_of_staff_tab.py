@@ -486,6 +486,17 @@ class CosPreferencesDialog(QDialog):
         self.prefs_deep_work_spin.setValue(2)
         layout.addWidget(self.prefs_deep_work_spin)
 
+        # Energy & Working Style (Phase 7)
+        layout.addWidget(QLabel("Energy & Working Style:"))
+        energy_form = QFormLayout()
+        self.energy_peak_edit = QLineEdit()
+        self.energy_peak_edit.setPlaceholderText("e.g. 8-11, 14-16")
+        energy_form.addRow("Peak focus hours:", self.energy_peak_edit)
+        self.energy_low_edit = QLineEdit()
+        self.energy_low_edit.setPlaceholderText("e.g. 13-14, after 17")
+        energy_form.addRow("Low energy windows:", self.energy_low_edit)
+        layout.addLayout(energy_form)
+
         layout.addWidget(QLabel("Behavior preferences:"))
         behavior_form = QFormLayout()
         self.behavior_tone_combo = QComboBox()
@@ -579,7 +590,7 @@ class CosPreferencesDialog(QDialog):
         row = self.db.cos_get_preferences()
         if not row:
             return
-        operating_system_md, blocked_times_json, deep_work_hours, behavior_prefs_json, _ = row
+        operating_system_md, blocked_times_json, deep_work_hours, behavior_prefs_json, energy_profile_json, _ = row
         self.prefs_os_edit.setPlainText(operating_system_md or "")
         self.prefs_deep_work_spin.setValue(deep_work_hours if deep_work_hours is not None else 2)
         self.prefs_blocked_list.clear()
@@ -631,6 +642,14 @@ class CosPreferencesDialog(QDialog):
         self.behavior_evenings_check.setChecked(bool(behavior.get("protect_evenings")))
         self.behavior_weekends_check.setChecked(bool(behavior.get("protect_weekends")))
         self.behavior_confirm_tasks_check.setChecked(bool(behavior.get("confirm_ambiguous_tasks")))
+        try:
+            energy = json.loads(energy_profile_json or "{}")
+            if not isinstance(energy, dict):
+                energy = {}
+        except Exception:
+            energy = {}
+        self.energy_peak_edit.setText(str(energy.get("peak_hours") or energy.get("peak") or "").strip())
+        self.energy_low_edit.setText(str(energy.get("low_energy_windows") or energy.get("low_energy") or "").strip())
         self._refresh_legacy_notice()
 
     def _save(self):
@@ -653,11 +672,19 @@ class CosPreferencesDialog(QDialog):
         behavior["protect_evenings"] = bool(self.behavior_evenings_check.isChecked())
         behavior["protect_weekends"] = bool(self.behavior_weekends_check.isChecked())
         behavior["confirm_ambiguous_tasks"] = bool(self.behavior_confirm_tasks_check.isChecked())
+        energy_profile_json = json.dumps(
+            {
+                "peak_hours": (self.energy_peak_edit.text() or "").strip(),
+                "low_energy_windows": (self.energy_low_edit.text() or "").strip(),
+            },
+            ensure_ascii=False,
+        )
         self.db.cos_set_preferences(
             operating_system_md=os_md,
             blocked_times_json=blocked,
             deep_work_hours=self.prefs_deep_work_spin.value(),
             behavior_prefs_json=json.dumps(behavior),
+            energy_profile_json=energy_profile_json,
         )
         QMessageBox.information(self, "Preferences", "Saved.")
         self.accept()
@@ -1993,6 +2020,13 @@ Calendar and task actions:
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
+        host = self.window()
+        if host is not None and hasattr(host, "open_memory_viewer"):
+            self.memory_viewer_btn = QPushButton("\U0001f9e0 View Memories")
+            self.memory_viewer_btn.setToolTip("View, edit, and manage long-term memories")
+            self.memory_viewer_btn.clicked.connect(host.open_memory_viewer)
+            self._apply_button_metrics(self.memory_viewer_btn, min_width=140)
+            layout.addWidget(self.memory_viewer_btn)
         tabs = QTabWidget()
         self.sidebar_tabs = tabs
 

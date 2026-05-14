@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QGroupBox,
     QTabWidget,
+    QSpinBox,
 )
 
 from core.db import DatabaseManager, bump_task_due_date_mmddyyyy
@@ -305,9 +306,9 @@ class TasksTab(QWidget):
             task_list_layout.addLayout(add_row)
 
         # Table: Tasks-tab-only layout. Task column gets most space; Priority and Actions have room.
-        self.table = QTableWidget(0, 10)
+        self.table = QTableWidget(0, 11)
         self.table.setHorizontalHeaderLabels(
-            ["ID", "Task", "Assigned To", "Priority", "Tags", "Due", "Category", "Project", "Done", "Actions"]
+            ["ID", "Task", "Assigned To", "Priority", "Tags", "Due", "Category", "Project", "Est (min)", "Done", "Actions"]
         )
         self.table.setColumnHidden(0, True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -330,7 +331,7 @@ class TasksTab(QWidget):
         hdr = self.table.horizontalHeader()
         if self._compact:
             # Dashboard focus view: no action buttons; allow user-resizable columns.
-            self.table.setColumnHidden(9, True)
+            self.table.setColumnHidden(10, True)
             for c in range(self.table.columnCount()):
                 if c == 0:
                     continue
@@ -343,6 +344,7 @@ class TasksTab(QWidget):
             hdr.resizeSection(3, 85)   # Priority
             hdr.resizeSection(5, 110)  # Due
             hdr.resizeSection(6, 100)  # Category
+            hdr.resizeSection(8, 88)  # Est (min)
         else:
             # Task column: stretch to use remaining space (main content)
             hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -351,11 +353,11 @@ class TasksTab(QWidget):
             # Priority: fixed width so P0–P5 combo is fully visible (Tasks tab footprint)
             hdr.resizeSection(3, 80)
             hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-            # Tags, Due, Category, Project, Done: size to content
-            for c in (4, 5, 6, 7, 8):
+            # Tags, Due, Category, Project, Est, Done: size to content
+            for c in (4, 5, 6, 7, 8, 9):
                 hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
             # Actions: size to content so buttons aren’t squished (width comes from button layout)
-            hdr.setSectionResizeMode(9, QHeaderView.ResizeMode.ResizeToContents)
+            hdr.setSectionResizeMode(10, QHeaderView.ResizeMode.ResizeToContents)
         # Persist user-adjusted column widths/order.
         hdr.setSectionsMovable(True)
         hdr.sectionResized.connect(lambda *_: self._save_header_state())
@@ -647,6 +649,17 @@ class TasksTab(QWidget):
                 it_project.setFlags(it_project.flags() ^ Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(r, 7, it_project)
 
+                est_minutes = int(rdict.get("estimate_minutes") or 0)
+                est_spin = QSpinBox()
+                est_spin.setRange(0, 100_000)
+                est_spin.setSingleStep(5)
+                est_spin.blockSignals(True)
+                est_spin.setValue(est_minutes)
+                est_spin.blockSignals(False)
+                est_spin.setToolTip("Expected time to complete (minutes)")
+                est_spin.valueChanged.connect(lambda v, tid=task_id: self._on_estimate_minutes_changed(tid, int(v)))
+                self.table.setCellWidget(r, 8, est_spin)
+
                 if self._compact:
                     done_widget = QWidget()
                     done_layout = QHBoxLayout(done_widget)
@@ -666,12 +679,12 @@ class TasksTab(QWidget):
                         lambda state, tid=task_id: self._set_done(tid, state == Qt.CheckState.Checked.value)
                     )
                     done_layout.addWidget(done_checkbox)
-                    self.table.setCellWidget(r, 8, done_widget)
+                    self.table.setCellWidget(r, 9, done_widget)
                 else:
                     it_done = QTableWidgetItem("Yes" if done else "")
                     it_done.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                     it_done.setFlags(it_done.flags() ^ Qt.ItemFlag.ItemIsEditable)
-                    self.table.setItem(r, 8, it_done)
+                    self.table.setItem(r, 9, it_done)
 
                 if not self._compact:
                     # Actions: spaced buttons so column isn’t a barcode (Tasks tab)
@@ -713,7 +726,7 @@ class TasksTab(QWidget):
                     btn_del.setMinimumWidth(52)
                     btn_del.clicked.connect(lambda _=False, tid=task_id: self._delete_task(tid))
                     row.addWidget(btn_del)
-                    self.table.setCellWidget(r, 9, actions)
+                    self.table.setCellWidget(r, 10, actions)
 
             self.table.resizeRowsToContents()
             # Keep startup and refresh row heights stable.
@@ -725,7 +738,7 @@ class TasksTab(QWidget):
             logger.exception("refresh_tasks failed: %s", e)
 
     def _header_state_key(self) -> str:
-        return "dashboard_table_header_state_v1" if self._compact else "tasks_table_header_state_v1"
+        return "dashboard_table_header_state_v2" if self._compact else "tasks_table_header_state_v2"
 
     def _save_header_state(self) -> None:
         try:
@@ -757,6 +770,14 @@ class TasksTab(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Tasks", f"Could not update assignee:\n\n{type(e).__name__}: {e}")
 
+    def _on_estimate_minutes_changed(self, task_id: int, minutes: int) -> None:
+        """Persist expected effort when the row's estimate spinbox changes."""
+        try:
+            m = max(0, min(int(minutes), 100_000))
+            self.db.update_task_by_id(int(task_id), estimate_minutes=m)
+        except Exception as e:
+            QMessageBox.warning(self, "Tasks", f"Could not update estimate:\n\n{type(e).__name__}: {e}")
+
     def _parse_mason_task_commands(self, response: str) -> str:
         """
         Parse Mason's reply for task command lines, apply them via the DB, and return
@@ -785,6 +806,7 @@ class TasksTab(QWidget):
                         completed=0,
                         cos_project_id=cmd.project_id,
                         assigned_to=cmd.assigned_to,
+                        estimate_minutes=cmd.estimate_minutes,
                     )
                     # Apply richer optional fields.
                     if cmd.priority is not None:
@@ -994,7 +1016,11 @@ class TasksTab(QWidget):
                     snooze_tag = f" snoozed_until={snoozed}" if snoozed else ""
                     proj = t.get("cos_project_id")
                     proj_s = f" project={proj}" if proj else ""
-                    lines.append(f"  {tid}: {text} | P{prio} | due {due} | assigned_to {assigned_to} | {cat}{proj_s}{snooze_tag}")
+                    est_m = int(t.get("estimate_minutes") or 0)
+                    est_s = f" est={est_m}m" if est_m > 0 else ""
+                    lines.append(
+                        f"  {tid}: {text} | P{prio} | due {due} | assigned_to {assigned_to} | {cat}{proj_s}{snooze_tag}{est_s}"
+                    )
             lines.append("")
             try:
                 proj_rows = self.db.cos_get_projects() or []
@@ -1039,7 +1065,7 @@ class TasksTab(QWidget):
             lines.append("If you think important tasks/projects are missing, ask Adam for a filter (project id, keyword, category, date range). Do not assume you saw everything.")
             lines.append("")
             lines.append(
-                "Tasks: ADD_TASK: <description> | <MM-DD-YYYY or none> | Business|Personal [| <priority P0-P5 or 0-5 or none>] [| <assigned to or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]"
+                "Tasks: ADD_TASK: <description> | <MM-DD-YYYY or none> | Business|Personal [| <priority P0-P5 or 0-5 or none>] [| <assigned to or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>] [| <estimate_minutes or none>]"
             )
             lines.append("TASK_UPDATE_PRIORITY: <task_id> | <0-5>")
             lines.append("TASK_COMPLETE: <task_id>")

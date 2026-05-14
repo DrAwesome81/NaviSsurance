@@ -1,5 +1,7 @@
 # CEO Regulatory Strategy Sprint (10 business days)
 
+Last updated: 2026-05-12
+
 This is a fixed-scope pilot offer designed for **startup CEOs** building MedTech products (AI SaMD, IVD/LDT, and adjacent devices) who need fast, defensible clarity on **regulatory path + evidence + timeline + risks**.
 
 ## Outcome (what you get)

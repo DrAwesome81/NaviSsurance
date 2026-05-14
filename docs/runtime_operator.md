@@ -1,6 +1,6 @@
 # Runtime, Jobs, And Local API — Operator Notes
 
-Last updated: 2026-04-03
+Last updated: 2026-05-12
 
 ## What this is
 

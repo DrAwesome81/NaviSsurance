@@ -1,5 +1,7 @@
 # 7-Minute CEO Demo – “From Vague Idea to Execution in One Flow”
 
+Last updated: 2026-05-12
+
 ## Pre-demo setup (do this 2 min before the call)
 
 - Have one clean, short product brief ready (even a 1-page mock is fine).

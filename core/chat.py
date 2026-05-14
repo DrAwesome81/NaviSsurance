@@ -69,13 +69,14 @@ class ChatManager(QObject):  # Inherit QObject for signals
                 add_memory(
                     messages=[
                         {"role": "user", "content": message},
-                        {"role": "assistant", "content": command_response},
+                        {"role": "assistant", "content": command_response["response"]},
                     ],
                     user_id=MEM0_USER_ID,
+                    metadata=command_response.get("metadata") or {},
                 )
             except Exception:
                 pass
-            return command_response
+            return command_response["response"]
 
         return self.response_handler.get_response(message, session_id, conversation_history)
 

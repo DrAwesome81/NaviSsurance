@@ -2,7 +2,7 @@
 
 Status: roadmap / design document, not a full description of shipped behavior.
 
-Last updated: 2026-04-03
+Last updated: 2026-05-12
 
 ## Purpose
 Build a single search capability that lets the Chief of Staff assistant (and the UI) find relevant information across:

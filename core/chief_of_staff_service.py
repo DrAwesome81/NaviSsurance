@@ -33,10 +33,15 @@ from core.cos_calendar import (
 from core.cos_doc_search import doc_search, format_hits
 from core.chat_retrieval import build_long_term_retrieval_context, format_chat_history_tool_results
 from core.agent_memory import build_agent_memory_context, build_assignment_memory_context
-from core.user_memory import build_user_memory_context
+from core.user_memory import build_user_memory_context, infer_entity_memory_refs
 from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
+from core.client_dossier import get_client_dossier_snapshot
 from core.local_llm import run_local_completion
 from core.tool_registry import invoke_tool
+from core.task_command_contract import (
+    extract_first_duration_phrase,
+    parse_optional_estimate_minutes_field,
+)
 from core.app_preferences import (
     get_cos_calendar_max_chars,
     get_cos_context_budget_chars,
@@ -212,6 +217,7 @@ def _apply_cos_context_budget(
 # ROBUST TASK ADDITION PARSER — CoS ADD_TASK lines & fallbacks
 # ============================================================
 # ADD_TASK: text | due_date (MM-DD-YYYY or none) | category (Business or Personal)
+#   [| priority] [| assigned_to | project_id | recurrence] [| estimate_minutes]
 #   [| priority(P0-P5|0-5|none)] [| assigned_to|none] [| project_id|none] [| recurrence]
 # search() allows leading text on the same line; payload is the rest of the line after ADD_TASK:
 ADD_TASK_PATTERN = re.compile(r"ADD_TASK:\s*(.+)$", re.IGNORECASE)
@@ -552,7 +558,14 @@ def _assignments_context(db: DatabaseManager, *, max_lines: int = 45) -> str:
 def _preferences_context(prefs_row) -> str:
     if not prefs_row:
         return ""
-    operating_system_md, blocked_times_json, deep_work_hours, behavior_prefs_json, _ = prefs_row
+    (
+        operating_system_md,
+        blocked_times_json,
+        deep_work_hours,
+        behavior_prefs_json,
+        energy_profile_json,
+        _prefs_updated_at,
+    ) = prefs_row
     parts = []
     if operating_system_md:
         parts.append("Operating system / constraints:\n" + operating_system_md)
@@ -640,6 +653,23 @@ def _preferences_context(prefs_row) -> str:
                     parts.append("Behavior prefs: " + json.dumps(prefs))
         except Exception:
             parts.append("Behavior prefs: " + behavior_prefs_json)
+    if energy_profile_json:
+        try:
+            ep = json.loads(energy_profile_json)
+            if isinstance(ep, dict) and ep:
+                elines: list[str] = []
+                peak = str(ep.get("peak_hours") or ep.get("peak") or "").strip()
+                low = str(ep.get("low_energy_windows") or ep.get("low_energy") or "").strip()
+                if peak:
+                    elines.append(f"- Peak focus hours: {peak}")
+                if low:
+                    elines.append(f"- Low energy windows: {low}")
+                if elines:
+                    parts.append("Energy / working style:\n" + "\n".join(elines))
+                elif ep:
+                    parts.append("Energy / working style: " + json.dumps(ep, ensure_ascii=False))
+        except Exception:
+            parts.append("Energy / working style: " + str(energy_profile_json))
     return "\n\n".join(parts) if parts else ""
 
 
@@ -847,7 +877,7 @@ Parallelism expectation:
 - If there are multiple Dispatch/Prep items, emit MULTIPLE ASSIGN lines (one per item/agent) so work can run in parallel.
 
 Action commands you may output:
-- ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal> [| <priority P0-P5 or 0-5 or none>] [| <assigned to or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]
+- ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal> [| <priority P0-P5 or 0-5 or none>] [| <assigned to or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>] [| <estimate: minutes (e.g. 90) or duration (e.g. 1 hr 15 min) or none>]
 - TASK_SET_TAGS: <task_id> | <json array of tags>    (example: TASK_SET_TAGS: 123 | [\"triage:dispatch\",\"source:am_sweep\"])
 - TASK_SET_ESTIMATE: <task_id> | <minutes>           (0-600, example: TASK_SET_ESTIMATE: 123 | 45)
 - ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>
@@ -1496,6 +1526,10 @@ def synthesize_add_task_line_from_user_text(
     lower = rest.lower()
     category = "Personal" if re.search(r"\bpersonal\b", lower) else "Business"
 
+    estimate_minutes, rest = extract_first_duration_phrase(rest)
+    if estimate_minutes is not None:
+        estimate_minutes = max(0, min(estimate_minutes, 100_000))
+
     priority_explicit: Optional[int] = None
     pm = re.search(r"(?i)\b(?:priority|prio\.?)\s*[:\s]*(?:p)?([0-5])\b", rest)
     if pm:
@@ -1552,7 +1586,10 @@ def synthesize_add_task_line_from_user_text(
         p = inferred if inferred is not None else 3
 
     due_part = due_norm if due_norm else "none"
-    return f"ADD_TASK: {desc} | {due_part} | {category} | P{p}"
+    line = f"ADD_TASK: {desc} | {due_part} | {category} | P{p}"
+    if estimate_minutes is not None:
+        line += f" | none | none | None | {int(estimate_minutes)}"
+    return line
 
 
 def _build_local_task_capture_messages(user_message: str) -> list[dict]:
@@ -2029,6 +2066,25 @@ def cos_response(
     assignments_ctx = _assignments_context(db, max_lines=al)
     cal_ctx = _truncate_cos_text(_calendar_context(), get_cos_calendar_max_chars(db))
     mem_ctx = _memory_context(db, user_message, chat_id)
+
+    # Client dossier digest (compact) when message or context resolves to a client
+    client_digest = ""
+    try:
+        refs = infer_entity_memory_refs(db, user_message or "")
+        for ref in refs:
+            if ref.get("entity_type") == "client":
+                snap = get_client_dossier_snapshot(db, int(ref.get("entity_key")), memory_limit=3, assignment_limit=3)
+                prof = snap.get("profile", {})
+                mems = snap.get("memory", [])
+                mem_line = mems[0]["content"][:120] if mems else ""
+                client_digest = f"\n\nClient Dossier ({prof.get('name', ref.get('entity_key'))}): {mem_line} (see Clients tab for full view)"
+                break
+    except Exception:
+        client_digest = ""
+
+    if client_digest:
+        mem_ctx = (mem_ctx or "") + client_digest
+
     prefs_ctx, cal_ctx, mem_ctx, _, tasks_ctx, assignments_ctx = _apply_cos_context_budget(
         prefs_ctx,
         cal_ctx,
@@ -2063,10 +2119,10 @@ Priority scale is numeric and consistent:
 - Delegation assignments: P1 (lowest urgency) … P5 (highest urgency).
 
 You can see his current dashboard task list and may add tasks to it. To add a task, write one or more lines in this exact format (one task per line):
-ADD_TASK: <task description> | <due date as MM-DD-YYYY or "none"> | <Business or Personal> [| <priority P0-P5 or 0-5 or none>] [| <assigned to or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]
+ADD_TASK: <task description> | <due date as MM-DD-YYYY or "none"> | <Business or Personal> [| <priority P0-P5 or 0-5 or none>] [| <assigned to or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>] [| <estimate: 90 or 1 hr 15 min or none>]
 Examples:
 - ADD_TASK: Send follow-up to client | 02-25-2026 | Business | P3
-- ADD_TASK: Draft DHF gap memo | 03-05-2026 | Business | P1 | Mason | 12 | Weekly
+- ADD_TASK: Draft DHF gap memo | 03-05-2026 | Business | P1 | Mason | 12 | Weekly | 90
 When adding a task, include priority whenever you can infer it from urgency, timing, or the surrounding plan context. Do not use P0 as a placeholder for "unspecified." If the user asked you to add a task and priority is genuinely unclear, ask a short follow-up question instead of outputting an ADD_TASK line with no priority.
 Omit ADD_TASK lines if you are not adding any tasks.
 {calendar_instructions}
@@ -2768,6 +2824,10 @@ def _parse_task_actions(
             if recurrence not in {"None", "Daily", "Weekly", "Monthly"}:
                 recurrence = "None"
 
+            estimate_minutes = parse_optional_estimate_minutes_field(
+                parts[recurrence_part_idx + 1] if len(parts) > recurrence_part_idx + 1 else None
+            )
+
             cos_project_id: Optional[int] = None
             if project_raw and project_raw.lower() not in {"none", "null", "n/a"}:
                 try:
@@ -2784,6 +2844,7 @@ def _parse_task_actions(
                     completed=0,
                     cos_project_id=cos_project_id,
                     assigned_to=assigned_to,
+                    estimate_minutes=estimate_minutes,
                 )
                 if priority is not None:
                     db.update_task_by_id(

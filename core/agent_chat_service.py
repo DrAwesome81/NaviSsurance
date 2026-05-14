@@ -392,8 +392,8 @@ def agent_chat_response(
 
     from core.mem0_memory import handle_explicit_memory_command
 
-    command_response = handle_explicit_memory_command(user_text)
-    if command_response:
+    mem_cmd = handle_explicit_memory_command(user_text)
+    if mem_cmd:
         try:
             from core.mem0_config import MEM0_USER_ID
             from core.mem0_memory import add_memory
@@ -401,13 +401,15 @@ def agent_chat_response(
             add_memory(
                 messages=[
                     {"role": "user", "content": user_text},
-                    {"role": "assistant", "content": command_response},
+                    {"role": "assistant", "content": mem_cmd["response"]},
                 ],
                 user_id=MEM0_USER_ID,
+                agent_id=code,
+                metadata=mem_cmd.get("metadata") or {},
             )
         except Exception:
             pass
-        return command_response
+        return mem_cmd["response"]
 
     context_parts: list[str] = []
     if assignment_id is not None:
@@ -502,10 +504,13 @@ def agent_chat_response(
         except Exception as exc:
             logger.debug("assignment memory writeback failed for %s: %s", code, exc)
 
-        # Also persist turn to Mem0 (semantic long-term memory)
+        # Also persist turn to Mem0 with metadata
         try:
             from core.mem0_config import MEM0_USER_ID
-            from core.mem0_memory import add_memory
+            from core.mem0_memory import add_memory, handle_explicit_memory_command
+
+            mem_command = handle_explicit_memory_command(user_text)
+            meta = mem_command.get("metadata", {}) if mem_command else {}
 
             add_memory(
                 messages=[
@@ -514,6 +519,7 @@ def agent_chat_response(
                 ],
                 user_id=MEM0_USER_ID,
                 agent_id=code,
+                metadata=meta,
             )
         except Exception as e:
             logger.debug("Mem0 store failed: %s", e)

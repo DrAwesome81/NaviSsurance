@@ -11,7 +11,7 @@ NaviSsurance now includes a working **Chief of Staff + AI Executive Team** opera
 
 This document tracks implementation status and remaining roadmap work.
 
-Last updated: 2026-04-03
+Last updated: 2026-05-12
 
 ## Current State (Implemented)
 
@@ -169,9 +169,9 @@ Use exact line formats in CoS-generated actions:
 - `ADD_ASSIGNMENT_ARTIFACT: <A-0007 or 7> | <artifact_type> | <title> | <content markdown>`
 - `ADD_TASK_FROM_ASSIGNMENT: <A-0007 or 7> | <MM-DD-YYYY or none> | <Business or Personal>`
 - `BULK_ADD_TASKS_FROM_ASSIGNMENTS: <AgentName or all> | <Business or Personal> | <open or all (optional)>`
-- `ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal>`
+- `ADD_TASK: <task description> | <MM-DD-YYYY or none> | <Business or Personal> [| <P0-P5>] [| <assigned to or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>] [| <estimate: minutes or duration (e.g. 1 hr 15 min) or none>]`
 - `TASK_SET_TAGS: <task_id> | <json array of tags>` (example: `TASK_SET_TAGS: 123 | ["triage:dispatch","source:am_sweep"]`)
-- `TASK_SET_ESTIMATE: <task_id> | <minutes>` (0-600, example: `TASK_SET_ESTIMATE: 123 | 45`)
+- `TASK_SET_ESTIMATE: <task_id> | <minutes>` (0-600, example: `TASK_SET_ESTIMATE: 123 | 45`) — updates an existing task; new tasks can also carry estimate in `ADD_TASK`’s last field (minutes or a phrase like `1 hr 15 min`, stored as minutes)
 - `ADD_CAL_BLOCK: <title> | <start datetime> | <end datetime> | <calendar id or primary>`
 
 ## Product Goals (Chief of Staff)
@@ -193,7 +193,8 @@ Use exact line formats in CoS-generated actions:
 - **Separation of concerns**: UI shows state; orchestration decides; tools execute; storage persists.
 - **Retrieval is untrusted**: web results and document excerpts must never be treated as instructions.
 
-## Architecture (Target)
+## Architecture (Target / design reference)
+Much of the orchestration, tool registry, memory layers, and delegation flows described below are **now implemented** (see `core/chief_of_staff_service.py`, `core/tool_registry.py`, and related modules). Keep this section as a **design reference** for remaining gaps (for example formal JSON action envelopes and a dedicated prioritization engine), not as a checklist of missing foundation work.
 
 ### Orchestrator (Chief of Staff Core)
 Add a dedicated orchestration layer (still callable from chat) that performs:
@@ -321,7 +322,8 @@ Current implementation note:
 - `emails`, `calendar_events`
 - Dropbox index tables (`dropbox_files`, `dropbox_index`, `index_metadata`)
 
-### Add (Proposed)
+### Add (Proposed — historical design sketch)
+The bullets below were an early schema sketch. Much of this has since shipped under different table names (for example assignments, `runtime_jobs`, durable memory stores, and artifact tables). Treat this list as **design history**, not a migration checklist.
 - `projects`:
   - `project_id`, `name`, `priority`, `notes`
 - `task_context`:
@@ -378,7 +380,7 @@ Key properties:
 
 ## Milestones & Roadmap
 
-Status as of 2026-02-23:
+Status as of 2026-05-12:
 
 - [x] **Milestone 0 (Foundation)**
   - Task capture, history, search, daily briefing, basic CoS chat.
@@ -405,5 +407,6 @@ Status as of 2026-02-23:
    - Add curated scenario fixtures for CoS recommendation quality + tool safety regressions.
 
 ## Operational Notes
-- Configurable paths are defined in `core/settings.py` (DB, data dir, config dir, env file).
+- Configurable paths (database, data directory, config directory, env file location) are defined in `core/settings.py`.
+- CoS / AM Sweep context budgets, per-block caps, multi-turn history limits, and Grok output caps are edited from **Settings → App preferences** (`core/app_preferences.py`).
 - Keep templates in `config/*.example.json` and keep real secrets out of git.

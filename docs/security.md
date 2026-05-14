@@ -1,6 +1,6 @@
 # NaviSsurance Security
 
-Last updated: 2026-04-01
+Last updated: 2026-05-12
 
 ## Overview
 NaviSsurance is a local-first desktop application with optional local runtime and local HTTP service components. Security posture is therefore centered on:
@@ -24,10 +24,7 @@ This document describes the current implementation posture. It does not certify 
 - See the more implementation-specific security notes in the repository-level `SECURITY.md`.
 
 ### API and channel exposure
-- The local FastAPI surface is optional and controlled by:
-  - `NAVI_LOCAL_API_ENABLED`
-  - `NAVI_LOCAL_API_HOST`
-  - `NAVI_LOCAL_API_PORT`
+- The local FastAPI surface is optional and controlled from **Settings → App preferences** (SQLite `app_settings`). Legacy `NAVI_LOCAL_API_*` environment variables may seed those keys once via `core.app_preferences.migrate_legacy_env_preferences()`.
 - Telegram scaffolding exists in the repo but remote chat is not part of the intended current product surface.
 - These integrations should remain disabled unless actively needed.
 

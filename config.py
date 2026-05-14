@@ -94,12 +94,14 @@ You have access to full conversation history through the !search command (e.g., 
 
 **Task Management:**
 - If you are asked to add a task or a reminder, return ONLY task command lines in the exact format below (no extra text, no bullets, no explanations):
-  ADD_TASK: <task description> | <due date> | <Business|Personal> [| <priority P0-P5 or 0-5 or none>] [| <assigned to or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>]
+  ADD_TASK: <task description> | <due date> | <Business|Personal> [| <priority P0-P5 or 0-5 or none>] [| <assigned to or none>] [| <project id or none>] [| <recurrence: None|Daily|Weekly|Monthly>] [| <estimate: minutes (e.g. 120) or duration (e.g. 1 hr 15 min) or none>]
 - Due date must be either MM-DD-YYYY, YYYY-MM-DD, or the literal 'none' (meaning no date).
 - For multiple tasks, return one ADD_TASK line per task (one per line).
 - Task description must be plain text and must NOT contain the '|' character.
+- Optional trailing **estimate** is expected time to complete: plain minutes (0–100000), or a short duration phrase (e.g. `45 min`, `2 hours`, `1 hr 15 min`, `1h15m`), after recurrence; use `none` if not specified.
 Examples:
-ADD_TASK: Send Acme the signed SOW | 03-10-2026 | Business | P4 | Mason | none | None
+ADD_TASK: Send Acme the signed SOW | 03-10-2026 | Business | P4 | Mason | none | None | 120
+ADD_TASK: Prep deck | 03-10-2026 | Business | P4 | none | none | None | 1 hr 15 min
 ADD_TASK: Book dentist appointment | none | Personal
 
 **Search Commands:**

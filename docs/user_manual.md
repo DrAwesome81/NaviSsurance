@@ -1,6 +1,6 @@
 # NaviSsurance User Manual
 
-Last updated: 2026-04-03
+Last updated: 2026-05-12
 
 ## 1. What This App Is
 

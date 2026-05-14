@@ -9,7 +9,8 @@ The Notes tab is now a context-document workspace rather than a loose-note inbox
 - **`gui/notes_tab.py`**: Main UI implementation with `NoteTakingSystem`
 - **`core/db.py`**: Stores hidden note-capture history plus first-class context documents
 - **`core/response_handler.py`**: Keeps `notes_session` traffic out of task/news/search routing
-- **`core/llama_worker.py`**: Local LLM worker used for document updates and re-organization
+- **`core/local_llm.py`**: Primary local completion path for Notes merge/reorganize (standalone `llama-cli` subprocess configured in `config.py`)
+- **`core/llama_worker.py`**: Legacy/auxiliary local worker path retained for compatibility with some callers
 
 ### Data Model
 - **`notes`**: Hidden ingestion history. Raw observations are still inserted immediately so user text is never lost.

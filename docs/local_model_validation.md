@@ -1,13 +1,18 @@
 # Local Model Validation
 
+Last updated: 2026-05-12
+
+## Production note (current app)
+The shipped desktop app uses **`Qwen3-14B Q5_K_M`** (GGUF on disk; filename uses underscores) via the standalone **`llama-cli`** subprocess wired in `config.py` and `core/local_llm.py` (see `docs/llm_routing.md`). Everything from **Baseline** through **Recommendation** below is **benchmark history** from the validation sprint, not the current runtime description.
+
 ## Goal
 Validate stronger local models on the `RTX 5090 32GB` while preserving about `8 GB` of VRAM headroom, then decide the safest near-term routing for `Notes`.
 
-## Baseline
-- Current app worker: `core/llama_worker.py`
-- Current embedded runtime: `llama-cpp-python 0.3.8+cu128.gemma3`
-- Current embedded model: `Meta-Llama-3-8B-Instruct Q4_K_M`
-- Current app offload setting: `n_gpu_layers=33`
+## Baseline (at time of benchmark)
+- Embedded worker script: `core/llama_worker.py`
+- Embedded runtime under test: `llama-cpp-python 0.3.8+cu128.gemma3`
+- Embedded model under test: `Meta-Llama-3-8B-Instruct Q4_K_M`
+- Offload setting used in tests: `n_gpu_layers=33`
 
 ## Key Runtime Finding
 The current embedded Python runtime is the main blocker, not the GPU.
@@ -82,7 +87,7 @@ The current embedded Python runtime is the main blocker, not the GPU.
 - Route `Notes` to `Grok` temporarily if reliability is more important than keeping `Notes` local right now.
 - Do not keep using the current embedded local worker for `Notes` on this machine until the runtime is upgraded away from the crashing Python path.
 
-## Practical Conclusion
+## Practical Conclusion (historical)
 If you want the best near-term user experience:
 - short term: use `Grok` for `Notes`
 - medium term: migrate local structured tasks to standalone `llama.cpp` with `Qwen3-14B Q5_K_M`

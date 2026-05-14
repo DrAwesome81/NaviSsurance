@@ -1,6 +1,6 @@
 ## RAG index (Chroma) — build & config
 
-Last updated: 2026-04-03
+Last updated: 2026-05-12
 
 This repo includes a local RAG index builder in `build_rag_index.py` that creates a Chroma vector store in `chroma_index/`.
 

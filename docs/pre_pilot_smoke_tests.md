@@ -1,5 +1,7 @@
 # Pre-pilot smoke test checklist (fast)
 
+Last updated: 2026-05-12
+
 Use this checklist before a paid pilot kickoff, a CEO demo, or any “screen share” call.
 
 ## A) 60-second setup check (no code)

@@ -1,6 +1,6 @@
 # LLM Routing Map
 
-Last updated: 2026-04-01
+Last updated: 2026-05-12
 
 ## Current target split
 

@@ -39,7 +39,7 @@ def bump_task_due_date_mmddyyyy(due_date: str | None, *, days: int) -> str:
 class DatabaseManager:
     def __init__(self, db_name: str | None = None):
         self.db_name = str(db_name or DATABASE_PATH)
-        self.current_schema_version = 27  # Increment this when making schema changes
+        self.current_schema_version = 28  # Increment this when making schema changes
         self.setup_db()
         self.create_indexes()
         # Additive tables for newer features (safe for legacy DBs)
@@ -1056,7 +1056,7 @@ class DatabaseManager:
     def save_message(self, session_id, role, content):
         with sqlite3.connect(self.db_name) as conn:
             conn.execute('INSERT INTO conversation (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)',
-                        (session_id, role, content, datetime.now()))
+                        (session_id, role, content, datetime.now().isoformat()))
             conn.commit()
 
     def search_conversations(self, search_terms, date_range=None):
@@ -4123,6 +4123,35 @@ class DatabaseManager:
             except Exception as e:
                 print(f"    - Error creating assignment memory tables: {e}")
 
+        # Version 27 to 28: Morning Planning - energy profile + enhanced daily plans
+        if from_version < 28 and to_version >= 28:
+            print("  - Extending cos_preferences with energy_profile_json and cos_daily_plans for structured plans")
+            try:
+                # Add energy_profile_json to cos_preferences
+                cursor = conn.execute("PRAGMA table_info(cos_preferences)")
+                cols = [c[1] for c in cursor.fetchall()]
+                if "energy_profile_json" not in cols:
+                    conn.execute("ALTER TABLE cos_preferences ADD COLUMN energy_profile_json TEXT")
+                    print("    - Added energy_profile_json to cos_preferences")
+
+                # Extend cos_daily_plans
+                cursor = conn.execute("PRAGMA table_info(cos_daily_plans)")
+                cols = [c[1] for c in cursor.fetchall()]
+                if "status" not in cols:
+                    conn.execute("ALTER TABLE cos_daily_plans ADD COLUMN status TEXT DEFAULT 'proposed'")
+                if "plan_json" not in cols:
+                    conn.execute("ALTER TABLE cos_daily_plans ADD COLUMN plan_json TEXT")
+                if "visual_html" not in cols:
+                    conn.execute("ALTER TABLE cos_daily_plans ADD COLUMN visual_html TEXT")
+                if "generated_at" not in cols:
+                    conn.execute("ALTER TABLE cos_daily_plans ADD COLUMN generated_at TEXT")
+                if "approved_at" not in cols:
+                    conn.execute("ALTER TABLE cos_daily_plans ADD COLUMN approved_at TEXT")
+                print("    - Extended cos_daily_plans columns")
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error in morning planning migration: {e}")
+
         print(f"Schema migration from version {from_version} to {to_version} completed.")
 
     # -------------------------------------------------------------------------
@@ -5294,12 +5323,13 @@ class DatabaseManager:
     def cos_get_preferences(self):
         with sqlite3.connect(self.db_name) as conn:
             cursor = conn.execute(
-                "SELECT operating_system_md, blocked_times_json, deep_work_hours, behavior_prefs_json, updated_at FROM cos_preferences WHERE id = 1"
+                "SELECT operating_system_md, blocked_times_json, deep_work_hours, behavior_prefs_json, energy_profile_json, updated_at FROM cos_preferences WHERE id = 1"
             )
             return cursor.fetchone()
 
     def cos_set_preferences(self, operating_system_md: str = None, blocked_times_json: str = None,
-                            deep_work_hours: int = None, behavior_prefs_json: str = None):
+                            deep_work_hours: int = None, behavior_prefs_json: str = None,
+                            energy_profile_json: str = None):
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with sqlite3.connect(self.db_name) as conn:
             row = conn.execute("SELECT 1 FROM cos_preferences WHERE id = 1").fetchone()
@@ -5318,13 +5348,16 @@ class DatabaseManager:
                 if behavior_prefs_json is not None:
                     sets.append("behavior_prefs_json = ?")
                     vals.append(behavior_prefs_json)
+                if energy_profile_json is not None:
+                    sets.append("energy_profile_json = ?")
+                    vals.append(energy_profile_json)
                 vals.append(1)
                 conn.execute(f"UPDATE cos_preferences SET {', '.join(sets)} WHERE id = ?", vals)
             else:
                 conn.execute(
-                    """INSERT INTO cos_preferences (id, operating_system_md, blocked_times_json, deep_work_hours, behavior_prefs_json, updated_at)
-                       VALUES (1, ?, ?, ?, ?, ?)""",
-                    (operating_system_md or "", blocked_times_json or "[]", deep_work_hours or 0, behavior_prefs_json or "{}", now)
+                    """INSERT INTO cos_preferences (id, operating_system_md, blocked_times_json, deep_work_hours, behavior_prefs_json, energy_profile_json, updated_at)
+                       VALUES (1, ?, ?, ?, ?, ?, ?)""",
+                    (operating_system_md or "", blocked_times_json or "[]", deep_work_hours or 0, behavior_prefs_json or "{}", energy_profile_json or "{}", now)
                 )
             conn.commit()
 
@@ -5352,6 +5385,57 @@ class DatabaseManager:
                 "SELECT id, week_start, plan_md, inputs_snapshot_json, created_at FROM cos_weekly_plans ORDER BY created_at DESC LIMIT 1"
             )
             return cursor.fetchone()
+
+    # Morning Planning helpers (phase 0)
+    def get_daily_plan(self, date_str: str) -> dict | None:
+        with sqlite3.connect(self.db_name) as conn:
+            row = conn.execute(
+                "SELECT id, date, status, plan_json, visual_html, generated_at, approved_at FROM cos_daily_plans WHERE date = ?",
+                (date_str,)
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "date": row[1],
+                "status": row[2] or "proposed",
+                "plan_json": row[3],
+                "visual_html": row[4],
+                "generated_at": row[5],
+                "approved_at": row[6],
+            }
+
+    def save_daily_plan(self, date_str: str, plan_data: dict) -> int:
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with sqlite3.connect(self.db_name) as conn:
+            existing = conn.execute("SELECT id FROM cos_daily_plans WHERE date = ?", (date_str,)).fetchone()
+            plan_json = plan_data.get("plan_json")
+            visual_html = plan_data.get("visual_html")
+            status = plan_data.get("status", "proposed")
+            if existing:
+                conn.execute(
+                    "UPDATE cos_daily_plans SET status=?, plan_json=?, visual_html=?, generated_at=? WHERE date=?",
+                    (status, plan_json, visual_html, now, date_str)
+                )
+                conn.commit()
+                return existing[0]
+            else:
+                cur = conn.execute(
+                    "INSERT INTO cos_daily_plans (date, status, plan_json, visual_html, generated_at) VALUES (?, ?, ?, ?, ?)",
+                    (date_str, status, plan_json, visual_html, now)
+                )
+                conn.commit()
+                return cur.lastrowid
+
+    def approve_daily_plan(self, date_str: str) -> bool:
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                "UPDATE cos_daily_plans SET status='approved', approved_at=? WHERE date=?",
+                (now, date_str)
+            )
+            conn.commit()
+            return True
 
     def cos_insert_daily_plan(self, date: str, plan_md: str) -> int:
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

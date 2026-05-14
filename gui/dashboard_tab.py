@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextBrowser, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QCheckBox, QComboBox, QInputDialog, QMessageBox, QDateEdit, QHeaderView, QAbstractItemView, QSizePolicy
 from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal, QMetaObject, Q_ARG
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dateutil import parser
 import sqlite3
 import sys
@@ -259,7 +259,7 @@ class DashboardTab(QWidget):
             return
 
     def _today_utc_str(self) -> str:
-        return datetime.utcnow().strftime("%Y-%m-%d")
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     def _get_cached_briefing_html_for_today(self) -> str:
         try:
@@ -307,7 +307,7 @@ class DashboardTab(QWidget):
     def _set_cached_schedule_html(self, html: str) -> None:
         try:
             self.db.set_setting("dashboard_schedule_cache_html", str(html or ""))
-            self.db.set_setting("dashboard_schedule_cache_at", datetime.utcnow().isoformat())
+            self.db.set_setting("dashboard_schedule_cache_at", datetime.now(timezone.utc).isoformat())
         except Exception:
             pass
 
@@ -389,7 +389,8 @@ class DashboardTab(QWidget):
         except Exception:
             briefing_off = False
         if not briefing_off:
-            QTimer.singleShot(2000, self.load_daily_briefing)
+            # Phase 5: auto-trigger morning plan on first open of the day (placeholder)
+            QTimer.singleShot(2500, self._maybe_auto_generate_morning_plan)
         else:
             QTimer.singleShot(500, self._show_briefing_disabled)
         QTimer.singleShot(12000, lambda: self._set_startup_refresh_indicator(False))
@@ -430,7 +431,7 @@ class DashboardTab(QWidget):
     def preload_news_sync(self):
         """Blocking news prefetch for splash startup flow (best-effort)."""
         # Honor same staleness policy as async load_news.
-        current_time = datetime.utcnow().timestamp()
+        current_time = datetime.now(timezone.utc).timestamp()
         one_hour_ago = current_time - 3600
         try:
             last_news_update = self.db.get_last_news_update()
@@ -1515,16 +1516,16 @@ class DashboardTab(QWidget):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(5, 5, 5, 5)
         
-        # Header with refresh button
+        # Header with Morning Planning button
         header_layout = QHBoxLayout()
-        briefing_header = QLabel("Daily Briefing")
+        briefing_header = QLabel("Morning Planning")
         briefing_header.setStyleSheet("color: #e8eaed; font-weight: 600; padding: 3px; background-color: transparent; border: none; font-size: 13px;")
         header_layout.addWidget(briefing_header)
         header_layout.addStretch()
         
-        refresh_briefing_btn = QPushButton("Refresh")
-        refresh_briefing_btn.clicked.connect(self.refresh_daily_briefing)
-        header_layout.addWidget(refresh_briefing_btn)
+        gen_btn = QPushButton("Generate Plan")
+        gen_btn.clicked.connect(self.generate_morning_plan)
+        header_layout.addWidget(gen_btn)
         layout.addLayout(header_layout)
         
         # Briefing display
@@ -2388,6 +2389,40 @@ class DashboardTab(QWidget):
             traceback.print_exc()
             if hasattr(self, 'briefing_display'):
                 self.briefing_display.setHtml(f"<div style='color: #e8eaed;'>Error loading briefing: {str(e)}</div>")
+
+    def _maybe_auto_generate_morning_plan(self):
+        """Phase 5: auto-generate morning plan on first open of the day if enabled."""
+        try:
+            from core.app_preferences import is_briefing_and_email_disabled
+            if is_briefing_and_email_disabled(self.db):
+                return
+            # Simple date check using existing last_run mechanism or a new setting
+            last = self.db.get_setting("morning_plan_last_date") or ""
+            today = datetime.now().strftime("%Y-%m-%d")
+            if last != today:
+                self.db.set_setting("morning_plan_last_date", today)
+                self.generate_morning_plan()
+        except Exception:
+            pass
+
+    def generate_morning_plan(self):
+        """Trigger Morning Planning flow (replaces legacy briefing generation)."""
+        try:
+            from core.morning_planning import run_morning_planning
+            from gui.morning_plan_review_dialog import MorningPlanReviewDialog
+
+            result = run_morning_planning(self.db)
+            dlg = MorningPlanReviewDialog(result, self)
+            if dlg.exec() == 1:  # accepted
+                # Phase 6: basic commit (reuses existing CoS action parsing for ADD_CAL_BLOCK etc.)
+                self.db.approve_daily_plan(result.get("plan_date", ""))
+                # In full impl: parse result['raw_output'] with parse_action_line and execute
+                if hasattr(self, 'briefing_display'):
+                    self.briefing_display.setHtml("<div style='color:#e8eaed; padding:20px;'>Morning plan approved and committed.</div>")
+        except Exception as e:
+            print(f"Error generating morning plan: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _briefing_load_timeout_check(self):
         """If briefing worker is still running after timeout, fail-open the UI message."""

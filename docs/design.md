@@ -1,6 +1,6 @@
 # NaviSsurance Design
 
-Last updated: 2026-04-03
+Last updated: 2026-05-12
 
 Contributor note:
 - If this design doc, older plan files, and the codebase appear to disagree, use `docs/contributor_guide.md` to determine which source should win.
@@ -175,14 +175,10 @@ See:
 - `docs/llm_routing.md`
 - `docs/local_model_validation.md`
 
-## Optional Runtime Flags
-Environment-controlled optional features are defined in `config.py`:
-- `NAVI_RUNTIME_ENABLED`
-- `NAVI_RUNTIME_POLL_INTERVAL_S`
-- `NAVI_RUNTIME_JOB_LEASE_S`
-- `NAVI_LOCAL_API_ENABLED`
-- `NAVI_LOCAL_API_HOST`
-- `NAVI_LOCAL_API_PORT`
+## Optional runtime and local API toggles
+Runtime scheduler, local API bind address, poll interval, Telegram scaffolding flags, and related non-secret knobs are stored in SQLite (`app_settings`) and edited from **Settings → App preferences**. Legacy `NAVI_*` environment variables may seed those keys once via `core.app_preferences.migrate_legacy_env_preferences()` when a DB value is still unset.
+
+See `docs/runtime_operator.md` for the operator-facing table and verification checklist.
 
 ## Current Design Direction
 NaviSsurance is evolving toward:

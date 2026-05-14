@@ -11,7 +11,7 @@ from dateutil import parser
 os.environ["TORCH_DYNAMO_DISABLE"] = "1"
 from config import PROJECT_ROOT, get_system_prompt
 # Dropbox indexing removed - using RAG index instead
-from core.chat_retrieval import build_long_term_retrieval_context
+# Lazy import: only needed for the long-term retrieval path inside get_response
 from core.local_llm import session_profile
 from core.task_command_contract import AddTaskCommand, normalize_mmddyyyy, parse_actions
 from core.agent_memory import build_supervisor_cross_memory_context
@@ -32,8 +32,7 @@ class ResponseHandler:
         self.model_loaded = False
         # Ensure only one thread talks to the worker at a time
         self.worker_lock = threading.Lock()
-
-        self._start_worker()
+        # Worker is started lazily on first local-LLM call to avoid spawning the subprocess on every app start.
 
     def _start_worker(self):
         self.process = None
@@ -101,6 +100,8 @@ class ResponseHandler:
 
     def chat_with_llama(self, messages, session_id):
         """Send a single request to the llama worker in a thread-safe, robust way."""
+        if not self.process:
+            self._start_worker()
         if not self.process or not self.model_loaded:
             return "Model not loaded."
         profile = session_profile(session_id)
@@ -312,6 +313,7 @@ class ResponseHandler:
                 agent_memory_limit=3,
                 assignment_memory_limit=4,
             )
+            from core.chat_retrieval import build_long_term_retrieval_context
             long_term_context = build_long_term_retrieval_context(
                 self.chat_handler.db,
                 message,
@@ -367,6 +369,7 @@ class ResponseHandler:
                             completed=0,
                             cos_project_id=cmd.project_id,
                             assigned_to=cmd.assigned_to,
+                            estimate_minutes=cmd.estimate_minutes,
                         )
                         if cmd.priority is not None:
                             try:
@@ -601,7 +604,7 @@ All Tasks:
                 include_snoozed=False,
                 limit=100,
             )
-            lines = ["Tasks (id, text, priority P0–P5, due, assigned to, category):"]
+            lines = ["Tasks (id, text, priority P0–P5, due, assigned to, category, est minutes):"]
             if not tasks:
                 lines.append("  (none)")
             else:
@@ -612,7 +615,11 @@ All Tasks:
                     due = t.get("due_date") or "—"
                     assigned_to = t.get("assigned_to") or "—"
                     cat = t.get("category") or "—"
-                    lines.append(f"  {tid}: {text} | P{prio} | due {due} | assigned to {assigned_to} | {cat}")
+                    est = int(t.get("estimate_minutes") or 0)
+                    est_s = str(est) if est > 0 else "—"
+                    lines.append(
+                        f"  {tid}: {text} | P{prio} | due {due} | assigned to {assigned_to} | {cat} | est {est_s}"
+                    )
             try:
                 proj_rows = db.cos_get_projects() or []
                 lines.append("")

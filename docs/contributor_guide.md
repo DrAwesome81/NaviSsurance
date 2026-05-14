@@ -1,6 +1,6 @@
 # NaviSsurance Contributor Guide
 
-Last updated: 2026-04-01
+Last updated: 2026-05-12
 
 ## Purpose
 This short guide explains where the current source of truth lives in the repo so contributors do not accidentally follow stale historical plans or older architectural descriptions.
@@ -34,7 +34,7 @@ When multiple files appear to disagree, use this order:
    - `docs/user_manual.md`
 
 5. **Historical plans**
-   - Older plan files under `C:\Users\adamo\.cursor\plans\`
+   - Older plan files under `.cursor/plans/` (or your local Cursor plans directory)
    - Treat these as history/spec/reference unless `docs/roadmap_status.md` or `TODO.md` explicitly says they are still active
 
 ## How To Read The Repo

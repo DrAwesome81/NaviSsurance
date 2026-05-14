@@ -3,9 +3,11 @@ from core.task_command_contract import (
     AddTaskCommand,
     ProjectSetDeadlineCommand,
     TaskDeleteCommand,
+    extract_first_duration_phrase,
     normalize_mmddyyyy,
     parse_action_line,
     parse_add_task_line,
+    parse_duration_to_minutes,
 )
 
 
@@ -77,4 +79,52 @@ def test_parse_action_line_task_set_assigned_to():
     assert cmd is not None
     assert cmd.task_id == 7
     assert cmd.assigned_to == "Quill"
+
+
+def test_parse_add_task_line_with_estimate_minutes_trailing():
+    ok, cmd, _reason = parse_add_task_line(
+        "ADD_TASK: Draft memo | none | Business | P4 | Mason | 12 | Weekly | 90"
+    )
+    assert ok is True
+    assert isinstance(cmd, AddTaskCommand)
+    assert cmd.recurrence == "Weekly"
+    assert cmd.estimate_minutes == 90
+
+
+def test_parse_add_task_line_invalid_estimate_ignored():
+    ok, cmd, _reason = parse_add_task_line(
+        "ADD_TASK: Draft memo | none | Business | P4 | Mason | 12 | Weekly | lots"
+    )
+    assert ok is True
+    assert isinstance(cmd, AddTaskCommand)
+    assert cmd.estimate_minutes is None
+
+
+def test_parse_duration_to_minutes_variants():
+    assert parse_duration_to_minutes("90") == 90
+    assert parse_duration_to_minutes("1 hr 15 min") == 75
+    assert parse_duration_to_minutes("2 hours 30 minutes") == 150
+    assert parse_duration_to_minutes("2 hours") == 120
+    assert parse_duration_to_minutes("45 min") == 45
+    assert parse_duration_to_minutes("1h15m") == 75
+    assert parse_duration_to_minutes("1hr15m") == 75
+    assert parse_duration_to_minutes("1.5 hours") == 90
+    assert parse_duration_to_minutes("none") is None
+    assert parse_duration_to_minutes("lots") is None
+
+
+def test_parse_add_task_line_estimate_duration_trailing():
+    ok, cmd, _reason = parse_add_task_line(
+        "ADD_TASK: Draft memo | none | Business | P4 | Mason | 12 | Weekly | 1 hr 15 min"
+    )
+    assert ok is True
+    assert isinstance(cmd, AddTaskCommand)
+    assert cmd.estimate_minutes == 75
+
+
+def test_extract_first_duration_phrase_strips_once():
+    mins, rest = extract_first_duration_phrase("Call Acme about Q1 1 hr 15 min tomorrow")
+    assert mins == 75
+    assert "1 hr 15 min" not in rest
+    assert "Call Acme" in rest
 

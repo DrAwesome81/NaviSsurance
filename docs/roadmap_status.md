@@ -1,6 +1,6 @@
 # Roadmap Status
 
-Last updated: 2026-04-03
+Last updated: 2026-05-12
 
 ## Purpose
 This document is the visible roadmap/status companion to `TODO.md`. It exists so the repo has one current place to classify active, implemented, and historical roadmap work without requiring contributors to inspect private or historical plan files first.
@@ -28,7 +28,10 @@ This document is the visible roadmap/status companion to `TODO.md`. It exists so
 - more mature entity-aware and semantic retrieval
 - agent/assignment reflection summaries and broader memory UX polish
 - observability and operational controls for optional runtime/API surfaces
-- performance work, especially CoS latency and duplicate calls
+- opportunistic CoS latency and duplicate-call reductions beyond the current Settings-driven context budgets and caps
+
+### Planned product work (tracked in `TODO.md`)
+- **Client Dossier / Client Memory**: a single per-client hub for memory, assignments, documents, and activity (not implemented yet; acceptance criteria live in `TODO.md`).
 
 ### Current product-direction note
 - Built-in desktop chat is the intended user chat surface.
@@ -52,10 +55,8 @@ This document is the visible roadmap/status companion to `TODO.md`. It exists so
 
 These remain useful as historical strategy/spec material, but they no longer describe the current architecture accurately enough to drive implementation work.
 
-### Verification-candidate plan
-- `fix_dual_llm_workflow_document_visibility_dd58cd2a.plan.md`
-
-This plan should only be reopened if the underlying Workspace document-visibility bug still reproduces on the current codebase.
+### Closed / verified against current code
+- `fix_dual_llm_workflow_document_visibility_dd58cd2a.plan.md` — Workspace dual-LLM source handoff for marked files is covered by automated tests (`tests/test_workspace_tab.py`) and fail-fast behavior when sources are unusable. Reopen only if a new regression reproduces.
 
 ### Non-core or deferred product direction
 - `freeinputsta-news-fundamentals-optionsplan_560ce259.plan.md`

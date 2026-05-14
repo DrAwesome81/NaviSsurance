@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from core.mem0_config import MEM0_USER_ID, get_memory
 
@@ -70,6 +71,20 @@ def search_memory(
         return []
 
 
+def delete_memory(memory_id: str | int) -> bool:
+    """Delete one Mem0 memory by id (string id from search/get_all)."""
+    mid = str(memory_id or "").strip()
+    if not mid:
+        return False
+    try:
+        m = _get_mem0()
+        m.delete(mid)
+        return True
+    except Exception as e:
+        logger.warning("Mem0 delete_memory failed: %s", e)
+        return False
+
+
 def get_all_memories(
     user_id: str = MEM0_USER_ID,
     agent_id: str | None = None,
@@ -114,59 +129,38 @@ def print_recent_memories(user_id: str = MEM0_USER_ID, limit: int = 10) -> None:
     print("=======================================\n")
 
 
-def handle_explicit_memory_command(user_message: str) -> str | None:
+def handle_explicit_memory_command(user_message: str) -> dict | None:
     """
-    Detects and handles explicit memory commands.
-    Returns a friendly response if handled, otherwise None.
+    Detects explicit memory commands and extracts metadata (client, project, etc.).
+    Returns a dict with 'response' and optional 'metadata', or None.
     """
     msg = user_message.lower().strip()
 
-    # Forget / remove specific memory
-    if any(
-        p in msg
-        for p in [
-            "forget that",
-            "remove that",
-            "delete that",
-            "ignore my previous",
-            "stop doing that",
-            "don't do that anymore",
-        ]
-    ):
-        return "Got it. I'll forget that going forward."
+    metadata: dict[str, str] = {}
 
-    # Update / change preference
-    if any(
-        p in msg
-        for p in [
-            "i changed my mind",
-            "update my preference",
-            "from now on i want",
-            "i now prefer",
-            "i want you to",
-            "please start",
-            "please stop",
-        ]
-    ):
-        return "Understood — I've updated your preference."
+    client_match = re.search(
+        r"(?:for client|client|with)\s+([A-Z][A-Za-z0-9\s]+?)(?:\s|,|\.|$)",
+        user_message,
+        re.IGNORECASE,
+    )
+    if client_match:
+        metadata["client"] = client_match.group(1).strip()
 
-    # Explicit remember / teach
-    if any(
-        p in msg
-        for p in [
-            "remember that",
-            "remember this",
-            "make sure you remember",
-            "teach navi",
-            "note that",
-            "important:",
-            "always remember",
-        ]
-    ):
-        return "I'll remember that."
+    project_match = re.search(
+        r"(?:project|for the)\s+([A-Z][A-Za-z0-9\s]+?)(?:\s|,|\.|$)",
+        user_message,
+        re.IGNORECASE,
+    )
+    if project_match:
+        metadata["project"] = project_match.group(1).strip()
 
-    # Client / project specific memory
-    if any(p in msg for p in ["for client", "with acme", "for the project", "regarding the"]):
-        return "Got it — I've noted that for future reference."
+    if any(p in msg for p in ["forget that", "remove that", "delete that", "ignore my previous"]):
+        return {"response": "Got it. I'll forget that going forward.", "metadata": metadata}
+
+    if any(p in msg for p in ["i changed my mind", "update my preference", "from now on i want", "i now prefer"]):
+        return {"response": "Understood — I've updated your preference.", "metadata": metadata}
+
+    if any(p in msg for p in ["remember that", "remember this", "teach navi", "note that", "important:"]):
+        return {"response": "I'll remember that.", "metadata": metadata}
 
     return None

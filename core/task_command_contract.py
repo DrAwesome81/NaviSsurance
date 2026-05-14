@@ -78,6 +78,100 @@ def parse_int_or_none(value: str | None) -> Optional[int]:
         return None
 
 
+_ESTIMATE_MINUTES_MAX = 100_000
+
+
+def parse_duration_to_minutes(value: str | None) -> Optional[int]:
+    """
+    Parse a human duration into whole minutes (0..100000).
+
+    Accepts:
+    - Plain minutes: `90`, `15`
+    - Minutes with unit: `90 min`, `15 minutes`
+    - Hours only: `2 hours`, `1.5 hr`
+    - Hours + minutes: `1 hr 15 min`, `2 hours 30 minutes`, `1h15m`, `1 h 15 m`
+    - none-like tokens -> None
+    """
+    s = (value or "").strip().strip('"').strip("'")
+    if not s or s.lower() in {"none", "null", "n/a", "na", "-"}:
+        return None
+    s_norm = re.sub(r"\s+", " ", s).strip()
+
+    if re.fullmatch(r"\d{1,6}", s_norm):
+        v = int(s_norm, 10)
+        return min(max(v, 0), _ESTIMATE_MINUTES_MAX)
+
+    # "1 hr 15 min" / "2 hours 30 minutes"
+    m = re.fullmatch(
+        r"(?i)(\d+(?:\.\d+)?)\s*(?:hr|hrs|hour|hours)\s+(\d+)\s*(?:min|mins|minute|minutes)",
+        s_norm,
+    )
+    if m:
+        total = int(round(float(m.group(1)) * 60)) + int(m.group(2))
+        return min(max(total, 0), _ESTIMATE_MINUTES_MAX)
+
+    # Compact "1h15m" / "1hr15m" / "1h 15m" / "2h30m"
+    m = re.fullmatch(r"(?i)(\d+(?:\.\d+)?)h\s*r?\s*(\d+)\s*m", s_norm)
+    if m:
+        total = int(round(float(m.group(1)) * 60)) + int(m.group(2))
+        return min(max(total, 0), _ESTIMATE_MINUTES_MAX)
+
+    # Hours only (include bare "h" / "hr")
+    m = re.fullmatch(r"(?i)(\d+(?:\.\d+)?)\s*(?:hr|hrs|hour|hours|h)", s_norm)
+    if m:
+        total = int(round(float(m.group(1)) * 60))
+        return min(max(total, 0), _ESTIMATE_MINUTES_MAX)
+
+    # Minutes with unit (word), not already handled as part of h+m
+    m = re.fullmatch(r"(?i)(\d+)\s*(?:min|mins|minute|minutes)", s_norm)
+    if m:
+        total = int(m.group(1))
+        return min(max(total, 0), _ESTIMATE_MINUTES_MAX)
+
+    # Whole-string compact minutes: "45m", "90 m"
+    m = re.fullmatch(r"(?i)(\d+)\s*m\b", s_norm)
+    if m:
+        total = int(m.group(1))
+        return min(max(total, 0), _ESTIMATE_MINUTES_MAX)
+
+    return None
+
+
+def parse_optional_estimate_minutes_field(value: str | None) -> Optional[int]:
+    """Trailing ADD_TASK field: minutes, hours, or hours+minutes (see `parse_duration_to_minutes`)."""
+    return parse_duration_to_minutes(value)
+
+
+def extract_first_duration_phrase(rest: str) -> tuple[Optional[int], str]:
+    """
+    Find the first duration phrase in free text, return (minutes, text with phrase removed).
+    Tries longer (hours+minutes) patterns before shorter ones.
+    """
+    r = (rest or "").strip()
+    if not r:
+        return None, r
+
+    patterns: list[str] = [
+        r"(?i)\b(\d+(?:\.\d+)?)\s*(?:hr|hrs|hour|hours)\s+(\d+)\s*(?:min|mins|minute|minutes)\b",
+        r"(?i)\b(\d+(?:\.\d+)?)h\s*r?\s*(\d+)\s*m\b",
+        r"(?i)\b(\d+(?:\.\d+)?)\s*(?:min|mins|minute|minutes)\b",
+        r"(?i)\b(\d+)\s*m\b",
+        r"(?i)\b(\d+(?:\.\d+)?)\s*(?:hr|hrs|hour|hours|h)\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, r)
+        if not m:
+            continue
+        chunk = (m.group(0) or "").strip()
+        mins = parse_duration_to_minutes(chunk)
+        if mins is None:
+            continue
+        new_r = (r[: m.start()] + " " + r[m.end() :]).strip()
+        new_r = re.sub(r"\s+", " ", new_r).strip(" ,.;-\t")
+        return mins, new_r
+    return None, r
+
+
 def _split_pipe_payload(payload: str, *, maxsplit: int | None = None) -> list[str]:
     if maxsplit is None:
         parts = payload.split("|")
@@ -95,6 +189,7 @@ class AddTaskCommand:
     assigned_to: Optional[str] = None
     project_id: Optional[int] = None
     recurrence: str = "None"
+    estimate_minutes: Optional[int] = None  # expected effort; None -> 0 in DB
 
 
 @dataclass(frozen=True)
@@ -222,7 +317,10 @@ def parse_add_task_line(line: str) -> tuple[bool, Optional[AddTaskCommand], str]
     """
     Parse canonical ADD_TASK line (CoS/Mason contract):
 
-    ADD_TASK: <desc> | <MM-DD-YYYY or none> | <Business|Personal> [| priority] [| assigned_to] [| project_id] [| recurrence]
+    ADD_TASK: <desc> | <MM-DD-YYYY or none> | <Business|Personal> [| priority] [| assigned_to] [| project_id] [| recurrence] [| estimate_minutes]
+
+    Trailing estimate is optional: plain minutes (e.g. 45), or a duration phrase (e.g. 1 hr 15 min,
+    2 hours, 90 min, 1h15m), after recurrence.
     """
     m = _ADD_TASK_LINE_RE.match(line or "")
     if not m:
@@ -275,6 +373,11 @@ def parse_add_task_line(line: str) -> tuple[bool, Optional[AddTaskCommand], str]
     if recurrence not in {"None", "Daily", "Weekly", "Monthly"}:
         recurrence = "None"
 
+    estimate_minutes: Optional[int] = None
+    est_idx = recurrence_part_idx + 1
+    if len(parts) > est_idx:
+        estimate_minutes = parse_optional_estimate_minutes_field(parts[est_idx])
+
     return (
         True,
         AddTaskCommand(
@@ -285,6 +388,7 @@ def parse_add_task_line(line: str) -> tuple[bool, Optional[AddTaskCommand], str]
             assigned_to=assigned_to,
             project_id=project_id,
             recurrence=recurrence,
+            estimate_minutes=estimate_minutes,
         ),
         "",
     )

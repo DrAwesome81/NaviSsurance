@@ -1,5 +1,7 @@
 # External News Feed (Dashboard) + Dedup / Suppression
 
+Last updated: 2026-05-12
+
 ## Goal
 Show a **relevant external headlines** feed on the Dashboard that:
 - pulls recent web headlines relevant to NaviSure’s work (FDA/MedTech/AI SaMD/IVD)

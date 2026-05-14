@@ -127,12 +127,8 @@ class DataFetcher:
                         singleEvents=True
                     ).execute().get('items', [])
                     
-                    # Add calendar info to each event and filter out "free" events
+                    # Add calendar info to each event (include free/transparent blocks from Navi planning)
                     for event in events:
-                        # Skip events marked as "show as free" (transparency = "transparent")
-                        if event.get('transparency') == 'transparent':
-                            continue
-                            
                         event['calendarName'] = cal.get('summary', 'Unknown Calendar')
                         event['calendarColor'] = cal.get('backgroundColor', '#000000')
                         all_events.append(event)

@@ -1964,7 +1964,7 @@ class WorkspaceTab(QWidget):
                 
             elif ext == '.pdf':
                 try:
-                    from PyPDF2 import PdfReader
+                    from pypdf import PdfReader
                     reader = PdfReader(path)
                     content = ""
                     for page in reader.pages:
@@ -1973,7 +1973,7 @@ class WorkspaceTab(QWidget):
                     if not content.strip():
                         content = "[PDF file appears empty or has no extractable text]"
                 except ImportError:
-                    content = "[PyPDF2 not installed - cannot read PDF]"
+                    content = "[pypdf not installed - cannot read PDF]"
                 except Exception as e:
                     content = f"[Error reading PDF: {str(e)}]"
 
@@ -2024,7 +2024,7 @@ class WorkspaceTab(QWidget):
             return False
         if text.startswith("[No readable text"):
             return False
-        if text.startswith(("[DOCX file", "[PDF file", "[Excel file", "[PyPDF2", "[pandas not")):
+        if text.startswith(("[DOCX file", "[PDF file", "[Excel file", "[pypdf", "[pandas not")):
             return False
         return True
 

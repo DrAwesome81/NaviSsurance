@@ -19,14 +19,12 @@ import os
 import json
 from datetime import datetime, timedelta
 from dateutil import parser
-import PyPDF2
 from bs4 import BeautifulSoup
 import markdown
 from core.compliance import ComplianceChecker, DocumentGenerator
-from docx import Document
-from fpdf import FPDF
 import re
 import requests
+from gui.memory_viewer import MemoryViewerDialog
 from gui.notes_tab import NoteTakingSystem, NoteProcessingThread
 from gui.notifications import play_notification_sound
 import html
@@ -201,6 +199,7 @@ from gui.demo_full_cycle import (
     DemoFullCycleResearchWorker,
 )
 from gui.chief_of_staff_tab import ChiefOfStaffTab
+from gui.clients_tab import ClientsTab
 from gui.agent_tab import AgentTab
 from gui.billing_tab import BillingTab
 from gui.team_directory_tab import TeamDirectoryTab
@@ -1157,6 +1156,15 @@ class ChatWindow(QMainWindow):
         setup_shortcuts(self)
         setup_status_bar(self)
 
+        memory_menu = self.menuBar().addMenu("Memory")
+        view_mem_action = QAction("View Memories", self)
+        view_mem_action.triggered.connect(self.open_memory_viewer)
+        memory_menu.addAction(view_mem_action)
+
+    def open_memory_viewer(self):
+        dialog = MemoryViewerDialog(self)
+        dialog.exec()
+
     def create_tabs(self):
         """Create and add all tabs after the chat handler is fully initialized."""
         logger.info("Creating tabs...")
@@ -1258,6 +1266,9 @@ class ChatWindow(QMainWindow):
         self.notes_tab = NoteTakingSystem(self.chat_handler)
         self.tab_widget.addTab(self.notes_tab, "Notes")
         
+        self.clients_tab = ClientsTab(self.db, self)
+        self.tab_widget.addTab(self.clients_tab, "Clients")
+
         self.chief_of_staff_tab = ChiefOfStaffTab(self.db, self)
         self.tab_widget.addTab(self.chief_of_staff_tab, "Chief of Staff")
         self._on_tab_changed(self.tab_widget.currentIndex())  # Apply visibility for initial tab

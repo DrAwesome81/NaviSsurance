@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 
 from dotenv import load_dotenv
-from mem0 import Memory
 
 from config import ENV_FILE, PROJECT_ROOT
 
@@ -31,7 +30,8 @@ def _patch_mem0_xai_llm_base_url() -> None:
     XAILLM.__init__ = _patched_init  # type: ignore[method-assign]
 
 
-_patch_mem0_xai_llm_base_url()
+# Patch is applied lazily on first real use of get_mem0_client() to avoid importing mem0 at startup.
+_PATCH_APPLIED = False
 
 MEM0_USER_ID = "dr_adam_odeh"
 
@@ -41,8 +41,14 @@ _MEM0_EMBEDDING_DIMS = 1024
 MEM0_QDRANT_PATH = os.path.join(PROJECT_ROOT, "data", "mem0_qdrant")
 
 
-def get_mem0_client() -> Memory:
-    """Grok (xAI) for LLM + HuggingFace for embeddings."""
+def get_mem0_client():
+    """Grok (xAI) for LLM + HuggingFace for embeddings. Import is lazy to avoid slowing app startup."""
+    global _PATCH_APPLIED
+    from mem0 import Memory  # heavy import (Chroma + embedding model) — only load when actually needed
+
+    if not _PATCH_APPLIED:
+        _patch_mem0_xai_llm_base_url()
+        _PATCH_APPLIED = True
 
     # Same xAI API as Grok. Prefer GROK_API_KEY first: many installs have a stale/wrong XAI_API_KEY
     # which would otherwise win and Mem0 would send xa*** → 400 Incorrect API key from api.x.ai.
