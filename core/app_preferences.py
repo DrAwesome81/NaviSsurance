@@ -42,6 +42,9 @@ KEY_COS_MAX_TASK_LINES = "cos_max_task_lines"
 KEY_COS_MAX_ASSIGNMENT_LINES = "cos_max_assignment_lines"
 KEY_COS_EMAILS_MAX_CHARS = "cos_emails_context_max_chars"
 
+# Client Dossier navigation behavior
+KEY_CLIENT_DOSSIER_NAV_MODE = "client_dossier_navigation_mode"  # "light" or "strong"
+
 
 def _db(db: Optional[DatabaseManager] = None) -> DatabaseManager:
     return db if db is not None else DatabaseManager()
@@ -304,3 +307,18 @@ def get_cos_emails_context_max_chars(db: Optional[DatabaseManager] = None) -> in
         return max(500, min(50000, n))
     except Exception:
         return 4000
+
+
+# --- Client Dossier Navigation Mode ---
+
+def get_client_dossier_navigation_mode(db: Optional[DatabaseManager] = None) -> str:
+    """Returns 'light' or 'strong'. 'strong' = more automatic client focus when jumping from Clients tab."""
+    v = _get_raw(db, KEY_CLIENT_DOSSIER_NAV_MODE)
+    if v and str(v).strip().lower() in ("strong", "auto", "aggressive"):
+        return "strong"
+    return "light"
+
+
+def set_client_dossier_navigation_mode(mode: str, db: Optional[DatabaseManager] = None) -> None:
+    val = "strong" if str(mode).strip().lower() in ("strong", "auto", "aggressive") else "light"
+    _db(db).set_setting(KEY_CLIENT_DOSSIER_NAV_MODE, val)

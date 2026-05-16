@@ -1546,15 +1546,26 @@ class BulkDueDateDialog(QDialog):
 
 
 class CosAssignmentDialog(QDialog):
-    """Create a delegation assignment from the CoS board."""
+    """Create a delegation assignment from the CoS board (or from Clients dossier)."""
 
-    def __init__(self, db: DatabaseManager, parent=None):
+    def __init__(self, db: DatabaseManager, parent=None, *, client_id: int | None = None, client_name: str | None = None):
         super().__init__(parent)
         self.db = db
-        self.setWindowTitle("New Assignment")
+        self._client_id = client_id
+        self._client_name = client_name
+        title = "New Assignment"
+        if client_name:
+            title = f"New Assignment for {client_name}"
+        self.setWindowTitle(title)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
+
+        # Optional client context (read-only when coming from Clients tab)
+        if client_name:
+            client_label = QLabel(f"<b>{client_name}</b> (Client #{client_id})")
+            client_label.setStyleSheet("color: #6b8cae; padding: 4px 0;")
+            form.addRow("Client:", client_label)
 
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("Assignment title")
@@ -1615,13 +1626,17 @@ class CosAssignmentDialog(QDialog):
         due_raw = (self.due_edit.text() or "").strip()
         due_ok, due_norm = _normalize_iso_due_date_input(due_raw)
         due = due_norm if due_ok else None
-        return {
+        vals = {
             "title": (self.title_edit.text() or "").strip(),
             "brief_md": (self.brief_edit.toPlainText() or "").strip(),
             "assignee_code": (self.assignee_combo.currentData() or "").strip().lower(),
             "priority": int(self.priority_spin.value()),
             "due_date": due,
         }
+        if self._client_id is not None:
+            vals["client_id"] = int(self._client_id)
+            vals["client_name"] = self._client_name
+        return vals
 
 
 class ChiefOfStaffTab(QWidget):
@@ -2403,6 +2418,43 @@ Calendar and task actions:
             pass
         self._refresh_assignment_list()
         self._focus_assignment_by_id(int(aid))
+
+    def _create_new_chat_for_client(self, client_id: int, client_name: str):
+        """Strong mode: create a new CoS chat focused on this client so dossier context is immediately available."""
+        try:
+            title = f"{client_name} – Planning & Delegation"
+            new_chat_id = self.db.cos_create_chat(title=title)
+            self._current_chat_id = new_chat_id
+            self._refresh_chat_list()
+            self._render_chat_history(force_bottom=True)
+
+            if hasattr(self, "ask_input"):
+                self.ask_input.setPlainText(f"Review priorities and open work for {client_name}.")
+                self.ask_input.setFocus()
+        except Exception as e:
+            logger.warning(f"Failed to create client-focused CoS chat: {e}")
+
+    def focus_on_client(self, client_id: int, client_name: str):
+        """Focus CoS on a specific client (used by strong navigation from Clients tab)."""
+        self._create_new_chat_for_client(client_id, client_name)
+
+    def focus_on_assignment(self, assignment_id: int):
+        """Attempt to focus a specific assignment when jumping from the Client Dossier."""
+        try:
+            # Switch to the Assignments subtab in the sidebar
+            if hasattr(self, "sidebar_tabs"):
+                for i in range(self.sidebar_tabs.count()):
+                    if "assignment" in self.sidebar_tabs.tabText(i).lower():
+                        self.sidebar_tabs.setCurrentIndex(i)
+                        break
+
+            if hasattr(self, "_refresh_assignment_list"):
+                self._refresh_assignment_list()
+
+            if hasattr(self, "show_toast"):
+                self.show_toast(f"Opened assignment A-{assignment_id} in Chief of Staff", 4000)
+        except Exception as e:
+            logger.warning(f"focus_on_assignment failed: {e}")
 
     def _reassign_selected_assignment(self):
         if not self._current_assignment_id:

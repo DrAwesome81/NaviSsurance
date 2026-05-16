@@ -23,6 +23,7 @@ from core.grok_client import (
     MODEL_COS,
     MODEL_FAST,
 )
+from core.model_router import ModelRole, get_model
 from core.cos_calendar import (
     calendar_available,
     calendar_write_available,
@@ -35,7 +36,7 @@ from core.chat_retrieval import build_long_term_retrieval_context, format_chat_h
 from core.agent_memory import build_agent_memory_context, build_assignment_memory_context
 from core.user_memory import build_user_memory_context, infer_entity_memory_refs
 from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
-from core.client_dossier import get_client_dossier_snapshot
+from core.client_dossier import build_client_dossier_context, get_client_dossier_snapshot
 from core.local_llm import run_local_completion
 from core.tool_registry import invoke_tool
 from core.task_command_contract import (
@@ -1973,7 +1974,7 @@ def _cos_run_tool_loop_single(
     out = ""
     mt = int(max_tokens) if max_tokens is not None else get_cos_max_output_tokens(db)
     for _ in range(3):
-        out = grok_completion(system_text, user_aug, model=MODEL_COS, max_tokens=mt)
+        out = grok_completion(system_text, user_aug, model=get_model(ModelRole.CHIEF_OF_STAFF), max_tokens=mt)
         out = (out or "").strip()
         if not out:
             return out
@@ -1997,7 +1998,7 @@ def _cos_run_tool_loop_messages(
     out = ""
     mt = int(max_tokens) if max_tokens is not None else get_cos_max_output_tokens(db)
     for _ in range(3):
-        out = grok_completion_messages(msgs, model=MODEL_COS, max_tokens=mt)
+        out = grok_completion_messages(msgs, model=get_model(ModelRole.CHIEF_OF_STAFF), max_tokens=mt)
         out = (out or "").strip()
         if not out:
             return out
@@ -2067,23 +2068,27 @@ def cos_response(
     cal_ctx = _truncate_cos_text(_calendar_context(), get_cos_calendar_max_chars(db))
     mem_ctx = _memory_context(db, user_message, chat_id)
 
-    # Client dossier digest (compact) when message or context resolves to a client
+    # Client dossier digest (rich, structured) when message or context resolves to a client.
+    # This is the main integration point so CoS planning & delegation are client-aware.
     client_digest = ""
     try:
         refs = infer_entity_memory_refs(db, user_message or "")
         for ref in refs:
             if ref.get("entity_type") == "client":
-                snap = get_client_dossier_snapshot(db, int(ref.get("entity_key")), memory_limit=3, assignment_limit=3)
-                prof = snap.get("profile", {})
-                mems = snap.get("memory", [])
-                mem_line = mems[0]["content"][:120] if mems else ""
-                client_digest = f"\n\nClient Dossier ({prof.get('name', ref.get('entity_key'))}): {mem_line} (see Clients tab for full view)"
+                client_digest = build_client_dossier_context(
+                    db,
+                    int(ref.get("entity_key")),
+                    max_memories=4,
+                    max_projects=3,
+                    max_assignments=3,
+                    max_tasks=4,
+                )
                 break
     except Exception:
         client_digest = ""
 
     if client_digest:
-        mem_ctx = (mem_ctx or "") + client_digest
+        mem_ctx = (mem_ctx or "") + "\n\n" + client_digest
 
     prefs_ctx, cal_ctx, mem_ctx, _, tasks_ctx, assignments_ctx = _apply_cos_context_budget(
         prefs_ctx,
@@ -2309,7 +2314,7 @@ Always interpret and communicate schedule/time references in the user's local ti
             out = grok_completion(
                 system_text,
                 user_aug,
-                model=MODEL_COS,
+                model=get_model(ModelRole.CHIEF_OF_STAFF),
                 max_tokens=cos_out_tokens,
             )
             out = (out or "").strip()
@@ -2331,7 +2336,7 @@ Always interpret and communicate schedule/time references in the user's local ti
         for _ in range(3):
             out = grok_completion_messages(
                 msgs,
-                model=MODEL_COS,
+                model=get_model(ModelRole.CHIEF_OF_STAFF),
                 max_tokens=cos_out_tokens,
             )
             out = (out or "").strip()

@@ -791,6 +791,20 @@ class ProjectManagementPanel(QWidget):
             logger.exception("refresh_projects failed: %s", e)
             QMessageBox.warning(self, "Projects", f"Could not load projects:\n{e}")
 
+    def select_project(self, project_id: int) -> bool:
+        """Select the row for a specific project and refresh its Gantt/tasks view. Returns True if found."""
+        try:
+            pid_str = str(int(project_id))
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item and item.text() == pid_str:
+                    self.table.selectRow(row)
+                    self._refresh_task_gantt_if_visible()
+                    return True
+            return False
+        except Exception:
+            return False
+
     def _add_project(self):
         dlg = ProjectEditDialog(self, project=None, db=self.db)
         if dlg.exec() != QDialog.DialogCode.Accepted:

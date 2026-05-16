@@ -487,6 +487,20 @@ class SettingsDialog(QDialog):
         cos_perf.setLayout(cos_form)
         app_layout.addWidget(cos_perf)
 
+        # Client Dossier navigation mode
+        dossier_nav = QGroupBox("Client Dossier navigation (when jumping from Clients tab)")
+        nav_layout = QHBoxLayout()
+        nav_layout.addWidget(QLabel("Mode:"))
+        self.combo_dossier_nav = QComboBox()
+        self.combo_dossier_nav.addItem("Light (manual) — just switch tabs, context available on demand", "light")
+        self.combo_dossier_nav.addItem("Strong (auto) — auto-create focused CoS chat for the client", "strong")
+        current_nav_mode = ap.get_client_dossier_navigation_mode(self._db)
+        idx = 0 if current_nav_mode == "light" else 1
+        self.combo_dossier_nav.setCurrentIndex(idx)
+        nav_layout.addWidget(self.combo_dossier_nav, 1)
+        dossier_nav.setLayout(nav_layout)
+        app_layout.addWidget(dossier_nav)
+
         self.chk_briefing_off = QCheckBox("Disable daily briefing and email fetch")
         self.chk_briefing_off.setChecked(ap.is_briefing_and_email_disabled(self._db))
         app_layout.addWidget(self.chk_briefing_off)
@@ -581,6 +595,10 @@ class SettingsDialog(QDialog):
             self._db.set_setting(ap.KEY_COS_MAX_TASK_LINES, str(int(self.spin_cos_task_lines.value())))
             self._db.set_setting(ap.KEY_COS_MAX_ASSIGNMENT_LINES, str(int(self.spin_cos_assign_lines.value())))
             self._db.set_setting(ap.KEY_COS_EMAILS_MAX_CHARS, str(int(self.spin_cos_emails.value())))
+            # Client Dossier navigation mode
+            nav_mode = self.combo_dossier_nav.currentData() or "light"
+            self._db.set_setting(ap.KEY_CLIENT_DOSSIER_NAV_MODE, nav_mode)
+
             self._db.set_setting(ap.KEY_BRIEFING_DISABLED, _tf(self.chk_briefing_off.isChecked()))
             self._db.set_setting(ap.KEY_LOCAL_LLM_GPU, str(int(self.spin_llm_gpu.value())))
             self._db.set_setting(ap.KEY_LOCAL_LLM_CTX, str(int(self.spin_llm_ctx.value())))

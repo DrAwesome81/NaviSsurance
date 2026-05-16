@@ -74,3 +74,18 @@ def test_snapshot_normalizes_tuple_projects_like_sqlite():
     assert snap["projects"][0]["name"] == "P"
     assert snap["projects"][0]["client_id"] == 1
     assert snap["projects"][1]["id"] == 11
+
+
+def test_snapshot_includes_client_id_on_projects():
+    """Dossier should correctly surface client_id for linked projects."""
+
+    class _ClientProjectDB(_FakeDB):
+        def cos_get_projects(self, *, client_id=None, **kwargs):
+            if client_id == 1:
+                return [(10, "QMS Overhaul", "Acme", None, "Active", 2, "2026-07-15", "Risk review", None, None, None, None, None, None, None, None, None, None, None, None, None, None, 1)]
+            return []
+
+    db = _ClientProjectDB()
+    snap = get_client_dossier_snapshot(db, 1)
+    assert len(snap["projects"]) == 1
+    assert snap["projects"][0]["client_id"] == 1

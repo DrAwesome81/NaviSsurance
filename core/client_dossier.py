@@ -183,3 +183,100 @@ def get_client_dossier_snapshot(
         "recent_emails": emails,
         "recent_meetings": meetings,
     }
+
+
+def build_client_dossier_context(
+    db: DatabaseManager,
+    client_id: int,
+    *,
+    max_memories: int = 4,
+    max_projects: int = 3,
+    max_assignments: int = 3,
+    max_tasks: int = 4,
+) -> str:
+    """
+    Build a compact, prompt-friendly text block summarizing the client dossier.
+
+    This is the main integration point for Chief of Staff and agent prompts.
+    """
+    snap = get_client_dossier_snapshot(
+        db,
+        client_id,
+        memory_limit=max_memories,
+        project_limit=max_projects,
+        assignment_limit=max_assignments,
+    )
+
+    if "error" in snap:
+        return ""
+
+    prof = snap.get("profile", {})
+    name = prof.get("name") or f"Client #{client_id}"
+    lines: list[str] = [f"Client Dossier: {name} (#{client_id})"]
+
+    # Key memories / facts
+    mems = snap.get("memory", [])
+    if mems:
+        lines.append("\nKey facts & preferences:")
+        for m in mems[:max_memories]:
+            content = (m.get("content") or "").strip()
+            if content:
+                kind = m.get("kind", "fact")
+                lines.append(f"- [{kind}] {content[:160]}")
+
+    # Active / relevant projects
+    projs = snap.get("projects", [])
+    if projs:
+        lines.append("\nActive projects:")
+        for p in projs[:max_projects]:
+            pname = p.get("name") or "(unnamed)"
+            status = p.get("status") or ""
+            next_action = p.get("next_action") or p.get("suggested_next_action") or ""
+            due = p.get("deadline") or ""
+            line = f"- {pname}"
+            if status:
+                line += f" [{status}]"
+            if due:
+                line += f" (due {due})"
+            if next_action:
+                line += f" — next: {next_action[:80]}"
+            lines.append(line)
+
+    # Open assignments
+    assigns = snap.get("assignments", [])
+    if assigns:
+        lines.append("\nOpen assignments:")
+        for a in assigns[:max_assignments]:
+            title = a.get("title") or "(untitled)"
+            assignee = a.get("assignee_code") or "?"
+            status = a.get("status") or ""
+            prio = a.get("priority")
+            due = a.get("due_date") or ""
+            line = f"- {assignee}: {title}"
+            if prio is not None:
+                line += f" (P{prio})"
+            if status:
+                line += f" [{status}]"
+            if due:
+                line += f" due {due}"
+            lines.append(line)
+
+    # Recent tasks (light)
+    tasks = snap.get("tasks", [])
+    open_tasks = [t for t in tasks if str(t.get("status", "")).lower() not in ("done", "completed", "archived")]
+    if open_tasks:
+        lines.append("\nRecent open tasks:")
+        for t in open_tasks[:max_tasks]:
+            ttitle = t.get("title") or "(untitled)"
+            tstatus = t.get("status") or ""
+            tdue = t.get("due_date") or ""
+            line = f"- {ttitle}"
+            if tstatus:
+                line += f" [{tstatus}]"
+            if tdue:
+                line += f" (due {tdue})"
+            lines.append(line)
+
+    lines.append("\n(Full Client Dossier available in the Clients tab)")
+
+    return "\n".join(lines)

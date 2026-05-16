@@ -31,7 +31,7 @@ This document is the visible roadmap/status companion to `TODO.md`. It exists so
 - opportunistic CoS latency and duplicate-call reductions beyond the current Settings-driven context budgets and caps
 
 ### Planned product work (tracked in `TODO.md`)
-- **Client Dossier / Client Memory**: a single per-client hub for memory, assignments, documents, and activity (not implemented yet; acceptance criteria live in `TODO.md`).
+- **Client Dossier / Client Memory**: Largely complete. A functional Clients tab now serves as the single per-client hub for memory, projects, assignments, tasks, recent activity, and quick actions. Light/Strong navigation modes and rich context injection into CoS are implemented. Remaining polish (deeper clickability, more tests) is tracked in `TODO.md`.
 
 ### Current product-direction note
 - Built-in desktop chat is the intended user chat surface.

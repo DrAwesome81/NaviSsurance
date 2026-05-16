@@ -128,41 +128,26 @@
 
 ## Planned: Client Dossier / Client Memory
 
-**Priority:** Medium–High · **Status:** Not implemented yet
+**Priority:** Medium–High · **Status:** Largely complete (as of May 2026)
 
-- [ ] **Client Dossier / Client Memory function:** centralized, rich memory and workspace per client.
+- [x] **Client Dossier / Client Memory function:** centralized, rich memory and workspace per client.
 
-**Description:** A dedicated Client Dossier acts as the single place for everything tied to a client—memory, work, documents, and activity—instead of hunting across assignments, memory, notes, and workspace.
+The Clients tab now provides a unified view with:
+- Editable client profile (name, aliases, key domains, notes)
+- Linked memory (Teach client knowledge)
+- Linked projects + ability to link existing ones or create new ones directly from the dossier
+- Linked assignments and tasks
+- Recent activity (emails, meetings, assignments, tasks)
+- Quick actions: New Assignment (with client context), New Note (pre-filled context), Add to Memory, View in Chief of Staff, Open in Tasks tab, Manage/Unlink projects
 
-**What it should include:**
+Strong navigation modes (Light vs Strong) are available in App Preferences so jumping from the Clients tab can either be manual or automatically create focused CoS chats.
 
-- A new **Clients** tab (or section in Chief of Staff / Library).
-- For each client, a unified view with:
-  - Key facts and preferences from global + entity-linked memory.
-  - Active and past assignments for this client.
-  - Linked projects and tasks.
-  - Important documents / artifacts (Workspace, Deep Research, Notes, etc.).
-  - Recent activity and memory entries, with a path to teach client-specific knowledge.
-  - Quick actions: **New Assignment**, **New Note**, **Add to Memory**, **View Full History**.
+Remaining polish items (lower priority):
+- Deeper per-item clickability (e.g. double-click project → open in Tasks panel)
+- Even richer empty states and onboarding guidance
+- Full tests for linking/unlinking flows
 
-**Goals:**
-
-- One source of truth when working with a client.
-- Automatically surface relevant client context when CoS or agents work on related tasks.
-- Easy teaching of client-specific preferences, style, history, and constraints.
-
-**Technical notes:**
-
-- Leverage existing entity-aware memory infrastructure.
-- Extend `user_memory` and agent memory with stronger client scoping.
-- New `clients` table (or enhance existing) with rich profile fields.
-- UI: clean, dashboard-like, similar to the current Assignment board.
-
-**Acceptance criteria:**
-
-- Selecting a client shows a coherent dossier view.
-- CoS and sub-agents can pull relevant client memory/context automatically.
-- User can add/teach client-specific information that persists and surfaces later.
+The core vision from the original spec is now delivered and in daily use.
 
 ## Intentionally Manual / Not Targeted for Deterministic Automation
 

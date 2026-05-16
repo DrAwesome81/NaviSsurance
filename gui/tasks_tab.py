@@ -396,6 +396,30 @@ class TasksTab(QWidget):
 
         layout.addWidget(tab_widget)
 
+    def switch_to_projects_tab(self):
+        """Switch the inner tab widget to show the Projects (list + Gantt) panel."""
+        try:
+            if hasattr(self, "tab_widget") and self.tab_widget is not None:
+                for i in range(self.tab_widget.count()):
+                    if "project" in self.tab_widget.tabText(i).lower():
+                        self.tab_widget.setCurrentIndex(i)
+                        return
+                # Fallback: switch to last tab (often Projects)
+                if self.tab_widget.count() > 1:
+                    self.tab_widget.setCurrentIndex(self.tab_widget.count() - 1)
+        except Exception:
+            pass
+
+    def show_and_select_project(self, project_id: int) -> bool:
+        """Switch to the Projects subtab and select the given project. Returns True if successful."""
+        self.switch_to_projects_tab()
+        try:
+            if hasattr(self, "project_panel") and self.project_panel is not None:
+                return self.project_panel.select_project(project_id)
+        except Exception:
+            pass
+        return False
+
     def _refresh_project_filter_combo(self):
         """Reload project filter dropdown from cos_projects."""
         try:

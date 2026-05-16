@@ -8,16 +8,22 @@ Uses xai_sdk.Client for chat and optional web_search tool for live search.
 import logging
 import os
 import time
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Union
+
+from core.model_router import ModelRole, get_model
 
 logger = logging.getLogger(__name__)
 
 # Default model (single shared xAI model across app call sites)
+# Legacy constants (still used in many places).
+# These now resolve through the model router for a smooth transition.
+# New code should prefer: from core.model_router import ModelRole, get_model
 MODEL_MULTI_AGENT = "grok-4.20-multi-agent-beta-0309"
-MODEL_CHAT = MODEL_MULTI_AGENT
-MODEL_FAST = MODEL_MULTI_AGENT
-MODEL_WEB = MODEL_MULTI_AGENT
-MODEL_COS = MODEL_MULTI_AGENT
+
+MODEL_CHAT = get_model(ModelRole.NAV_CHAT)
+MODEL_FAST = get_model(ModelRole.NAV_CHAT)
+MODEL_WEB = get_model(ModelRole.NAV_CHAT)
+MODEL_COS = get_model(ModelRole.CHIEF_OF_STAFF)
 
 
 def _get_api_key() -> Optional[str]:
@@ -149,7 +155,7 @@ def _grok_retry_sleep_s(attempt: int) -> float:
 def grok_completion(
     system: str,
     user: str,
-    model: str = MODEL_CHAT,
+    model: Union[str, ModelRole] = MODEL_CHAT,
     store: bool = False,
     max_tokens: Optional[int] = None,
 ) -> str:
@@ -157,6 +163,10 @@ def grok_completion(
     Single turn: system + user message, return assistant content.
     Uses xAI SDK (gRPC); no deprecated REST.
     """
+    # Resolve ModelRole to actual model string
+    if isinstance(model, ModelRole):
+        model = get_model(model)
+
     try:
         from xai_sdk import Client
         from xai_sdk.chat import system as sys_msg, user as user_msg
@@ -207,7 +217,7 @@ def grok_completion(
 
 def grok_completion_messages(
     messages: List[dict],
-    model: str = MODEL_CHAT,
+    model: Union[str, ModelRole] = MODEL_CHAT,
     store: bool = False,
     max_tokens: Optional[int] = None,
 ) -> str:
@@ -215,6 +225,10 @@ def grok_completion_messages(
     Multi-message turn. messages = [{"role": "system", "content": "..."}, ...].
     Returns assistant content.
     """
+    # Resolve ModelRole to actual model string
+    if isinstance(model, ModelRole):
+        model = get_model(model)
+
     try:
         from xai_sdk import Client
         from xai_sdk.chat import system as sys_msg, user as user_msg
