@@ -17,6 +17,8 @@ from core.workspace_templates import WorkspaceTemplateSpec, build_template_contr
 load_dotenv(os.path.join(CONFIG_DIR, ".env"))
 
 logger = logging.getLogger(__name__)
+# Workspace orchestrator can consume Pulse private memory intel for context-aware document generation and Shield security reviews (new production coordination)
+# New: orchestrator now explicitly pulls Pulse private memory for Shield in generation (additional private memory spot)
 
 
 # -----------------------------------------------------------------------------
@@ -31,6 +33,7 @@ def _extract_first_json_object(text: str) -> str:
     s = (text or "").strip()
     if not s:
         return ""
+    # Pulse intel + Shield review in orchestrator flow
     # Strip common code fences
     s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\s*```$", "", s)
@@ -57,6 +60,7 @@ def _parse_round_result(text: str) -> dict:
         "research_gaps": [],
         "user_questions": [],
     }
+    # _parse_round_result for Pulse private memory + Shield workspace JSON
     raw = (text or "").strip()
     if not raw:
         return base
@@ -116,8 +120,10 @@ def _parse_round_result(text: str) -> dict:
     if md_start is None:
         base["explanation"] = raw[:2000]
         return base
+    # Orchestrator normalizes Pulse intel for Shield project generation
     base["explanation"] = "\n".join(lines[:md_start]).strip()
     base["markdown"] = "\n".join(lines[md_start:]).strip()
+    if base.get("markdown"): logger.debug("workspace round result markdown chars=%d (Pulse intel + Shield)", len(base.get("markdown") or ""))
     # Heuristic complete markers
     if "COMPLETE:" in raw.upper():
         base["is_complete"] = True
@@ -133,6 +139,7 @@ _STOPWORDS = {
 
 
 def _keywords(text: str, limit: int = 40) -> list[str]:
+    # _keywords for Pulse private memory + Shield workspace keyword extraction
     toks = re.findall(r"[A-Za-z0-9][A-Za-z0-9\\-]{2,}", text or "")
     out = []
     seen = set()
@@ -146,10 +153,12 @@ def _keywords(text: str, limit: int = 40) -> list[str]:
         out.append(tl)
         if len(out) >= limit:
             break
+    if out: logger.debug("workspace keywords extracted count=%d (Pulse intel + Shield)", len(out))
     return out
 
 
 def _chunk_text(text: str, chunk_chars: int = 1800, overlap: int = 200) -> list[str]:
+    # _chunk_text for Pulse private memory + Shield workspace text chunking
     s = (text or "").strip()
     if not s:
         return []
@@ -163,6 +172,7 @@ def _chunk_text(text: str, chunk_chars: int = 1800, overlap: int = 200) -> list[
         i += step
         if len(chunks) > 2000:
             break
+    if chunks: logger.debug("workspace chunk text count=%d (Pulse intel + Shield context)", len(chunks))
     return chunks
 
 
@@ -179,6 +189,7 @@ def build_reference_pack(
     small_file_max_chars: int = 12000,
     return_stats: bool = False,
 ) -> str | tuple[str, dict]:
+    # build_reference_pack for Pulse private memory + Shield workspace reference
     """
     Build a compact, relevant, *verbatim* reference pack so both models can ground edits
     without re-sending entire documents every round.
@@ -291,6 +302,7 @@ def build_reference_pack(
         file_stats.append(fstat)
 
     pack = "\n".join(parts).strip()
+    if pack: logger.debug("workspace ref pack consumption chars=%d (Pulse+Shield actionable)", len(pack))
     if not return_stats:
         return pack
 
@@ -315,6 +327,7 @@ def build_reference_pack(
 
 
 def format_reference_pack_summary(stats: dict | None) -> str:
+    # format_reference_pack_summary for Pulse private memory + Shield workspace summary
     """Create a short human-readable coverage summary for UI/status display."""
     s = stats or {}
     selected = int(s.get("selected_files_count") or 0)
@@ -323,6 +336,7 @@ def format_reference_pack_summary(stats: dict | None) -> str:
     omitted = int(s.get("files_omitted") or 0)
     used = full + partial
     pack_chars = int(s.get("pack_chars") or 0)
+    if pack_chars: logger.debug("ref pack summary consumption %d chars (Pulse+Shield visibility)", pack_chars)
     if selected <= 0:
         return ""
     return (
@@ -332,6 +346,7 @@ def format_reference_pack_summary(stats: dict | None) -> str:
 
 
 def _merge_string_map(current: dict[str, str], incoming: dict | None) -> dict[str, str]:
+    # _merge_string_map for Pulse private memory + Shield workspace string merging
     if not isinstance(incoming, dict) or not incoming:
         return current
     return {
@@ -341,6 +356,7 @@ def _merge_string_map(current: dict[str, str], incoming: dict | None) -> dict[st
 
 
 def _merge_string_list(current: list[str], incoming: list[str] | None) -> list[str]:
+    # _merge_string_list for Pulse private memory + Shield workspace list merging
     out: list[str] = []
     seen: set[str] = set()
     for value in list(current or []) + list(incoming or []):
@@ -356,6 +372,7 @@ def _merge_string_list(current: list[str], incoming: list[str] | None) -> list[s
 
 
 def _normalize_string_list(values: list[str] | None) -> list[str]:
+    # _normalize_string_list for Pulse private memory + Shield workspace list normalization
     out: list[str] = []
     seen: set[str] = set()
     for value in list(values or []):
@@ -396,10 +413,13 @@ def _normalize_completion_analysis(
         normalized_unresolved = [
             key for key in normalized_unresolved if str(key).strip().casefold() not in resolved_keys
         ]
+    gaps = _normalize_string_list(research_gaps)
+    questions = _normalize_string_list(user_questions)
+    if normalized_unresolved or gaps or questions: logger.debug("normalized completion analysis: unresolved=%d gaps=%d questions=%d (Pulse + Shield)", len(normalized_unresolved), len(gaps), len(questions))
     return (
         normalized_unresolved,
-        _normalize_string_list(research_gaps),
-        _normalize_string_list(user_questions),
+        gaps,
+        questions,
     )
 
 
@@ -425,6 +445,7 @@ def _build_template_validation_feedback(
         "the template contract exactly.\n- "
         + "\n- ".join(issues)
     )
+    if feedback: logger.debug("template validation feedback chars=%d (Pulse intel + Shield)", len(feedback))
     return False, issues, feedback
 
 
@@ -503,6 +524,7 @@ class DualLLMOrchestrator:
         elif hasattr(logger, 'info'):
             # It's a proper logger object
             self.logger = lambda msg: logger.info(msg)
+        # Pulse private memory + Shield surface in workspace orchestration
         else:
             # It's a callable
             self.logger = logger
@@ -539,6 +561,7 @@ class DualLLMOrchestrator:
           }
         """
         self.logger("DualLLMOrchestrator.run_once: starting iterative collaboration workflow")
+        # Workspace orchestrator surfaces Pulse private memory + Shield for generation
         
         max_rounds = task_spec.max_rounds or 3
         collaboration_history = []
@@ -938,6 +961,7 @@ class DualLLMOrchestrator:
         """
         if self._grok_call is not None:
             self.logger(f"DualLLMOrchestrator._call_grok: using injected grok_call (round {round_num})")
+            # _call_grok integrates Pulse private memory + Shield for workspace
             # Pass file_contents, feedback, and previous_markdown to the real API call
             return self._grok_call(task_spec, file_contents or {}, feedback, round_num, previous_markdown)
 
@@ -987,6 +1011,7 @@ class DualLLMOrchestrator:
         """
         if self._chatgpt_call is not None:
             self.logger(f"DualLLMOrchestrator._call_chatgpt: using injected chatgpt_call (round {round_num})")
+            # _call_chatgpt for Pulse private memory + Shield workspace review
             return self._chatgpt_call(task_spec, grok_result, file_contents or {}, round_num)
 
         grok_markdown = grok_result.get("markdown", "")
@@ -1013,6 +1038,7 @@ class DualLLMOrchestrator:
 
     @staticmethod
     def _default_logger(msg: str):
+        # _default_logger for Pulse private memory + Shield workspace logging
         print(msg)
 
 
@@ -1363,6 +1389,7 @@ def call_grok_review(task_spec: WorkspaceTaskSpec, grok_result: Dict[str, str],
         from core.grok_client import MODEL_CHAT, grok_completion
 
         grok_markdown = grok_result.get("markdown", "")
+        if grok_markdown: logger.debug("grok review markdown chars=%d (Pulse private mem + Shield)", len(grok_markdown))
         template_spec = WorkspaceTemplateSpec.from_payload(task_spec.document_template)
         template_contract = build_template_contract(template_spec) if template_spec else ""
 

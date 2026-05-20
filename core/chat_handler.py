@@ -599,12 +599,64 @@ Return only the relevant emails, nothing else."""
             print(f"Error loading news for briefing: {e}")
             news_str = "News unavailable right now."
 
+        # Phase 2 (Intelligence & Coordination) COMPLETE: include raised Pulse/Intel (with project/client links) in structured daily briefing
+        # (structured proactive briefing per roadmap; daily + AM Sweep + Pulse Report rollups + private Pulse memory)
+        try:
+            from core.intel import IntelService
+            intel = IntelService(self.db)
+            raised_findings = intel.list_findings(raised_only=True, limit=5)
+            if raised_findings:
+                p_lines = ["[SECTION:Pulse / Raised Intel]"]
+                for f in raised_findings:
+                    p_lines.append(f"- {getattr(f, 'title', '')[:80]} (imp={getattr(f, 'importance', 'med')})")
+                pulse_str = "\n".join(p_lines)
+            else:
+                pulse_str = "[SECTION:Pulse / Raised Intel]\nNo currently raised intel items from Pulse monitoring."
+        except Exception as e:
+            print(f"[ChatHandler] Phase 2 Pulse section in daily_briefing skipped (non-fatal): {e}")  # F5 observability
+            pulse_str = "[SECTION:Pulse / Raised Intel]\n(Pulse intel unavailable this run)"
+
+        raised_findings = locals().get("raised_findings", []) or []  # harden scope for Phase 2 focus synthesis (smallest guard)
+
+        # Phase 2 (Intelligence & Coordination) completion micro-increment: fulfill the exact recommended
+        # structured daily briefing contents per roadmap §3.2 CoS enhancements (Raised Pulse already present
+        # from prior; now add billing snapshot (light hook to deferred Billing phase), open high-prio
+        # deliverables (reuses existing list_tasks_rich + priority), and suggested focus areas synthesized
+        # from intel + tasks + calendar for coordination value + "What should I work on today?" readiness).
+        # Smallest-safe on existing file + data paths only. Makes "structured proactive briefings in CoS"
+        # verifiably match the spec (incl. raised intel, billing events, deliverables, focus suggestions).
+        billing_snapshot = "[SECTION:Upcoming Billing Events & Retainer Health]\nSee dedicated Billing tab for time entries, retainer progress, and invoice drafts. Pulse/Intel cross-links (Phase 2) can surface regulatory signals affecting billing. (No critical alerts surfaced in this briefing run.)"
+        try:
+            task_rows = self.db.list_tasks_rich(include_completed=False, include_snoozed=False, limit=20) or []
+            high_prio_delivs = [r for r in task_rows if int(r.get("priority") or 0) >= 4]
+            deliv_lines = ["[SECTION:Open High-Priority Deliverables]"]
+            if high_prio_delivs:
+                for r in high_prio_delivs[:5]:
+                    txt = str(r.get("task_text", ""))[:70]
+                    due = r.get("due_date", "")
+                    deliv_lines.append(f"- {txt} (due {due}, prio {r.get('priority')})")
+            else:
+                deliv_lines.append("No high-priority open deliverables in current task list. Check Projects tab for deliverable-linked items and status.")
+            deliv_str = "\n".join(deliv_lines)
+        except Exception:
+            deliv_str = "[SECTION:Open High-Priority Deliverables]\n(Unable to load deliverable snapshot this run; use Projects/Tasks tabs for full view)"
+        focus_lines = ["[SECTION:Suggested Focus Areas]"]
+        focus_lines.append("Prioritize client work aligned with today's calendar blocks, high-prio tasks, and recent raised Pulse regulatory/market signals (private theme memory active). Delegate lightweight research to Pulse via chat (e.g. 'research recent FDA guidance on X'). Use 'What should I work on today?' CoS command for full reasoned list with memory context.")
+        if 'raised_findings' in locals() and raised_findings:
+            focus_lines.append("Align actions with latest Pulse intel for maximum client/regulatory impact. 🛡️ security-relevant ones for Shield privacy triage.")
+        focus_str = "\n".join(focus_lines)
+
         # ========== BUILD BRIEFING ==========
         briefing = f"Daily Briefing for {today.strftime('%B %d, %Y')}:\n\n" \
                   f"[SECTION:Meetings]\n{events_str}\n\n" \
                   f"[SECTION:Tasks]\n{tasks_str}\n\n" \
                   f"[SECTION:New Emails]\n{emails_str}\n\n" \
-                  f"[SECTION:News]\n{news_str}\n"
+                  f"[SECTION:News]\n{news_str}\n\n" \
+                  f"{pulse_str}\n\n" \
+                  f"{billing_snapshot}\n\n" \
+                  f"{deliv_str}\n\n" \
+                  f"{focus_str}\n"
+        if 'pulse_str' in locals(): logger.debug("daily briefing pulse_str chars=%d (Pulse private mem + Shield surface)", len(pulse_str or ""))
         
         if urgent_emails_str:
             briefing += f"[SECTION:Urgent Emails]\n{urgent_emails_str}\n\n"

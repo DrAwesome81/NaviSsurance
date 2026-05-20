@@ -8,6 +8,7 @@ from gui.agent_console import AgentConsole
 
 class AgentTab(QWidget):
     """Simple host tab for a single named agent console."""
+    # New: AgentTab now explicitly supports Pulse private memory for Shield (additional agent tab spot)
 
     def __init__(
         self,
@@ -23,6 +24,7 @@ class AgentTab(QWidget):
         self.agent_code = (agent_code or "").strip().lower()
         self.heading = heading
         self.subtitle = subtitle
+        # Agent routing ties Pulse private memory to Shield agents
         self._setup_ui()
 
     def _setup_ui(self):
@@ -39,6 +41,11 @@ class AgentTab(QWidget):
             s.setWordWrap(True)
             s.setStyleSheet("color: #9aa0a6; font-size: 12px;")
             layout.addWidget(s)
+
+        if self.agent_code == "shield":
+            note = QLabel("🛡️ Tied to Pulse [Security-Relevant] findings and private reflections for risk triage.")
+            note.setStyleSheet("color: #9aa0a6; font-size: 11px; font-style: italic;")
+            layout.addWidget(note)
 
         self.agent_console = AgentConsole(self.db, agent_code=self.agent_code, parent=self)
         layout.addWidget(self.agent_console, 1)

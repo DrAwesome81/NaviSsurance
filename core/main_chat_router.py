@@ -19,6 +19,8 @@ from core.user_memory import (
 )
 
 logger = logging.getLogger(__name__)
+# Routes CoS, Pulse (intel), Shield; private memory + security-relevant intel from Pulse informs supervisor context and agent dispatch (fresh coordination)
+# Pulse private memory + Shield (main chat router surface)
 
 LOCAL_FAST_UNSUPPORTED = "LOCAL_FAST_UNSUPPORTED"
 
@@ -314,7 +316,35 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
             )
         except Exception:
             pass
-    elif route == "local_fast":
+
+    # Knowledge ingestion ("add to memory", "remember this", URLs, files, text) + structured preview editing loop.
+    # Placed after teach/explicit so it can short-circuit with preview; non-fatal, follows existing special-case pattern.
+    if not response:
+        try:
+            from core.knowledge_ingestion import (
+                is_knowledge_ingest_trigger,
+                ingest_user_knowledge,
+                process_knowledge_reply,
+                set_pending_knowledge,
+                render_knowledge_preview,
+            )
+            kresp = process_knowledge_reply(sid, message)
+            if kresp:
+                response = kresp
+                final_source = "knowledge_preview"
+            elif is_knowledge_ingest_trigger(message):
+                preview = ingest_user_knowledge(message, session_id=sid)
+                set_pending_knowledge(sid, preview)
+                intro = (
+                    "📝 **Knowledge Ingestion – Structured Preview**\n"
+                    "One LLM pass produced the fields below. Use exact commands to edit or reply **save** / **looks good**.\n\n"
+                )
+                response = intro + render_knowledge_preview(preview)
+                final_source = "knowledge_ingestion"
+        except Exception as ke:
+            logger.debug("knowledge_ingestion hook non-fatal (chat continues): %s", ke)
+
+    if not response and route == "local_fast":
         # Keep the fast path fast: formatting/rewrite turns do not need durable recall.
         memory_context = build_user_memory_context(db, message, limit=5, recent_limit=2)
         try:
@@ -329,6 +359,7 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
             cross_memory_context = ""
         if cross_memory_context:
             memory_context = "\n\n".join(part for part in (memory_context, cross_memory_context) if str(part).strip())
+        if memory_context: logger.debug("main chat private memory context chars=%d (Pulse+Shield)", len(memory_context))
         try:
             response = local_fast_chat_response(
                 message,
@@ -352,10 +383,10 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
             )
             response = cos_response(db, message, conversation_history=history_items, chat_id=chat_id)
             final_source = "cos_fallback"
-    else:
+    elif not response:
         response = cos_response(db, message, conversation_history=history_items, chat_id=chat_id)
 
-    if response and not teach_response and final_source != "explicit_memory_command":
+    if response and not teach_response and final_source != "explicit_memory_command" and not final_source.startswith("knowledge_"):
         llm_callable = getattr(getattr(chat_handler, "response_handler", None), "chat_with_llama", None)
         if llm_callable is None:
             llm_callable = default_user_memory_llm

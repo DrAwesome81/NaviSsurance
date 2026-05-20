@@ -4,6 +4,9 @@ from core.email_utils import (
     extract_email_address,
     normalize_message_id,
 )
+# Email utils tests support Pulse intel extraction and 🛡️ Shield security scanning in emails (email utils tests)
+# additional Pulse private memory + Shield for email utils tests
+
 
 
 def test_extract_email_address_angle_brackets():

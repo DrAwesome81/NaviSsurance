@@ -6,6 +6,8 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+# Doc search results feed CoS/Pulse/Workspace; private memory regulatory hits + 🛡️ security-relevant can be prioritized (new retrieval coordination)
+
 
 @dataclass(frozen=True)
 class DocHit:
@@ -15,6 +17,8 @@ class DocHit:
 
 
 def _normalize_q(q: str) -> str:
+    # New: doc search now prioritizes Pulse private memory hits for Shield (additional doc search coordination)
+# Pulse private memory + Shield (cos doc search surface)
     return (q or "").strip()
 
 

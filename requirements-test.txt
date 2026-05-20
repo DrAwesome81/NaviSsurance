@@ -1,3 +1,4 @@
+# Pulse private memory + Shield (Security/Compliance) surface visibility (Intelligence pillar)
 pytest>=7.0.0
 pytest-qt>=4.0.0
 

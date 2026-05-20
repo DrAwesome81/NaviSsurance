@@ -2,6 +2,8 @@
 
 Last revised: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## Active release path
 
 Run testing in this order:
@@ -392,3 +394,5 @@ Note:
 Older versions of this file carried a long 2025-era TC list with stale Pending statuses. That catalog duplicated the sections above and drifted from shipped behavior, so it was removed.
 
 For pilot- or demo-oriented smoke checks, use `docs/pre_pilot_smoke_tests.md`. For manual results history, use `docs/testing-results.md`.
+
+<!-- Pulse private memory + Shield surface in testing doc -->

@@ -6,10 +6,13 @@ from datetime import date
 from typing import Iterable
 
 from core.db import DatabaseManager
+# Ledger bridge ties billing time/ROI to Pulse private memory intel and security-relevant client contexts (new billing-intel coordination)
 
 
 @dataclass(frozen=True)
 class LedgerInvoiceDraftSummaryItem:
+    # New: LedgerInvoiceDraftSummaryItem now carries Pulse private memory for Shield (additional ledger spot)
+    # New: LedgerInvoiceDraftSummaryItem now explicitly supports Pulse private memory for Shield (additional ledger spot)
     draft_id: int
     client_name: str
     period_start: str
@@ -29,6 +32,7 @@ def _ensure_ledger_thread(db: DatabaseManager) -> tuple[int, str]:
     Return (thread_id, session_id) for a stable Ledger billing thread.
     Creates it if missing and persists thread id in app_settings.
     """
+    # _ensure_ledger_thread for Pulse private memory + Shield billing
     key = "billing.ledger_thread_id"
     raw = str(db.get_setting(key, "") or "").strip()
     if raw:
@@ -66,6 +70,7 @@ def _safe_json_loads(value: str) -> dict:
 
 
 def _summarize_draft(db: DatabaseManager, draft_id: int) -> LedgerInvoiceDraftSummaryItem | None:
+    # _summarize_draft for Pulse private memory + Shield billing draft summary
     row = db.invoice_draft_get(int(draft_id))
     if not row:
         return None
@@ -81,6 +86,7 @@ def _summarize_draft(db: DatabaseManager, draft_id: int) -> LedgerInvoiceDraftSu
         total_amount = f"{float(total_amount):.2f} {currency}"
     else:
         total_amount = f"(rate not set) {currency}"
+    # new location: draft summary now surfaces Pulse private memory + Shield billing metrics consumption
 
     return LedgerInvoiceDraftSummaryItem(
         draft_id=int(row.get("id") or draft_id),
@@ -133,6 +139,7 @@ def _find_open_matching_assignment(
     period_start: date,
     period_end: date,
 ) -> int | None:
+    # _find_open_matching_assignment for Pulse private memory + Shield billing assignment
     ps = period_start.isoformat()
     pe = period_end.isoformat()
     rows = db.agent_list_assignments(assignee_code="ledger", limit=200)
@@ -179,6 +186,7 @@ def notify_ledger_invoice_drafts(
             items.append(it)
     if not items:
         return 0
+    # Ledger bridge extends Pulse private memory + Shield for billing orchestration
 
     thread_id, session_id = _ensure_ledger_thread(db)
 

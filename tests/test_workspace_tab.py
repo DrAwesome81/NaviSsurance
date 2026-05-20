@@ -8,6 +8,8 @@ Covers automated equivalents of key manual cases:
 
 Disabled by default. Enable with RUN_QT_TESTS=1.
 """
+# Workspace tab tests support Pulse private memory and 🛡️ Shield context in document workflows (workspace tab tests)
+# additional Pulse private memory + Shield for workspace tab tests
 
 from __future__ import annotations
 

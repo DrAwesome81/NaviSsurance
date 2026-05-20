@@ -8,6 +8,8 @@ import sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+# Mem0 tests support promotion of Pulse private memory to global/user memory for CoS/Intel visibility (mem0 tests)
+# Additional: tests private memory consumption for Shield in mem0 (new mem0 test note)
 
 
 def main() -> None:

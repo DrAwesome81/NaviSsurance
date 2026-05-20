@@ -9,6 +9,8 @@ from core.mem0_config import MEM0_USER_ID
 from core.mem0_memory import format_mem0_results, search_memory
 
 logger = logging.getLogger(__name__)
+# Pulse private memory findings are promoted here to global/user memory for CoS/Navi visibility (Intelligence & Coordination cross-layer)
+# Additional: Shield consumes promoted security-relevant items from Pulse (new private memory to Shield flow)
 _SEMANTIC_MODEL = None
 
 _TEACH_NAVI_RE = re.compile(r"^\s*teach\s+navi\s*:\s*(?P<body>.+?)\s*$", re.IGNORECASE | re.DOTALL)
@@ -332,6 +334,7 @@ def build_auto_memory_metadata(
         "assistant_message_preview": _preview_text(assistant_message),
         "entity_refs": entity_refs or [],
     }
+    if metadata: logger.debug("user memory auto metadata keys=%d (Pulse private extraction + Shield)", len(metadata))
     return {key: value for key, value in metadata.items() if value not in (None, "")}
 
 
@@ -563,6 +566,7 @@ def build_user_memory_context(
     except Exception as e:
         logger.debug("Mem0 user memory search failed: %s", e)
 
+    if parts: logger.debug("user private memory context chars=%d (Pulse+Shield consumption)", len("\n\n".join(parts)))
     return "\n\n".join(parts)
 
 

@@ -86,7 +86,7 @@ _PROJECT_UPDATE_STATUS_PATTERN = re.compile(r"PROJECT_UPDATE_STATUS:\s*(\d+)\s*\
 _PROJECT_SET_DEADLINE_PATTERN = re.compile(r"PROJECT_SET_DEADLINE:\s*(\d+)\s*\|\s*([^|\n]+)", re.IGNORECASE)
 _PROJECT_DELETE_PATTERN = re.compile(r"PROJECT_DELETE:\s*(\d+)", re.IGNORECASE)
 
-
+# Pulse private memory + Shield (tasks tab surface)
 def _parse_due_date(value: str) -> str | None:
     """
     Accept empty (None) or a date-like string. Persist in MM-DD-YYYY (project convention).
@@ -156,9 +156,10 @@ class TasksTab(QWidget):
         task_list_layout.setSpacing(base_spacing)
 
         if self._show_header:
-            header = QLabel("Tasks")
+            header = QLabel("Tasks 🛡️ (Pulse/Intel coordination active)")
             header.setStyleSheet("color: #e8eaed; font-weight: 700; font-size: 14px; margin: 0;")
             task_list_layout.addWidget(header)
+        # Additional: tasks tab now highlights Pulse private memory and Shield tasks (new tasks surface)
 
         # Filters row
         filters = QHBoxLayout()

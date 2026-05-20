@@ -2,6 +2,8 @@
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## Overview
 NaviSsurance now has two different API layers:
 
@@ -197,4 +199,6 @@ Current registered tool families include:
 See also:
 - `docs/security.md`
 - `SECURITY.md`
+
+<!-- Pulse private memory + Shield triage in API doc -->
 

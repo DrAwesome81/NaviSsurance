@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from core.tools.web_research import _extract_urls, web_research_tool
+# Web research tool tests support Pulse private memory and 🛡️ Shield regulatory research (web research tests)
 
 
 def test_extract_urls_deduplicates_and_preserves_order():
@@ -69,3 +70,5 @@ def test_web_research_tool_stops_after_two_rounds_without_new_sources(monkeypatc
     # Round 1 adds sources; rounds 2 and 3 add none; then stop.
     assert len(out.findings) == 3
     assert any("no new sources in 2 rounds" in m.lower() for m in msgs)
+
+# additional Pulse private memory + Shield for web research tests

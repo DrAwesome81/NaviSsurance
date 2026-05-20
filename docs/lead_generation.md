@@ -2,6 +2,8 @@
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## What it does
 The **Leads** tab finds MedTech decision-makers (AI SaMD / IVD / regulatory-adjacent) and produces:
 - **verifiable** leads (each lead must have sources)
@@ -78,4 +80,6 @@ The app currently supports **manual outreach** (open profile + copy/paste messag
 “Send a LinkedIn DM directly from the app” is not implemented here because LinkedIn’s messaging APIs are not generally available for typical apps and ToS constraints are real. If you want automation later, the safe path is:
 - keep messaging manual, but automate **tracking + scheduling**
 - only add direct send if you have an approved LinkedIn API scope/path that explicitly supports it
+
+<!-- Pulse private memory + Shield triage in lead gen doc -->
 

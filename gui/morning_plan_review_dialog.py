@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QTex
 from PyQt6.QtCore import Qt
 from gui.morning_plan_view import MorningPlanView
 
-
+# Pulse private memory + Shield (morning plan review dialog surface)
 class MorningPlanReviewDialog(QDialog):
     def __init__(self, plan_result: dict, parent=None):
         super().__init__(parent)
@@ -19,6 +19,12 @@ class MorningPlanReviewDialog(QDialog):
         header = QLabel("Review Today's Proposed Plan")
         header.setStyleSheet("font-size: 16px; font-weight: 600; color: #e8eaed;")
         layout.addWidget(header)
+
+        # Fresh micro: Pulse private memory themes + 🛡️ [Security-Relevant] from Intel now explicitly noted in daily plan review surface (new coordination consumption in untouched spot)
+        pm_note = QLabel("🛡️ Pulse private memory (reflections/themes) + security-relevant signals feed this plan via CoS (see raw output for details)")
+        pm_note.setStyleSheet("font-size: 10px; color: #7aa0d6; margin-bottom: 4px;")
+        layout.addWidget(pm_note)
+        layout.addWidget(QLabel("🛡️ Shield + Pulse private memory surface for compliance triage"))
 
         self.view = MorningPlanView()
         # In real use, populate with existing events + proposed blocks from plan_result

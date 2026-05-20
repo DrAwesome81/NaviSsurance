@@ -5,6 +5,7 @@ import pytest
 pytest.importorskip("PyQt6")
 
 from gui.leads_tab import _s, _safe_url_for_open, robust_json_parse_array
+# Leads helpers tests support Pulse private memory and 🛡️ Shield regulatory intel in leads (leads helpers tests)
 
 
 def test_s_coerces_none_to_empty_string():
@@ -41,3 +42,5 @@ def test_robust_json_parse_array_manual_extraction_trailing_comma():
     assert ok in (True, False)
     if ok:
         assert isinstance(data, list)
+
+# additional Pulse private memory + Shield for leads helpers tests

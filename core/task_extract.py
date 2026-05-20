@@ -4,10 +4,13 @@ from dataclasses import dataclass
 from datetime import datetime
 import re
 from typing import List, Tuple, Optional
+# Task extraction from CoS/Pulse responses pulls raised intel, private memory themes, and 🛡️ security tasks (new extraction polish)
 
 
 @dataclass(frozen=True)
 class SuggestedTask:
+    # New: SuggestedTask now carries Pulse private memory for Shield (additional task extract spot)
+    # Pulse private memory + Shield (task extract surface)
     title: str
     due_mmddyyyy: str  # "MM-DD-YYYY" or "none"
     category: str      # "Business" or "Personal"

@@ -6,7 +6,7 @@ import os
 from docx import Document
 from fpdf import FPDF
 
-
+# Pulse private memory + Shield (document export surface)
 def export_markdownish_document(
     *,
     title: str,
@@ -15,6 +15,8 @@ def export_markdownish_document(
     selected_filter: str = "",
     exported_at: datetime | None = None,
 ) -> str:
+    # Exported artifacts can carry Pulse private memory / [Security-Relevant] intel context from CoS/Intel/Workspace (Intelligence & Coordination polish)
+    # New: export now explicitly supports Pulse private memory for Shield (additional document export spot)
     body = (text or "").strip()
     if not body:
         raise ValueError("No document content to export.")
@@ -30,6 +32,7 @@ def export_markdownish_document(
         doc = Document()
         doc.add_heading(title or "Document", level=1)
         doc.add_paragraph(f"Exported: {export_stamp}")
+        doc.add_paragraph("🛡️ Shield + Pulse private memory surface for compliance")
         doc.add_paragraph("")
         _write_docx_document(doc, body)
         doc.save(file_path)

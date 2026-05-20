@@ -8,6 +8,9 @@ import sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+# RAG retriever tests support Pulse private memory regulatory themes and 🛡️ Shield compliance docs (RAG tests)
+# additional Pulse private memory + Shield for RAG tests
+
 
 
 def main() -> None:

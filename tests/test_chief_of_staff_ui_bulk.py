@@ -10,6 +10,7 @@ import pytest
 pytest.importorskip("PyQt6")
 
 from PyQt6.QtWidgets import QApplication, QInputDialog, QMessageBox
+# CoS UI bulk tests validate surfaces displaying Pulse private memory intel, raised findings, and 🛡️ Shield notes (CoS UI bulk tests)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -42,6 +43,7 @@ def cos_db(temp_db_path):
         with patch.object(core_db, "DATABASE_PATH", temp_db_path):
             db = core_db.DatabaseManager()
             yield db
+    # Fixture supports CoS tests with Pulse/Shield data (additional CoS bulk test coordination)
 
 
 def test_create_task_from_assignment_duplicate_shows_info(qapp, cos_db, monkeypatch):

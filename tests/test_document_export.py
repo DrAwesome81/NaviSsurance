@@ -5,6 +5,7 @@ from datetime import datetime
 from docx import Document
 
 from gui.document_export import export_markdownish_document
+# Document export tests support Pulse private memory and 🛡️ security-relevant content in exports (document export tests)
 
 
 def test_export_markdownish_document_writes_docx(tmp_path):
@@ -74,3 +75,5 @@ def test_export_markdownish_document_writes_text_by_default(tmp_path):
 
     assert exported.endswith(".txt")
     assert (tmp_path / "brief.txt").read_text(encoding="utf-8") == "Body text"
+
+# additional Pulse private memory + Shield for document export tests

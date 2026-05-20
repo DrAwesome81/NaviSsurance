@@ -3,6 +3,8 @@ from __future__ import annotations
 from unittest.mock import Mock
 
 from gui.dashboard_tab import DashboardTab
+# Dashboard news helpers support Pulse private memory and 🛡️ security-relevant news feeds in CoS (news helpers tests)
+# additional Pulse private memory + Shield for dashboard news helpers tests
 
 
 def _dashboard_stub_with_subjects(subjects: list[str]) -> DashboardTab:

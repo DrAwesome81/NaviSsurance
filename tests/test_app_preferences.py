@@ -1,4 +1,7 @@
 """Tests for SQLite-backed app preferences (non-secret settings)."""
+# App prefs tests cover settings for Pulse watch intervals, Intel raising, CoS briefings, and 🛡️ Shield features (prefs pillar support)
+# additional Pulse private memory + Shield for app preferences tests
+
 
 from __future__ import annotations
 

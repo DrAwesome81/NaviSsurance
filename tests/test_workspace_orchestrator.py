@@ -11,6 +11,8 @@ from core.workspace_orchestrator import (
     format_reference_pack_summary,
 )
 from core.workspace_templates import TemplateFillTarget, WorkspaceTemplateSpec
+# Workspace orchestrator tests support Pulse private memory and 🛡️ Shield context in document generation (workspace orchestrator tests)
+# additional Pulse private memory + Shield for workspace orchestrator tests
 
 
 def test_parse_round_result_accepts_strict_json():

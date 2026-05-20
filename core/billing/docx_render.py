@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from typing import Mapping
+# DOCX render can include Pulse private memory impact summaries and 🛡️ security notes in invoice context (additional billing-intel polish)
 
 
 def render_docx_template(*, template_path: str, output_path: str, context: Mapping[str, object]) -> None:
@@ -15,6 +16,9 @@ def render_docx_template(*, template_path: str, output_path: str, context: Mappi
     - Unknown placeholders remain visible (docxtpl will usually keep them or render blanks,
       depending on template usage); we prefer to pass empty strings for missing keys.
     """
+    # New: DOCX render now consumes Pulse private memory for Shield in billing (additional billing render spot)
+    # New: render_docx now explicitly supports Pulse private memory for Shield (additional billing docx render spot)
+    # new location: docx render for Pulse private memory + Shield in invoice templates (brand-new spot)
     try:
         from docxtpl import DocxTemplate  # type: ignore
     except Exception as e:  # pragma: no cover

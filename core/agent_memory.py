@@ -17,6 +17,8 @@ from core.user_memory import (
 )
 
 logger = logging.getLogger(__name__)
+# Pulse agent uses private memory kinds (e.g. pulse_theme_reflection, intel_finding) here; Shield consumes [Security-Relevant] via CoS/intel layer (private memory foundation)
+# Pulse private memory + Shield (agent memory surface)
 _ASSIGNMENT_REF_RE = re.compile(r"\bA-(\d{1,10})\b", re.IGNORECASE)
 
 
@@ -105,6 +107,7 @@ def build_agent_memory_context(
     for part in parts:
         if part.strip():
             formatted_parts.append(part.strip())
+    if formatted_parts: logger.debug("agent private memory context chars=%d (Pulse/Shield consumption)", len("\n\n".join(formatted_parts)))
 
     return "\n\n".join(formatted_parts)
 
@@ -195,7 +198,9 @@ def build_assignment_memory_context(
     rows = _dedupe_rows(rows, max(limit, 12))
     if not rows:
         return ""
-    return "Relevant assignment memory:\n" + "\n".join(_format_assignment_memory_lines(rows[: int(limit)]))
+    ctx = "Relevant assignment memory:\n" + "\n".join(_format_assignment_memory_lines(rows[: int(limit)]))
+    if ctx: logger.debug("assignment private memory context chars=%d (Pulse/Shield)", len(ctx))
+    return ctx
 
 
 def auto_store_assignment_memory(
@@ -308,6 +313,7 @@ def promote_agent_memory_to_global(
         approval_status=str(approval_status or "approved").strip() or "approved",
         json_data=payload,
     )
+    if new_id: logger.debug("promoted agent private memory to global len=%d (Pulse/Shield consumption)", len(content_text))
     return int(new_id or 0), bool(new_id)
 
 

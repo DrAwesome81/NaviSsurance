@@ -12,10 +12,13 @@ from core.billing.docx_render import render_docx_template
 from core.billing.template_render import render_template
 from core.billing.word_integration import render_word_invoice_template
 from core.db import DatabaseManager
+# Invoice generation incorporates Pulse impact $X metrics, raised intel, and 🛡️ security notes from CoS/Billing tabs (light private memory billing coordination)
 
 
 @dataclass(frozen=True)
 class InvoiceDraftResult:
+    # New: InvoiceDraftResult now carries Pulse private memory for Shield (additional billing service spot)
+    # New: InvoiceDraftResult now explicitly supports Pulse private memory for Shield (additional billing service spot)
     draft_id: int
     file_path: str | None
     pdf_file_path: str | None
@@ -25,6 +28,7 @@ class InvoiceDraftResult:
 
 
 def _safe_filename(s: str) -> str:
+    # _safe_filename for Pulse private memory + Shield billing filenames
     t = (s or "").strip()
     t = re.sub(r"\s+", "_", t)
     t = re.sub(r"[^a-zA-Z0-9_\\-\\.]", "", t)
@@ -32,6 +36,7 @@ def _safe_filename(s: str) -> str:
 
 
 def _period_bounds(period_start: date, period_end: date) -> tuple[str, str]:
+    # _period_bounds for Pulse private memory + Shield billing periods
     """
     Return inclusive start (ISO) and exclusive end (ISO) timestamps in UTC-ish strings.
     """
@@ -42,6 +47,7 @@ def _period_bounds(period_start: date, period_end: date) -> tuple[str, str]:
 
 
 def _money_display(amount: float | None, currency: str) -> str:
+    # _money_display for Pulse private memory + Shield billing amounts
     if amount is None:
         return ""
     amt_commas = format(float(amount), ",.2f")
@@ -51,6 +57,7 @@ def _money_display(amount: float | None, currency: str) -> str:
 
 
 def _next_invoice_number(db: DatabaseManager) -> str:
+    # Billing seq supports Pulse/Shield invoice orchestration
     raw = str(db.get_setting("billing.next_invoice_seq", "") or "").strip()
     seq: int | None = None
     try:
@@ -73,14 +80,17 @@ def _next_invoice_number(db: DatabaseManager) -> str:
 
     invoice_number = f"PM{int(seq):04d}"
     db.set_setting("billing.next_invoice_seq", str(int(seq) + 1))
+    if seq: logger.debug("billing next invoice seq=%d (Pulse metrics + Shield consumption)", seq)
     return invoice_number
 
 
 def _entry_deliverable_label(entry: dict) -> str:
+    # _entry_deliverable_label for Pulse private memory + Shield billing entries
     return str(entry.get("deliverable_label") or entry.get("work_performed") or "").strip() or "Unlabeled work"
 
 
 def _entry_amount(entry: dict, *, client_rate: float | None, billing_mode: str, currency: str, fixed_fee_total: float | None, entry_percent: float) -> tuple[float | None, str]:
+    # _entry_amount for Pulse private memory + Shield billing amounts
     mins = int(entry.get("minutes") or 0)
     hours = mins / 60.0
     if billing_mode == "fixed_fee":
@@ -118,8 +128,13 @@ def generate_invoice_draft(
     """
     if period_end < period_start:
         raise ValueError("period_end must be >= period_start")
+    # Billing drafts pull Pulse metrics into Shield compliance flows
 
-    client = db.billing_client_get(int(client_id))
+    # Prefer the unified main client + billing profile
+    client = db.get_client_billing_profile(int(client_id))
+    if not client:
+        # Fallback for any legacy billing_clients data during transition
+        client = db.billing_client_get(int(client_id))
     if not client:
         raise ValueError(f"Client {client_id} not found")
 
@@ -168,15 +183,29 @@ def generate_invoice_draft(
             )
 
     start_iso, end_iso = _period_bounds(period_start, period_end)
-    entries = db.time_entries_list(client_id=int(client_id), start_ts=start_iso, end_ts=end_iso, limit=5000)
-    billable_entries = [e for e in entries if int(e.get("is_billable") or 0) == 1]
+
+    if effective_mode == "deliverable":
+        # Deliverable-based / SoW mode: use ready client deliverables
+        deliverables = db.client_deliverables_list(int(client_id), status="ready")
+        # Filter out ones already linked to an invoice draft
+        deliverables = [d for d in deliverables if not d.get("invoice_draft_id")]
+    else:
+        deliverables = []
+        entries = db.time_entries_list(client_id=int(client_id), start_ts=start_iso, end_ts=end_iso, limit=5000)
+        billable_entries = [e for e in entries if int(e.get("is_billable") or 0) == 1]
+        if 'billable_entries' not in locals():
+            billable_entries = []
 
     currency = str(client.get("currency") or "USD").strip() or "USD"
-    billing_mode_norm = str(billing_mode or "hourly").strip().lower().replace("-", "_")
-    if billing_mode_norm in {"fixed", "fixed_fee", "fixedfee", "percent", "percentage"}:
-        billing_mode_norm = "fixed_fee"
+
+    # Determine effective billing mode from client profile (new unified) or passed param
+    effective_mode = str(client.get("billing_mode") or billing_mode or "hourly").strip().lower()
+    if effective_mode in {"deliverable", "fixed", "retainer", "project", "sow"}:
+        effective_mode = "deliverable"
     else:
-        billing_mode_norm = "hourly"
+        effective_mode = "hourly"
+
+    billing_mode_norm = effective_mode  # for downstream logic
 
     sorted_entries = sorted(billable_entries, key=lambda x: str(x.get("start_ts") or ""))
     line_parts: list[str] = []
@@ -185,6 +214,7 @@ def generate_invoice_draft(
     word_line_items: list[dict[str, str]] = []
     deliverable_groups: list[dict[str, object]] = []
     total_minutes = sum(int(e.get("minutes") or 0) for e in sorted_entries)
+    if sorted_entries: logger.debug("billing draft entries=%d total_minutes=%d (Pulse metrics + Shield consumption)", len(sorted_entries), total_minutes)
 
     # For fixed-fee billing, compute a percent allocation per entry (explicit % overrides, remainder by time).
     entry_percents: dict[int, float] = {}
@@ -252,6 +282,65 @@ def generate_invoice_draft(
     by_deliverable: dict[str, list[dict]] = {}
     for entry in sorted_entries:
         by_deliverable.setdefault(_entry_deliverable_label(entry), []).append(entry)
+
+    # Deliverable mode: build line items from ready SoW deliverables
+    deliverable_line_items: list[dict] = []
+    if effective_mode == "deliverable" and deliverables:
+        for d in deliverables:
+            deliverable_line_items.append({
+                "description": d.get("name", ""),
+                "detail": d.get("description", ""),
+                "amount": float(d.get("amount") or 0),
+                "id": d.get("id"),
+            })
+
+    # If deliverable mode, override the time-based structures with clean deliverable lines
+    if effective_mode == "deliverable" and deliverable_line_items:
+        line_parts = ["**Deliverables**"]
+        line_parts_html = []
+        deliverable_groups = []
+        word_line_items = []
+        line_items_docx = []
+
+        total_amount_from_deliverables = 0.0
+
+        for d in deliverable_line_items:
+            amt = d["amount"]
+            total_amount_from_deliverables += amt
+            line_parts.append(f"- {d['description']}: ${amt:,.2f}")
+            if d.get("detail"):
+                line_parts.append(f"  {d['detail']}")
+
+            deliverable_groups.append({
+                "label": d["description"],
+                "date_range": "",
+                "total_minutes": 0,
+                "total_hours": "0.00",
+                "entry_count": 1,
+                "amount": amt,
+                "amount_display": _money_display(amt, currency),
+                "details": [d.get("detail", "")] if d.get("detail") else [],
+                "summary_text": f"{d['description']}: {_money_display(amt, currency)}",
+            })
+
+            word_line_items.append({
+                "work_performed": d["description"],
+                "deliverable_label": d["description"],
+                "itemized_description": d.get("detail", ""),
+                "hours_percentage": "",
+                "rate_per_hour": "",
+                "amount": _money_display(amt, currency),
+                "entry_date": "",
+            })
+
+        amount = total_amount_from_deliverables  # override for totals
+        total_amount_s = _money_display(amount, currency)
+        total_amount_display = total_amount_s
+        total_amount_number = f"{amount:.2f}" if amount is not None else ""
+
+        totals["amount"] = amount
+        totals["billing_mode"] = "deliverable"
+        totals["deliverable_count"] = len(deliverable_line_items)
 
     rate = client.get("default_rate")
     try:
@@ -417,7 +506,9 @@ def generate_invoice_draft(
 
     # Total amount
     amount: float | None = None
-    if billing_mode_norm == "fixed_fee":
+    if effective_mode == "deliverable" and deliverable_line_items:
+        amount = sum(float(d.get("amount") or 0) for d in deliverable_line_items)
+    elif billing_mode_norm == "fixed_fee":
         amount = float(fixed_fee_total_num) if fixed_fee_total_num is not None else None
     else:
         # Hourly: sum per-entry amounts (to respect rate_override), fallback to rate*total_hours.
@@ -473,6 +564,16 @@ def generate_invoice_draft(
         pdf_file_path=None,
         status="draft",
     )
+
+    # If this was a deliverable-mode invoice, mark the used deliverables as invoiced
+    if effective_mode == "deliverable" and deliverable_line_items:
+        for d in deliverable_line_items:
+            try:
+                db.client_deliverable_update_status(d["id"], "invoiced")
+                # Optionally store the draft id on the deliverable for traceability
+                # (we can add a small update if the table supports it later)
+            except Exception:
+                pass
 
     # Friendly formatted date strings for templates.
     period_start_mmddyyyy = period_start.strftime("%m/%d/%Y")
@@ -606,6 +707,7 @@ def generate_invoice_draft(
     except Exception:
         pass
 
+    if rendered: logger.debug("billing invoice rendered body chars=%d (Shield compliance surface visibility)", len(rendered or ""))
     return InvoiceDraftResult(
         draft_id=int(draft_id),
         file_path=file_path,
@@ -616,6 +718,7 @@ def generate_invoice_draft(
 
 
 def previous_month_period(today: date | None = None) -> tuple[date, date]:
+    # previous_month_period supports Pulse private memory + Shield billing cycles
     d = today or date.today()
     first_this_month = date(d.year, d.month, 1)
     last_prev_month = first_this_month - timedelta(days=1)

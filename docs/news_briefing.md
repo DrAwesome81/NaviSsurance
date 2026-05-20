@@ -2,6 +2,8 @@
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## Goal
 Show a **relevant external headlines** feed on the Dashboard that:
 - pulls recent web headlines relevant to NaviSure’s work (FDA/MedTech/AI SaMD/IVD)
@@ -87,3 +89,5 @@ The current mechanism relies on the agent’s `WEB_SEARCH:` tool path. Longer-te
 - keep the same output contract (JSON array of `{title, content/summary, url, source, published_date}`),
 - keep canonicalization + DB dedup unchanged,
 - ensure timeouts/retries and avoid logging raw tool outputs.
+
+<!-- Pulse private memory + Shield surface in news briefing -->

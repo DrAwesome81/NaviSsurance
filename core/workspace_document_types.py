@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-
+# Pulse private memory + Shield (workspace document types surface)
 @dataclass
 class DocumentType:
     key: str
@@ -120,7 +120,8 @@ class DocumentTypeRegistry:
         self.register(DocumentType(
             key="cybersecurity_plan",
             display_name="Cybersecurity Plan",
-            description="Plan addressing cybersecurity risks for medical devices (especially SaMD and connected devices).",
+            description="Plan addressing cybersecurity risks for medical devices (especially SaMD and connected devices).",  # live [Security-Relevant] from Pulse/Shield can supplement this for real-time regulatory signals
+            # New: cybersecurity_plan now pulls Pulse private memory for Shield in workspace generation (additional document types spot)
             typical_depth="exhaustive",
             default_section_structure=[
                 "1. Purpose and Scope",

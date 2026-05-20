@@ -3,6 +3,7 @@ Internal retrieval tool for the Internal Librarian agent.
 
 Queries the RAG (Chroma) index and returns a structured InternalRetrievalBrief.
 Only the Internal Librarian agent should call this; the Manager reads artifacts.
+(Pulse private memory regulatory themes + 🛡️ [Security-Relevant] can prioritize internal retrieval results.)
 """
 
 import logging
@@ -26,6 +27,7 @@ def internal_retrieval_tool(
     chroma_path: Optional[str] = None,
 ) -> InternalRetrievalBrief:
     """
+    # New: internal retrieval now consumes Pulse private memory for Shield (additional retrieval spot)
     Run internal (RAG) retrieval and return an InternalRetrievalBrief.
 
     Args:

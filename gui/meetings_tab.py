@@ -54,6 +54,7 @@ class MeetingMetadataDialog(QDialog):
         initial_cos_project_id: int | None = None,
     ):
         super().__init__(parent)
+        self.db = db
         self.setWindowTitle("Label meeting")
         self.setModal(True)
 
@@ -81,12 +82,28 @@ class MeetingMetadataDialog(QDialog):
             clients = db.clients_list(active_only=True) if db is not None and hasattr(db, "clients_list") else []
         except Exception:
             clients = []
+        try:
+            from core.intel import IntelService
+            isvc = IntelService(db)
+        except Exception:
+            isvc = None
         for client in clients:
             try:
                 client_id = int(client.get("id"))
                 client_name = str(client.get("name") or "").strip()
             except Exception:
                 continue
+            if isvc:
+                try:
+                    w_list = [w for w in (isvc.list_watch_topics() or []) if getattr(w, 'client_id', None) == client_id]
+                    has_r = bool(isvc.list_findings(client_id=client_id, raised_only=True, limit=1))
+                    if w_list or has_r:
+                        client_name += " 📡"
+                        tip = "Pulse: " + ", ".join([getattr(w,'topic','')[:20] for w in w_list[:2]]) if w_list else "Recent raised Pulse intel for client"
+                        idx = self.client_combo.count()
+                        self.client_combo.setItemData(idx, tip, Qt.ToolTipRole)
+                except Exception:
+                    pass
             self.client_combo.addItem(client_name or f"Client {client_id}", client_id)
             if initial_client_id is not None and client_id == int(initial_client_id):
                 self.client_combo.setCurrentIndex(self.client_combo.count() - 1)
@@ -105,10 +122,24 @@ class MeetingMetadataDialog(QDialog):
             if initial_cos_project_id is not None and project_id == int(initial_cos_project_id):
                 self.project_combo.setCurrentIndex(self.project_combo.count() - 1)
 
+        self.client_combo.currentIndexChanged.connect(self._update_pulse_note)
+        self._update_pulse_note()  # initial
+
         form.addRow("Meeting date", self.date_edit)
         form.addRow("Meeting with", self.with_edit)
         form.addRow("Client", self.client_combo)
         form.addRow("Project", self.project_combo)
+        self.pulse_note = QLabel("", self)
+        self.pulse_note.setStyleSheet("font-size: 9px; color: #7aa0d6;")
+        pulse_container = QWidget()
+        ph = QHBoxLayout(pulse_container)
+        ph.setContentsMargins(0, 0, 0, 0)
+        ph.addWidget(self.pulse_note, 1)
+        self.view_pulse_btn = QPushButton("View")
+        self.view_pulse_btn.setStyleSheet("font-size: 8px; padding: 1px 3px;")
+        self.view_pulse_btn.clicked.connect(self._view_pulse_intel)
+        ph.addWidget(self.view_pulse_btn)
+        form.addRow("Pulse Intel", pulse_container)
         form.addRow("Notes", self.notes_edit)
 
         layout.addLayout(form)
@@ -129,6 +160,49 @@ class MeetingMetadataDialog(QDialog):
         client_id = self.client_combo.currentData()
         project_id = self.project_combo.currentData()
         return meeting_date, meeting_with, notes, client_id, project_id
+
+    def _update_pulse_note(self):
+        """Tiny: show Pulse Intel summary for selected client in meeting dialog (actionable at-a-glance in creation flow)."""
+        try:
+            cid = self.client_combo.currentData()
+            if not cid or not self.db:
+                self.pulse_note.setText("")
+                return
+            from core.intel import IntelService
+            isvc = IntelService(self.db)
+            w_list = [w for w in (isvc.list_watch_topics() or []) if getattr(w, 'client_id', None) == cid]
+            recent = isvc.list_findings(client_id=cid, raised_only=True, limit=1)
+            txt = ""
+            if w_list:
+                txt = f"👤 {len(w_list)} watches"
+            if recent:
+                txt += ("; " if txt else "") + f"recent: {getattr(recent[0],'title','')[:25]}"
+            self.pulse_note.setText("📡 " + txt if txt else "")
+            if hasattr(self, 'view_pulse_btn'):
+                self.view_pulse_btn.setVisible(bool(txt))
+            self.notes_edit.setToolTip(f"Pulse for client: {txt}" if txt else "Key decisions, action items, follow-ups…")
+            # tiny extra: hint in with_edit placeholder when Pulse active for the client
+            base_ph = "e.g., Acme — John Smith (Reg Affairs)"
+            self.with_edit.setPlaceholderText(base_ph + (f"  📡 Pulse active 🛡️ Shield for sec-relevant" if txt else ""))
+        except Exception:
+            self.pulse_note.setText("")
+            if hasattr(self, 'view_pulse_btn'):
+                self.view_pulse_btn.setVisible(False)
+            self.notes_edit.setToolTip("Key decisions, action items, follow-ups…")
+            self.with_edit.setPlaceholderText("e.g., Acme — John Smith (Reg Affairs)")
+
+    def _view_pulse_intel(self):
+        """Tiny: View in Intel filtered to current client from the meeting dialog Pulse note."""
+        try:
+            cid = self.client_combo.currentData()
+            if cid and hasattr(self.parent(), "focus_intel_tab"):
+                self.parent().focus_intel_tab(client_id=cid)
+                # seamless: confirm in the note area after jumping (stays until client changes or dialog closes)
+                txt = self.pulse_note.text()
+                if txt and "✓ viewed" not in txt:
+                    self.pulse_note.setText(txt + " ✓ viewed")
+        except Exception:
+            pass
 
 
 class AssemblyAITranscriptionWorker(QThread):

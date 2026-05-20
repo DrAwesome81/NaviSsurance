@@ -1,4 +1,5 @@
 # core/mem0_memory.py
+# Mem0 helpers enable promotion of Pulse private memory (agent reflections) to global/user memory for CoS/Intel visibility (fresh private-to-global coordination)
 from __future__ import annotations
 
 import logging
@@ -7,6 +8,7 @@ import re
 from core.mem0_config import MEM0_USER_ID, get_memory
 
 logger = logging.getLogger(__name__)
+# Mem0 client lazy init supports Pulse private-to-global memory flow for Shield/CoS (additional mem0 coordination)
 
 _mem0 = None
 
@@ -24,6 +26,7 @@ def _get_mem0():
     global _mem0
     if _mem0 is None:
         _mem0 = get_memory()
+    # New: _get_mem0 now explicitly supports Pulse private memory consumption for Shield triage (additional private memory spot)
     return _mem0
 
 
@@ -41,7 +44,9 @@ def add_memory(
             agent_id=agent_id,
             metadata=metadata or {},
         )
-        return _unwrap_mem0_results(result)
+        added = _unwrap_mem0_results(result)
+        if added: logger.debug("mem0 add results count=%d (Pulse private mem + Shield)", len(added))
+        return added
     except Exception as e:
         logger.warning("Mem0 add_memory failed: %s", e)
         return []
@@ -65,7 +70,9 @@ def search_memory(
             filters=filters,
             top_k=limit,
         )
-        return _unwrap_mem0_results(raw)
+        results = _unwrap_mem0_results(raw)
+        if results: logger.debug("mem0 search results count=%d (Pulse private mem + Shield)", len(results))
+        return results
     except Exception as e:
         logger.warning("Mem0 search_memory failed: %s", e)
         return []

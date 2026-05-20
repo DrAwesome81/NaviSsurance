@@ -4,9 +4,11 @@ import json
 import logging
 import os
 import re
-from datetime import date, datetime, timedelta
+import sqlite3
+from datetime import date, datetime, timedelta, timezone
 
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -32,6 +34,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QFileDialog,
     QInputDialog,
+    QApplication,
 )
 
 from config import ARTIFACTS_DIR
@@ -76,6 +79,29 @@ class EditTimeEntryDialog(QDialog):
         self.setModal(True)
 
         root = QVBoxLayout(self)
+        # Tiny Pulse awareness for the client's time entry being edited (if client_id present in entry)
+        try:
+            cid = entry.get("client_id")
+            if cid:
+                from core.intel import IntelService
+                isvc = IntelService(parent.db if hasattr(parent, 'db') else None)
+                if isvc:
+                    w_list = [w for w in (isvc.list_watch_topics() or []) if getattr(w, 'client_id', None) == cid]
+                    recent = isvc.list_findings(client_id=cid, raised_only=True, limit=1)
+                    txt = ""
+                    if w_list: txt = f"👤 {len(w_list)} watches"
+                    if recent: txt += ("; " if txt else "") + f"recent: {getattr(recent[0],'title','')[:20]}"
+                    if txt:
+                        note = QLabel("📡 Pulse for client: " + txt + " (see main row)")
+                        note.setStyleSheet("font-size: 9px; color: #7aa0d6;")
+                        note.setToolTip("Pulse intel influenced or suggested content for this client's time entries. Use 'Use Pulse title' button or view in Intel tab.")
+                        root.addWidget(note)
+                    use_btn = QPushButton("Use Pulse title")
+                    use_btn.setStyleSheet("font-size: 8px; padding: 1px;")
+                    use_btn.clicked.connect(self._use_pulse_title_in_edit)
+                    root.addWidget(use_btn)
+        except Exception:
+            pass
         deliverable_text = str(entry.get("deliverable_label") or entry.get("work_performed") or "")
 
         row1 = QHBoxLayout()
@@ -185,6 +211,16 @@ class EditBillingClientDialog(QDialog):
         row4.addStretch()
         root.addLayout(row4)
 
+        row5 = QHBoxLayout()
+        row5.addWidget(QLabel("Billing mode:"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["hourly", "deliverable"])
+        current_mode = (client or {}).get("billing_mode") or "hourly"
+        self.mode_combo.setCurrentText(current_mode if current_mode in ("hourly", "deliverable") else "hourly")
+        row5.addWidget(self.mode_combo)
+        row5.addStretch()
+        root.addLayout(row5)
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -197,6 +233,7 @@ class EditBillingClientDialog(QDialog):
             "billing_contact_name": self.contact_edit.text().strip() or None,
             "billing_email": self.email_edit.text().strip() or None,
             "default_rate": rate if rate > 0 else None,
+            "billing_mode": self.mode_combo.currentText(),
         }
 
 
@@ -210,6 +247,10 @@ class BillingTab(QWidget):
         self._timer_ui = QTimer(self)
         self._timer_ui.setInterval(500)
         self._timer_ui.timeout.connect(self._tick_timer_label)
+        self._last_pulse_titles = []
+        self._current_client_rate = 0.0
+        self._last_pulse_revenue = 0.0
+        self._from_dossier_snapshot = False
 
         self._setup_ui()
         self._ensure_default_template()
@@ -218,6 +259,7 @@ class BillingTab(QWidget):
         self._load_autorun_settings()
         self._refresh_time_entries()
         self._refresh_drafts()
+        self._on_client_changed()  # ensure Pulse/Intel awareness label populates for first client on tab load
 
     # -------------------------
     # UI setup
@@ -261,15 +303,74 @@ class BillingTab(QWidget):
         client_row.addWidget(edit_client_btn)
         left_layout.addLayout(client_row)
 
+        # Tiny new cross-link: Pulse/Intel awareness in Billing client view (+Watch creates client-scoped topics that now drive monitoring + auto client linking)
+        pulse_row = QHBoxLayout()
+        pulse_lbl = QLabel("Recent Pulse:")
+        pulse_lbl.setStyleSheet("font-weight: 600; color: #4a9eff; font-size: 10px;")
+        pulse_lbl.setToolTip("Recent raised findings; client-scoped watches drive monitoring. Highlighted/filterable 'Pulse-influenced' entries in table below for audit. (click count or use checkbox). See revenue summary for ROI. 🛡️ [Security-Relevant] items triage in Shield tab.")
+        pulse_row.addWidget(pulse_lbl)
+        self.pulse_info_label = QLabel("(select client)")
+        self.pulse_info_label.setStyleSheet("font-size: 10px;")
+        self.pulse_info_label.setTextFormat(Qt.TextFormat.RichText)
+        self.pulse_info_label.linkActivated.connect(self._on_pulse_count_link)
+        pulse_row.addWidget(self.pulse_info_label, 1)
+        view_intel_btn = QPushButton("View in Intel")
+        view_intel_btn.setStyleSheet("font-size: 9px; padding: 1px 4px;")
+        view_intel_btn.setToolTip("Open Intel filtered to this client (findings + client-scoped watches highlighted/grouped first)")
+        view_intel_btn.clicked.connect(self._view_intel_for_current_client)
+        pulse_row.addWidget(view_intel_btn)
+        add_watch_btn = QPushButton("+Watch")
+        add_watch_btn.setStyleSheet("font-size: 9px; padding: 1px 4px;")
+        add_watch_btn.setToolTip("Quick-create client-scoped Pulse watch topic from Billing (will appear in Intel, influence monitoring, auto-link findings to client)")
+        add_watch_btn.clicked.connect(self._create_client_watch_topic)
+        pulse_row.addWidget(add_watch_btn)
+        left_layout.addLayout(pulse_row)
+
+        # Billing mode indicator (visible feedback for the two modes)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Billing mode:"))
+        self.billing_mode_label = QLabel("hourly")
+        self.billing_mode_label.setStyleSheet("font-weight: 600; color: #4a9eff;")
+        mode_row.addWidget(self.billing_mode_label)
+        mode_row.addStretch()
+        left_layout.addLayout(mode_row)
+
+        # Deliverables section (visible only for deliverable-mode clients)
+        self.deliverables_group = QGroupBox("Deliverables / SoW Items (for retainer & fixed billing)")
+        self.deliverables_group.setVisible(False)
+        deliv_layout = QVBoxLayout(self.deliverables_group)
+        self.deliverables_list = QListWidget()
+        self.deliverables_list.setMaximumHeight(120)
+        deliv_layout.addWidget(self.deliverables_list)
+
+        deliv_btn_row = QHBoxLayout()
+        add_deliv_btn = QPushButton("Add from SoW…")
+        add_deliv_btn.clicked.connect(self._add_deliverable)
+        deliv_btn_row.addWidget(add_deliv_btn)
+        mark_ready_btn = QPushButton("Mark Selected Ready")
+        mark_ready_btn.clicked.connect(self._mark_deliverable_ready)
+        deliv_btn_row.addWidget(mark_ready_btn)
+        deliv_btn_row.addStretch()
+        deliv_layout.addLayout(deliv_btn_row)
+        left_layout.addWidget(self.deliverables_group)
+
         # Timer entry form
         timer_group = QGroupBox("Add time entry")
         timer_layout = QVBoxLayout(timer_group)
+
+        self.pulse_suggest_label = QLabel("")
+        self.pulse_suggest_label.setStyleSheet("font-size: 9px; color: #7aa0d6;")
+        timer_layout.addWidget(self.pulse_suggest_label)
 
         desc_row = QHBoxLayout()
         desc_row.addWidget(QLabel("Description:"))
         self.desc_edit = QLineEdit()
         self.desc_edit.setPlaceholderText("What did you do?")
         desc_row.addWidget(self.desc_edit, 1)
+        use_pulse_btn = QPushButton("Use Pulse")
+        use_pulse_btn.setStyleSheet("font-size: 8px; padding: 1px 2px;")
+        use_pulse_btn.clicked.connect(self._use_pulse_title_for_desc)
+        desc_row.addWidget(use_pulse_btn)
         timer_layout.addLayout(desc_row)
 
         deliverable_row = QHBoxLayout()
@@ -350,6 +451,31 @@ class BillingTab(QWidget):
         del_btn = QPushButton("Delete selected")
         del_btn.clicked.connect(self._delete_selected_entries)
         filter_row.addWidget(del_btn)
+        mark_btn = QPushButton("Mark reviewed")
+        mark_btn.setStyleSheet("font-size: 9px; padding: 1px 2px;")
+        mark_btn.setToolTip("Mark selected (or all visible filtered if none selected) as [reviewed via Pulse]")
+        mark_btn.clicked.connect(self._mark_pulse_reviewed)
+        filter_row.addWidget(mark_btn)
+        export_btn = QPushButton("Export filtered")
+        export_btn.setStyleSheet("font-size: 9px; padding: 1px 2px;")
+        export_btn.clicked.connect(self._export_pulse_entries)
+        filter_row.addWidget(export_btn)
+        self.pulse_only_cb = QCheckBox("Pulse-influenced only")
+        self.pulse_only_cb.setToolTip("Hide non-Pulse entries in the time log (for quick audit of intel usage). See Pulse-assisted revenue in summary for ROI.")
+        self.pulse_only_cb.blockSignals(True)
+        try:
+            checked = str(self.db.get_setting("billing.pulse_filter_only", "false")).lower() == "true"
+            self.pulse_only_cb.setChecked(checked)
+        except Exception:
+            pass
+        self.pulse_only_cb.blockSignals(False)
+        self.pulse_only_cb.stateChanged.connect(self._apply_pulse_filter)
+        filter_row.addWidget(self.pulse_only_cb)
+        self.pulse_contrib_label = QLabel("")
+        self.pulse_contrib_label.setStyleSheet("font-size: 9px; color: #7aa0d6;")
+        self.pulse_contrib_label.setTextFormat(Qt.TextFormat.RichText)
+        self.pulse_contrib_label.linkActivated.connect(self._on_pulse_count_link)  # reuse the toggle handler for the ROI label too
+        filter_row.addWidget(self.pulse_contrib_label)
         left_layout.addLayout(filter_row)
 
         self.entries_table = QTableWidget(0, 8)
@@ -544,11 +670,35 @@ class BillingTab(QWidget):
     def _refresh_clients(self) -> None:
         self.client_combo.blockSignals(True)
         self.client_combo.clear()
-        clients = self.db.billing_clients_list(active_only=True)
+        clients = []
+        try:
+            # Prefer main clients table (new unified billing)
+            with sqlite3.connect(self.db.db_name) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT id, name, COALESCE(billing_mode, 'hourly') as billing_mode FROM clients WHERE is_active = 1 ORDER BY name"
+                ).fetchall()
+                clients = [dict(r) for r in rows]
+        except Exception:
+            clients = self.db.billing_clients_list(active_only=True) or []
+
+        try:
+            from core.intel import IntelService
+            intel = IntelService(self.db)
+        except Exception:
+            intel = None
         for c in clients:
-            self.client_combo.addItem(str(c.get("name") or f"Client {c.get('id')}"), int(c["id"]))
+            mode = (c.get("billing_mode") or "hourly").lower()
+            client_name = c.get("name") or f"Client {c.get('id', '')}"
+            label = f"{client_name} ({mode})"
+            if intel:
+                try:
+                    if intel.list_findings(client_id=int(c["id"]), limit=1):
+                        label += " 📡"  # Pulse intel badge for this client in Billing list
+                except Exception:
+                    pass
+            self.client_combo.addItem(label, int(c["id"]))
         if not clients:
-            # Keep startup non-blocking: do not show modal prompts while app loads.
             self.client_combo.addItem("No clients yet (click New client…)", None)
         self.client_combo.blockSignals(False)
 
@@ -559,19 +709,47 @@ class BillingTab(QWidget):
         values = dlg.values()
         if not str(values.get("name") or "").strip():
             return
-        self.db.billing_client_create(
-            name=str(values.get("name") or "").strip(),
-            billing_contact_name=values.get("billing_contact_name"),
-            billing_email=values.get("billing_email"),
-            default_rate=values.get("default_rate"),
-        )
+        # Create in main clients table with billing profile
+        try:
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            with sqlite3.connect(self.db.db_name) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO clients (name, billing_contact_name, billing_email, default_rate, billing_mode, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (
+                        str(values.get("name") or "").strip(),
+                        values.get("billing_contact_name"),
+                        values.get("billing_email"),
+                        values.get("default_rate"),
+                        values.get("billing_mode", "hourly"),
+                        now,
+                        now,
+                    )
+                )
+                conn.commit()
+                new_cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        except Exception as e:
+            QMessageBox.warning(self, "Billing", f"Could not create client: {e}")
+            return
         self._refresh_clients()
+        for i in range(self.client_combo.count()):
+            if self.client_combo.itemData(i) == new_cid:
+                self.client_combo.setCurrentIndex(i)
+                break
+        self._on_client_changed()  # refresh Pulse/Intel awareness for the newly created client
 
     def _on_edit_client(self) -> None:
         cid = self._current_client_id()
         if cid is None:
             return
-        row = self.db.billing_client_get(int(cid))
+        row = self.db.get_client_billing_profile(int(cid))
+        if not row:
+            try:
+                row = self.db.billing_client_get(int(cid))
+            except Exception:
+                row = None
         if not row:
             return
         dlg = EditBillingClientDialog(client=row, parent=self)
@@ -581,7 +759,18 @@ class BillingTab(QWidget):
         if not str(values.get("name") or "").strip():
             QMessageBox.information(self, "Billing", "Client name is required.")
             return
-        self.db.billing_client_update(int(cid), **values)
+        # Update main client billing profile
+        try:
+            self.db.update_client_billing_profile(int(cid), **{k: v for k, v in values.items() if k in ("billing_mode", "default_rate", "billing_contact_name", "billing_email")})
+            # Also update name if changed
+            if values.get("name"):
+                now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                with sqlite3.connect(self.db.db_name) as conn:
+                    conn.execute("UPDATE clients SET name = ?, updated_at = ? WHERE id = ?", 
+                                 (values["name"], now, int(cid)))
+                    conn.commit()
+        except Exception as e:
+            QMessageBox.warning(self, "Billing", f"Could not update: {e}")
         self._refresh_clients()
         for i in range(self.client_combo.count()):
             if int(self.client_combo.itemData(i)) == int(cid):
@@ -589,8 +778,101 @@ class BillingTab(QWidget):
                 break
 
     def _on_client_changed(self) -> None:
+        cid = self._current_client_id()
+        mode = "hourly"
+        if cid:
+            try:
+                prof = self.db.get_client_billing_profile(cid)
+                mode = prof.get("billing_mode", "hourly") or "hourly"
+                self._current_client_rate = float(prof.get("default_rate") or 0) if prof else 0.0
+            except Exception:
+                mode = "hourly"
+                self._current_client_rate = 0.0
+        self.billing_mode_label.setText(mode)
+        self.billing_mode_label.setStyleSheet(
+            "font-weight: 600; color: #f4c542;" if mode == "deliverable" else "font-weight: 600; color: #4a9eff;"
+        )
+        if not cid:
+            self._current_client_rate = 0.0
+            self._last_pulse_revenue = 0.0
+            self._last_pulse_hours = 0.0
+            self._last_total_billable_revenue = 0.0
+            if hasattr(self, 'pulse_info_label'):
+                base = self.pulse_info_label.text().split(" | ")[0] if " | " in self.pulse_info_label.text() else self.pulse_info_label.text()
+                self.pulse_info_label.setText(base)  # clean ROI when no client
+
+        is_deliverable = mode == "deliverable"
+        if hasattr(self, "deliverables_group"):
+            self.deliverables_group.setVisible(is_deliverable)
+            if is_deliverable:
+                self._refresh_deliverables()
+
         self._refresh_time_entries()
         self._refresh_drafts()
+
+        # Also refresh deliverables if the group is visible after mode change
+        if hasattr(self, "deliverables_group") and self.deliverables_group.isVisible():
+            self._refresh_deliverables()
+
+        # Update Pulse/Intel awareness for current client (fresh cross-link into Billing view)
+        self._update_pulse_awareness_for_client(cid)
+        self._update_pulse_contribution_summary()  # ensure period count/summary is present after client switch too
+
+        if getattr(self, '_from_dossier_snapshot', False):
+            # seamless confirmation after jump from client dossier button
+            if hasattr(self, 'pulse_info_label'):
+                txt = self.pulse_info_label.text()
+                if "Returned from dossier" not in txt:
+                    self.pulse_info_label.setText(txt + " (context from client dossier snapshot)")
+            self._from_dossier_snapshot = False
+            self._apply_pulse_filter()  # ensure filter active immediately after dossier jump
+
+    def _refresh_deliverables(self) -> None:
+        if not hasattr(self, "deliverables_list"):
+            return
+        self.deliverables_list.clear()
+        cid = self._current_client_id()
+        if not cid:
+            return
+        try:
+            dels = self.db.client_deliverables_list(cid)
+            for d in dels:
+                status = d.get("status", "pending")
+                text = f"[{status}] {d.get('name')} — ${float(d.get('amount') or 0):.2f}"
+                item = QListWidgetItem(text)
+                item.setData(Qt.ItemDataRole.UserRole, d.get("id"))
+                self.deliverables_list.addItem(item)
+        except Exception as e:
+            self.deliverables_list.addItem(f"(error loading: {e})")
+
+    def _add_deliverable(self) -> None:
+        cid = self._current_client_id()
+        if not cid:
+            QMessageBox.information(self, "Billing", "Select a client first.")
+            return
+        name, ok = QInputDialog.getText(self, "Add Deliverable", "Deliverable name / description:")
+        if not ok or not name.strip():
+            return
+        amount, ok = QInputDialog.getDouble(self, "Add Deliverable", "Fixed amount ($):", 0, 0, 1000000, 2)
+        if not ok:
+            return
+        try:
+            self.db.client_deliverable_add(client_id=cid, name=name.strip(), amount=amount)
+            self._refresh_deliverables()
+        except Exception as e:
+            QMessageBox.warning(self, "Billing", f"Could not add: {e}")
+
+    def _mark_deliverable_ready(self) -> None:
+        current = self.deliverables_list.currentItem() if hasattr(self, "deliverables_list") else None
+        if not current:
+            return
+        did = current.data(Qt.ItemDataRole.UserRole)
+        if did:
+            try:
+                self.db.client_deliverable_update_status(did, "ready")
+                self._refresh_deliverables()
+            except Exception as e:
+                QMessageBox.warning(self, "Billing", f"Could not update: {e}")
 
     # -------------------------
     # Time entry
@@ -619,6 +901,9 @@ class BillingTab(QWidget):
         delta = end - self._timer_start
         minutes = max(1, int(delta.total_seconds() // 60))
         desc = self.desc_edit.text().strip()
+        if not desc and hasattr(self, '_last_pulse_titles') and self._last_pulse_titles:
+            desc = self._last_pulse_titles[0][:80] + " (from Pulse)"
+            self.desc_edit.setText(desc)
         deliverable = self.deliverable_edit.text().strip()
         pct = float(self.percent_spin.value() or 0.0)
         pct_val = pct if pct > 0 else None
@@ -643,6 +928,10 @@ class BillingTab(QWidget):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.timer_label.setText("Timer: —")
+        if hasattr(self, 'pulse_suggest_label'):
+            self.pulse_suggest_label.setText("")
+        if "Pulse-influenced" in desc or "from Pulse" in desc:
+            self.pulse_info_label.setText(self.pulse_info_label.text() + " | ✓ Pulse suggested this entry")
         self._refresh_time_entries()
 
     def _manual_add(self) -> None:
@@ -660,6 +949,9 @@ class BillingTab(QWidget):
             return
         minutes = max(1, minutes)
         desc = self.desc_edit.text().strip()
+        if not desc and hasattr(self, '_last_pulse_titles') and self._last_pulse_titles:
+            desc = self._last_pulse_titles[0][:80] + " (from Pulse)"
+            self.desc_edit.setText(desc)
         deliverable = self.deliverable_edit.text().strip()
         pct = float(self.percent_spin.value() or 0.0)
         pct_val = pct if pct > 0 else None
@@ -680,7 +972,13 @@ class BillingTab(QWidget):
             rate_override=rate_ov_val,
             is_billable=billable,
         )
+        if "Pulse-influenced" in desc or "from Pulse" in desc:
+            self.pulse_info_label.setText(self.pulse_info_label.text() + " | ✓ Pulse suggested this entry")
+        if hasattr(self, 'pulse_suggest_label'):
+            self.pulse_suggest_label.setText("")
         self._refresh_time_entries()
+        if hasattr(self, 'pulse_info_label'):
+            self.pulse_info_label.setText(self.pulse_info_label.text() + " | marked reviewed")
 
     def _tick_timer_label(self) -> None:
         if not self._timer_running or not self._timer_start:
@@ -688,7 +986,10 @@ class BillingTab(QWidget):
         delta = datetime.now() - self._timer_start
         minutes = int(delta.total_seconds() // 60)
         seconds = int(delta.total_seconds() % 60)
-        self.timer_label.setText(f"Timer: {minutes:02d}:{seconds:02d}")
+        base = f"Timer: {minutes:02d}:{seconds:02d}"
+        if hasattr(self, '_last_pulse_titles') and self._last_pulse_titles:
+            base += " | 📡 Pulse ready"
+        self.timer_label.setText(base)
 
     def _refresh_time_entries(self) -> None:
         cid = self._current_client_id()
@@ -701,6 +1002,28 @@ class BillingTab(QWidget):
         end_iso = (datetime(end.year, end.month, end.day) + timedelta(days=1)).isoformat()
         rows = self.db.time_entries_list(client_id=cid, start_ts=start_iso, end_ts=end_iso, limit=1000)
         self.entries_table.setRowCount(len(rows))
+        # Compute Pulse-assisted revenue for current filter (tiny ROI summary)
+        self._last_pulse_revenue = 0.0
+        self._last_pulse_hours = 0.0
+        self._last_total_billable_revenue = 0.0
+        try:
+            rate = getattr(self, '_current_client_rate', 0.0)
+            for e in rows:
+                mins = int(e.get("minutes") or 0)
+                r_ov = float(e.get("rate_override") or 0)
+                eff_rate = r_ov if r_ov > 0 else rate
+                h = mins / 60.0
+                if int(e.get("is_billable") or 0) == 1 and eff_rate > 0:
+                    self._last_total_billable_revenue += h * eff_rate
+                desc = str(e.get("description") or "")
+                if "Pulse" in desc or "from Pulse" in desc or "Pulse-influenced" in desc:
+                    self._last_pulse_hours += h
+                    if eff_rate > 0:
+                        self._last_pulse_revenue += h * eff_rate
+        except Exception:
+            self._last_pulse_revenue = 0.0
+            self._last_pulse_hours = 0.0
+            self._last_total_billable_revenue = 0.0
         for r, e in enumerate(rows):
             st = str(e.get("start_ts") or "")
             en = str(e.get("end_ts") or "")
@@ -721,11 +1044,25 @@ class BillingTab(QWidget):
             self.entries_table.setItem(r, 4, QTableWidgetItem(f"{hrs:.2f}"))
             self.entries_table.setItem(r, 5, QTableWidgetItem(deliverable))
             self.entries_table.setItem(r, 6, QTableWidgetItem(pct_disp))
-            self.entries_table.setItem(r, 7, QTableWidgetItem(str(e.get("description") or "")))
+            desc_text = str(e.get("description") or "")
+            desc_item = QTableWidgetItem(desc_text)
+            if "Pulse" in desc_text or "from Pulse" in desc_text or "Pulse-influenced" in desc_text:
+                desc_item.setBackground(QColor(230, 255, 230))  # light green for Pulse-influenced
+                desc_item.setToolTip("This time entry was influenced by recent Pulse intel (from client-scoped watches or raised findings). View details in Intel tab.")
+                desc_item.setData(Qt.ItemDataRole.UserRole + 1, "pulse")
+            self.entries_table.setItem(r, 7, desc_item)
+            if "Pulse" in desc_text or "from Pulse" in desc_text or "Pulse-influenced" in desc_text:
+                first = self.entries_table.item(r, 0)
+                if first:
+                    first.setToolTip(desc_item.toolTip() if hasattr(desc_item, 'toolTip') else "")
             # Store id on row
             self.entries_table.item(r, 0).setData(Qt.ItemDataRole.UserRole, int(e.get("id") or 0))
 
         self.entries_table.resizeColumnsToContents()
+
+        self._update_pulse_contribution_summary()
+
+        self._apply_pulse_filter()
 
     def _selected_entry_ids(self) -> list[int]:
         ids: list[int] = []
@@ -737,6 +1074,107 @@ class BillingTab(QWidget):
             if eid:
                 ids.append(int(eid))
         return sorted(set(ids))
+
+    def _apply_pulse_filter(self):
+        """Tiny client-side filter: hide non-Pulse rows when 'Pulse-influenced only' is checked (for audit in Billing table)."""
+        only = hasattr(self, 'pulse_only_cb') and self.pulse_only_cb.isChecked()
+        for r in range(self.entries_table.rowCount()):
+            item = self.entries_table.item(r, 7)
+            has = bool(item and any(m in item.text() for m in ["Pulse-influenced", "from Pulse", "Pulse"]))
+            self.entries_table.setRowHidden(r, only and not has)
+        header = self.entries_table.horizontalHeader()
+        if only:
+            header.setStyleSheet("QHeaderView::section { background-color: #d0e8ff; }")
+            self.entries_table.setStyleSheet("QTableWidget { border: 2px solid #4a9eff; }")
+        else:
+            header.setStyleSheet("")
+            self.entries_table.setStyleSheet("")
+        if hasattr(self, 'db'):
+            try:
+                self.db.set_setting("billing.pulse_filter_only", "true" if only else "false")
+            except Exception:
+                pass
+        if hasattr(self, 'pulse_info_label') and only:
+            txt = self.pulse_info_label.text()
+            if "(filtered)" not in txt:
+                self.pulse_info_label.setText(txt + " (filtered)")
+
+    def _mark_pulse_reviewed(self):
+        """Tiny action for filtered set: append '[reviewed via Pulse]' to selected entries' descriptions for audit trail."""
+        ids = self._selected_entry_ids()
+        if not ids:
+            # bulk: all currently visible (filtered) with Pulse marker
+            for r in range(self.entries_table.rowCount()):
+                if self.entries_table.isRowHidden(r):
+                    continue
+                item = self.entries_table.item(r, 0)
+                if item:
+                    eid = item.data(Qt.ItemDataRole.UserRole)
+                    if eid:
+                        ids.append(int(eid))
+            ids = sorted(set(ids))
+        if not ids:
+            return
+        for eid in ids:
+            try:
+                e = self.db.time_entry_get(eid)
+                if e:
+                    desc = str(e.get("description") or "")
+                    if ("Pulse" in desc or "from Pulse" in desc) and "[reviewed via Pulse]" not in desc:
+                        rev_date = datetime.now().date().isoformat()
+                        new_desc = desc.rstrip() + f" [reviewed via Pulse {rev_date}]"
+                        self.db.time_entry_update(eid, description=new_desc)
+            except Exception:
+                continue
+        self._refresh_time_entries()
+        self._update_pulse_contribution_summary()
+
+    def _export_pulse_entries(self):
+        """Tiny export: copy visible (filtered) Pulse-influenced entries to clipboard for audit/ROI tracking."""
+        if not hasattr(self, 'entries_table'):
+            return
+        lines = []
+        for r in range(self.entries_table.rowCount()):
+            if self.entries_table.isRowHidden(r):
+                continue
+            desc_item = self.entries_table.item(r, 7)
+            if desc_item and any(m in desc_item.text() for m in ["Pulse-influenced", "from Pulse", "Pulse"]):
+                date = self.entries_table.item(r, 0).text() if self.entries_table.item(r, 0) else ""
+                mins = self.entries_table.item(r, 3).text() if self.entries_table.item(r, 3) else ""
+                lines.append(f"{date} | {mins}min | {desc_item.text()}")
+        if lines:
+            QApplication.clipboard().setText("\n".join(lines))
+            QMessageBox.information(self, "Export", f"Copied {len(lines)} Pulse-influenced entries to clipboard.")
+        else:
+            QMessageBox.information(self, "Export", "No visible Pulse-influenced entries.")
+
+    def _update_pulse_contribution_summary(self):
+        """Tiny helper: compute and append/refresh the Pulse-influenced count in the summary label (called from refresh and client change for always-visible audit info)."""
+        pulse_count = 0
+        for r in range(self.entries_table.rowCount()):
+            item = self.entries_table.item(r, 7)
+            if item and any(m in item.text() for m in ["Pulse-influenced", "from Pulse", "Pulse"]):
+                pulse_count += 1
+        if hasattr(self, 'pulse_info_label'):
+            base = self.pulse_info_label.text().split(" | ")[0] if " | " in self.pulse_info_label.text() else self.pulse_info_label.text()
+            if pulse_count > 0:
+                self.pulse_info_label.setText(base + f' | <a href="toggle_pulse">{pulse_count} Pulse-influenced this period</a>')
+                if getattr(self, '_last_pulse_revenue', 0) > 0 or getattr(self, '_last_pulse_hours', 0) > 0:
+                    pct = (self._last_pulse_revenue / self._last_total_billable_revenue * 100) if getattr(self, '_last_total_billable_revenue', 0) > 0 else 0
+                    self.pulse_info_label.setText(self.pulse_info_label.text() + f" | Pulse-assisted: {self._last_pulse_hours:.1f}h / ${self._last_pulse_revenue:.2f} ({pct:.0f}% of billable)")
+            else:
+                self.pulse_info_label.setText(base)
+            if hasattr(self, 'pulse_contrib_label'):
+                if pulse_count > 0 or getattr(self, '_last_pulse_revenue', 0) > 0:
+                    pct = (self._last_pulse_revenue / self._last_total_billable_revenue * 100) if getattr(self, '_last_total_billable_revenue', 0) > 0 else 0
+                    self.pulse_contrib_label.setText(f'<a href="toggle_pulse">📡 {pulse_count} / {getattr(self, "_last_pulse_hours", 0):.1f}h / ${getattr(self, "_last_pulse_revenue", 0):.2f} ({pct:.0f}%)</a>')
+                else:
+                    self.pulse_contrib_label.setText("")
+
+    def _on_pulse_count_link(self, link):
+        """Tiny: clicking the count in summary toggles the Pulse filter (makes count actionable for audit)."""
+        if link == "toggle_pulse" and hasattr(self, 'pulse_only_cb'):
+            self.pulse_only_cb.setChecked(not self.pulse_only_cb.isChecked())
 
     def _delete_selected_entries(self) -> None:
         ids = self._selected_entry_ids()
@@ -1144,7 +1582,14 @@ class BillingTab(QWidget):
         except Exception:
             pass
         try:
-            billing_mode = str(self.billing_mode_combo.currentData() or "hourly")
+            # Prefer client's stored billing_mode (hourly or deliverable)
+            client_prof = self.db.get_client_billing_profile(cid) if cid else {}
+            client_mode = (client_prof.get("billing_mode") or "").strip().lower()
+            if client_mode == "deliverable":
+                billing_mode = "deliverable"
+            else:
+                billing_mode = str(self.billing_mode_combo.currentData() or "hourly")
+
             fixed_fee_total = None
             if billing_mode == "fixed_fee":
                 v = float(self.fixed_fee_total_spin.value() or 0.0)
@@ -1473,3 +1918,113 @@ class BillingTab(QWidget):
         except Exception:
             return
 
+    # New tiny cross-link helpers (Billing <-> Pulse/Intel)
+    def _update_pulse_awareness_for_client(self, cid):
+        if not cid or not hasattr(self, "pulse_info_label"):
+            return
+        try:
+            from core.intel import IntelService
+            intel = IntelService(self.db)
+            findings = intel.list_findings(client_id=cid, limit=2) or []  # recent (any) for client awareness; raised surface in Intel
+            ts = intel.get_last_pulse_display()
+            watches = [w for w in (intel.list_watch_topics() or []) if getattr(w, 'client_id', None) == cid]
+            wcount = len(watches)
+            count = len(findings)
+            self._last_pulse_titles = [f.title for f in findings] if findings else []
+            if hasattr(self, 'pulse_suggest_label'):
+                if self._last_pulse_titles:
+                    t0 = self._last_pulse_titles[0]
+                    sec = " 🛡️" if "[Security-Relevant]" in t0 else ""
+                    self.pulse_suggest_label.setText(f"📡 Pulse suggestion: {t0[:40]}{sec} (use button below)")
+                else:
+                    self.pulse_suggest_label.setText("")
+            if findings:
+                txt = ", ".join([f.title[:25] for f in findings])
+                self.pulse_info_label.setText(f"({count} recent, {wcount} watches) {txt} (View in Intel) [last {ts}]")
+            else:
+                self.pulse_info_label.setText(f"(no recent Pulse findings for client, {wcount} watches) [last {ts}]")
+            self.pulse_info_label.setToolTip(f"Recent Pulse/Intel findings linked to this client ({wcount} client-scoped watches). Last update: {ts}. Click View in Intel (watches grouped/highlighted) or +Watch for full.")
+            if hasattr(self, 'desc_edit') and findings:
+                top = findings[0].title[:30] if findings else ""
+                self.desc_edit.setToolTip(f"Recent Pulse for client: {top}. Consider in time entry." if top else "")
+            if hasattr(self, 'deliverable_edit') and findings:
+                top = findings[0].title[:25] if findings else ""
+                self.deliverable_edit.setToolTip(f"Pulse suggestion: {top}" if top else "")
+            self._update_pulse_contribution_summary()  # re-apply ROI/revenue summary after overwriting recent text so it stays persistent after client changes
+            # Live badge update for current combo item (makes 📡 appear/refresh after monitoring runs elsewhere)
+            try:
+                idx = self.client_combo.currentIndex()
+                if idx >= 0 and self.client_combo.itemData(idx) == cid:
+                    cur_text = self.client_combo.itemText(idx)
+                    if count > 0 and " 📡" not in cur_text:
+                        self.client_combo.setItemText(idx, cur_text + " 📡")
+                    self.client_combo.setToolTip(f"Client has {wcount} active Pulse watches (click View in Intel)")
+            except Exception:
+                pass
+        except Exception:
+            self.pulse_info_label.setText("(Pulse unavailable)")
+            self._last_pulse_titles = []
+            if hasattr(self, 'pulse_suggest_label'):
+                self.pulse_suggest_label.setText("")
+
+    def _view_intel_for_current_client(self):
+        cid = self._current_client_id()
+        if cid and hasattr(self.parent(), "focus_intel_tab"):
+            self.parent().focus_intel_tab(client_id=cid)
+            self.pulse_info_label.setText("Intel opened — client findings + watches (👤 grouped first/highlighted) in watchlist")
+        else:
+            self.pulse_info_label.setText("(open Intel tab to view)")
+
+    def _create_client_watch_topic(self):
+        """Fresh: quick client-scoped watch topic creation directly from Billing Pulse row (uses client name, stores client_id association)."""
+        cid = self._current_client_id()
+        if not cid:
+            self.pulse_info_label.setText("(select client to add watch topic)")
+            return
+        try:
+            from core.intel import IntelService
+            intel = IntelService(self.db)
+            # Get client name for topic
+            cname = f"Client {cid}"
+            try:
+                clis = self.db.list_clients(active_only=False, limit=50) or []
+                for c in clis:
+                    if c.get('id') == cid:
+                        cname = c.get('name', cname)
+                        break
+            except Exception:
+                pass
+            topic_name = f"Client monitoring: {cname}"
+            # Create with client association (no keywords for quick; user can edit in Intel)
+            intel.add_watch_topic(topic_name, [], "medium", client_id=cid)
+            self.pulse_info_label.setText(f"Watch added for {cname} — appears in Intel watchlist (👤 client-scoped); future monitoring will auto-link findings to this client")
+            # Live update badge/awareness
+            self._update_pulse_awareness_for_client(cid)
+        except Exception as e:
+            self.pulse_info_label.setText(f"(watch create failed: {str(e)[:30]})")
+
+    def _use_pulse_title_in_edit(self):
+        """Tiny: populate desc_edit from recent Pulse in edit dialog (for time entry edit flow)."""
+        try:
+            # re-fetch using entry if possible, but since no stored, use simple from note text or skip
+            if hasattr(self, 'desc_edit') and self.desc_edit:
+                # fallback: use a generic or from tooltip if set
+                tip = self.desc_edit.toolTip() if hasattr(self.desc_edit, 'toolTip') else ""
+                if "Pulse" in tip and ":" in tip:
+                    title = tip.split(":",1)[1].split(".")[0].strip()[:80]
+                    self.desc_edit.setText(title + " (from Pulse) [Pulse-influenced]")
+        except Exception:
+            pass
+
+    def _use_pulse_title_for_desc(self):
+        """Tiny: populate desc_edit from recent Pulse title (for timer/manual time entry flow)."""
+        if hasattr(self, '_last_pulse_titles') and self._last_pulse_titles:
+            title = self._last_pulse_titles[0]
+            current = self.desc_edit.text().strip()
+            if current and title not in current:
+                self.desc_edit.setText(current + f" ({title} from Pulse) [Pulse-influenced]")
+            elif not current:
+                self.desc_edit.setText(f"{title} (from Pulse) [Pulse-influenced]")
+            self.pulse_info_label.setText(self.pulse_info_label.text() + " ✓ used")
+            if hasattr(self, 'pulse_suggest_label'):
+                self.pulse_suggest_label.setText(" ✓ Used for this entry")

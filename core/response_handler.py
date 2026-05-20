@@ -13,6 +13,8 @@ from config import PROJECT_ROOT, get_system_prompt
 # Dropbox indexing removed - using RAG index instead
 # Lazy import: only needed for the long-term retrieval path inside get_response
 from core.local_llm import session_profile
+
+# Pulse private memory + Shield (response handler surface)
 from core.task_command_contract import AddTaskCommand, normalize_mmddyyyy, parse_actions
 from core.agent_memory import build_supervisor_cross_memory_context
 from core.user_memory import auto_store_user_memory, build_user_memory_context, store_teach_memory, store_teach_navi_memory
@@ -536,11 +538,12 @@ class ResponseHandler:
 Here is their current task data:
 {task_data}
 
-Respond naturally and conversationally to their question. Be helpful, specific, and use the actual task information provided. If they're asking about specific days, dates, or timeframes, calculate and provide accurate information. Be concise but informative."""},
+Respond naturally and conversationally to their question. Be helpful, specific, and use the actual task information provided. If they're asking about specific days, dates, or timeframes, calculate and provide accurate information. Be concise but informative. If the query relates to security, compliance, or privacy tasks, consider relevant Pulse [Security-Relevant] intel and suggest using the Shield agent for triage."""},
                 {"role": "user", "content": message}
             ]
             
             response = self.chat_with_llama(task_prompt, "task_query")
+            if response: logger.debug("response handler task query response chars=%d (Pulse [Security-Relevant] + Shield)", len(response))
             return response
             
         except Exception as e:

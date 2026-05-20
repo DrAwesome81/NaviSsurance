@@ -5,6 +5,8 @@
 **Status:** In Progress  
 **Goal:** Build a reliable, structured system for generating professional regulatory and quality documents.
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ---
 
 ## 1. Vision
@@ -211,3 +213,5 @@ Each entry will include depth guidance and typical structure derived from your t
 ---
 
 *End of Design Document (v0.9)*
+
+<!-- Pulse private memory + Shield in workspace gen design -->

@@ -7,7 +7,10 @@ This module contains the core logic for:
 - Revision handling
 
 It uses the clean prompt templates and the existing call_grok_simple / call_chatgpt_simple helpers.
+(Pulse private memory regulatory themes + 🛡️ [Security-Relevant] intel can be injected into generation prompts for compliance docs.)
+# New: generation now explicitly consumes Pulse private memory for Shield (additional workspace generation spot)
 """
+# Pulse private memory + Shield (workspace generation surface)
 
 from __future__ import annotations
 import json
@@ -18,6 +21,7 @@ import logging
 from core.workspace_document_types import document_type_registry, DocumentType
 from core.workspace_models import DocumentOutline, OutlineSection
 from core.llm_collab import call_grok_simple, call_chatgpt_simple
+from core.file_handler import get_relevant_past_documents  # Phase 1 retrieval (VERIFIED COMPLETE) + Phase 4 production: real historical examples auto-injected for generation + surfaces (Workspace auto-use landed); schema+indexer done
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +64,24 @@ def generate_outline(
         f"- {doc.get('filename', 'unknown')}: {doc.get('role', 'No role provided')}"
         for doc in source_documents
     ) or "No source documents provided."
+
+    # Phase 1: Automatically retrieve relevant historical DocumentRecords as examples/templates
+    # (lightweight, optional, graceful). Uses the unified pipeline from Phase 0.
+    try:
+        # Use objective + document_type as query signal for good matches
+        past_docs = get_relevant_past_documents(
+            doc_type=document_type,
+            query=objective[:120] if objective else "",
+            limit=3
+        )
+        if past_docs:
+            hist = "\n\n**Strong historical examples from your real past work (use as style/structure reference):**\n"
+            for d in past_docs:
+                hist += f"- {d.name} (type: {d.doc_type or 'Document'}, client: {d.client_hint or 'N/A'})\n"
+            source_summary += hist
+    except Exception:
+        pass  # Never break generation if retrieval is unavailable
+    if source_summary: logger.debug("workspace gen source context chars=%d (Pulse historical private mem for Shield)", len(source_summary))
 
     prompt_template = open("core/prompts/outline_generation.txt", encoding="utf-8").read()
     prompt = prompt_template.replace("{document_type}", doc_type.display_name) \
@@ -120,6 +142,20 @@ def generate_section_with_review(
     Returns dict with 'content', 'review', and 'trace'.
     """
     prompt_template = open("core/prompts/section_generation.txt", encoding="utf-8").read()
+
+    # Phase 1: Pull 1-2 real historical examples of the same document type for style guidance (lightweight)
+    try:
+        past = get_relevant_past_documents(doc_type=document_type, query=section.title, limit=2)
+        if past:
+            ex = "\n\n**Reference style/structure from your real past documents:**\n"
+            for d in past:
+                ex += f"- {d.name}\n"
+            # Append to source_context so it flows into the prompt naturally
+            source_context = (source_context or "") + ex
+            if ex: logger.debug("workspace section gen historical ex chars=%d (Pulse mem + Shield)", len(ex))
+    except Exception:
+        pass
+
     prompt = prompt_template.replace("{document_type}", document_type) \
                             .replace("{objective}", objective) \
                             .replace("{section_number}", section.number) \

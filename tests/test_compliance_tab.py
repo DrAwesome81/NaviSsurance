@@ -3,6 +3,8 @@ Qt/UI tests for Compliance tab local behaviors.
 
 Disabled by default. Enable with RUN_QT_TESTS=1.
 """
+# Compliance tab tests validate Pulse [Security-Relevant] intel loading and Shield triage UI (compliance tab tests)
+# additional Pulse private memory + Shield for compliance tab tests
 
 from __future__ import annotations
 

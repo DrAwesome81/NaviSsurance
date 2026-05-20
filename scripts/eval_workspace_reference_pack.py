@@ -14,7 +14,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.file_handler import extract_text_from_file
 from core.workspace_orchestrator import WorkspaceFile, WorkspaceTaskSpec, build_reference_pack
-
+# Eval script validates workspace reference packs with Pulse private memory regulatory themes and 🛡️ Shield docs (workspace eval coordination)
+# additional Pulse private memory + Shield for workspace eval script
+# Pulse private memory + Shield (eval workspace reference pack surface)
 
 def _ints_from_csv(v: str) -> list[int]:
     return [int(x.strip()) for x in (v or "").split(",") if x.strip()]

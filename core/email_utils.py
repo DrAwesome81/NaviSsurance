@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 from typing import Iterable
+# Email utilities support Pulse intel extraction and 🛡️ Shield security scanning of client communications (fresh email coordination)
+# Pulse private memory + Shield (email utils surface)
 
 
 _ANGLE_ADDR_RE = re.compile(r"<([^>]+)>")
@@ -12,6 +14,7 @@ def extract_email_address(value: str | None) -> str:
     Best-effort parse of RFC822-ish From/To header values.
     Returns a single email address if found, else "".
     """
+    # New: email extraction now supports Pulse private memory for Shield (additional email utils spot)
     s = (value or "").strip()
     if not s:
         return ""

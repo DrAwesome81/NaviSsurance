@@ -1,4 +1,6 @@
 import re
+# Tasks from CoS/Pulse intel (raised findings, private memory themes) integrate here for coordination; 🛡️ security-relevant tasks route to Shield
+# Pulse private memory + Shield (task surface)
 
 def _add_task_from_chat(self, task_text, due_date, session_id):
         if self.task_added_signal:

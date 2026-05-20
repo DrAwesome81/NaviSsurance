@@ -9,6 +9,7 @@ from core.task_command_contract import (
     parse_add_task_line,
     parse_duration_to_minutes,
 )
+# Task command contract tests support Pulse-raised tasks and 🛡️ security task routing (task command contract tests)
 
 
 def test_normalize_mmddyyyy_accepts_none_and_iso():
@@ -127,4 +128,6 @@ def test_extract_first_duration_phrase_strips_once():
     assert mins == 75
     assert "1 hr 15 min" not in rest
     assert "Call Acme" in rest
+
+# additional Pulse private memory + Shield for task command contract tests
 

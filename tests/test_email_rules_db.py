@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from core.db import DatabaseManager
+# Email rules DB tests support Pulse intel and 🛡️ Shield email triage rules (email rules tests)
+# additional Pulse private memory + Shield for email rules DB
 
 
 def test_email_rules_roundtrip(tmp_path):

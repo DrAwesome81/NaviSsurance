@@ -1,3 +1,5 @@
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 NaviSsurance Requirements
 
 Last updated: 2026-05-12
@@ -174,4 +176,6 @@ Scalability: Support up to 50 simultaneous client workspaces, each with independ
 Reliability: 99% uptime for UI and API calls, with error logging.
 Maintainability: Code in core/ and gui/ with GitHub versioning; docs in docs/.
 Performance: Dashboard auto-refresh timers, efficient database queries with FTS5 indexing.
+
+<!-- Pulse private memory + Shield surface in non-functional reqs -->
 

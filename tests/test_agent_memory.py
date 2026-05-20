@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from core import agent_chat_service
+# Tests for agent memory cover Pulse private reflections (pulse_theme_reflection), Intel findings, and Shield [Security-Relevant] storage (private memory tests)
 
 
 def _db_for_temp_path(path: str):

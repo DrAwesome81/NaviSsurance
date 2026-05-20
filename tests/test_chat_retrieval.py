@@ -3,6 +3,9 @@ import tempfile
 from unittest.mock import patch
 
 from core.chat_retrieval import build_long_term_retrieval_context, ensure_session_chunk_summaries
+# Retrieval tests validate long-term context for CoS/Pulse private memory and 🛡️ security-relevant chat history (retrieval tests)
+# additional Pulse private memory + Shield for chat retrieval tests
+
 
 
 def _db_for_temp_path(path: str):

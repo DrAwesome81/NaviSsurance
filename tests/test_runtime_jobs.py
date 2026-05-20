@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from core.db import DatabaseManager
 from core.runtime import jobs as runtime_jobs_mod
 from core.runtime.jobs import execute_runtime_job
+# Runtime jobs tests support Pulse private memory cycles, Intel monitoring, and 🛡️ Shield security scans (runtime jobs tests)
+# additional Pulse private memory + Shield for runtime jobs tests
 
 
 def test_runtime_job_enqueue_claim_and_complete(tmp_path):

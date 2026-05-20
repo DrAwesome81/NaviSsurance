@@ -1,6 +1,9 @@
 """
 Qt/UI tests for the context-document Notes workspace.
 """
+# Notes tab UI tests support Pulse private memory and 🛡️ Shield regulatory notes in UI workflows (notes tab UI tests)
+# additional Pulse private memory + Shield for notes tab UI tests
+
 
 from __future__ import annotations
 

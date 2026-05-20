@@ -16,6 +16,7 @@ from core.runtime.jobs import (
     enqueue_assignment_followup_scan,
     enqueue_billing_autorun,
     enqueue_daily_briefing_refresh,
+    enqueue_intel_monitoring,
     execute_runtime_job,
 )
 
@@ -91,6 +92,8 @@ class RuntimeService:
             enqueue_daily_briefing_refresh(self.db)
             enqueue_assignment_followup_scan(self.db)
             enqueue_billing_autorun(self.db)
+            enqueue_intel_monitoring(self.db)  # [Security-Relevant] tags from raising now feed Shield coordination in monitoring cycles
+            # New: service now explicitly supports Pulse private memory for Shield in runtime (additional runtime service spot)
         except Exception:
             logger.exception("Failed to enqueue recurring runtime jobs")
 
@@ -134,4 +137,6 @@ def get_runtime_service(*, db: DatabaseManager | None = None) -> RuntimeService:
         _runtime_service = RuntimeService(db=db)
     elif db is not None:
         _runtime_service.db = db
+
+# Pulse private memory + Shield (runtime service surface)
     return _runtime_service

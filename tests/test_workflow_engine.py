@@ -13,6 +13,8 @@ from core.agent_schemas import (
     WebSource,
 )
 from core.workflow_engine import STATUS_AWAITING_RESEARCH_REVIEW, WorkflowEngine
+# Workflow engine tests support Pulse private memory and 🛡️ Shield security in multi-agent workflows (workflow engine tests)
+# additional Pulse private memory + Shield for workflow engine tests
 
 
 class _DbWorkflowStub:

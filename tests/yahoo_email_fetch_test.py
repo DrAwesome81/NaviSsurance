@@ -4,6 +4,8 @@ from datetime import datetime
 import os
 from dotenv import load_dotenv
 import time
+# Yahoo email fetch tests support Pulse intel triage and 🛡️ Shield security in email processing (yahoo email tests)
+# additional Pulse private memory + Shield for yahoo email fetch
 
 def fetch_recent_yahoo_emails(num_emails=10):
     """

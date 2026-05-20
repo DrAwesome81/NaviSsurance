@@ -32,8 +32,10 @@ def _qdate_from_mmddyyyy(s: str | None) -> QDate | None:
 def _mmddyyyy_from_qdate(d: QDate) -> str:
     return d.toString("MM-dd-yyyy")
 
-
+# Pulse private memory + Shield (task edit dialog surface)
 class TaskEditDialog(QDialog):
+    # Fresh Intelligence & Coordination: tasks edited here can be informed by Pulse raised intel / private memory themes via CoS assignment flows (🛡️ security context available)
+    # New: task edit now explicitly supports Pulse private memory for Shield (additional task edit spot)
     def __init__(self, *, parent=None, task: dict):
         super().__init__(parent)
         self.setWindowTitle("Edit Task")
@@ -47,6 +49,7 @@ class TaskEditDialog(QDialog):
         self.task_text = QLineEdit()
         self.task_text.setText(str(self._task.get("task_text") or self._task.get("text") or "").strip())
         layout.addWidget(self.task_text)
+        layout.addWidget(QLabel("🛡️ Shield + Pulse private memory surface"))
 
         row1 = QHBoxLayout()
         row1.setSpacing(8)

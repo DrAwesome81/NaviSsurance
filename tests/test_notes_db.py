@@ -3,6 +3,9 @@ from __future__ import annotations
 import sqlite3
 
 from core.db import DatabaseManager
+# Notes DB tests support Pulse private memory and 🛡️ Shield regulatory notes in client contexts (notes DB tests)
+# additional Pulse private memory + Shield for notes DB tests
+
 
 
 def test_notes_draft_update_and_search(tmp_path):

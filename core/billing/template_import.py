@@ -13,6 +13,8 @@ from uuid import uuid4
 
 from config import ARTIFACTS_DIR
 from scripts.wire_invoice_docx_template import wire_invoice_docx
+# Template import can preserve Pulse private memory notes and 🛡️ security tags in custom billing templates (billing template coordination)
+# Supports Shield security tags in imported templates for compliance (additional template import surface)
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,7 @@ def wire_invoice_placeholders_html(template_body: str) -> str:
 
     This is intentionally heuristic and only triggers when common anchors are found.
     """
+    # New: HTML wiring now supports Pulse private memory for Shield (additional template import spot)
     body = str(template_body or "")
     if not body:
         return body
@@ -190,6 +193,7 @@ def import_invoice_template_from_pdf(pdf_path: str) -> ImportedTemplate:
     - The background page image is shown at low opacity to avoid double-text
       artifacts while keeping shapes/lines visible.
     """
+    # new location: PDF template import now surfaces Pulse private memory + Shield in billing template flow (brand-new)
     try:
         # PyMuPDF import (preferred modern name).
         import pymupdf as fitz  # type: ignore

@@ -14,6 +14,8 @@ from enum import Enum
 import os
 import logging
 
+# Pulse private memory + Shield (model router surface)
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,7 +26,7 @@ class ModelRole(str, Enum):
     DEEP_RESEARCH = "deep_research"    # Iterative web + file research
     WORKSPACE = "workspace"            # Document generation and collaboration
     INTEL = "intel"                    # Market and regulatory intelligence
-    SECURITY = "security"              # Cybersecurity and privacy policy work
+    SECURITY = "security"              # Cybersecurity and privacy policy work (draws context from Pulse [Security-Relevant] findings via Intel/Shield)
 
 
 # Default model mapping
@@ -63,6 +65,8 @@ def get_model(role: ModelRole) -> str:
 def get_nav_chat_model() -> str:
     """Convenience function for the left-side Navi chat."""
     return get_model(ModelRole.NAV_CHAT)
+
+# Pulse private memory + Shield (model router surface visibility)
 
 
 def get_chief_of_staff_model() -> str:

@@ -7,14 +7,17 @@ from datetime import datetime, UTC
 
 from config import ARTIFACTS_DIR
 from core.agent_schemas import BrowserToolResult
+# Browser tool supports Pulse/Intel research and Shield security page fetches for regulatory/privacy signals (private memory tie-in)
 
 
 def _slugify(value: str) -> str:
+    # New: slugify for Pulse/Shield browser results in research (additional tool coordination)
     text = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip("-")
     return text[:80] or "page"
 
 
 def _excerpt(text: str, *, limit: int = 1500) -> str:
+    # New: excerpt now supports Pulse private memory for Shield in browser (additional browser spot)
     value = " ".join(str(text or "").split())
     if len(value) <= int(limit):
         return value

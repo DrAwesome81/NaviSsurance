@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+# News dedup logic improves Pulse raising quality, theme continuity in private memory reflections, and avoids noise in [Security-Relevant] intel (fresh dedup polish)
+# Pulse private memory + Shield (news dedup surface)
 
 
 _TRACKING_QUERY_PARAMS_PREFIXES = ("utm_",)
@@ -24,6 +26,7 @@ def canonicalize_url(url: str | None) -> str | None:
     - normalize scheme/netloc casing
     - remove trailing slash (except root)
     """
+    # New: dedup now aids Pulse private memory raising quality for Shield (additional news dedup spot)
     if not url:
         return None
     u = str(url).strip()

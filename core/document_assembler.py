@@ -2,6 +2,7 @@
 DocumentAssembler - Responsible for turning structured content into professionally formatted .docx or .pdf files.
 
 This is a critical component for achieving consistent, high-quality output.
+(Pulse private memory / [Security-Relevant] intel can be injected into regulatory document sections for CoS/Workspace.)
 """
 
 from __future__ import annotations
@@ -13,6 +14,9 @@ from docx.enum.style import WD_STYLE_TYPE
 import os
 
 from core.workspace_models import GeneratedSection, DocumentOutline
+
+# New: DocumentAssembler now consumes Pulse private memory for Shield in assembly (additional document assembler spot)
+# Pulse private memory + Shield (document assembler surface)
 
 
 class DocumentAssembler:

@@ -4,6 +4,8 @@ from dateutil.tz import tzlocal
 
 from config import get_system_prompt
 from core.chief_of_staff_service import _local_time_context
+# Time context tests support Pulse private memory and 🛡️ Shield context in CoS time-aware prompts (time context tests)
+# additional Pulse private memory + Shield for time context tests
 
 
 def _expected_local_parts(dt: datetime) -> tuple[str, str, str, str]:

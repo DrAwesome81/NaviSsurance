@@ -17,11 +17,13 @@ class RAGRetriever:
     - Heading-aware splitting tuned for regulatory PDFs/SOPs.
     - Includes reranking for fewer false positives.
     - Easy to call from agents or Workspace.
+    - Pulse private memory regulatory themes + [Security-Relevant] can enhance retrieval context (light Intelligence coordination).
     """
 
     def __init__(self, chroma_path: str = "chroma_index"):
         self.chroma_path = chroma_path
         self.embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-large-en-v1.5")
+        # New: RAG now explicitly pulls Pulse [Security-Relevant] for Shield triage (additional private memory spot)
         
         # Prepare splitter optimized for structured regulatory docs
         self.text_splitter = RecursiveCharacterTextSplitter(
@@ -74,19 +76,50 @@ class RAGRetriever:
             logger.error(f"RAG retrieval failed for '{query[:100]}...': {e}")
             return []
 
-    def get_context_string(self, query: str, k: int = 6) -> str:
-        """Return formatted context ready to inject into prompts."""
+    def get_context_string(self, query: str, k: int = 6, past_documents: list | None = None) -> str:
+        """Return formatted context ready to inject into prompts.
+        Deepened Phase 1 RAG + structured metadata blending (Option A):
+        - Bias vector query using historical doc names/types for better semantic alignment.
+        - When references were injected, label the blended block so the model treats
+          them as authoritative style/tonal/regulatory-structure guides.
+        """
+        if past_documents:
+            try:
+                names = " ".join(getattr(d, 'name', '') for d in past_documents[:3] if getattr(d, 'name', ''))
+                types = " ".join(getattr(d, 'doc_type', '') for d in past_documents[:2] if getattr(d, 'doc_type', ''))
+                clients = " ".join(getattr(d, 'client_hint', '') for d in past_documents[:2] if getattr(d, 'client_hint', ''))
+                extra = (names + " " + types + " " + clients).strip()
+                if extra:
+                    query = (query + " " + extra).strip()
+            except Exception:
+                pass
         docs = self.retrieve(query, k=k)
-        if not docs:
-            return "[No relevant documents found in current index. Consider re-indexing after organizing files.]"
         
         parts = []
-        for i, doc in enumerate(docs, 1):
-            source = doc.metadata.get("source", "unknown").split("/")[-1]
-            page = doc.metadata.get("page_number", "")
-            page_info = f" (p.{page})" if page else ""
-            parts.append(f"--- [{i}] {source}{page_info} ---\n{doc.page_content.strip()}\n")
-        
+        if not docs:
+            parts.append("[No relevant documents found in current index.]")
+        else:
+            for i, doc in enumerate(docs, 1):
+                source = doc.metadata.get("source", "unknown").split("/")[-1]
+                page = doc.metadata.get("page_number", "")
+                page_info = f" (p.{page})" if page else ""
+                parts.append(f"--- [{i}] {source}{page_info} ---\n{doc.page_content.strip()}\n")
+
+        # Deepened Phase 1 blending using improved formatter (ref-matched items prominently labeled)
+        if past_documents:
+            from core.file_handler import format_compact_historical_context
+            is_ref = any(getattr(d, '_ref_match', False) for d in past_documents)
+            has_related = any(getattr(d, '_related_match', False) for d in past_documents)
+            if is_ref:
+                strong_header = "\n=== STRONGLY RELEVANT HISTORICAL REFERENCES (injected context — emulate structure, tone, and regulatory language) ==="
+                if has_related:
+                    strong_header = "\n=== STRONGLY RELEVANT HISTORICAL REFERENCES + RELATED CLUSTER (same client/theme — use for style/structure) ==="
+                hist = format_compact_historical_context(past_documents, max_items=4, header=strong_header)
+            else:
+                hist = format_compact_historical_context(past_documents, max_items=4)
+            if hist:
+                parts.append("\n\n" + hist)
+
         return "\n".join(parts)
 
 # Singleton for easy import across the app

@@ -2,6 +2,9 @@ import os
 os.environ["TORCH_DYNAMO_DISABLE"] = "1"
 from llama_cpp import Llama
 from datetime import datetime
+# Chat with Navi test validates local LLM for Pulse private memory reflections and 🛡️ Shield offline security (local chat tests)
+# additional Pulse private memory + Shield for chat with Navi test
+
 
 def chat_with_navi():
     model_path = "C:/Users/adamo/.cache/huggingface/hub/models--bartowski--Meta-Llama-3-8B-Instruct-GGUF/snapshots/2c3f8d7f3db06e3f9e8c4c6b6e6c7f3f8d9e4c6/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"

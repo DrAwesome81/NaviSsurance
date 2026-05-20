@@ -1,6 +1,8 @@
 import os
 import tempfile
 from unittest.mock import patch
+# CoS memory tests cover promotion from Pulse private agent_memory and Shield security context (memory coordination tests)
+# New: supports private memory consumption for Shield in CoS (additional CoS memory note)
 
 
 def test_cos_memory_add_and_search():

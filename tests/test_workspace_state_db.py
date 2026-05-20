@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from core.db import DatabaseManager
+# Workspace state DB tests support Pulse private memory and 🛡️ Shield context in workspace states (workspace state tests)
+# additional Pulse private memory + Shield for workspace state DB tests
 
 
 def test_workspace_state_round_trip_and_last_used(tmp_path):

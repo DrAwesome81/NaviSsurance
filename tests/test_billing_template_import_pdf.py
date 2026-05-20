@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 
 from core.billing.template_import import import_invoice_template_from_pdf
+# Billing PDF template import tests cover Pulse private memory and 🛡️ security tags in PDF invoices (PDF import tests)
+# New: PDF import now ties to Pulse private memory for Shield (additional PDF billing test note)
 
 
 def test_import_invoice_template_from_pdf_produces_html_with_embedded_page(tmp_path):

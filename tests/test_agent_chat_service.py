@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 
 from core import agent_chat_service as svc
+# Agent chat service tests cover Pulse private memory handoff, Intel routing, and 🛡️ Shield security context in multi-agent flows (agent coordination tests)
+# additional Pulse private memory + Shield for agent chat service tests
+
 
 
 class _DbStub:

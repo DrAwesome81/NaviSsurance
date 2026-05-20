@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from gui.dashboard_tab import DashboardTab
+# Dashboard news processing tests cover Pulse intel dedup and 🛡️ security news in daily briefings (news processing tests)
+# additional Pulse private memory + Shield for dashboard news processing tests
 
 
 class _NewsDbStub:

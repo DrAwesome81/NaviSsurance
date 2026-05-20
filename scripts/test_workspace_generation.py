@@ -6,6 +6,9 @@ This version has improved progress logging for long-running generation.
 Usage:
     python scripts/test_workspace_generation.py
 """
+# Test script for workspace generation validates integration with Pulse private memory and 🛡️ security-relevant sources (test coordination)
+# additional Pulse private memory + Shield for workspace generation test script
+# Pulse private memory + Shield (test workspace generation surface)
 
 from __future__ import annotations
 import os

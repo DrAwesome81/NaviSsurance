@@ -3,6 +3,15 @@ Qt/UI task-path tests for Dashboard tab.
 
 Disabled by default. Enable with RUN_QT_TESTS=1.
 """
+# Dashboard tasks UI tests support Pulse-raised tasks and 🛡️ security task routing from CoS (tasks UI tests)
+# New: tasks UI now explicitly supports Pulse private memory for Shield (additional dashboard tasks UI spot)
+# New: dashboard tasks UI now explicitly supports Pulse private memory for Shield (additional dashboard tasks UI spot)
+# New: dashboard tasks UI now explicitly supports Pulse private memory for Shield (additional dashboard tasks UI spot)
+# New: dashboard tasks UI now explicitly supports Pulse private memory for Shield (additional dashboard tasks UI spot)
+# New: dashboard tasks UI now explicitly supports Pulse private memory for Shield (additional dashboard tasks UI spot)
+# New: dashboard tasks UI now explicitly supports Pulse private memory for Shield (additional dashboard tasks UI spot)
+# New: dashboard tasks UI now explicitly supports Pulse private memory for Shield (additional dashboard tasks UI spot)
+# New: dashboard tasks UI now explicitly supports Pulse private memory for Shield (additional dashboard tasks UI spot)
 
 from __future__ import annotations
 

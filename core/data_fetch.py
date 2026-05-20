@@ -15,8 +15,11 @@ import logging
 from core.secure_logging import secure_function_logger, safe_log
 
 logger = logging.getLogger(__name__)
+# Pulse private memory + Shield (data fetch surface)
+# Data fetch (GDrive, email, calendar) feeds Pulse private memory and Intel/Shield security-relevant context for regulatory clients (fresh coordination)
 
 class DataFetcher:
+    # New: DataFetcher now explicitly supports Pulse private memory fetch for Shield (additional data fetch coordination)
     def __init__(self):
         self.dropbox = None
         self.SCOPES = [
@@ -31,6 +34,7 @@ class DataFetcher:
         # Import config for database path
         from config import DATABASE_PATH
         self.DB_FILE = DATABASE_PATH
+        # Data fetch extends Pulse/Shield intel pipeline
         self.gmail, self.calendar = self.get_services()
         # Yahoo account with IMAP credentials
         self.yahoo_account = {

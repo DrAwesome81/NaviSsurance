@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 
 # Load environment variables FIRST before any other imports that might need them
 load_dotenv(os.path.join(os.path.dirname(__file__), "config", ".env"), override=True)
+# Main entry wires GUI with Pulse private memory, Intel tab, CoS, and 🛡️ Shield for full Intelligence & Coordination pillar (startup coordination note)
+# Pulse private memory + Shield (main entry surface)
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QRect, Qt, QTimer

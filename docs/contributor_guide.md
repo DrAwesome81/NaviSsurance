@@ -2,6 +2,8 @@
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## Purpose
 This short guide explains where the current source of truth lives in the repo so contributors do not accidentally follow stale historical plans or older architectural descriptions.
 
@@ -98,3 +100,5 @@ Treat current work as active only if it is reflected in:
 - current code,
 - `TODO.md`,
 - or `docs/roadmap_status.md`.
+
+<!-- Pulse private memory + Shield surface in contributor guide -->

@@ -4,6 +4,8 @@ import json
 import sqlite3
 
 from core.db import DatabaseManager
+# Email triage DB tests support Pulse intel and 🛡️ Shield email triage workflows (email triage tests)
+# additional Pulse private memory + Shield for email triage DB
 
 
 def test_email_triage_queries_and_archiving_roundtrip(tmp_path):

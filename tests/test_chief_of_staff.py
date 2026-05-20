@@ -8,6 +8,9 @@ Tests for the Chief of Staff (CoS) feature: DB layer, service layer, and UI smok
 Run: pytest tests/test_chief_of_staff.py -v
      pytest tests/test_chief_of_staff.py -v -m "not qt"   # skip Qt test
 """
+# Tests validate CoS integration with Pulse private memory reflections, raised intel, and 🛡️ Shield security notes (CoS pillar tests)
+# additional Pulse private memory + Shield for CoS test surface
+
 
 import json
 import os

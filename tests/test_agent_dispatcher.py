@@ -7,6 +7,9 @@ import pytest
 
 from core.agent_dispatcher import can_run_tool, run_tool
 from core.agent_schemas import AgentType, InternalRetrievalBrief, WebResearchBrief
+# Dispatcher tests validate permissions for Pulse (intel) and Shield agents in tool routing and private memory access (dispatcher coordination)
+# additional Pulse private memory + Shield for agent dispatcher tests
+
 
 
 def test_can_run_tool_permission_matrix():

@@ -2,6 +2,7 @@ import sys
 import os
 import json
 
+# Local Llama worker supports CoS, Pulse private memory reflections, and Shield security analysis for offline regulatory intel (fresh local coordination)
 # Add parent directory to path so we can import config
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -15,10 +16,12 @@ def main():
         sys.stderr.flush()
         print("MODEL_LOADED", file=sys.stderr)
         sys.stderr.flush()
+        # Worker ready for Pulse private memory offline inference and Shield local security (new local worker coordination)
     except Exception as e:
         print(f"LOAD_ERROR:{str(e)}", file=sys.stderr)
         sys.stderr.flush()
         sys.exit(1)
+    # Worker loop ready for Pulse private memory and Shield tasks (additional worker coordination)
 
     for line in sys.stdin:
         try:

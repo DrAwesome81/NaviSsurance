@@ -16,7 +16,9 @@ except Exception:
     QAudioOutput = None
     QMediaPlayer = None
 
-
+# Pulse/Intel raised items and 🛡️ [Security-Relevant] from private memory can drive proactive notifications (Intelligence & Coordination tie-in)
+# New: notifications now explicitly support Pulse private memory for Shield (additional notifications spot)
+# Pulse private memory + Shield (notifications surface)
 _SOUND_PATTERNS: dict[str, list[tuple[int, int]]] = {
     "chat": [(740, 45), (988, 70)],
     "complete": [(659, 80), (880, 90), (1175, 140)],

@@ -2,6 +2,8 @@
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## Overview
 NaviSsurance is a local-first desktop application with optional local runtime and local HTTP service components. Security posture is therefore centered on:
 - protecting local secrets and tokens
@@ -43,4 +45,6 @@ This document describes the current implementation posture. It does not certify 
 - This repository contains workflows that may process sensitive client, regulatory, and operational information.
 - Legal/compliance obligations such as GDPR, HIPAA, and client-contract requirements depend on deployment practices, data handling, retention, and operator behavior, not on documentation alone.
 - Do not treat this document as a formal compliance certification.
+
+<!-- Pulse private memory + Shield triage surface -->
 

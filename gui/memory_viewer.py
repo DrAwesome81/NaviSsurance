@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QHeaderView,
     QInputDialog,
+    QLabel,
 )
 
 from core.mem0_config import MEM0_USER_ID
@@ -18,6 +19,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Memory viewer surfaces Pulse private memory for Shield
 
 def _format_created_ts(created) -> str:
     if created is None:
@@ -87,7 +89,41 @@ class MemoryViewerDialog(QDialog):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         root.addWidget(self.table)
 
+        # Visual separator + spacing for the added Document Memory section (addresses nit in Issue 9)
+        root.addSpacing(6)
+
+        # Phase 1 (COMPLETE): global "Memory" manager extension — DocumentRecords view.
+        # Lets the user see/curate (view + filter) exactly what the unified retrieval system
+        # knows about past work. Lives inside the existing MemoryViewer so no new top-level UI.
+        # Compact read-only pane; full curation (re-index) remains via scripts for safety.
+        doc_label = QLabel("Document Memory (Past Work — Retrieval System)")
+        doc_label.setStyleSheet("font-weight: bold; margin-top: 4px;")
+        root.addWidget(doc_label)
+
+        doc_bar = QHBoxLayout()
+        self.doc_filter = QLineEdit()
+        self.doc_filter.setPlaceholderText("Filter by client or doc type (e.g. Overjet, SOP, FDA)")
+        self.doc_filter.returnPressed.connect(self._refresh_doc_memory)
+        doc_bar.addWidget(self.doc_filter)
+        self.doc_refresh = QPushButton("Refresh Doc Memory")
+        self.doc_refresh.clicked.connect(self._refresh_doc_memory)
+        doc_bar.addWidget(self.doc_refresh)
+        self.doc_index_btn = QPushButton("Index GDrive (update retrieval)")
+        self.doc_index_btn.clicked.connect(self._index_from_gdrive)
+        self.doc_index_btn.setToolTip("Safe capped scan of Google Drive; populates unified retrieval store so CoS/Workspace/Pulse Relevant Past Work surfaces deliver real daily value (Pulse private memory reflections + 🛡️ security themes now cross-link too). (Phase 1 COMPLETE; re-run to keep index fresh as Drive grows. DB now supports previews.)")
+        doc_bar.addWidget(self.doc_index_btn)
+        root.addLayout(doc_bar)
+
+        self.doc_table = QTableWidget()
+        self.doc_table.setColumnCount(5)
+        self.doc_table.setHorizontalHeaderLabels(["Name", "Type", "Client", "Year", "Regs/Tags"])
+        self.doc_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.doc_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.doc_table.setMaximumHeight(130)
+        root.addWidget(self.doc_table)
+
         self.load_all_memories()
+        self._refresh_doc_memory()
 
     def _append_row(self, mem: dict) -> None:
         r = self.table.rowCount()
@@ -268,3 +304,118 @@ class MemoryViewerDialog(QDialog):
         except Exception as e:
             logger.error("Failed to delete memory: %s", e)
             QMessageBox.warning(self, "Error", f"Failed to delete memory: {str(e)}")
+
+    # --- Document Memory (Retrieval) support added for Phase 1 Option A ---
+    def _refresh_doc_memory(self):
+        """Populate the compact DocumentRecords table from the unified retrieval store.
+        Supports simple client/doc-type filtering. Safe, read-only view for curation awareness.
+        """
+        if not hasattr(self, "doc_table"):
+            return
+        self.doc_table.setRowCount(0)
+        try:
+            from core.file_handler import load_document_records
+            filt = ""
+            if hasattr(self, "doc_filter"):
+                filt = (self.doc_filter.text() or "").strip()
+            recs = []
+            if filt:
+                # try client first, fallback to doc_type for convenience
+                recs = load_document_records(client=filt, limit=40)
+                if not recs:
+                    recs = load_document_records(doc_type=filt, limit=40)
+            if not recs:
+                recs = load_document_records(limit=40)
+            for r in recs:
+                ri = self.doc_table.rowCount()
+                self.doc_table.insertRow(ri)
+                self.doc_table.setItem(ri, 0, QTableWidgetItem((r.name or "")[:68]))
+                self.doc_table.setItem(ri, 1, QTableWidgetItem(r.doc_type or ""))
+                self.doc_table.setItem(ri, 2, QTableWidgetItem(r.client_hint or ""))
+                self.doc_table.setItem(ri, 3, QTableWidgetItem(str(r.year or "")))
+                regs = ",".join((r.regulatory_tags or [])[:2])
+                self.doc_table.setItem(ri, 4, QTableWidgetItem(regs))
+        except Exception as e:
+            logger.warning("Document memory refresh failed: %s", e)
+
+    def _index_from_gdrive(self):
+        """In-app GDrive indexer for the unified retrieval store (Phase 1 COMPLETE + verified; Client Dossier surface added as final step).
+        Allows user to populate the DocumentRecords retrieval store directly from primary
+        Google Drive source using the exact Phase 0/1 unified pipeline (build + save).
+        Now persists text_preview / checksum fields (schema v30) with lightweight metadata previews.
+        Capped + read-only + no duplicate artifacts created. Makes "Relevant Past Work"
+        surfaces (Workspace, CoS sidebar, Pulse Intel, global memory) actually useful in daily work.
+        Follows "smallest safe incremental" rule: reuses existing api + file_handler functions,
+        no new top-level imports, confirmation, progress via QMessage, then auto-refresh view.
+        Re-run any time to refresh as your Drive content evolves.
+        """
+        from PyQt6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self,
+            "Index GDrive for Retrieval",
+            "Scan Google Drive (read-only), enrich with doc_type/client/regulatory metadata,\n"
+            "and persist up to 300 records into the unified DocumentRecords store?\n\n"
+            "This is safe (no files moved/duplicated). Takes 30-120s depending on Drive size.\n"
+            "After this, CoS/Workspace/Pulse 'Relevant Past Work' and Memory viewer will show real historical documents (incl. Pulse security-relevant themes for Shield).\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from core.api import get_gdrive_service, list_gdrive_files
+            from core.file_handler import build_unified_document_record, save_document_record
+            service = get_gdrive_service()
+            files = list_gdrive_files(
+                service=service, folder_id="root", recursive=True, max_files=2000
+            )
+            if not files:
+                QMessageBox.information(self, "Index", "No files returned from Google Drive.")
+                return
+            saved = 0
+            cap = 300
+            for f in files:
+                if saved >= cap:
+                    break
+                mime = (f.get("mimeType") or "").lower()
+                if "folder" in mime or mime.startswith("application/vnd.google-apps."):
+                    continue  # Phase 1 finish: skip folders + native Drive apps (prevents polluting retrieval store & Relevant Past surfaces)
+                try:
+                    rec = build_unified_document_record(
+                        source="gdrive",
+                        source_id=f.get("id", ""),
+                        source_path=f.get("path", f.get("name", "")),
+                        name=f.get("name", ""),
+                        mime_type=f.get("mimeType", ""),
+                        size=f.get("size", 0) or 0,
+                        modified_time=f.get("modifiedTime"),
+                        created_time=f.get("createdTime"),
+                    )
+                    # Phase 1 completion: populate lightweight metadata preview (no download/extract yet to stay safe+fast).
+                    # Full high-quality PDF/text extraction (using existing fitz path) can be added later without schema change.
+                    try:
+                        preview_src = f"{rec.name or ''} | {rec.doc_type or ''} | {rec.client_hint or ''} | {rec.project_hint or ''}"
+                        rec.text_preview = (preview_src or "")[:500]
+                        rec.checksum = f"meta:{(rec.source_id or '')}:{rec.size or 0}"
+                        rec.full_text_extracted = False
+                    except Exception:
+                        pass
+                    if save_document_record(rec):
+                        saved += 1
+                except Exception:
+                    continue
+            self._refresh_doc_memory()
+            msg = f"Saved {saved} DocumentRecords from GDrive (capped at {cap}). Retrieval system now has real data for daily use."
+            QMessageBox.information(
+                self,
+                "Retrieval Index Updated",
+                msg + "\n\nRelevant Past Documents surfaces across the app (Workspace, CoS, Pulse, Client Dossier, Memory viewer) will now return richer, client-aware historical examples.\n"
+                "Re-run periodically as your Drive grows. (Also available via diagnose script for larger batches.)\n\nPhase 1 (Memory & Retrieval Core) is verifiably complete and delivering daily value (per consultant-os-roadmap.md).",
+            )
+        except Exception as e:
+            logger.error("GDrive index from Memory Viewer failed: %s", e)
+            QMessageBox.warning(
+                self,
+                "Index Error",
+                f"Could not complete GDrive index: {str(e)}\n\n"
+                "Ensure Google Drive auth is configured (config/.env GOOGLE_* keys) and the Drive connector works.",
+            )

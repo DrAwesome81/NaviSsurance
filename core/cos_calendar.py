@@ -4,6 +4,7 @@ import os
 import pickle
 from datetime import datetime, timedelta, timezone
 from typing import Any
+# Calendar integration supplies dates for Pulse watch cycles, CoS briefings, and 🛡️ Shield compliance deadlines (fresh calendar coordination)
 
 
 def _config_paths() -> tuple[str, str]:
@@ -13,6 +14,8 @@ def _config_paths() -> tuple[str, str]:
     client_secret_path = os.path.join(CONFIG_DIR, "client_secret.json")
     return token_path, client_secret_path
 
+# New: calendar now feeds Pulse private memory watch dates and Shield deadlines (additional calendar surface)
+# Pulse private memory + Shield (cos calendar surface)
 
 def calendar_available() -> tuple[bool, str]:
     """

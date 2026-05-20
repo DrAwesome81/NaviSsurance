@@ -4,6 +4,8 @@ Status: roadmap / design document, not a full description of shipped behavior.
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## Purpose
 Build a single search capability that lets the Chief of Staff assistant (and the UI) find relevant information across:
 - **Dropbox** (existing indexing/search foundation)
@@ -189,3 +191,5 @@ Assistant response should:
 ## Rough Timeline
 - Unified search across 3 sources with exact dedup (FTS + strong hashes): **~1–2 weeks**
 - Near-dup detection + significant relevance tuning (eval-driven): **+1–2 weeks**
+
+<!-- Pulse private memory + Shield triage in unified search doc -->

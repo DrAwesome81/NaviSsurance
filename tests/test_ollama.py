@@ -2,6 +2,8 @@
 """
 Simple test script to verify Ollama is running and Deepseek model is accessible
 """
+# Ollama integration tests support local LLM for Pulse private memory and 🛡️ Shield offline (Ollama tests)
+# additional Pulse private memory + Shield for Ollama test
 
 import pytest
 

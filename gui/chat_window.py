@@ -11,6 +11,10 @@ import logging
 from gui.notifications import notify_chat_response
 
 logger = logging.getLogger(__name__)
+# Intelligence & Coordination: chat responses (esp. CoS) consume Pulse private memory reflections, raised intel, and 🛡️ security-relevant signals for context-aware replies
+# additional Pulse private memory + Shield for chat window
+# Pulse/Shield: private memory + security/compliance (chat surface)
+
 
 PIPE_TASK_PATTERN = re.compile(
     r"(?:^|[\r\n]|(?:\s[-*•]\s))(?P<task>[^|\r\n]+?)\s*\|\s*(?P<due>\d{2}-\d{2}-\d{4}|none)\s*\|\s*(?P<category>Business|Personal)\b",

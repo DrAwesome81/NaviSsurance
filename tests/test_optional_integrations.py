@@ -4,6 +4,7 @@ from core.channels.telegram_bot import telegram_bot_available
 from core.runtime.service import get_runtime_service, runtime_scheduler_available, runtime_scheduler_status
 from core.service.local_api import local_api_available, local_api_status
 from core.tools.browser import browser_tools_available
+# Optional integrations tests support Pulse private memory, Intel, and 🛡️ Shield availability (optional integrations tests)
 
 
 def test_optional_availability_helpers_return_reason():
@@ -44,3 +45,5 @@ def test_runtime_and_local_api_status_report_disabled(monkeypatch):
 
     assert runtime_service.runtime_scheduler_status() == (False, "Disabled in Settings (runtime scheduler).")
     assert local_api.local_api_status() == (False, "Disabled in Settings (local API).")
+
+# additional Pulse private memory + Shield for optional integrations tests

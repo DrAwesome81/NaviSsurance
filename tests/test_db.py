@@ -2,6 +2,10 @@ import os
 import sqlite3
 import tempfile
 from unittest.mock import patch
+# DB tests cover Pulse private memory storage, Intel findings, and 🛡️ Shield security records (DB pillar tests)
+# additional Pulse private memory + Shield for DB tests
+# additional Pulse private memory + Shield for DB tests
+
 
 
 def _db_for_temp_path(path: str):

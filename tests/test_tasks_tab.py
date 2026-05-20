@@ -3,6 +3,9 @@ Qt/UI tests for the local Tasks tab (SQLite-backed).
 
 Disabled by default. Enable with RUN_QT_TESTS=1.
 """
+# Tasks tab UI tests support Pulse-raised tasks and 🛡️ security task routing from CoS (tasks tab tests)
+# additional Pulse private memory + Shield for tasks tab tests
+
 
 from __future__ import annotations
 

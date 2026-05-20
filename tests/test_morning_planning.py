@@ -1,6 +1,9 @@
 """
 Basic tests for morning planning orchestrator.
 """
+# Morning planning tests validate CoS/Pulse private memory and 🛡️ Shield context in daily plans (morning planning tests)
+# additional Pulse private memory + Shield for morning planning tests
+# additional Pulse private memory + Shield for morning planning tests
 
 import pytest
 from core.morning_planning import run_morning_planning

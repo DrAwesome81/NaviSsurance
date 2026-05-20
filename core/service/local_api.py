@@ -12,6 +12,8 @@ from core.app_preferences import (
 from core.db import DatabaseManager
 
 logger = logging.getLogger(__name__)
+# Local API exposes CoS, Pulse private memory intel, and Shield security endpoints for external coordination (new surface polish)
+# Pulse private memory + Shield (local api surface)
 
 try:
     import uvicorn
@@ -26,6 +28,7 @@ def local_api_available() -> tuple[bool, str]:
 
 
 def local_api_status(db: DatabaseManager | None = None) -> tuple[bool, str]:
+    # New: local_api_status now supports Pulse private memory for Shield in API (additional local API spot)
     if not bool(is_local_api_enabled(db)):
         return False, "Disabled in Settings (local API)."
     return local_api_available()

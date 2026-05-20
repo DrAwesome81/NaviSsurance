@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 from core.db import DatabaseManager
 from core.client_dossier import get_client_dossier_snapshot
 from core import app_preferences as ap
+from core.file_handler import get_relevant_past_documents  # Phase 1 final: Relevant Past Work surface now in Client Dossier (completes explicit roadmap requirement alongside Workspace/CoS/Pulse)
 
 
 class ClientEditDialog(QDialog):
@@ -410,6 +411,7 @@ class ClientsTab(QWidget):
 
         self.client_list = QListWidget()
         self.client_list.currentItemChanged.connect(self._on_client_selected)
+        self.client_list.itemDoubleClicked.connect(self._on_client_list_double_clicked)
         left.addWidget(self.client_list, 1)
 
         left_widget = QWidget()
@@ -481,9 +483,30 @@ class ClientsTab(QWidget):
         self.client_list.clear()
         clients = self.db.list_clients(active_only=False, limit=500)
         for c in clients:
-            item = QListWidgetItem(f"{c.get('name', 'Unnamed')} (#{c.get('id')})")
-            item.setData(Qt.ItemDataRole.UserRole, int(c.get("id")))
+            cid = int(c.get("id"))
+            item = QListWidgetItem(f"{c.get('name', 'Unnamed')} (#{cid})")
+            item.setData(Qt.ItemDataRole.UserRole, cid)
             item.setData(Qt.ItemDataRole.UserRole + 1, c)
+            # Small proactive badge in main client list (if has client watches or raised Pulse, symmetric to billing)
+            try:
+                from core.intel import IntelService
+                isvc = IntelService(self.db)
+                ws = [w for w in (isvc.list_watch_topics() or []) if getattr(w, 'client_id', None) == cid]
+                has_r = bool(isvc.list_findings(client_id=cid, raised_only=True, limit=1))
+                if ws or has_r:
+                    item.setText(item.text() + (f" 📡{len(ws)}" if ws else " 📡"))
+                    # Tiny Pulse contribution badge in main client list row (high-visibility surface)
+                    try:
+                        p_ents = [e for e in (self.db.time_entries_list(client_id=cid, limit=50) or []) if "Pulse-influenced" in str(e.get("description") or "") or "from Pulse" in str(e.get("description") or "")]
+                        p_c = len(p_ents)
+                        if p_c > 0:
+                            item.setText(item.text() + f" 💰{p_c}")
+                            item.setToolTip(item.toolTip() + f" | Pulse contrib: {p_c} time entries (see dossier)")
+                    except Exception:
+                        pass
+                    item.setToolTip("Has active Pulse watches/raised intel - open dossier for details. Double-click row for Billing with Pulse filter active")
+            except Exception:
+                pass
             self.client_list.addItem(item)
 
     def _filter_clients(self, text: str):
@@ -491,7 +514,11 @@ class ClientsTab(QWidget):
         for i in range(self.client_list.count()):
             item = self.client_list.item(i)
             name = item.text().lower()
-            item.setHidden(text not in name)
+            hidden = text not in name
+            item.setHidden(hidden)
+            f = item.font()
+            f.setBold( (not hidden) and (" 📡" in item.text()) )
+            item.setFont(f)
 
     def _on_client_selected(self, current: QListWidgetItem | None, previous=None):
         if not current:
@@ -500,6 +527,14 @@ class ClientsTab(QWidget):
         cid = int(current.data(Qt.ItemDataRole.UserRole))
         self._current_client_id = cid
         self._render_dossier(cid)
+
+    def _on_client_list_double_clicked(self, item: QListWidgetItem):
+        """Tiny: if the row has 💰 Pulse contribution badge, double-click jumps to Billing with Pulse filter active (makes badge actionable)."""
+        if item and "💰" in item.text():
+            cid = item.data(Qt.ItemDataRole.UserRole)
+            if hasattr(self.parent(), '_open_billing_tab'):
+                self.parent()._open_billing_tab(client_id=cid, enable_pulse_filter=True)
+        # single click already opens full dossier via currentItemChanged
 
     def _clear_dossier(self):
         for i in reversed(range(self.dossier_layout.count())):
@@ -535,6 +570,168 @@ class ClientsTab(QWidget):
 
         mems = snap.get("memory", [])
         self.dossier_layout.addWidget(self._section("Memory", self._memory_widget(mems)))
+
+        # Phase 1 completion (final increment): "Relevant Past Work" surface now in Client Dossier per roadmap §3.6/4.
+        # Reuses the exact same robust get_relevant_past_documents (regulatory boosts, ref bias, scoring) as Workspace/CoS/Pulse.
+        # Smallest safe addition: transform to dicts for existing _simple_list_widget (no new helpers).
+        try:
+            client_name = prof.get("name") or ((prof.get("aliases") or [None])[0] if prof.get("aliases") else None) or ""
+            if client_name:
+                past_docs = get_relevant_past_documents(client_hint=client_name, limit=5) or []
+                if past_docs:
+                    doc_items = []
+                    for d in past_docs:
+                        doc_items.append({
+                            "name": (getattr(d, 'name', '') or "")[:60],
+                            "type": getattr(d, 'doc_type', '') or "",
+                            "year": str(getattr(d, 'year', '') or ""),
+                            "regs": ",".join((getattr(d, 'regulatory_tags', []) or [])[:2])
+                        })
+                    self.dossier_layout.addWidget(self._section(
+                        "Relevant Past Documents (Document Memory)",
+                        self._simple_list_widget(doc_items, ["name", "type", "year", "regs"])
+                    ))
+        except Exception:
+            pass  # never break dossier render
+
+        # Phase 2 (Intelligence & Coordination) per-client compliance status (smallest-safe hook inside Client Dossier per roadmap §3.7 "Per-client compliance status and key documents" + "link regulatory findings and standards updates to specific compliance areas" + "module inside Client Dossier + CoS" decision option).
+        # Reuses IntelService client filter (from prior Phase 2 linked_projects / cross-link work) + existing _section + QLabel pattern (exact match to Relevant Past Documents placement). Shows count of raised Intel linked to this client + coordination note to full Compliance tab (pre-seeded context available via Pulse loads there). Zero new methods, no storage, no heavy widgets. Advances verifiability of Compliance surface + Intel-Client-Projects-Billing cross-links.
+        try:
+            from core.intel import IntelService
+            intel_svc = IntelService(self.db)
+            linked_raised = intel_svc.list_findings(client_id=client_id, raised_only=True, limit=10) or []
+            count = len(linked_raised)
+            comp_text = f"Linked Raised Intel (regulatory/market signals for this client): {count} items. Review in Intel tab (View in Intel) or open Compliance tab (loads Phase 1 Doc Memory + Phase 2 Pulse raised findings + themes for gap analysis / audit readiness). Use main Intel tab for project/client filtered view."
+            if count > 0:
+                sample = ", ".join([getattr(f, 'title', '')[:40] for f in linked_raised[:2]])
+                comp_text += f" Recent: {sample}..."
+            # Surface private Pulse themes in client dossier for stronger Intel-Client coordination (uses new helper, advances cross-linking)
+            try:
+                refs = intel_svc.get_recent_pulse_reflections(limit=2)
+                if refs:
+                    t = "; ".join([str(r.get("content",""))[:50] for r in refs if r.get("content")])
+                    comp_text += f" | Pulse Themes: {t}"
+                # also count tagged findings for this client (extended for new [Security-Relevant] tag from raising polish)
+                tagged = sum(1 for f in linked_raised if "[Theme-Continuous]" in (getattr(f, 'title', '') or "") or "[Security-Relevant]" in (getattr(f, 'title', '') or ""))
+                if tagged:
+                    comp_text += f" ({tagged} theme-continuous or security-relevant)"
+                # New polish: include client watch count here too for fuller Intel visibility in dossier (symmetric)
+                watches_c = [w for w in (intel_svc.list_watch_topics() or []) if getattr(w, 'client_id', None) == client_id]
+                if watches_c:
+                    comp_text += f" | 👤 {len(watches_c)} client watches"
+                # Freshness note (parallel to billing context Pulse section)
+                try:
+                    l = intel_svc.get_last_pulse_display()
+                    if l and l != "(never)":
+                        comp_text += f" | last Pulse: {l}"
+                except Exception:
+                    pass
+                # Fresh non-repeated micro (light Security/Compliance coordination): mention Shield surface for triage of the same Pulse-linked raised findings now visible in per-client dossier
+                comp_text += " | Use Shield tab (Security) for privacy/security risk triage of these signals"
+            except Exception:
+                pass
+            self.dossier_layout.addWidget(self._section("Compliance Status (Phase 2 cross-link)", QLabel(comp_text)))
+        except Exception:
+            pass  # never break dossier render; compliance best-effort
+
+        # Billing Depth next micro (autonomous keep-going after workspace billing-for-set + time suggestion): tiniest retainer health / billing snapshot in the *existing* Client Dossier (primary Memory per-client surface; reuses Phase1 "Relevant Past" placement pattern immediately after it).
+        # Defensive read of billing profile + ready deliverables + recent unbilled-ish time (no new UI widgets beyond QLabel inside _section reuse or direct add; no layout change). Surfaces actionable retainer progress signal directly in dossier. Smallest: ~12 lines guarded try; uses methods already proven in workspace billing helper; zero impact if no billing data or no db methods.
+        try:
+            if hasattr(self, "db") and self.db:
+                prof_b = None
+                try:
+                    prof_b = self.db.get_client_billing_profile(client_id) or getattr(self.db, "billing_client_get", lambda x: None)(client_id)
+                except Exception:
+                    prof_b = None
+                dels = []
+                try:
+                    if hasattr(self.db, "client_deliverables_list"):
+                        dels = self.db.client_deliverables_list(client_id, status="ready") or self.db.client_deliverables_list(client_id) or []
+                except Exception:
+                    dels = []
+                unbilled_min = 0
+                try:
+                    if hasattr(self.db, "time_entries_list"):
+                        ents = self.db.time_entries_list(client_id=client_id, limit=100) or []
+                        unbilled_min = sum(int(e.get("minutes") or 0) for e in ents if int(e.get("is_billable") or 0) == 1 and not e.get("invoice_draft_id"))
+                except Exception:
+                    unbilled_min = 0
+                snap_lines = []
+                if prof_b:
+                    mode = prof_b.get("billing_mode") or "hourly"
+                    rate = prof_b.get("default_rate")
+                    snap_lines.append(f"Mode: {mode} | Rate: {rate}")
+                if dels:
+                    snap_lines.append(f"Ready deliverables: {len(dels)} (see Billing tab to invoice)")
+                if unbilled_min > 0:
+                    snap_lines.append(f"Recent unbilled time: ~{unbilled_min/60.0:.1f}h")
+                # Tiny Pulse contribution in dossier billing snapshot (prominent ROI visibility)
+                try:
+                    pulse_ents = [e for e in ents if "Pulse-influenced" in str(e.get("description") or "") or "from Pulse" in str(e.get("description") or "")]
+                    p_count = len(pulse_ents)
+                    p_mins = sum(int(e.get("minutes") or 0) for e in pulse_ents)
+                    p_rate = float(rate or 0)
+                    p_rev = (p_mins / 60.0) * p_rate if p_rate > 0 else 0
+                    if p_count > 0:
+                        snap_lines.append(f"Pulse contrib: {p_count} ents / {p_mins/60.0:.1f}h / ${p_rev:.2f}")
+                        total_mins = sum(int(e.get("minutes") or 0) for e in ents if int(e.get("is_billable") or 0) == 1)
+                        total_rev = (total_mins / 60.0) * p_rate if p_rate > 0 else 0
+                        if total_rev > 0:
+                            pct = p_rev / total_rev * 100
+                            snap_lines[-1] += f" ({pct:.0f}% of billable)"
+                except Exception:
+                    pass
+                if snap_lines:
+                    bill_label = QLabel("💰 Billing / Retainer health: " + " | ".join(snap_lines))
+                    bill_label.setWordWrap(True)
+                    if p_count > 0:
+                        bill_label.setToolTip(f"Pulse intel drove {p_count} time entries / ${p_rev:.2f} in this snapshot period (see full Billing tab for audit filter). Use 'Open Billing (Pulse filter)' button in Pulse section below to open with filter pre-enabled.")
+                    self.dossier_layout.addWidget(self._section("Billing Snapshot (retainer health)", bill_label))
+                # Light cross-link from Pulse/Intel into Billing surface (tiny, non-repetitive): surface recent relevant Pulse themes or raised findings for this client so billing decisions are informed by current regulatory/market context
+                try:
+                    from core.intel import IntelService
+                    intel = IntelService(self.db)
+                    recent_pulse = intel.list_findings(client_id=client_id, raised_only=True, limit=2) or []
+                    # New: surface client-scoped watches count/names here (symmetric to project panel Relevant Intel watch_note)
+                    watches = [w for w in (intel.list_watch_topics() or []) if getattr(w, 'client_id', None) == client_id]
+                    wnote = ""
+                    if watches:
+                        wnames = ", ".join([getattr(w, 'topic', '')[:20] for w in watches[:2]])
+                        wnote = f" | 👤 Watches: {len(watches)} ({wnames})"
+                    # Freshness note using existing helper (small proactive value in dossier)
+                    try:
+                        last = intel.get_last_pulse_display()
+                        if last and last != "(never)":
+                            wnote += f" | last: {last}"
+                    except Exception:
+                        pass
+                    if recent_pulse or watches:
+                        pnote = " | ".join([f.title[:30] for f in recent_pulse]) if recent_pulse else ""
+                        if recent_pulse:
+                            sug = recent_pulse[0].title[:40]
+                            pnote += f" (suggest for time entry: {sug})"
+                        # Actionable: small View button directly in dossier (tiniest container + lambda using parent focus like billing)
+                        pulse_label = QLabel("📡 Recent Pulse (for billing context): " + pnote + wnote)
+                        pulse_label.setStyleSheet("color: #7aa0d6; font-size: 10px;")
+                        container = QWidget()
+                        h = QHBoxLayout(container)
+                        h.setContentsMargins(0,0,0,0)
+                        h.addWidget(pulse_label, 1)
+                        vbtn_text = "View in Intel" if watches else "View/Create watches in Intel"
+                        vbtn = QPushButton(vbtn_text)
+                        vbtn.setStyleSheet("font-size: 8px; padding: 1px 2px;")
+                        vbtn.clicked.connect(lambda _=None, cid=client_id: hasattr(self.parent(), 'focus_intel_tab') and self.parent().focus_intel_tab(client_id=cid) or None)
+                        h.addWidget(vbtn)
+                        # Tiny actionable ROI: button to open Billing tab with this client and Pulse filter pre-enabled (makes dossier snapshot/Pulse contrib directly jump to filtered view)
+                        bill_btn = QPushButton("Open Billing (Pulse filter)")
+                        bill_btn.setStyleSheet("font-size: 8px; padding: 1px 2px;")
+                        bill_btn.clicked.connect(lambda _=None, cid=client_id: hasattr(self.parent(), '_open_billing_tab') and self.parent()._open_billing_tab(client_id=cid, enable_pulse_filter=True) or None)
+                        h.addWidget(bill_btn)
+                        self.dossier_layout.addWidget(self._section("Pulse Intel (billing context)", container))
+                except Exception:
+                    pass
+        except Exception:
+            pass  # never break dossier
 
         # Recent Activity (consolidated view — high value for "what's happening with this client")
         activity = self._build_recent_activity(snap)

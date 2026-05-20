@@ -2,6 +2,8 @@
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## Purpose
 
 This document defines what NaviSsurance would need in order to become a credible replacement for human staff in three specific roles:
@@ -289,6 +291,8 @@ If only a few things can be built next, prioritize them in this order:
 3. approval-policy engine and audit log,
 4. inbox and scheduling automation,
 5. verification and replacement-readiness dashboards.
+
+<!-- Pulse private memory + Shield triage in staff matrix -->
 
 ## Architecture View
 

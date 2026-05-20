@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 
+# Pulse private memory + Shield (agent routing surface)
 def route_for_agent(agent_code: str):
     """
     Return route tuple:
@@ -17,7 +18,8 @@ def route_for_agent(agent_code: str):
         "ledger": ("billing_tab", None, "ledger_console", "Billing"),
         "archive": ("library_tab", None, "agent_console", "Library"),
         "pulse": ("intel_tab", None, "agent_console", "Intel"),
-        "shield": ("security_tab", None, "agent_console", "Security"),
+        "shield": ("security_tab", None, "agent_console", "Security"),  # Pulse [Security-Relevant] aware via Intel/Shield cross-link
         "navi": ("chief_of_staff_tab", None, None, "Chief of Staff"),
     }.get(code)
+    # Routing surfaces Pulse/Shield coordination for agents and CoS
 

@@ -10,6 +10,8 @@ from core.billing import template_render
 from core.billing.template_render import list_placeholders, validate_invoice_template
 from core.db import DatabaseManager
 import os
+# Billing template import tests cover Pulse private memory notes and 🛡️ security tags in DOCX templates (template import tests)
+# New: supports private memory consumption in billing templates for Shield (additional billing test note)
 
 
 def test_import_invoice_template_from_docx_auto_wires_common_placeholders(tmp_path, monkeypatch):

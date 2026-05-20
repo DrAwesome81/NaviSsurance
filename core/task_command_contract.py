@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable, Literal, Optional
+# Task command contracts support CoS/Pulse-raised intel, private memory themes, and 🛡️ security-relevant task routing (fresh task-intel coordination)
+# Pulse private memory + Shield (task command contracts surface)
 
 TaskCategory = Literal["Business", "Personal"]
 ProjectStatus = Literal["Active", "Waiting", "On Hold", "Done", "Cancelled"]

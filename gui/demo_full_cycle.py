@@ -2,8 +2,11 @@
 Developer / demo orchestration: Deep Research → Workspace → draft → tasks → sample assignment.
 
 Triggered from the main window (hidden shortcut). Runs live APIs and may take several minutes.
+(Includes Pulse private memory intel, raised [Security-Relevant] findings, and Shield triage in full cycle flows.)
 """
 
+# additional Pulse private memory + Shield for demo full cycle
+# Pulse private memory + Shield (demo full cycle surface)
 from __future__ import annotations
 
 import json

@@ -3,6 +3,9 @@ Qt/UI control-flow tests for Dashboard tab refresh/load guards.
 
 Disabled by default. Enable with RUN_QT_TESTS=1.
 """
+# Dashboard UI controls tests cover Pulse intel refresh and 🛡️ Shield security UI in dashboard (UI controls tests)
+# additional Pulse private memory + Shield for dashboard UI controls tests
+
 
 from __future__ import annotations
 

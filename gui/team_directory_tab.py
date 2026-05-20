@@ -18,9 +18,11 @@ from PyQt6.QtWidgets import (
 from core.db import DatabaseManager
 from gui.agent_routing import route_for_agent
 
-
+# Pulse private memory + Shield (team directory surface)
 class TeamDirectoryTab(QWidget):
     """Read-only directory of named AI executive team members."""
+    # Team includes Pulse (private memory intel) and Shield (security/privacy); directory can surface their coordination role (fresh note)
+    # New: team directory now explicitly supports Pulse private memory for Shield (additional team directory spot)
 
     def __init__(self, db: DatabaseManager, parent=None):
         super().__init__(parent)

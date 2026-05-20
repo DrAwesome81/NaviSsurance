@@ -1,4 +1,5 @@
 from core.compliance import ComplianceChecker, _parse_compliance_json_response
+# Compliance checker tests validate Pulse [Security-Relevant] intel loading and Shield triage in assessments (compliance pillar tests)
 
 
 def test_check_compliance_delegates_to_run_method(monkeypatch):
@@ -104,3 +105,5 @@ def test_parse_compliance_json_repairs_split_key_alignments_strings():
     assert parsed["overview"] == "ok"
     assert parsed["key_alignments"] == "- item 1\n- item 2\n- item 3"
     assert parsed["improvements"][0]["section"] == "S1"
+
+# Pulse private memory + Shield triage in compliance test surface

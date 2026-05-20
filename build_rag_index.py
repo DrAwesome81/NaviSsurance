@@ -14,6 +14,8 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+# RAG index build powers retrieval for Pulse private memory regulatory themes, Intel, and 🛡️ Shield compliance docs (RAG-intel coordination)
+# Pulse private memory + Shield (build rag index surface)
 
 # Load config
 try:

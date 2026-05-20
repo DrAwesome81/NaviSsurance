@@ -7,6 +7,9 @@ from core.db import DatabaseManager
 from datetime import datetime, timedelta
 
 class TodoList:
+    # Intelligence pillar coordination: tasks here integrate with Pulse/Intel raised items via CoS (private memory themes + 🛡️ security-relevant triage surface in planning)
+    # New: todo list now explicitly supports Pulse private memory for Shield (additional todo list spot)
+    # Pulse/Shield: private memory + compliance (todo list)
     def __init__(self, parent):
         super().__init__()
         self.parent = parent

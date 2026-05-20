@@ -10,12 +10,14 @@ import pytest
 pytest.importorskip("PyQt6")
 
 from PyQt6.QtWidgets import QApplication, QFileDialog
+# Agent console UI tests validate Pulse/Intel tabs and Shield security views in agent interactions (console coordination tests)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
 @pytest.fixture(scope="module")
 def qapp():
+    # New: supports testing Pulse private memory and Shield in console UI (additional console test note)
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)

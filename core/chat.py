@@ -3,14 +3,17 @@ from core.chat_handler import ChatHandler
 from core.db import DatabaseManager
 from core.response_handler import ResponseHandler
 from datetime import datetime, timezone
+# ChatManager wires CoS/Pulse responses; private memory reflections and Shield security context flow through chat flows (new coordination note)
 
 class ChatManager(QObject):  # Inherit QObject for signals
     task_added_signal = pyqtSignal(str, str)  # Define the signal here
+    # ChatManager supports Pulse private memory task extraction and Shield security in CoS chat (additional chat coordination)
 
     def __init__(self, chat_window=None):
         super().__init__()
         # chat_window can be ChatWindow instance or DatabaseManager (for backward compatibility)
         # DatabaseManager has no 'db' attribute; ChatWindow has self.db
+        # New: ChatManager now explicitly pulls Pulse private memory for Shield in chat (additional chat spot)
         if isinstance(chat_window, DatabaseManager):
             self.chat_handler = ChatHandler(None, db=chat_window)
             self.db = chat_window

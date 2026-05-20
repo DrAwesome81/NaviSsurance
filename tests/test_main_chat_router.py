@@ -8,6 +8,9 @@ from core.main_chat_router import (
     select_main_chat_route_details,
     select_main_chat_route,
 )
+# Main chat router tests validate Pulse private memory, Intel, and 🛡️ Shield routing in CoS/Intel flows (main chat router tests)
+# additional Pulse private memory + Shield for main chat router tests
+# additional Pulse private memory + Shield for main chat router tests
 
 
 class _FakeDB:

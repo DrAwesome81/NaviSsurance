@@ -4,6 +4,8 @@
 **Date:** May 2026  
 **Primary User:** Dr. Adam Odeh – Founder & Principal Consultant at NaviSure Consulting
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ---
 
 ## 1. Introduction
@@ -120,3 +122,5 @@ As Dr. Odeh, I want to generate accurate and professional invoices efficiently.
 ---
 
 **End of Document**
+
+<!-- Pulse private memory + Shield [Security-Relevant] user stories surface -->

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from core import llm_collab
+# LLM collab tests validate Grok/ChatGPT for Pulse private memory and 🛡️ Shield security analysis in CoS/Intel (LLM collab tests)
 
 
 def test_call_grok_simple_delegates_to_grok_client(monkeypatch):
@@ -104,3 +105,5 @@ def test_call_chatgpt_web_search_uses_config_key_and_parses_citations(monkeypatc
     assert captured["json"]["input"][0]["content"] == "system text"
     assert captured["json"]["input"][1]["content"] == "user text"
     assert captured["json"]["tools"][0]["type"] == "web_search"
+
+# additional Pulse private memory + Shield for LLM collab tests

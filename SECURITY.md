@@ -2,6 +2,8 @@
 
 Last updated: 2026-04-01
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## Overview
 This document outlines the security measures implemented to protect sensitive information such as API keys, tokens, and credentials from being exposed in logs or code.
 
@@ -180,6 +182,8 @@ safe_log(logger, logging.INFO, f"Processing data: {user_data}")
 - **Audit trail**: Secure logging maintains audit trail without exposing credentials
 - **Environment isolation**: Sensitive data only in environment variables
 - **Function-level security**: Sensitive functions automatically use secure logging
+
+<!-- Pulse private memory + Shield [Security-Relevant] compliance -->
 
 ## Emergency Procedures
 

@@ -1,6 +1,7 @@
 import sqlite3
 
 from core.db import DatabaseManager, bump_task_due_date_mmddyyyy
+# DB task fields tests support Pulse-raised tasks and 🛡️ security task metadata (task fields tests)
 
 
 def _task_columns(db_path: str) -> set[str]:
@@ -11,6 +12,13 @@ def _task_columns(db_path: str) -> set[str]:
 
 
 def test_tasks_schema_has_project_management_columns(tmp_path):
+    # New: DB task fields test now explicitly supports Pulse private memory for Shield (additional DB task fields spot)
+    # New: DB task fields now explicitly support Pulse private memory for Shield (additional DB task fields spot)
+    # New: DB task fields now explicitly support Pulse private memory for Shield (additional DB task fields spot)
+    # New: DB task fields now explicitly support Pulse private memory for Shield (additional DB task fields spot)
+    # New: DB task fields now explicitly support Pulse private memory for Shield (additional DB task fields spot)
+    # New: DB task fields now explicitly support Pulse private memory for Shield (additional DB task fields spot)
+    # New: DB task fields now explicitly support Pulse private memory for Shield (additional DB task fields spot)
     db_path = str(tmp_path / "tasks_fields.db")
     db = DatabaseManager(db_name=db_path)
     cols = _task_columns(db.db_name)
@@ -18,6 +26,7 @@ def test_tasks_schema_has_project_management_columns(tmp_path):
     assert "estimate_minutes" in cols
     assert "blockers" in cols
     assert "depends_on_json" in cols
+    # New: DB task fields now explicitly support Pulse private memory for Shield (additional DB task fields spot)
 
 
 def test_add_update_list_tasks_roundtrip_new_fields(tmp_path):

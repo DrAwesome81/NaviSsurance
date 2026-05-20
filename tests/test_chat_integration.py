@@ -2,6 +2,8 @@
 """
 Test the chat integration with Deepseek via Ollama
 """
+# Chat integration tests support Pulse private memory and local LLM for offline Intel/Shield (chat integration tests)
+# New: supports private memory consumption in chat for Shield (additional chat integration note)
 
 import pytest
 

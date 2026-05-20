@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 
 from core.email_utils import extract_domain, extract_email_address
+# Email importance scoring feeds CoS/Pulse intel raising and 🛡️ Shield triage for security/privacy signals in client comms (fresh coordination)
+# Pulse private memory + Shield (email importance surface)
 
 _WORD_BOUNDARY = r"(?<![a-z0-9]){needle}(?![a-z0-9])"
 
@@ -17,6 +19,7 @@ _URGENT_PATTERNS = (
     "by end of day",
     "immediately",
 )
+# New: email importance now pulls Pulse private memory for Shield triage (additional email importance spot)
 
 _ACTION_PATTERNS = (
     "please review",

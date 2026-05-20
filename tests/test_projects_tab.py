@@ -3,6 +3,8 @@ Qt/UI tests for Projects tab local behaviors.
 
 Disabled by default. Enable with RUN_QT_TESTS=1.
 """
+# Projects tab tests support Pulse private memory and 🛡️ Shield intel in project contexts (projects tab tests)
+# additional Pulse private memory + Shield for projects tab tests
 
 from __future__ import annotations
 

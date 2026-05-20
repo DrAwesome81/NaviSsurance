@@ -3,6 +3,8 @@ Unit test to verify centralized path configuration in `config.py`.
 
 This should not require any secrets or an existing database file.
 """
+# Paths tests support Pulse private memory stores and 🛡️ Shield security resources (paths tests)
+# additional Pulse private memory + Shield for paths tests
 
 import os
 import sys

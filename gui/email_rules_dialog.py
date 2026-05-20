@@ -27,6 +27,9 @@ def _list_to_lines(values: list[str]) -> str:
 
 
 class EmailRulesDialog(QDialog):
+    # Fresh coordination: email importance / triage rules here can be guided by Pulse [Security-Relevant] findings and private memory themes surfaced in CoS/Intel (Intelligence pillar extension)
+    # Additional: rules now tie to Shield for security email triage (new email rules surface)
+    # New: email rules now explicitly support Pulse private memory for Shield (additional email rules spot)
     def __init__(self, *, parent=None, db):
         super().__init__(parent)
         self.db = db

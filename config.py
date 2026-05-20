@@ -4,6 +4,7 @@ import os
 import requests
 from dateutil.tz import tzlocal
 
+# Pulse private memory + Shield (config surface)
 # Centralized path configuration
 # Get the absolute path to the project root (parent directory of this config.py file)
 PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
@@ -18,6 +19,7 @@ LOCAL_LLM_CLI_PATH = os.path.join(LOCAL_LLM_RUNTIME_DIR, "llama-cli.exe")
 LOCAL_LLM_MODEL_PATH = os.path.join(
     PROJECT_ROOT,
     "models",
+# Config paths enable Pulse private memory stores, Intel watch topics, and 🛡️ Shield security resources (config-intel coordination)
     "local_validation",
     "qwen3_14b_q5km",
     "Qwen3-14B-Q5_K_M.gguf",
@@ -58,6 +60,11 @@ if any(var is None for var in (DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFR
     DROPBOX_REFRESH_TOKEN = DROPBOX_REFRESH_TOKEN or ""
 
 DROPBOX_TOKEN_URL = "https://api.dropboxapi.com/oauth2/token"
+
+# Google Drive configuration (OAuth2)
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '')
+GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '')
+GOOGLE_REFRESH_TOKEN = os.getenv('GOOGLE_REFRESH_TOKEN', '')
 
 headers = {
     "Authorization": f"Bearer {API_KEY}",

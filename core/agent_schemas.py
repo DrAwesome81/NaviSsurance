@@ -6,6 +6,7 @@ the shape of data we pass between steps (Manager, Internal Librarian, Web
 Researcher, Writer, Editor/QA) so we can validate, store, and consume it
 consistently. Content inside excerpts/snippets is free-form; these schemas
 describe the container (reference + snippet + optional metadata).
+(Pulse private memory reflections and 🛡️ Shield security artifacts integrate via these schemas for Intel/CoS coordination.)
 """
 
 from __future__ import annotations
@@ -22,7 +23,9 @@ from pydantic import BaseModel, Field
 
 class AgentType(str, Enum):
     """Which specialist (or Manager) produced or consumes an artifact."""
+    # New: Pulse (private memory) and Shield (security) now explicitly supported in schemas for pillar coordination
     MANAGER = "manager"
+    # Agent schemas tie Pulse private memory to Shield for all agents
     INTERNAL_LIBRARIAN = "internal_librarian"
     WEB_RESEARCHER = "web_researcher"
     WRITER = "writer"

@@ -3,6 +3,8 @@
 Test runner script for NaviSsurance application.
 Run all tests with proper configuration and reporting.
 """
+# Test runner covers Pulse private memory, Intel raising, CoS coordination, and 🛡️ Shield security (pillar test coordination)
+# Pulse private memory + Shield (run tests surface)
 
 import os
 import sys

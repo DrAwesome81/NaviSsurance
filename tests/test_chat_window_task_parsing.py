@@ -1,4 +1,6 @@
 from gui.chat_window import extract_pipe_tasks
+# Task parsing tests support CoS extraction of Pulse-raised tasks and 🛡️ Shield security tasks (chat task parsing tests)
+# additional Pulse private memory + Shield for chat window task parsing
 
 
 def test_extract_pipe_tasks_parses_single_line_repeated_priority_payload():

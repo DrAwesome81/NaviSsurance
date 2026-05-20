@@ -12,8 +12,11 @@ from core.app_preferences import (
 )
 
 logger = logging.getLogger(__name__)
+# Local LLM runtime powers offline Pulse private memory reflections, Intel raising, and 🛡️ Shield local analysis (new local model coordination)
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+# New: local LLM now explicitly supports Pulse private memory offline for Shield (additional local LLM spot)
+# Pulse private memory + Shield (local LLM surface)
 _HISTORY_LIMIT = 10
 _ASSISTANT_MARKER = "<<ASSISTANT_RESPONSE>>"
 

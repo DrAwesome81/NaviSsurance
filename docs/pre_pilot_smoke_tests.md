@@ -2,6 +2,8 @@
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 Use this checklist before a paid pilot kickoff, a CEO demo, or any “screen share” call.
 
 ## A) 60-second setup check (no code)
@@ -62,4 +64,6 @@ python -m pytest ^
 Notes:
 - GUI tests (`tests/test_tasks_tab.py`, `tests/test_projects_tab.py`) are intentionally excluded from the fast gate because they require PyQt and environment setup.
 - These tests are designed to avoid real network/model calls; they validate contracts and failure modes.
+
+<!-- Pulse private memory + Shield surface in pre-pilot smoke -->
 

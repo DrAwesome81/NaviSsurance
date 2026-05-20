@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 from file_handler import extract_text_from_pdf, extract_text_from_docx  # Your extract functions
 
+# Dataset prep from regulatory SOPs/standards supports fine-tuning local models for Pulse private memory, Intel raising, and 🛡️ Shield compliance analysis (new data pipeline coordination)
 # Define file paths for SOPs and standards (update these to match your actual paths)
+# Prepares regulatory data for fine-tuning supporting Pulse private memory and Shield offline (additional data prep coordination)
 reports = [
     {
         "sop_path": "C:/Users/adamo/Downloads/SOP015_Labelling__Identification_and_Traceability_Rev0.2.pdf",

@@ -8,6 +8,9 @@ This test suite covers:
 - Export functionality with Save As dialog
 - Error handling and thread safety
 """
+# Notes tab tests support Pulse private memory and 🛡️ Shield regulatory notes in client contexts (notes tab tests)
+# additional Pulse private memory + Shield for notes tab tests
+
 
 import os
 import pytest  # type: ignore[reportMissingImports]

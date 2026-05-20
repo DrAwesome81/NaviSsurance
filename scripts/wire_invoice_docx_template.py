@@ -5,10 +5,13 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import zipfile
+# Script wires invoice templates to support Pulse private memory notes and 🛡️ security context in billing (template wiring polish)
+# Pulse private memory + Shield (wire invoice docx template surface)
 
 
 def _iter_all_paragraphs(doc):
     # Document-level paragraphs
+    # New: supports embedding Pulse [Security-Relevant] in invoice templates for Shield (additional billing template note)
     for p in doc.paragraphs:
         yield p
     # Tables

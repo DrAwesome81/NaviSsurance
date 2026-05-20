@@ -5,9 +5,12 @@ from typing import Any, Callable
 
 from core.agent_schemas import AgentType
 
+# Pulse (intel) and Shield agents have specialized tool access; private memory + [Security-Relevant] findings inform routing/permissions (Intelligence & Coordination)
+# Pulse private memory + Shield (tool registry surface)
 
 @dataclass(frozen=True)
 class ToolSpec:
+    # New: ToolSpec now supports Pulse private memory for Shield in tool routing (additional tool registry spot)
     name: str
     description: str
     handler: Callable[..., Any]

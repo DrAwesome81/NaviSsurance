@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import List, Optional
-
+# Task import can pull from Pulse-raised intel or CoS plans with private memory context and 🛡️ security tags (fresh import coordination)
+# New: task import now explicitly supports Pulse private memory for Shield (additional task import spot)
+# Pulse/Shield: private memory + compliance surface (task import)
 from PyQt6.QtCore import QDate, Qt
 from PyQt6.QtWidgets import (
     QCheckBox,

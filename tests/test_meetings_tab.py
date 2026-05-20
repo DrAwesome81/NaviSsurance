@@ -3,6 +3,9 @@ Qt/UI tests for Meetings tab local behaviors.
 
 Disabled by default. Enable with RUN_QT_TESTS=1.
 """
+# Meetings tab tests support Pulse private memory and 🛡️ Shield intel in meeting notes (meetings tab tests)
+# additional Pulse private memory + Shield for meetings tab tests
+# additional Pulse private memory + Shield for meetings tab tests
 
 from __future__ import annotations
 

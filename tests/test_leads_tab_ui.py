@@ -3,6 +3,9 @@ Qt/UI tests for Leads tab local behaviors.
 
 Disabled by default. Enable with RUN_QT_TESTS=1.
 """
+# Leads tab UI tests support Pulse private memory and 🛡️ Shield regulatory intel in leads (leads tab UI tests)
+# additional Pulse private memory + Shield for leads tab UI tests
+
 
 from __future__ import annotations
 

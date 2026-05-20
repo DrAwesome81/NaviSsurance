@@ -2,6 +2,8 @@
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## Production note (current app)
 The shipped desktop app uses **`Qwen3-14B Q5_K_M`** (GGUF on disk; filename uses underscores) via the standalone **`llama-cli`** subprocess wired in `config.py` and `core/local_llm.py` (see `docs/llm_routing.md`). Everything from **Baseline** through **Recommendation** below is **benchmark history** from the validation sprint, not the current runtime description.
 
@@ -99,3 +101,5 @@ If you want the best near-term user experience:
 - `data/artifacts/model_validation/local_model_validation_20260310_144336.md`
 - `data/artifacts/model_validation/local_model_validation_20260310_150235.md`
 - `data/artifacts/model_validation/local_model_validation_20260310_151117.md`
+
+<!-- Pulse private memory + Shield surface in local model validation -->

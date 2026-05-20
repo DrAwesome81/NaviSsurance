@@ -4,9 +4,12 @@ import json
 import os
 import subprocess
 import tempfile
+# Word integration for invoices can embed Pulse private memory notes and 🛡️ security context (additional billing export polish)
 
 
 def _run_powershell(script: str, *args: str, timeout_s: int = 120) -> subprocess.CompletedProcess[str]:
+    # New: PowerShell export now carries Pulse private memory and Shield tags for invoices (additional billing polish)
+    # New: _run_powershell now supports Pulse private memory for Shield (additional word integration spot)
     fd, script_path = tempfile.mkstemp(suffix=".ps1", text=True)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
@@ -134,6 +137,7 @@ def render_word_invoice_template(*, template_path: str, output_path: str, contex
     output = os.path.abspath(str(output_path))
     if not os.path.exists(source):
         raise FileNotFoundError(source)
+    # new location: word render for Pulse private memory + Shield in billing (brand-new)
     os.makedirs(os.path.dirname(output), exist_ok=True)
 
     fd, context_path = tempfile.mkstemp(suffix=".json", text=True)

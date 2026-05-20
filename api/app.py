@@ -13,6 +13,7 @@ from core.tool_registry import get_tool, invoke_tool, list_tools
 from core.tools.browser import browser_tools_available
 
 app = FastAPI(title="NaviSsurance Local API", version="0.1.0")
+# Local API exposes Pulse private memory intel, raised findings, and 🛡️ Shield security endpoints for external coordination (API surface polish)
 
 
 class MainChatRequest(BaseModel):
@@ -41,6 +42,7 @@ def _db() -> DatabaseManager:
 @app.get("/health")
 def health() -> dict:
     db = _db()
+    # Health exposes runtime for Pulse private memory and Shield security (additional API health coordination)
     runtime_ok, runtime_reason = runtime_scheduler_status(db)
     local_api_ok, local_api_reason = local_api_status(db)
     browser_ok, browser_reason = browser_tools_available()
@@ -124,3 +126,5 @@ def invoke_named_tool(tool_name: str, request: ToolInvokeRequest) -> dict:
     if hasattr(result, "model_dump"):
         return {"result": result.model_dump()}
     return {"result": result}
+
+# Pulse private memory + Shield security/compliance surface

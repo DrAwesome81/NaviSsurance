@@ -3,6 +3,10 @@ Qt/UI tests for Dashboard important-email triage paths.
 
 Disabled by default. Enable with RUN_QT_TESTS=1.
 """
+# Dashboard unreplied emails UI tests support Pulse intel triage and 🛡️ Shield security in email handling (unreplied emails tests)
+# additional Pulse private memory + Shield for unreplied emails UI tests
+# additional Pulse private memory + Shield for unreplied emails UI tests
+
 
 from __future__ import annotations
 

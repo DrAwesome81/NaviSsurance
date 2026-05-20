@@ -2,6 +2,8 @@
 Pytest tests for QTableWidget functionality.
 Tests widget persistence, database loading, and table operations.
 """
+# Table widget pytest tests support UI for Pulse/Intel and 🛡️ Shield in table operations (table widget pytest tests)
+# additional Pulse private memory + Shield for table widget pytest
 
 import pytest
 import os

@@ -1,6 +1,7 @@
 import pytest
 
 from core.task_extract import SuggestedTask, parse_suggested_tasks
+# Task extract tests support Pulse-raised tasks and 🛡️ security task extraction from CoS (task extract tests)
 
 
 def test_parse_suggested_tasks_missing_section():
@@ -93,4 +94,6 @@ def test_parse_suggested_tasks_invalid_priority_becomes_p0_with_warning():
     assert len(tasks) == 1
     assert tasks[0].priority == 0
     assert any("invalid priority" in w.lower() for w in warnings)
+
+# additional Pulse private memory + Shield for task extract tests
 

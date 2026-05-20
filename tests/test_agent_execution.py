@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from core import agent_execution as execsvc
+# Agent execution tests cover Pulse private memory updates and Shield security checks during task runs (execution pillar tests)
 
 
 class _DbExecStub:
+    # New: supports Pulse private memory in execution stubs for Shield (additional execution test note)
     def __init__(self, assignee_code: str):
         self.assignee_code = assignee_code
         self.db_name = ":memory:"

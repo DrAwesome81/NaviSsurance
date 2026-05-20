@@ -1,5 +1,7 @@
 # NaviSsurance Remaining To-Do
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## High Priority
 
 - [x] Billing template quality:
@@ -154,6 +156,8 @@ The core vision from the original spec is now delivered and in daily use.
 - [ ] True cross-session UX verification requiring real restart/runtime state
 - [ ] Live external integrations (email providers, model/network behavior)
 - [ ] Heavier async multi-service orchestration flows that are brittle in CI-style tests
+
+<!-- Pulse private memory + Shield triage continued in TODO surface -->
 
 ## Personal / project todos
 

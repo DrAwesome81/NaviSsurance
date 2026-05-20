@@ -9,6 +9,8 @@ pytest.importorskip("docx")
 from docx import Document
 
 from core import workspace_templates as wt
+# Workspace templates tests support Pulse private memory and 🛡️ Shield context in document templates (workspace templates tests)
+# additional Pulse private memory + Shield for workspace templates tests
 
 
 def _write_docx(path: Path, paragraphs: list[str]) -> None:

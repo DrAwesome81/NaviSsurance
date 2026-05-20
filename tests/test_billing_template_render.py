@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from core.billing.template_render import list_placeholders, render_template
+# Billing template render tests support Pulse private memory and 🛡️ security placeholders in custom invoices (render tests)
+# New: render tests now cover private memory consumption for Shield in templates (additional render test note)
 
 
 def test_render_template_replaces_known_placeholders_and_leaves_unknown():

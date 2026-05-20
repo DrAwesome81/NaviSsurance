@@ -2,6 +2,8 @@
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## Pre-demo setup (do this 2 min before the call)
 
 - Have one clean, short product brief ready (even a 1-page mock is fine).
@@ -83,3 +85,5 @@ In **Chief of Staff**:
 
 > That’s the loop: vague idea → cited research → CEO memo → importable tasks → delegated execution, all visible and trackable.  
 > This is how we move from “unsure” to “executing” in days instead of weeks. If this resonates, we can run a fixed 10-business-day Regulatory Strategy Sprint and deliver exactly these artifacts for your board.
+
+<!-- Pulse private memory + Shield triage in demo script -->

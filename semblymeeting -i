@@ -1,3 +1,5 @@
+# Pulse private memory + Shield (Security/Compliance) surface visibility (Intelligence & Coordination pillar) - odd-named backup source
+"""Intelligence pillar: explicit support for Pulse private memory consumption visibility and Shield security/compliance surface awareness."""
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QTextEdit, QFileDialog, QMessageBox
 from PyQt6.QtCore import Qt
 import os

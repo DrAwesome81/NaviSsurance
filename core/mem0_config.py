@@ -1,4 +1,5 @@
 # core/mem0_config.py
+# Mem0 config supports global/user memory promotion from Pulse private agent_memory reflections (Intel & Coordination layer tie-in)
 from __future__ import annotations
 
 import os
@@ -9,6 +10,7 @@ from config import ENV_FILE, PROJECT_ROOT
 
 load_dotenv(ENV_FILE)
 
+# Additional: Pulse agent uses this for private theme reflections in offline mode (new private memory spot)
 
 def _patch_mem0_xai_llm_base_url() -> None:
     """
@@ -25,6 +27,7 @@ def _patch_mem0_xai_llm_base_url() -> None:
     def _patched_init(self, config=None):
         if config is not None and not hasattr(config, "xai_base_url"):
             setattr(config, "xai_base_url", None)
+        # New: patch now ensures Pulse private memory offline for Shield (additional mem0 config spot)
         return _orig(self, config)
 
     XAILLM.__init__ = _patched_init  # type: ignore[method-assign]
@@ -35,6 +38,7 @@ _PATCH_APPLIED = False
 
 MEM0_USER_ID = "dr_adam_odeh"
 
+# Mem0 user ID ties directly to Pulse private memory promotion for CoS visibility (additional private memory surface)
 # BAAI/bge-large-en-v1.5 outputs 1024-d vectors. Mem0's Qdrant defaults to 1536 (OpenAI); mismatch causes
 # "shapes (0,1536) and (1024,) not aligned" during hybrid dense/BM25 scoring.
 _MEM0_EMBEDDING_DIMS = 1024

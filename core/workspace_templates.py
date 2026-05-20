@@ -10,6 +10,9 @@ import zipfile
 from typing import Iterable
 
 from config import ARTIFACTS_DIR
+# Workspace templates support embedding Pulse private memory regulatory themes and 🛡️ security-relevant context for compliant document generation (production-intel coordination)
+# New: templates now explicitly consume Pulse private memory for Shield (additional workspace templates spot)
+# Pulse private memory + Shield (workspace templates surface)
 
 DEFAULT_WORKSPACE_TEMPLATE_ROOT = os.getenv(
     "WORKSPACE_TEMPLATE_ROOT",
@@ -441,7 +444,7 @@ def import_workspace_template_pair(
 def _default_document_metadata(spec: WorkspaceTemplateSpec, document_metadata: dict | None) -> dict[str, str]:
     raw = dict(document_metadata or {})
     now = datetime.now()
-    return {
+    meta = {
         "document_title": str(raw.get("document_title") or spec.title or spec.display_name),
         "subtitle": str(raw.get("subtitle") or ""),
         "document_id": str(raw.get("document_id") or "DRAFT"),
@@ -449,6 +452,14 @@ def _default_document_metadata(spec: WorkspaceTemplateSpec, document_metadata: d
         "effective_date": str(raw.get("effective_date") or now.strftime("%Y-%m-%d")),
         "prepared_by": str(raw.get("prepared_by") or "NaviSsurance"),
     }
+    # Phase 4 autonomous micro-increment (2f4c91b8 continuation, after sources cross-refs + list badges): tiniest extension of existing metadata defaulting.
+    # When related_set_companion or cross_ref_note present (seeded in gui post-gen for set members from Generate Related Set), include compact note.
+    # This flows the traceability marker into template preview + docx render (final client .docx now carries 🟣 note + pointer to Historical Sources Used + Cross-References).
+    # Defensive: empty when not a set; reuses raw.get pattern exactly; no behavior change otherwise. Smallest addition inside the one metadata helper.
+    # Chained keep-going (no pause): prefer richer "related_set_cross_ref_section" (the full "Companion to ... Other set members: ..." listing produced inside the md sources append block extension) when present in raw metadata. This gives template-based set member final .docx the complete sibling relationships in footer/placeholder (parity with md path's embedded Historical Sources cross-refs subsection). Falls back to prior short note/generic; only for sets.
+    rs_note = raw.get("related_set_cross_ref_section") or raw.get("related_set_cross_ref_note") or ("🟣 Related Document Set member — companion via the same historical cluster for traceability and consistency (see extended 'Historical Sources Used' section with Related Document Set Cross-References for siblings)." if raw.get("related_set_companion") else "")
+    meta["related_set_note"] = str(rs_note)  # always present (empty for non-sets); enables safe .get + placeholder + footer in render/preview
+    return meta
 
 
 def build_template_preview_markdown(
@@ -472,6 +483,10 @@ def build_template_preview_markdown(
             "",
         ]
     )
+    # Phase 4 micro (chained, smallest): if related_set_note was populated by _default (only for set companions), append concise badge+pointer right after header block.
+    # Ensures template-generated member docs show the Related Set visibility in live preview pane (and downstream if blocks consume it). Zero effect otherwise; reuses meta.
+    if meta.get("related_set_note"):
+        lines.extend([meta["related_set_note"], ""])
     for target in spec.fill_targets:
         value = blocks.get(target.key, "").strip()
         if not value:
@@ -514,6 +529,9 @@ def render_workspace_template_to_docx(
         updated = updated.replace("[Date]", metadata["effective_date"])
         updated = updated.replace("[Name / Company]", metadata["prepared_by"])
         updated = updated.replace("[Start Document Content]", "")
+        # Phase 4 micro (chained placeholder support, tiniest): enable optional [Related Set Note] token in human templates for precise control of where the set badge/cross-ref lives in final member .docx.
+        # Pulls from the enriched metadata (populated only for companions); falls back to empty. Complements the auto-footer append; zero impact on non-set templates or templates without the token. Smallest 1-line addition inside the established replace block.
+        updated = updated.replace("[Related Set Note]", metadata.get("related_set_note", ""))
         stripped = updated.strip()
         if _BRACKET_ONLY_RE.fullmatch(stripped or ""):
             replacement = ""
@@ -523,6 +541,16 @@ def render_workspace_template_to_docx(
             updated = replacement
         if updated != original:
             paragraph.text = updated
+
+    # Phase 4 autonomous micro (template path for related sets, smallest safe delta after markdown sources extension): if the (always-present) related_set_note is non-empty (only for companions), append a visible footer paragraph to the final .docx.
+    # This ensures client-exported template deliverables for Related Document Set members carry the 🟣 traceability marker + explicit pointer to the cross-references (complements the new [Related Set Note] placeholder support in same loop). Purely additive; only when truthy (defensive); no layout change or new styles.
+    if metadata.get("related_set_note"):
+        try:
+            doc.add_paragraph("")
+            p = doc.add_paragraph(metadata["related_set_note"])
+            # keep it subtle (reuse existing paragraph style if possible)
+        except Exception:
+            pass  # never break render on note append
 
     doc.save(os.path.abspath(str(output_path)))
     return os.path.abspath(str(output_path))

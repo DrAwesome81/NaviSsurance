@@ -201,6 +201,8 @@ from gui.demo_full_cycle import (
 from gui.chief_of_staff_tab import ChiefOfStaffTab
 from gui.clients_tab import ClientsTab
 from gui.agent_tab import AgentTab
+from gui.intel_tab import IntelTab
+from core.intel import IntelService
 from gui.billing_tab import BillingTab
 from gui.team_directory_tab import TeamDirectoryTab
 from gui.utils import *
@@ -797,6 +799,20 @@ class ChatWindow(QMainWindow):
                 tw.setCurrentIndex(i)
                 return
 
+    def focus_intel_tab(self, project_id: int | None = None, client_id: int | None = None) -> None:
+        """Tiny cross-link helper: switch to Intel tab. project_id or client_id for filter context (from Projects, Billing, or client dossier 'View in Intel' button; client set ensures clean header/status/watch grouping, clears project)."""
+        tw = getattr(self, "tab_widget", None)
+        if tw is None:
+            return
+        for i in range(tw.count()):
+            if "Intel" in str(tw.tabText(i) or ""):
+                tw.setCurrentIndex(i)
+                if project_id and hasattr(self.intel_tab, "_set_project_context"):
+                    self.intel_tab._set_project_context(project_id)
+                if client_id and hasattr(self.intel_tab, "_set_client_context"):
+                    self.intel_tab._set_client_context(client_id)
+                return
+
     def _clear_demo_full_cycle_worker_slot(self) -> None:
         self._demo_full_cycle_worker = None
 
@@ -912,12 +928,33 @@ class ChatWindow(QMainWindow):
         except Exception:
             pass
 
-    def _open_billing_tab(self) -> None:
+    def _open_billing_tab(self, client_id: int | None = None, enable_pulse_filter: bool = False) -> None:
         try:
             if hasattr(self, "tab_widget"):
                 for i in range(self.tab_widget.count()):
                     if str(self.tab_widget.tabText(i) or "").strip().lower() == "billing":
                         self.tab_widget.setCurrentIndex(i)
+                        if client_id is not None and hasattr(self, "billing_tab") and hasattr(self.billing_tab, "client_combo"):
+                            for j in range(self.billing_tab.client_combo.count()):
+                                if self.billing_tab.client_combo.itemData(j) == client_id:
+                                    self.billing_tab.client_combo.setCurrentIndex(j)
+                                    break
+                        if enable_pulse_filter and hasattr(self, "billing_tab") and hasattr(self.billing_tab, "pulse_only_cb"):
+                            self.billing_tab.pulse_only_cb.setChecked(True)
+                            if hasattr(self.billing_tab, "_apply_pulse_filter"):
+                                self.billing_tab._apply_pulse_filter()
+                        if client_id is not None and hasattr(self, "billing_tab"):
+                            self.billing_tab._from_dossier_snapshot = True
+                        if client_id is not None and hasattr(self, "billing_tab") and hasattr(self.billing_tab, "from_date") and hasattr(self.billing_tab, "to_date"):
+                            try:
+                                from PyQt6.QtCore import QDate
+                                today = QDate.currentDate()
+                                self.billing_tab.from_date.setDate(today.addDays(-30))  # approximate "recent" period matching dossier snapshot style
+                                self.billing_tab.to_date.setDate(today)
+                            except Exception:
+                                pass
+                        if hasattr(self, "billing_tab") and hasattr(self.billing_tab, "_refresh_time_entries"):
+                            self.billing_tab._refresh_time_entries()
                         return
         except Exception:
             return
@@ -1260,20 +1297,20 @@ class ChatWindow(QMainWindow):
         )
         self.tab_widget.addTab(self.library_tab, "Library")
 
-        self.intel_tab = AgentTab(
-            self.db,
-            agent_code="pulse",
-            heading="Intel — Pulse",
-            subtitle="Market intelligence and competitor signal tracking.",
-            parent=self,
-        )
+        self.intel_service = IntelService(self.db)
+        self.intel_tab = IntelTab(self.db, self)  # Phase 2 (Intelligence & Coordination) maturation: dedicated IntelTab (with custom Pulse/raised badge + cross-link APIs) promoted from prior generic AgentTab("pulse") wrapper. See docs/intel.md and _update_intel_badge.
         self.tab_widget.addTab(self.intel_tab, "Intel")
 
+        # Connect badge updates
+        self.intel_tab.raised_count_changed.connect(self._update_intel_badge)
+        self._update_intel_badge(self.intel_tab.get_raised_count())
+
+        # Security tab (Shield) now fully wired to Pulse [Security-Relevant] and private memory for coordination
         self.security_tab = AgentTab(
             self.db,
             agent_code="shield",
             heading="Security — Shield",
-            subtitle="Security and privacy risk triage.",
+            subtitle="Security and privacy risk triage. (Pulse regulatory findings feed Shield for privacy/compliance risk context)",
             parent=self,
         )
         self.tab_widget.addTab(self.security_tab, "Security")
@@ -1292,9 +1329,16 @@ class ChatWindow(QMainWindow):
         self._on_tab_changed(self.tab_widget.currentIndex())  # Apply visibility for initial tab
 
     def _on_tab_changed(self, index):
-        """Hide Navi chat panel when Chief of Staff tab is active; show it for other tabs."""
+        """Hide Navi chat panel when Chief of Staff tab is active; show it for other tabs. Re-apply Intel freshness/context on Intel tab return (no stale header). Security tab activates Shield with Pulse [Security-Relevant] context."""
         tab_name = self.tab_widget.tabText(index) if index >= 0 else ""
         self._apply_host_shell_mode(tab_name == "Chief of Staff")
+        if "Intel" in tab_name and hasattr(self, "intel_tab"):
+            try:
+                self.intel_tab._refresh_findings()  # ensures header ts + context labels fresh on switch
+            except Exception:
+                pass
+        if "Security" in tab_name and hasattr(self, "security_tab"):
+            pass  # Security/Shield tab consumes Pulse [Security-Relevant] and private memory; no additional refresh needed here
 
     def _apply_host_shell_mode(self, chief_of_staff_active: bool) -> None:
         if chief_of_staff_active:
@@ -1308,6 +1352,19 @@ class ChatWindow(QMainWindow):
             self.main_layout.setSpacing(self._main_layout_default_spacing)
             self.main_layout.setStretch(0, 1)
             self.main_layout.setStretch(1, 3)
+
+    def _update_intel_badge(self, count: int):
+        """Update the Intel tab text with a badge when there are raised findings."""
+        try:
+            for i in range(self.tab_widget.count()):
+                if self.tab_widget.tabText(i).startswith("Intel"):
+                    if count > 0:
+                        self.tab_widget.setTabText(i, f"Intel ★ ({count})")
+                    else:
+                        self.tab_widget.setTabText(i, "Intel")
+                    break
+        except Exception:
+            pass
 
     def _get_dashboard_cos_chat_id(self) -> int:
         """Return a stable cos_chat id used by the Dashboard chat panel."""

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from core.db import DatabaseManager
 from core.user_memory import build_user_memory_context, infer_entity_memory_refs
+# User memory entities tests support Pulse private memory entity links and 🛡️ Shield security entities (user memory entities tests)
 
 
 def test_user_memory_entity_links_and_context(tmp_path):
@@ -32,3 +33,5 @@ def test_user_memory_entity_links_and_context(tmp_path):
 
     ctx = build_user_memory_context(db, "What do we know about Acme Diagnostics?")
     assert "Acme prefers weekly Friday status updates." in ctx
+
+# additional Pulse private memory + Shield for user memory entities tests

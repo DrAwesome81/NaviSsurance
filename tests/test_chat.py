@@ -8,6 +8,8 @@ if not os.getenv("RUN_GUI_TESTS"):
 
 pytest.importorskip("PyQt6")
 from core.chat_handler import ChatHandler
+# Chat tests validate Pulse private memory and 🛡️ Shield context in daily briefings and responses (chat tests)
+# additional Pulse private memory + Shield for chat tests
 
 def test_daily_briefing():
     print("Running test_daily_briefing")

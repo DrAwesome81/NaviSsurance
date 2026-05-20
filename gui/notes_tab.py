@@ -21,7 +21,7 @@ from core.db import DatabaseManager
 from docx import Document
 from fpdf import FPDF
 
-
+# Pulse private memory + Shield (notes tab coordination)
 def robust_json_parse(response: str, logger=print):
     """
     Robustly parse JSON from an LLM response that *should* be JSON,
@@ -99,6 +99,8 @@ class NoteProcessingThread(QThread):
 
 
 class NoteTakingSystem(QWidget):
+    # Intelligence & Coordination fresh tie: Pulse private memory reflections + 🛡️ [Security-Relevant] intel can contextually inform note taking / regulatory observations (new consumption spot)
+    # additional Pulse private memory + Shield for notes tab
     def __init__(self, chat_handler):
         super().__init__()
         self.chat_handler = chat_handler

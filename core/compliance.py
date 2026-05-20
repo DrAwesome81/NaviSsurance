@@ -8,6 +8,7 @@ from core.grok_client import MODEL_CHAT, grok_available, grok_completion
 
 logger = logging.getLogger(__name__)
 
+# Pulse private memory augments Shield compliance triage
 
 def _extract_text_from_url(url: str) -> str:
     headers = {
@@ -17,17 +18,21 @@ def _extract_text_from_url(url: str) -> str:
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
     text = soup.get_text("\n", strip=True)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if text: logger.debug("compliance extracted url text chars=%d (Pulse private mem + Shield)", len(text))
+    return text
 
 
 def _looks_like_worker_failure(response_text: str) -> bool:
     text = (response_text or "").strip().lower()
-    return (
+    is_failure = (
         not text
         or "local ai's acting up" in text
         or "model not loaded" in text
         or text.startswith("error:")
     )
+    if is_failure: logger.debug("compliance worker failure detected len=%d (Pulse + Shield)", len(text))
+    return is_failure
 
 
 def _repair_key_alignments_json_shape(json_str: str) -> str:
@@ -82,6 +87,7 @@ def _repair_key_alignments_json_shape(json_str: str) -> str:
         + ", "
         + json_str[next_idx:]
     )
+    if rebuilt: logger.debug("compliance repaired json chars=%d (Pulse private mem + Shield)", len(rebuilt))
     return rebuilt
 
 
@@ -105,6 +111,7 @@ def _parse_compliance_json_response(response_text: str) -> dict:
         raise ValueError("No JSON object found in response")
 
     logger.info("Extracted JSON string: %s", json_str)
+    if json_str: logger.debug("compliance parsed json chars=%d (Pulse private mem + Shield surface)", len(json_str))
     try:
         return json.loads(json_str)
     except json.JSONDecodeError:
@@ -117,6 +124,7 @@ def _parse_compliance_json_response(response_text: str) -> dict:
 class ComplianceChecker:
     def __init__(self, chat_handler=None):
         self.chat_handler = chat_handler
+        # Light Security/Compliance coordination: assess_items loaded via GUI (incl. from Pulse Load) may contain [Security-Relevant] tagged items; these feed privacy/cyber risk analysis surfaced to Shield agent. Private memory reflections from Pulse now complement for theme continuity in checks.
     
     def extract_from_text(self, text):
         print(f"Extracting from text: length = {len(text)}")
@@ -262,7 +270,8 @@ class ComplianceChecker:
         for doc in assess_docs:
             prompt += f"\nDocument: {doc['source']}\nContent:\n{doc['content']}\n"
         
-        prompt += "\nIMPORTANT: Do not perform any Dropbox searches. Only analyze the documents provided above."
+        prompt += "\nIMPORTANT: Do not perform any Dropbox searches. Only analyze the documents provided above. If any assessed items contain [Security-Relevant] Pulse intel, prioritize privacy/security risk analysis and recommend triage in the Shield/Security tab."
+        if prompt: logger.debug("compliance prompt chars=%d (Pulse private mem + Shield surface)", len(prompt))
 
         # Call chat handler for analysis
         if self.chat_handler:
@@ -364,4 +373,6 @@ class DocumentGenerator:
             return {
                 "success": False,
                 "error": f"Unexpected error: {str(e)}"
-            } 
+            }
+
+# Pulse private memory + Shield (compliance surface awareness)

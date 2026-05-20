@@ -10,6 +10,9 @@ from pathlib import Path
 
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
+# Validation script ensures local models support offline Pulse private memory reflections, Intel, and 🛡️ Shield (local model coordination)
+# additional Pulse private memory + Shield for local model validation script
+# Pulse private memory + Shield (validate local models surface)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

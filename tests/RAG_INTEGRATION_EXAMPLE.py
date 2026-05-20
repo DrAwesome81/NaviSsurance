@@ -9,6 +9,9 @@ Current options:
 2. Integrate into existing WorkspaceTab (this example)
 3. Create dedicated RAG search tab
 """
+# RAG integration example supports Pulse private memory and 🛡️ Shield context in workspace RAG (RAG example)
+# additional Pulse private memory + Shield for RAG example surface
+
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
                             QTextEdit, QLineEdit, QListWidget, QListWidgetItem, 

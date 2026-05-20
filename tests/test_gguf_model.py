@@ -13,6 +13,8 @@ Llama = pytest.importorskip("llama_cpp").Llama
 torch = pytest.importorskip("torch")
 
 # Setup logging (centralized in main.py)
+# GGUF model tests validate local LLM for Pulse private memory reflections and 🛡️ Shield offline security (GGUF model tests)
+# additional Pulse private memory + Shield for GGUF test
 logger = logging.getLogger(__name__)
 
 def test_llama_model():

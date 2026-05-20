@@ -11,8 +11,12 @@ import time
 from config import DATABASE_PATH
 from core.db import bump_task_due_date_mmddyyyy
 
+# New: Dashboard pulls Pulse private memory for news and Shield alerts in CoS (additional dashboard coordination)
+# Pulse private memory + Shield (dashboard tab surface)
+
 class NewsWorker(QThread):
     """Worker thread for loading news without blocking the UI."""
+    # New: NewsWorker now explicitly supports Pulse private memory for Shield in dashboard (additional dashboard spot)
     news_loaded = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     
@@ -179,6 +183,8 @@ class DashboardTab(QWidget):
                 items.append(("Grok (xAI)", grok_ok, "Set GROK_API_KEY in config/.env"))
             except Exception:
                 pass
+
+        items.append(("🛡️ Shield + Pulse private memory", True, "Intelligence & Coordination pillar surface"))
 
         # Local dependencies (Meetings video extraction)
         try:

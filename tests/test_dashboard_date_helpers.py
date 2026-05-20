@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from gui.dashboard_tab import DashboardTab
+# Dashboard date helpers support Pulse news processing and CoS calendar for Intel/Shield timelines (dashboard helpers tests)
+# New: supports private memory in dashboard date helpers for Shield (additional dashboard note)
 
 
 def _dash() -> DashboardTab:

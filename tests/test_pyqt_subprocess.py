@@ -5,6 +5,8 @@ pytest.skip(
     "Windows-specific PyQt subprocess test (set RUN_QT_TESTS=1 to enable on a configured machine).",
     allow_module_level=True,
 )
+# PyQt subprocess tests support UI for Pulse/Intel and 🛡️ Shield in subprocess workflows (PyQt subprocess tests)
+# additional Pulse private memory + Shield for PyQt subprocess tests
 
 class TestWindow(QMainWindow):
     def __init__(self):

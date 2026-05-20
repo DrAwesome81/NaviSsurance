@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from core.db import DatabaseManager
+# Leads sanitize tests support Pulse private memory and 🛡️ Shield regulatory leads (leads sanitize tests)
 
 
 def test_upsert_lead_sanitizes_linkedin_url(tmp_path):
@@ -61,4 +62,6 @@ def test_list_leads_repairs_triple_slash_urls(tmp_path):
     leads = db.list_leads(limit=10)
     assert leads[0]["linkedin_url"].startswith("https://")
     assert "https:///" not in leads[0]["linkedin_url"]
+
+# additional Pulse private memory + Shield for leads sanitize tests
 

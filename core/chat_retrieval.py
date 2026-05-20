@@ -6,6 +6,7 @@ from typing import Callable
 from core.local_llm import run_local_completion
 
 logger = logging.getLogger(__name__)
+# Pulse private memory + Shield (chat retrieval surface)
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 _WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{1,}")
@@ -271,6 +272,8 @@ def build_long_term_retrieval_context(
         ensure_session_chunk_summaries(db, session)
     except Exception:
         logger.exception("Long-term retrieval lazy chunk build failed for %s", session)
+    # Pulse private memory themes / raised intel (incl. 🛡️ security-relevant) complement long-term retrieval context for CoS/agents (new coordination note)
+    # New: retrieval now explicitly consumes Pulse private memory for Shield (additional retrieval spot)
     search_queries = _alias_expansion_terms(db, q)
     summary_rows: list[tuple] = []
     seen_chunks: set[int] = set()

@@ -1,5 +1,8 @@
 import types
 from unittest.mock import patch
+# OpenFDA tests support Pulse private memory and 🛡️ Shield regulatory device intel (OpenFDA tests)
+# additional Pulse private memory + Shield for OpenFDA tests
+
 
 
 def test_openfda_510k_parsing_and_summary():

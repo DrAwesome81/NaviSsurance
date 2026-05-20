@@ -1,5 +1,7 @@
 # NaviSsurance Overview
 
+<!-- Pulse private memory + Shield [Security-Relevant] overview surface -->
+
 Last updated: 2026-05-12
 
 ## Purpose
@@ -18,11 +20,15 @@ The app is not just a chat shell. Its core value is domain workflow support for 
 - **Billing**: Time entry, invoice templates, draft generation, and review-first export.
 - **Notes**: Long-running context documents with AI-assisted organization and export.
 - **Leads**: Evidence-first MedTech lead generation with openFDA enrichment and scoring.
+- **Clients**: Dedicated client dossiers with memory, projects, assignments, and quick actions.
 - **Compliance**: Grok-assisted compliance review of documents and URLs.
 - **Meetings**: Audio transcription and downstream task/document workflows.
+- **Intel**: Market and regulatory intelligence monitoring with watchlists, research requests, and proactive alerting (via the Pulse specialist).
 
 ### Specialist-agent operating model
-NaviSsurance includes a working Chief of Staff plus named specialists (directory in `core/db.py:seed_default_agents`), including `Atlas`, `Quill`, `Sentinel`, `Lex`, `Scout`, `Mason`, `Ledger`, `Archive`, `Pulse`, and `Shield`. These agents are surfaced through assignment workflows, direct agent threads, artifacts, and board-level state rather than as abstract hidden subagents.
+NaviSsurance includes a working Chief of Staff plus named specialists (directory in `core/db.py:seed_default_agents`), including `Atlas`, `Quill`, `Sentinel`, `Lex`, `Scout`, `Mason`, `Ledger`, `Archive`, `Pulse` (Intel), and `Shield`. These agents are surfaced through assignment workflows, direct agent threads, artifacts, and board-level state rather than as abstract hidden subagents.
+
+`Pulse` powers the dedicated **Intel** tab for ongoing market and regulatory monitoring.
 
 ## Runtime And Integration Surface
 The application now includes optional platform infrastructure beyond the PyQt UI:

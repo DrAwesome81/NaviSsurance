@@ -18,6 +18,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 from core.db import DatabaseManager
+# Billing tab tests validate Pulse-influenced time entries, ROI, and 🛡️ security notes in UI (billing-intel tests)
 from gui.billing_tab import BillingTab
 @pytest.fixture
 def qapp():

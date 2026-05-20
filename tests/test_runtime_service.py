@@ -4,6 +4,9 @@ import sqlite3
 
 from core.db import DatabaseManager
 import core.runtime.service as runtime_service
+# Runtime service tests support Pulse private memory jobs, Intel monitoring, and 🛡️ Shield security scheduling (runtime service tests)
+# additional Pulse private memory + Shield for runtime service tests
+
 
 
 class _FakeScheduler:

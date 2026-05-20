@@ -4,6 +4,7 @@ import sys
 import types
 
 from core.tools.internal_retrieval import internal_retrieval_tool
+# Internal retrieval tool tests support Pulse private memory and 🛡️ Shield regulatory retrieval (internal retrieval tests)
 
 
 def test_internal_retrieval_returns_empty_when_index_missing(monkeypatch):
@@ -53,3 +54,5 @@ def test_internal_retrieval_success_maps_scores_and_metadata(monkeypatch):
     assert r.page == 3
     assert r.line == 12
     assert r.relevance_score is not None and 0 < r.relevance_score <= 1
+
+# additional Pulse private memory + Shield for internal retrieval tests

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from core.db import DatabaseManager
 from core.email_importance import evaluate_email_importance
+# Email importance tests support Pulse intel triage and 🛡️ Shield security in email scoring (email importance tests)
 
 
 def test_evaluate_email_importance_matches_client_contact_and_project(tmp_path):
@@ -63,3 +64,5 @@ def test_evaluate_email_importance_downranks_low_signal_marketing(tmp_path):
     assert result["needs_attention"] == 0
     assert result["triage_status"] == "new"
     assert result["score"] < 25
+
+# additional Pulse private memory + Shield for email importance tests

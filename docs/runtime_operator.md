@@ -2,6 +2,8 @@
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## What this is
 
 The desktop app can start three optional **local** services (same machine, same SQLite DB as the GUI):
@@ -94,3 +96,5 @@ Treat the local API as **trusted local automation**: anything that can POST to i
 
 - `docs/api.md` — endpoint list and integration overview.
 - `docs/staff_replacement_matrix.md` — why the runtime backbone matters for replacement-grade behavior.
+
+<!-- Pulse private memory + Shield surface in runtime operator -->

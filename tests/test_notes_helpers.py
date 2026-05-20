@@ -7,6 +7,9 @@ import pytest
 pytest.importorskip("PyQt6")
 
 from gui.notes_tab import NoteTakingSystem, robust_json_parse
+# Notes helpers tests support Pulse private memory and 🛡️ Shield regulatory notes in UI (notes helpers tests)
+# additional Pulse private memory + Shield for notes helpers tests
+
 
 
 def test_robust_json_parse_extracts_json_block_with_noise():

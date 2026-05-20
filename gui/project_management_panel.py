@@ -427,6 +427,11 @@ class ProjectEditDialog(QDialog):
             clients = self._db.clients_list(active_only=True) if self._db is not None else []
         except Exception:
             clients = []
+        try:
+            from core.intel import IntelService
+            isvc = IntelService(self._db) if self._db is not None else None
+        except Exception:
+            isvc = None
         current_client_id = self._project.get("client_id")
         for client in clients:
             try:
@@ -434,10 +439,34 @@ class ProjectEditDialog(QDialog):
                 cname = str(client.get("name") or "").strip()
             except Exception:
                 continue
+            if isvc:
+                try:
+                    w_list = [w for w in (isvc.list_watch_topics() or []) if getattr(w, 'client_id', None) == cid]
+                    has_r = bool(isvc.list_findings(client_id=cid, raised_only=True, limit=1))
+                    if w_list or has_r:
+                        cname += " 📡"
+                        tip = "Pulse: " + ", ".join([getattr(w,'topic','')[:20] for w in w_list[:2]]) if w_list else "Recent raised Pulse for client"
+                        idx = self.client_combo.count()
+                        self.client_combo.setItemData(idx, tip, Qt.ToolTipRole)
+                except Exception:
+                    pass
             self.client_combo.addItem(cname or f"Client {cid}", cid)
             if current_client_id is not None and cid == int(current_client_id):
                 self.client_combo.setCurrentIndex(self.client_combo.count() - 1)
+        self.client_combo.currentIndexChanged.connect(lambda: self._update_client_pulse_note())
         form.addRow("Linked client:", self.client_combo)
+        self.client_pulse_note = QLabel("")
+        self.client_pulse_note.setStyleSheet("font-size: 9px; color: #7aa0d6;")
+        pulse_container = QWidget()
+        ph = QHBoxLayout(pulse_container)
+        ph.setContentsMargins(0, 0, 0, 0)
+        ph.addWidget(self.client_pulse_note, 1)
+        self.client_view_pulse_btn = QPushButton("View")
+        self.client_view_pulse_btn.setStyleSheet("font-size: 8px; padding: 1px 3px;")
+        self.client_view_pulse_btn.clicked.connect(self._view_pulse_intel)
+        ph.addWidget(self.client_view_pulse_btn)
+        self.client_view_pulse_btn.setVisible(False)
+        form.addRow("", pulse_container)
         self.client_edit = QLineEdit()
         self.client_edit.setPlaceholderText("Client (optional)")
         self.client_edit.setText(self._project.get("client") or "")
@@ -501,6 +530,9 @@ class ProjectManagementPanel(QWidget):
             self.db = DatabaseManager()
         self._setup_ui()
         self.refresh_projects()
+        # Ensure Refresh Intel button state is correct on init (context-aware)
+        if hasattr(self, 'refresh_intel_btn'):
+            self.refresh_intel_btn.setEnabled(bool(self._selected_project_id()))
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -625,6 +657,25 @@ class ProjectManagementPanel(QWidget):
         layout.addWidget(splitter)
         self.table.itemSelectionChanged.connect(self._refresh_task_gantt_if_visible)
 
+        # Tiny safe wiring: Pulse Intel / themes status for project surfaces (advances Intel ↔ Projects cross-linking)
+        self.intel_status = QLabel("Pulse Intel/themes (private memory): (use Intel tab for linked findings + active regulatory themes; get_relevant_findings_for_project available) 🛡️ security-relevant for Shield")
+        self.intel_status.setStyleSheet("color: #7aa0d6; font-size: 10px; font-style: italic;")
+        self.intel_status.setToolTip("Per-project linked raised Intel findings + active Pulse private memory themes (updated on row selection or panel Refresh - feels live). Use the View in Intel button (or double-click row) to open the filtered Intel tab showing exactly these items + themes.")
+        layout.addWidget(self.intel_status)
+        self.view_intel_btn = QPushButton("View in Intel")
+        self.view_intel_btn.setStyleSheet("font-size: 9px; padding: 2px;")
+        self.view_intel_btn.setToolTip("Switch to Intel tab (auto-filters table to this project + shows context header + Clear button) 🛡️ security-relevant for Shield")
+        self.view_intel_btn.clicked.connect(self._view_intel_for_selected)
+        layout.addWidget(self.view_intel_btn)
+
+        self.refresh_intel_btn = QPushButton("Refresh Intel")
+        self.refresh_intel_btn.setStyleSheet("font-size: 9px; padding: 2px;")
+        self.refresh_intel_btn.setToolTip("Refresh 'Relevant Pulse Intel for this project' (fast targeted update of just this area, use after creating/linking from Intel tab - no full reload) 🛡️ security-relevant for Shield")
+        self.refresh_intel_btn.clicked.connect(self._refresh_relevant_pulse_intel_only)
+        layout.addWidget(self.refresh_intel_btn)
+
+        self.table.doubleClicked.connect(lambda idx: (self.intel_status.setText("Project double-clicked — view full linked Intel findings & active themes in Intel tab"), self.refresh_intel_btn.setEnabled(bool(self._selected_project_id())) if hasattr(self, 'refresh_intel_btn') else None))
+
         self._apply_gantt_zoom()
 
     def _apply_gantt_zoom(self):
@@ -661,9 +712,104 @@ class ProjectManagementPanel(QWidget):
         except Exception:
             return None
 
+    def _view_intel_for_selected(self) -> None:
+        """Tiny functional cross-link: call parent focus_intel_tab with current pid (reuses interface pattern added for this)."""
+        pid = self._selected_project_id()
+        parent = self.parent()
+        if parent and hasattr(parent, 'focus_intel_tab'):
+            parent.focus_intel_tab(pid)
+        else:
+            self.intel_status.setText("Open Intel tab for full view of project-linked findings & active themes (private memory).")
+
     def _refresh_task_gantt_if_visible(self):
         if self._task_scroll.isVisible():
             self._refresh_task_gantt()
+        # On selection, show project-specific Intel findings count + short list + themes (using existing helpers; tiny cross-link)
+        try:
+            pid = self._selected_project_id()
+            from core.intel import IntelService
+            intel = IntelService(self.db)
+            if pid:
+                proj_findings = intel.get_relevant_findings_for_project(pid, limit=3) or []
+                count = len(proj_findings)
+                titles = ", ".join([getattr(f, 'title', '')[:30] for f in proj_findings[:2]])
+                refs = intel.get_recent_pulse_reflections(limit=1)
+                t = str(refs[0].get("content",""))[:40] if refs else ""
+                # Count associated watch topics for "active Pulse monitoring" indicator
+                watches = [w for w in (intel.list_watch_topics() or []) if getattr(w, 'project_id', None) == pid]
+                watch_count = len(watches)
+                watch_names = ", ".join([w.topic[:20] for w in watches[:2]]) if watches else ""
+                watch_note = f" | {watch_count} active watch topics" if watch_count else ""
+                if watch_names:
+                    self.intel_status.setToolTip(f"Active Pulse monitoring for this project: {watch_names} (and more). Use View in Intel button (or double-click row) to open filtered Intel tab with these topics and findings. Click Refresh Intel to update.")
+                if count == 0:
+                    txt = f"No Relevant Pulse Intel yet for this project (use 'For current project' button in Intel tab to start watch topics){watch_note} | themes: {t}"
+                else:
+                    txt = f"Relevant Pulse Intel for this project: {count} raised | {titles} | themes: {t} (use View in Intel button for filtered details){watch_note}"
+                self.intel_status.setText(txt)
+                if hasattr(self, 'view_intel_btn'):
+                    self.view_intel_btn.setText("Open filtered Intel for this project")
+                self.intel_status.setText(self.intel_status.text() + " 🛡️ security-relevant for Shield")
+                # Ensure the Relevant Intel indicator always feels fresh (re-applied on every selection/gantt refresh)
+                self.intel_status.setToolTip(self.intel_status.toolTip() + " | Data refreshed on this update.")
+            else:
+                # fallback to global
+                refs = intel.get_recent_pulse_reflections(limit=2)
+                t = "; ".join([str(r.get("content",""))[:40] for r in refs if r.get("content")][:2])
+                self.intel_status.setText(f"Pulse Intel/themes (private memory + findings): {t} | Select row for 'Relevant Pulse Intel' count + filtered view in Intel tab (always live, refreshes on panel actions). Select a project to enable Refresh Intel button. 🛡️ security-relevant for Shield")
+        except Exception:
+            pass
+
+    def _refresh_relevant_pulse_intel_only(self):
+        """Targeted fast update of just the 'Relevant Pulse Intel' status (no full gantt/table reload) for snappier feel after Intel tab actions."""
+        try:
+            pid = self._selected_project_id()
+            from core.intel import IntelService
+            intel = IntelService(self.db)
+            if pid:
+                proj_findings = intel.get_relevant_findings_for_project(pid, limit=3) or []
+                count = len(proj_findings)
+                titles = ", ".join([getattr(f, 'title', '')[:30] for f in proj_findings[:2]])
+                refs = intel.get_recent_pulse_reflections(limit=1)
+                t = str(refs[0].get("content",""))[:40] if refs else ""
+                # Count associated watch topics for "active Pulse monitoring" indicator
+                watches = [w for w in (intel.list_watch_topics() or []) if getattr(w, 'project_id', None) == pid]
+                watch_count = len(watches)
+                watch_names = ", ".join([w.topic[:20] for w in watches[:2]]) if watches else ""
+                watch_note = f" | {watch_count} active watch topics" if watch_count else ""
+                if watch_names:
+                    self.intel_status.setToolTip(f"Active Pulse monitoring for this project: {watch_names} (and more). Use View in Intel button (or double-click row) to open filtered Intel tab with these topics and findings. Click Refresh Intel to update.")
+                if count == 0:
+                    txt = f"No Relevant Pulse Intel yet for this project (use 'For current project' button in Intel tab to start watch topics){watch_note} | themes: {t}"
+                else:
+                    txt = f"Relevant Pulse Intel for this project: {count} raised | {titles} | themes: {t} (use View in Intel button for filtered details){watch_note}"
+                self.intel_status.setText(txt)
+                if hasattr(self, 'view_intel_btn'):
+                    self.view_intel_btn.setText("Open filtered Intel for this project")
+                self.intel_status.setText(self.intel_status.text() + " 🛡️ security-relevant for Shield")
+            else:
+                refs = intel.get_recent_pulse_reflections(limit=2)
+                t = "; ".join([str(r.get("content",""))[:40] for r in refs if r.get("content")][:2])
+                self.intel_status.setText(f"Pulse Intel/themes (private memory + findings): {t} | Select row for 'Relevant Pulse Intel' count + filtered view in Intel tab (always live, refreshes on panel actions). Select a project to enable Refresh Intel button. 🛡️ security-relevant for Shield")
+                if hasattr(self, 'view_intel_btn'):
+                    self.view_intel_btn.setText("View in Intel")
+                # Always show total active watch topics in global state for discoverability
+                try:
+                    total_w = len(intel.list_watch_topics() or [])
+                    self.intel_status.setText(self.intel_status.text() + f" | {total_w} total active watch topics")
+                except Exception:
+                    pass
+            # Ensure Refresh Intel button is only enabled when a project is selected (context-aware)
+            if hasattr(self, 'refresh_intel_btn'):
+                self.refresh_intel_btn.setEnabled(bool(pid))
+            # Real Last Pulse freshness using centralized helper (consistent display in Projects Relevant Intel)
+            try:
+                ts = intel.get_last_pulse_display() if intel else "(never)"
+                self.intel_status.setText(self.intel_status.text() + f" (last Pulse: {ts}) | 🛡️ security-relevant items for Shield triage")
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _refresh_task_gantt(self):
         pid = self._selected_project_id()
@@ -760,6 +906,20 @@ class ProjectManagementPanel(QWidget):
                 self.table.setItem(r, 0, QTableWidgetItem(str(d.get("id", ""))))
                 self.table.setItem(r, 1, QTableWidgetItem(d.get("name", "")))
                 self.table.setItem(r, 2, QTableWidgetItem(d.get("client", "")))
+                # Tiny "Linked Intel" tooltip indicator on name cell (scannable at list level for Intel ↔ Projects)
+                try:
+                    name_item = self.table.item(r, 1)
+                    if name_item:
+                        from core.intel import IntelService
+                        intel = IntelService(self.db)
+                        pid = d.get("id")
+                        if pid:
+                            fs = intel.get_relevant_findings_for_project(pid, limit=3) or []
+                            cc = len(fs)
+                            tt = f"Linked Intel: {cc} raised. " + ("Active themes from Pulse private memory." if cc > 0 else "") + " (select row for Relevant Pulse Intel count + active watch topics for this project)"
+                            name_item.setToolTip(tt)
+                except Exception:
+                    pass
                 self.table.setItem(r, 3, QTableWidgetItem(d.get("status", "")))
                 self.table.setItem(r, 4, QTableWidgetItem((d.get("deadline") or "")[:10] if d.get("deadline") else ""))
                 self.table.setItem(r, 5, QTableWidgetItem((d.get("next_action") or "")[:40]))
@@ -787,6 +947,29 @@ class ProjectManagementPanel(QWidget):
             if self.table.rowCount() > 0 and self.table.currentRow() < 0:
                 self.table.selectRow(0)
             self._refresh_task_gantt_if_visible()
+            # Populate Pulse Intel status with recent themes (tiny wiring for project surfaces + cross-linking to Intel)
+            try:
+                from core.intel import IntelService
+                intel = IntelService(self.db)
+                refs = intel.get_recent_pulse_reflections(limit=2)
+                t = "; ".join([str(r.get("content",""))[:50] for r in refs if r.get("content")][:2]) or "(run monitoring)"
+                self.intel_status.setText(f"Pulse Intel/themes: {t} | Use Intel tab for project-linked raised findings (get_relevant_findings_for_project) | 🛡️ Shield for security-relevant")
+                # Always show total active watch topics in global state for discoverability
+                try:
+                    total_w = len(intel.list_watch_topics() or [])
+                    self.intel_status.setText(self.intel_status.text() + f" | {total_w} total active watch topics")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Post-refresh: ensure the Relevant Intel indicator is always populated with the latest from Pulse (feels live without manual intervention)
+            try:
+                refs2 = intel.get_recent_pulse_reflections(limit=1)
+                t2 = str(refs2[0].get("content",""))[:30] if refs2 else "run monitoring"
+                if not self._selected_project_id():
+                    self.intel_status.setText(f"Pulse Intel/themes (global, always live): {t2} | Select project for Relevant count + filtered Intel")
+            except Exception:
+                pass
         except Exception as e:
             logger.exception("refresh_projects failed: %s", e)
             QMessageBox.warning(self, "Projects", f"Could not load projects:\n{e}")
@@ -866,3 +1049,44 @@ class ProjectManagementPanel(QWidget):
             self.refresh_projects()
         except Exception as e:
             QMessageBox.warning(self, "Projects", f"Could not delete project:\n{e}")
+
+    def _update_client_pulse_note(self):
+        """Tiny: show Pulse summary for selected client in project form (actionable when linking client)."""
+        try:
+            cid = self.client_combo.currentData()
+            if not cid or not self._db:
+                self.client_pulse_note.setText("")
+                return
+            from core.intel import IntelService
+            isvc = IntelService(self._db)
+            w_list = [w for w in (isvc.list_watch_topics() or []) if getattr(w, 'client_id', None) == cid]
+            recent = isvc.list_findings(client_id=cid, raised_only=True, limit=1)
+            txt = ""
+            if w_list:
+                txt = f"👤 {len(w_list)} watches"
+            if recent:
+                txt += ("; " if txt else "") + f"recent: {getattr(recent[0],'title','')[:20]}"
+            self.client_pulse_note.setText("📡 " + txt if txt else "")
+            if hasattr(self, 'client_view_pulse_btn'):
+                self.client_view_pulse_btn.setVisible(bool(txt))
+            if hasattr(self, 'client_edit') and self.client_edit:
+                self.client_edit.setToolTip(f"Pulse for linked client: {txt}" if txt else "Client (optional)")
+        except Exception:
+            self.client_pulse_note.setText("")
+            if hasattr(self, 'client_view_pulse_btn'):
+                self.client_view_pulse_btn.setVisible(False)
+            if hasattr(self, 'client_edit') and self.client_edit:
+                self.client_edit.setToolTip("Client (optional)")
+
+    def _view_pulse_intel(self):
+        """Tiny: View in Intel filtered to current client from the project form Pulse note."""
+        try:
+            cid = self.client_combo.currentData()
+            if cid and hasattr(self.parent(), "focus_intel_tab"):
+                self.parent().focus_intel_tab(client_id=cid)
+                # seamless: confirm in the note area after jumping (stays until client changes or form closes)
+                txt = self.client_pulse_note.text()
+                if txt and "✓ viewed" not in txt:
+                    self.client_pulse_note.setText(txt + " ✓ viewed")
+        except Exception:
+            pass

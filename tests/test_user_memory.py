@@ -12,6 +12,8 @@ from core.user_memory import (
     parse_teach_navi_command,
     store_teach_navi_memory,
 )
+# User memory tests support promotion from Pulse private agent_memory and 🛡️ Shield security context (user memory tests)
+# additional Pulse private memory + Shield for user memory tests
 
 
 def test_parse_teach_navi_command():

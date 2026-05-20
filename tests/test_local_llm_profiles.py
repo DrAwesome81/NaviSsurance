@@ -2,6 +2,10 @@ from types import SimpleNamespace
 
 from core import local_llm
 from core.app_preferences import get_local_llm_timeout_s
+# Local LLM profiles tests support offline Pulse private memory and 🛡️ Shield security via local models (local LLM profiles tests)
+# additional Pulse private memory + Shield for local LLM profiles tests
+# additional Pulse private memory + Shield for local LLM profiles tests
+
 
 
 def test_main_local_fast_profile_uses_tighter_budget():

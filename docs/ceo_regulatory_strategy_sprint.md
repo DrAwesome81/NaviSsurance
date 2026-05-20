@@ -2,6 +2,8 @@
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 This is a fixed-scope pilot offer designed for **startup CEOs** building MedTech products (AI SaMD, IVD/LDT, and adjacent devices) who need fast, defensible clarity on **regulatory path + evidence + timeline + risks**.
 
 ## Outcome (what you get)
@@ -62,4 +64,6 @@ You receive an execution plan that can be imported into a task system in a struc
 - You can explain the recommended path in one slide.
 - You have a prioritized execution plan you can start this week.
 - You have citations supporting key claims in the brief.
+
+<!-- Pulse private memory + Shield triage in CEO regulatory sprint -->
 

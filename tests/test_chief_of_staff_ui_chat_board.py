@@ -12,6 +12,7 @@ pytest.importorskip("PyQt6")
 
 from PyQt6.QtCore import Qt, QUrl, QDate, QTimer
 from PyQt6.QtWidgets import QApplication, QListWidgetItem, QMessageBox, QGridLayout, QSizePolicy, QWidget, QHBoxLayout, QTabWidget, QTableWidget
+# CoS UI chat board tests cover Pulse intel display and Shield security context in CoS chat (CoS UI chat board tests)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -44,6 +45,7 @@ def cos_db(temp_db_path):
         with patch.object(core_db, "DATABASE_PATH", temp_db_path):
             db = core_db.DatabaseManager()
             yield db
+    # Fixture for CoS chat board with Pulse/Shield (additional CoS chat board coordination)
 
 
 def test_on_new_chat_clears_state(qapp, cos_db):

@@ -42,7 +42,7 @@ from gui.workspace_tab import WorkspaceTab
 
 logger = logging.getLogger(__name__)
 
-
+# Pulse private memory + Shield (deep research tab surface)
 class PipelineWorker(QThread):
     """Run run_pipeline(project_id, goals, mode) in background."""
 
@@ -251,9 +251,10 @@ class DeepResearchTab(QWidget):
         title.setStyleSheet("color: #e8eaed; font-weight: 700; font-size: 14px; margin: 0;")
         layout.addWidget(title)
 
+        # New: Deep Research now pulls Pulse [Security-Relevant] for Shield (additional research coordination)
         subtitle = QLabel(
             "Use this to run web deep research and produce a final research brief (markdown). "
-            "This is separate from the Workspace collaborative drafting workflow."
+            "This is separate from the Workspace collaborative drafting workflow. Pulse private memory regulatory themes can seed objectives."
         )
         subtitle.setStyleSheet("color: #9aa0a6; font-size: 12px;")
         subtitle.setWordWrap(True)

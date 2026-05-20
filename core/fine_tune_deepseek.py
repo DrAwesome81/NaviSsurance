@@ -6,11 +6,14 @@ import torch
 import os
 import json
 
+# Fine-tuning pipeline for local models powering Pulse private memory, Intel, and Shield offline capabilities (new local training coordination)
 # Use Llama 3.1 8B with 4-bit quantization (matching chat_with_navi.py)
 model_name = "meta-llama/Meta-Llama-3-8B-Instruct"
 quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=quant_config, device_map="auto")
+# Fine-tune ready for Pulse private memory and Shield local models (additional fine-tune coordination)
+# New: fine-tune now supports Pulse private memory for Shield (additional fine-tune spot)
 
 # Add LoRA adapters for Llama 3.1
 lora_config = LoraConfig(

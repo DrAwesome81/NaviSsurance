@@ -72,6 +72,24 @@ def enqueue_billing_autorun(db: DatabaseManager, *, run_at: str | None = None) -
     )
 
 
+def enqueue_intel_monitoring(db: DatabaseManager, *, run_at: str | None = None) -> int:
+    """Enqueue a periodic Intel / Pulse monitoring cycle."""
+    # Run every 2 hours by default (can be made configurable later)
+    if run_at is None:
+        now = datetime.now(UTC)
+        run_at = (now + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    key = f"intel_monitoring:{datetime.now(UTC).strftime('%Y-%m-%dT%H')}"
+    return db.runtime_job_enqueue(
+        job_type="intel_monitoring",
+        payload_json={},
+        priority=25,
+        max_attempts=2,
+        run_at=run_at,
+        unique_key=key,
+    )
+
+
 def _handle_assignment_bootstrap(db: DatabaseManager, payload: dict) -> dict:
     assignment_id = int(payload.get("assignment_id") or 0)
     thread_id = payload.get("thread_id")
@@ -150,11 +168,31 @@ def _handle_billing_autorun(db: DatabaseManager, payload: dict) -> dict:
     }
 
 
+def _handle_intel_monitoring(db: DatabaseManager, payload: dict) -> dict:
+    """Run a monitoring cycle for the Intel (Pulse) agent. (Phase 2 Intelligence & Coordination COMPLETE: private theme reflections active + matured raising + cross-links; [Security-Relevant] tags now feed Shield.)"""
+    _ = payload
+    try:
+        from core.intel import IntelService
+        intel = IntelService(db)
+
+        # Run the actual monitoring logic defined in IntelService
+        result = intel.run_monitoring_cycle()
+
+        return {
+            "ok": True,
+            **result
+        }
+    except Exception as e:
+        logger.exception("Intel monitoring failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
 JOB_HANDLERS = {
     "assignment_bootstrap": _handle_assignment_bootstrap,
     "daily_briefing_refresh": _handle_daily_briefing_refresh,
     "assignment_followup_scan": _handle_assignment_followup_scan,
     "billing_autorun": _handle_billing_autorun,
+    "intel_monitoring": _handle_intel_monitoring,
 }
 
 

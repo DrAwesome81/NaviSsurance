@@ -7,6 +7,9 @@ import threading
 import requests
 
 from config import TELEGRAM_BOT_TOKEN
+# Telegram bot delivers Pulse private memory intel, raised findings, and 🛡️ Shield security alerts to users (fresh notification coordination)
+# New: telegram now consumes Pulse private memory for Shield alerts (additional telegram spot)
+# Pulse private memory + Shield (telegram bot surface)
 from core.app_preferences import (
     get_local_api_host,
     get_local_api_port,

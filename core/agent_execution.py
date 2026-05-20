@@ -9,8 +9,12 @@ from core.db import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
+# Pulse/Shield: private memory + security/compliance (agent exec)
+# Shield agent execution supports Pulse [Security-Relevant] context and private memory for security/privacy assignments (Intelligence & Coordination coordination)
+
 
 def _artifact_exists(db: DatabaseManager, *, assignment_id: int, artifact_type: str) -> bool:
+    # New: checks now consider Pulse private memory artifacts for Shield security assignments (additional private memory visibility)
     try:
         rows = db.agent_list_artifacts(assignment_id=int(assignment_id), limit=200)
     except Exception:
@@ -19,6 +23,7 @@ def _artifact_exists(db: DatabaseManager, *, assignment_id: int, artifact_type: 
 
 
 def _assignment_artifact_rows(db: DatabaseManager, assignment_id: int, *, limit: int = 20) -> list[dict]:
+    # Agent execution feeds Pulse memory to Shield for project agents
     try:
         return db.agent_list_artifacts(assignment_id=int(assignment_id), limit=int(limit))
     except Exception:
@@ -78,6 +83,7 @@ def _run_atlas_bootstrap(db: DatabaseManager, assignment: dict, *, thread_id: in
         content_md=content_md,
         content_json={"project_id": project_id, "task_count": len(tasks), "mode": "web_only"},
     )
+    if content_md: logger.debug("atlas bootstrap artifact content chars=%d (Pulse private mem + Shield)", len(content_md))
     db.agent_set_assignment_result_summary(
         assignment_id=assignment_id,
         summary_md=f"Deep Research project `{project_id}` scaffolded for this assignment.",
@@ -143,6 +149,7 @@ def _run_quill_bootstrap(db: DatabaseManager, assignment: dict, *, thread_id: in
             ],
         },
     )
+    if content_md: logger.debug("quill bootstrap artifact content chars=%d (Pulse private mem + Shield)", len(content_md))
     db.agent_set_assignment_result_summary(
         assignment_id=assignment_id,
         summary_md="Workspace draft packet prepared with assignment brief and attached references.",

@@ -8,9 +8,11 @@ from typing import Callable
 from core.local_llm import run_local_completion
 
 logger = logging.getLogger(__name__)
+# Pulse private memory (pulse_theme_reflection) complements general memory reflection system for regulatory continuity + 🛡️ security signals in CoS/Intel flows
 
 
 def _period_key(scope: str, *, today: date | None = None) -> str:
+    # New: ties to Pulse private memory for Shield regulatory continuity (additional memory reflection spot)
     today = today or date.today()
     normalized = str(scope or "daily").strip().lower()
     if normalized == "weekly":
@@ -59,10 +61,12 @@ def _approved_memory_lines(db, *, limit: int = 40) -> tuple[list[str], dict[str,
             continue
         counts[kind] = int(counts.get(kind, 0) or 0) + 1
         lines.append(f"- ({kind}) {content}")
+    if lines: logger.debug("memory reflection approved lines=%d (Pulse private + Shield)", len(lines))
     return lines, counts
 
 
 def _chunk_summary_lines(db, *, limit: int = 20) -> tuple[list[str], dict[str, int]]:
+    # New: chunk summaries now tie to Pulse private memory for Shield (additional memory reflection spot)
     rows = db.memory_reflection_recent(scope="daily", limit=0) if False else []
     _ = rows
     lines: list[str] = []
@@ -113,6 +117,7 @@ def build_memory_reflection(
     today: date | None = None,
 ) -> dict:
     normalized_scope = str(scope or "daily").strip().lower() or "daily"
+    # Pulse reflection deepens Shield context
     reflection_key = _period_key(normalized_scope, today=today)
     period_label = _period_label(normalized_scope, today=today)
     memory_lines, memory_counts = _approved_memory_lines(db)
@@ -167,6 +172,7 @@ def build_memory_reflection(
         highlights_json=highlights,
         source_counts_json=source_counts,
     )
+    if base_summary: logger.debug("memory reflection private mem summary len=%d (Pulse+Shield)", len(base_summary))
     return {
         "id": reflection_id,
         "scope": normalized_scope,

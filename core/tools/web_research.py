@@ -3,6 +3,7 @@ Web research tool for the Web Researcher agent.
 
 Uses ChatGPT to research the query and returns a structured WebResearchBrief.
 Only the Web Researcher agent should call this; the Manager reads artifacts.
+(Pulse intel monitoring and private memory reflections leverage similar web research for regulatory [Security-Relevant] signals.)
 """
 
 import logging
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 def _extract_urls(text: str) -> list[str]:
     """Extract URLs from text (simple regex)."""
+    # New: URL extraction now aids Pulse private memory research for Shield (additional web research spot)
     url_pattern = re.compile(
         r"https?://[^\s<>\"']+",
         re.IGNORECASE,

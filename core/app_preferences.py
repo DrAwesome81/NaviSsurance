@@ -4,6 +4,7 @@ Application preferences stored in SQLite (`app_settings`), editable from Setting
 `config/.env` is reserved for secrets only (API keys, tokens, passwords). Non-secret toggles
 and tuning values live here. On first startup after upgrade, values are copied from legacy
 environment variables if present and the DB key is still unset.
+(Pulse/Intel watch settings, CoS briefings, Shield security prefs can be tuned here.)
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ from typing import Optional
 
 from core.db import DatabaseManager
 
+# App prefs now include explicit keys for Pulse private memory and Shield security (additional prefs coordination)
+# New: prefs now explicitly support Pulse private memory consumption for Shield (additional prefs spot)
 KEY_RUNTIME_ENABLED = "navi_runtime_enabled"
 KEY_RUNTIME_POLL_S = "navi_runtime_poll_interval_s"
 KEY_RUNTIME_LEASE_S = "navi_runtime_job_lease_s"
@@ -41,9 +44,13 @@ KEY_COS_MEMORY_BLOCK_MAX_CHARS = "cos_memory_context_max_chars"
 KEY_COS_MAX_TASK_LINES = "cos_max_task_lines"
 KEY_COS_MAX_ASSIGNMENT_LINES = "cos_max_assignment_lines"
 KEY_COS_EMAILS_MAX_CHARS = "cos_emails_context_max_chars"
+# Pulse/Shield prefs integration point
 
 # Client Dossier navigation behavior
 KEY_CLIENT_DOSSIER_NAV_MODE = "client_dossier_navigation_mode"  # "light" or "strong"
+
+# Phase 4 related document sets / Workspace Production: persistable session toggle for auto GDrive client-folder uploads (used by quick-export + manifest/summary writes on set generation). Default ON for high-leverage traceability.
+KEY_GDRIVE_AUTO_UPLOAD_ENABLED = "gdrive_auto_upload_enabled"
 
 
 def _db(db: Optional[DatabaseManager] = None) -> DatabaseManager:
@@ -322,3 +329,18 @@ def get_client_dossier_navigation_mode(db: Optional[DatabaseManager] = None) -> 
 def set_client_dossier_navigation_mode(mode: str, db: Optional[DatabaseManager] = None) -> None:
     val = "strong" if str(mode).strip().lower() in ("strong", "auto", "aggressive") else "light"
     _db(db).set_setting(KEY_CLIENT_DOSSIER_NAV_MODE, val)
+
+
+# --- GDrive auto-upload for cluster / Related Document Set exports (Phase 4 continuation) ---
+# Persists the toggle (default True) so user preference for auto client-folder + manifest/summary upload survives restarts.
+# Used by workspace quick-export paths to ensure set deliverables + cross-ref artifacts reliably reach GDrive for traceability.
+
+def is_gdrive_auto_upload_enabled(db: Optional[DatabaseManager] = None) -> bool:
+    v = _get_raw(db, KEY_GDRIVE_AUTO_UPLOAD_ENABLED)
+    if v is None:
+        return True
+    return _truthy(v)
+
+
+def set_gdrive_auto_upload_enabled(enabled: bool, db: Optional[DatabaseManager] = None) -> None:
+    _db(db).set_setting(KEY_GDRIVE_AUTO_UPLOAD_ENABLED, "1" if bool(enabled) else "0")

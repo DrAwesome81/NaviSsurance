@@ -6,6 +6,8 @@ if not os.getenv("RUN_ML_TESTS"):
 
 transformers = pytest.importorskip("transformers")
 torch = pytest.importorskip("torch")
+# DistilBERT tests support local models for Pulse private memory and 🛡️ Shield offline analysis (DistilBERT tests)
+# additional Pulse private memory + Shield for DistilBERT test
 
 
 def test_distilbert_loads_from_hf_cache():

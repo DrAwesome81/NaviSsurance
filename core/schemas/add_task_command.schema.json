@@ -1,4 +1,5 @@
 {
+  "$comment": "Pulse private memory + Shield (Security/Compliance) surface visibility (Intelligence & Coordination pillar).",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "naviSsurance.add_task_command.schema.json",
   "title": "NaviSsurance ADD_TASK command",

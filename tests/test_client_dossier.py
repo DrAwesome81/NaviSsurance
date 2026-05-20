@@ -1,4 +1,6 @@
 from core.client_dossier import get_client_dossier_snapshot
+# Client dossier tests validate Pulse private memory and 🛡️ security-relevant intel in client snapshots (dossier tests)
+# additional Pulse private memory + Shield for client dossier tests
 
 
 class _FakeDB:

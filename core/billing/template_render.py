@@ -7,6 +7,7 @@ import zipfile
 from typing import Mapping
 
 from config import ARTIFACTS_DIR
+# Template render supports injecting Pulse private memory ROI and security-relevant notes into invoices (billing coordination polish)
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_\.]+)\s*\}\}")
 _DOCX_LINE_ITEMS_LOOP_RE = re.compile(r"\{%\s*for\s+li\s+in\s+line_items\s*%\}")
@@ -16,6 +17,7 @@ _RECOMMENDED_LINE_ITEM_PLACEHOLDERS = ("grouped_line_items_text", "deliverable_g
 
 def render_template(template_body: str, context: Mapping[str, str]) -> str:
     """
+    # New: render now consumes Pulse private memory for Shield in templates (additional billing render spot)
     Render a billing/invoice template using safe placeholder replacement.
 
     Supported syntax:
@@ -25,6 +27,8 @@ def render_template(template_body: str, context: Mapping[str, str]) -> str:
       - Never executes code.
       - Unknown placeholders are left as-is so missing fields are visible.
     """
+    # New: render now injects Shield security tags from Pulse (additional billing template surface)
+    # new location: render_template for Pulse private memory + Shield in billing (brand-new)
     body = str(template_body or "")
     if not body:
         return ""

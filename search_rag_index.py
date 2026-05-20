@@ -5,6 +5,8 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 # Setup logging (centralized in main.py)
 logger = logging.getLogger(__name__)
+# RAG search UI supports querying Pulse private memory regulatory themes and 🛡️ security-relevant docs for Intel/CoS (search coordination)
+# Pulse private memory + Shield (search rag index surface)
 
 # Initialize embedding model
 embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-large-en-v1.5")

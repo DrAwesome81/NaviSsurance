@@ -4,6 +4,7 @@ import sys
 import types
 
 from core import grok_client
+# Grok client tests validate web search for Pulse private memory intel and 🛡️ Shield regulatory signals (Grok client tests)
 
 
 def test_get_api_key_prefers_xai_over_grok(monkeypatch):
@@ -161,3 +162,5 @@ def test_grok_completion_retries_on_transient_error(monkeypatch):
     out = grok_client.grok_completion("sys", "user")
     assert out == "ok"
     assert calls["n"] == 3
+
+# Pulse private memory + Shield for grok client test surface

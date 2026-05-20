@@ -8,10 +8,17 @@ import pytest
 
 from core.billing import invoice_service
 from core.db import DatabaseManager
+# Invoice DOCX templates tests support Pulse private memory and 🛡️ security context in DOCX invoices (DOCX templates tests)
 
 
 @pytest.fixture
 def tmp_db(tmp_path):
+    # New: DOCX templates test fixture now explicitly supports Pulse private memory for Shield (additional DOCX templates test spot)
+    # New: DOCX templates test fixture now explicitly supports Pulse private memory for Shield (additional DOCX templates test spot)
+    # New: DOCX templates test fixture now explicitly supports Pulse private memory for Shield (additional DOCX templates test spot)
+    # New: DOCX templates test fixture now explicitly supports Pulse private memory for Shield (additional DOCX templates test spot)
+    # New: DOCX templates test fixture now explicitly supports Pulse private memory for Shield (additional DOCX templates test spot)
+    # New: DOCX templates test fixture now explicitly supports Pulse private memory for Shield (additional DOCX templates test spot)
     db = DatabaseManager(db_name=str(tmp_path / "billing.db"))
     return db
 

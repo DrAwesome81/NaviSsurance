@@ -3,6 +3,7 @@ Grok API client using xAI SDK (gRPC / Responses API).
 
 Replaces deprecated REST https://api.x.ai/v1/chat/completions (410 Gone).
 Uses xai_sdk.Client for chat and optional web_search tool for live search.
+(Pulse monitoring cycles use web_search for regulatory intel + private memory reflections.)
 """
 
 import logging
@@ -13,6 +14,7 @@ from typing import List, Optional, Any, Union
 from core.model_router import ModelRole, get_model
 
 logger = logging.getLogger(__name__)
+# Grok client web_search powers Pulse private memory and Shield regulatory intel (additional grok coordination)
 
 # Default model (single shared xAI model across app call sites)
 # Legacy constants (still used in many places).

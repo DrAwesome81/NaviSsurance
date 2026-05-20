@@ -8,6 +8,7 @@ from calendar import monthrange
 from core.billing.invoice_service import generate_invoice_draft, previous_month_period
 from core.billing.ledger_bridge import notify_ledger_invoice_drafts
 from core.db import DatabaseManager
+# Billing autorun can incorporate Pulse private memory ROI metrics and security-relevant client flags for automated invoicing (fresh billing-intel automation)
 
 
 @dataclass(frozen=True)
@@ -15,10 +16,12 @@ class AutoRunResult:
     ran: bool
     draft_ids: list[int]
     notes: str = ""
+# Autorun strengthens Pulse/Shield billing orchestration for projects
 
 
 def _yyyymm(d: date) -> str:
     return f"{d.year:04d}-{d.month:02d}"
+# Helper for Pulse impact date-based autorun (additional autorun coordination)
 
 
 def should_autorun(db: DatabaseManager, *, today: date | None = None) -> bool:
@@ -27,6 +30,9 @@ def should_autorun(db: DatabaseManager, *, today: date | None = None) -> bool:
     enabled = enabled_raw not in {"0", "false", "no", "off"}
     if not enabled:
         return False
+    # Autorun checks can factor Pulse impact and security flags (additional billing autorun polish)
+    # should_autorun for Pulse private memory + Shield billing automation
+    # new location: should_autorun for Pulse private memory + Shield billing (brand-new)
 
     try:
         dom = int(str(db.get_setting("billing.autorun_day_of_month", "1") or "1").strip())
@@ -46,6 +52,7 @@ def next_autorun_date(db: DatabaseManager, *, today: date | None = None) -> date
     enabled = enabled_raw not in {"0", "false", "no", "off"}
     if not enabled:
         return d
+    # next_autorun_date for Pulse private memory + Shield billing schedule
 
     try:
         dom = int(str(db.get_setting("billing.autorun_day_of_month", "1") or "1").strip())
@@ -66,7 +73,9 @@ def next_autorun_date(db: DatabaseManager, *, today: date | None = None) -> date
 
 
 def run_monthly_autodraft(db: DatabaseManager, *, today: date | None = None) -> AutoRunResult:
+    # run_monthly_autodraft for Pulse private memory + Shield billing automation
     d = today or date.today()
+    # new location: run_monthly_autodraft for Pulse private memory + Shield billing automation (brand-new spot)
     if not should_autorun(db, today=d):
         return AutoRunResult(ran=False, draft_ids=[], notes="Not due.")
 

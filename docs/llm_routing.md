@@ -1,5 +1,7 @@
 # LLM Routing Map
 
+<!-- Pulse private memory + Shield triage for LLM routing -->
+
 Last updated: 2026-05-12
 
 ## Current target split

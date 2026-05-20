@@ -5,6 +5,9 @@ from pathlib import Path
 import pytest
 
 import core.tools.browser as browser_tools
+# Browser tools tests validate Pulse/Intel web research and 🛡️ Shield security page fetches (browser tools tests)
+# additional Pulse private memory + Shield for browser tool tests
+
 
 
 class _FakeLocator:

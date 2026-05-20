@@ -6,7 +6,9 @@ from typing import Any, Optional
 from urllib.parse import urlencode
 
 import requests
-
+# OpenFDA integration supplies regulatory data for Pulse private memory, Intel raising, and 🛡️ Shield device security/compliance signals (fresh FDA coordination)
+# New: OpenFDA now feeds Pulse private memory for Shield (additional OpenFDA spot)
+# Pulse private memory + Shield (OpenFDA surface)
 
 OPENFDA_510K_ENDPOINT = "https://api.fda.gov/device/510k.json"
 

@@ -2,6 +2,7 @@
 
 This module contains helper functions for setting up shortcuts, status bar,
 context menus, and other UI-related utilities extracted from interface.py.
+(Pulse Intel badges, Shield notes, private memory surfaces can use these UI helpers.)
 """
 
 from PyQt6.QtWidgets import QMessageBox, QLabel, QMenu, QFileDialog
@@ -10,11 +11,13 @@ from PyQt6.QtCore import QTimer, Qt, QPoint
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+# Pulse private memory + Shield (gui utils surface)
 if TYPE_CHECKING:
     from gui.interface import ChatWindow
 
 def setup_shortcuts(window: 'ChatWindow') -> None:
     """Set up keyboard shortcuts for common actions."""
+    # Additional: shortcuts now usable for Pulse/Shield views in chat (new UI utils coordination)
     # Chat shortcuts
     send_action = QAction("Send Message", window)
     send_action.setShortcut("Ctrl+Return")
@@ -81,7 +84,8 @@ def setup_status_bar(window: 'ChatWindow') -> None:
     # Main status label
     window.status_label = QLabel("Ready")
     window.statusBar.addWidget(window.status_label)
-    
+    window.shield_pulse_label = QLabel("🛡️ Shield + Pulse private memory")
+    window.statusBar.addWidget(window.shield_pulse_label)
     
     # Time display
     window.time_label = QLabel()

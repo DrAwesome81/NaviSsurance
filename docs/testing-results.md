@@ -1,5 +1,7 @@
 # NaviSsurance Testing Results Log
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 Record the **result** and **date** for each test item. Aligned with [testing.md](testing.md). (The long legacy TC scratch list was removed from `testing.md`; use the structured sections there and this log for ongoing tracking.)
 
 - **Result:** `Pass` | `Fail` | `Skip` | `Pending` — what you type after running the test.
@@ -221,3 +223,5 @@ This legacy subsection is superseded by the active `Chief of Staff + Executive T
 3. Set **Date** to the run date (YYYY-MM-DD).
 4. Optionally add a short **Notes** line for that run (e.g., "Fail: calendar token missing", "56 passed").
 5. For automated suites, record the overall outcome and date in the *Automated test runs* table.
+
+<!-- Pulse private memory + Shield surface in testing results -->

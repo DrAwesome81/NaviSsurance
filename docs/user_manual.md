@@ -594,14 +594,38 @@ These tabs are lighter-weight specialist workspaces.
 Use this as an archive and retrieval workspace for institutional knowledge and previously gathered material.
 
 ### `Intel`
-Use this for market intelligence and competitor signal tracking.
+The **Intel** tab (powered by the Pulse specialist) is a dedicated workspace for ongoing market and regulatory intelligence.
+
+**Core features**
+- Maintain a personal **watchlist** of topics and keywords (e.g. “FDA AI/ML Guidance”, specific competitors, reimbursement changes).
+- Request research on any topic directly from the tab.
+- Background monitoring runs periodically (via the runtime system) and creates findings when relevant developments are detected.
+- The system can raise findings that match your watchlist **or** that the model judges important even if they fall outside your explicit topics.
+- Important findings appear with a badge on the tab (`Intel ★ (n)`).
+- Findings can be linked to one or more clients.
+- You can add private notes to any finding.
+
+**How it behaves**
+- Treat Pulse like a proactive analyst: it monitors, flags what looks important, and waits for you to review.
+- The Chief of Staff only sees new Intel items when **you** open the Intel tab (no automatic alerts to CoS).
+- Other agents can request scoped intelligence from Pulse (usually routed through CoS, with limited direct “poke” queries supported).
+
+**Typical workflow**
+1. Add topics to your watchlist.
+2. Occasionally request research on a specific question.
+3. Check the Intel tab when it shows a badge.
+4. Review raised findings, link them to clients, and add notes.
+5. When working in the Chief of Staff tab, open Intel to pull in any relevant signals for planning.
+
+See the dedicated guide: [docs/intel.md](intel.md)
 
 ### `Security`
 Use this for security and privacy risk triage.
 
 ### Practical guidance
-- These tabs are useful when `Chief of Staff` routes work to a specialist domain.
-- They may be more useful as focused workspaces than as full end-user workflows with long step-by-step procedures.
+- **Intel** is now a full dedicated workspace with watchlists, background monitoring, and client linking. It is intended to feel like a proactive specialist who raises important signals.
+- **Library** and **Security** are still lighter specialist workspaces (they remain as focused `AgentTab` interfaces for now).
+- These tabs become most powerful when used together with the Chief of Staff for planning and delegation.
 
 ## 16. Exports
 

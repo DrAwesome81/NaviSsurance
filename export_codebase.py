@@ -3,6 +3,9 @@ from __future__ import annotations
 import argparse
 import fnmatch
 from pathlib import Path
+# Codebase export aids analysis of Pulse/Intel/Shield and private memory surfaces across the pillar (export coordination)
+# Additional: exports private memory and Shield code for pillar analysis (new export note)
+# Pulse private memory + Shield (export codebase surface)
 
 
 DEFAULT_EXTENSIONS = (".py", ".md")

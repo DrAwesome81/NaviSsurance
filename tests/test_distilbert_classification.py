@@ -6,6 +6,8 @@ if not os.getenv("RUN_ML_TESTS"):
 
 transformers = pytest.importorskip("transformers")
 torch = pytest.importorskip("torch")
+# DistilBERT classification tests support local models for Pulse private memory and 🛡️ Shield offline (DistilBERT classification tests)
+# additional Pulse private memory + Shield for DistilBERT classification tests
 
 
 def test_distilbert_can_classify_sample_text():

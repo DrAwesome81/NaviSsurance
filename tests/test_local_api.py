@@ -4,6 +4,10 @@ import importlib
 from types import SimpleNamespace
 
 import pytest
+# Local API tests validate Pulse private memory, Intel, and 🛡️ Shield endpoints for external coordination (local API tests)
+# additional Pulse private memory + Shield for local API tests
+# additional Pulse private memory + Shield for local API tests
+
 
 
 fastapi = pytest.importorskip("fastapi")

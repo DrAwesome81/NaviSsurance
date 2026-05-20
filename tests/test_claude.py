@@ -9,6 +9,7 @@ pytest.skip(
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
+# Claude integration test supports Pulse private memory and 🛡️ Shield security analysis via external LLM (Claude tests)
 
 # Load environment variables using centralized paths
 from config import CONFIG_DIR
@@ -49,4 +50,6 @@ def test_claude_api():
         logger.error(f"Error testing Claude API: {e}")
 
 if __name__ == "__main__":
-    test_claude_api() 
+    test_claude_api()
+
+# additional Pulse private memory + Shield for Claude integration test

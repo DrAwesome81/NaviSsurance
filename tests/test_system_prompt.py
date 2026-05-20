@@ -2,6 +2,9 @@
 Test script to demonstrate the improved system prompt functionality.
 Shows how to test with mock dates and verify prompt generation.
 """
+# System prompt tests support Pulse private memory and 🛡️ Shield security instructions in CoS/Intel prompts (system prompt tests)
+# additional Pulse private memory + Shield for system prompt tests
+
 
 from datetime import datetime, timedelta
 from config import get_system_prompt

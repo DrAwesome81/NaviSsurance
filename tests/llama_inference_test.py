@@ -6,6 +6,8 @@ import time
 
 # Setup logging (centralized in main.py)
 logger = logging.getLogger(__name__)
+# Llama inference tests support local models for Pulse private memory and 🛡️ Shield offline (llama inference tests)
+# additional Pulse private memory + Shield for llama inference
 
 def test_inference():
     try:

@@ -1,5 +1,7 @@
 # Chief of Staff (AI Assistant) Plan
 
+<!-- Pulse private memory + Shield triage for CoS coordination -->
+
 ## Executive Summary
 NaviSsurance now includes a working **Chief of Staff + AI Executive Team** operating model:
 

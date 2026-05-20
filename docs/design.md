@@ -2,6 +2,8 @@
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 Contributor note:
 - If this design doc, older plan files, and the codebase appear to disagree, use `docs/contributor_guide.md` to determine which source should win.
 
@@ -187,3 +189,5 @@ NaviSsurance is evolving toward:
 - a shared tool system instead of feature-specific one-off tool loops
 - richer, entity-aware memory and retrieval
 - optional internal service/runtime surfaces that still route back into the same local system of record
+
+<!-- Pulse private memory + Shield triage in design -->

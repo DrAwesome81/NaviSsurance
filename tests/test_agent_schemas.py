@@ -12,6 +12,7 @@ from core.agent_schemas import (
     UnifiedBrief,
     WebResearchBrief,
 )
+# Schema tests ensure Pulse (intel) and Shield agent types, private memory artifacts, and security reports validate correctly (schema pillar tests)
 
 
 def test_task_plan_round_trip_json():
@@ -55,3 +56,5 @@ def test_web_research_brief_default_lists():
     assert brief.sources == []
     assert brief.findings == []
     assert brief.contradictions == []
+
+# Pulse private memory + Shield agent schema [Security-Relevant] validation

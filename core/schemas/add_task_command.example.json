@@ -1,3 +1,4 @@
+// Pulse private memory + Shield (Security/Compliance) surface visibility (Intelligence & Coordination pillar)
 {
   "command": "ADD_TASK",
   "task_description": "Send Acme the signed SOW",

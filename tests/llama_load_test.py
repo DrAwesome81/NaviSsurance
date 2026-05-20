@@ -7,6 +7,8 @@ import json
 
 # Setup logging (centralized in main.py)
 logger = logging.getLogger(__name__)
+# Llama load tests support local models for Pulse private memory and 🛡️ Shield offline (llama load tests)
+# additional Pulse private memory + Shield for llama load tests
 
 class DocumentProcessor:
     def __init__(self):

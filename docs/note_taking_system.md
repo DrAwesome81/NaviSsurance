@@ -1,5 +1,7 @@
 # Note-Taking System Documentation
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 ## Overview
 The Notes tab is now a context-document workspace rather than a loose-note inbox. Each work context becomes one living document. As you add observations while reviewing material, Navi merges them into that context document, rewrites them for clarity, and reorganizes them into cleaner sections and bullet points.
 
@@ -132,3 +134,5 @@ This keeps document-update prompts focused on note processing instead of command
 - Multiple notes reorganize into cleaner sections/themes
 - Export writes the active document, not a list of note rows
 - Failures preserve hidden note history and show user feedback
+
+<!-- Pulse private memory + Shield surface in note taking -->

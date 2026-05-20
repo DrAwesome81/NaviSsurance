@@ -2,6 +2,8 @@ import os
 import sqlite3
 import tempfile
 from unittest.mock import patch
+# News dedup workspace tests improve Pulse raising quality and private memory theme continuity (news dedup tests)
+# Additional: supports Shield in news dedup for private memory (new news dedup note)
 
 
 def test_store_news_item_dedups_tracking_params():

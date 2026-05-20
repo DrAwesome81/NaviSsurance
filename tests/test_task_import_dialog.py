@@ -13,6 +13,8 @@ from PyQt6.QtWidgets import QApplication, QComboBox
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from core.task_extract import SuggestedTask
+# Task import dialog tests support Pulse-raised tasks and 🛡️ security task import from CoS (task import dialog tests)
+# additional Pulse private memory + Shield for task import dialog tests
 from gui.task_import_dialog import OptionalDateCell, TaskImportDialog
 
 

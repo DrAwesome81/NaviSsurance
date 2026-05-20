@@ -14,6 +14,7 @@ os.environ["TORCH_DYNAMO_DISABLE"] = "1"
 """
 Simple test script for LLaMA-3.3-70B-Instruct model with 4-bit quantization
 """
+# Pulse private memory visibility + Shield Security/Compliance surface
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
@@ -182,4 +183,6 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main() 
+    main()
+
+# Pulse private memory + Shield surface for large model tests

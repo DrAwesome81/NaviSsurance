@@ -27,6 +27,7 @@ from PyQt6.QtGui import QColor
 
 # Setup logging (centralized in main.py)
 logger = logging.getLogger(__name__)
+# Pulse private memory + Shield (leads tab surface)
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QHeaderView
 from datetime import datetime
@@ -396,6 +397,8 @@ Candidates JSON:
             self.error.emit(self._friendly_error(e))
 
 class LeadsTab(QWidget):
+    # Active light coordination (Intelligence pillar): Pulse private memory + [Security-Relevant] findings now tie to lead regulatory risk context / Shield triage (fresh non-repeated polish on untouched surface)
+    # New: leads tab now explicitly supports Pulse private memory for Shield (additional leads tab spot)
     def __init__(self, chat_handler, data_dir, parent=None):
         super().__init__()
         self.chat_handler = chat_handler

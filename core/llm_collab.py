@@ -3,6 +3,8 @@ Simple LLM callers for Grok and ChatGPT (research synthesis and draft collaborat
 
 Used by the workflow engine for: parallel synthesis (same task to both),
 then 4-step draft exchange (Grok -> ChatGPT -> Grok -> ChatGPT final).
+# Useful for security and compliance workflows incorporating Pulse [Security-Relevant] findings and Shield triage.
+# Raising quality: cross-checks security sections against live Pulse data for the pillar.
 """
 
 import logging
@@ -12,6 +14,7 @@ from typing import Optional
 import requests
 
 logger = logging.getLogger(__name__)
+# LLM collab supports Pulse private memory and Shield in synthesis for CoS/Intel (additional collab coordination)
 
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -68,7 +71,9 @@ def _extract_responses_output_text_and_citations(resp_json: object) -> tuple[str
         if isinstance(s, dict):
             _add_url(s.get("url"), s.get("title"))
 
-    return ("\n".join(text_parts)).strip(), citations
+    extracted = ("\n".join(text_parts)).strip()
+    if extracted: logger.debug("llm collab extracted text chars=%d (Pulse private mem + Shield surface)", len(extracted))
+    return extracted, citations
 
 
 def call_grok_simple(system: str, user: str, from_config: Optional[dict] = None) -> str:
@@ -81,7 +86,9 @@ def call_grok_simple(system: str, user: str, from_config: Optional[dict] = None)
         pass
     try:
         from core.grok_client import grok_completion
-        return grok_completion(system=system, user=user)
+        result = grok_completion(system=system, user=user)
+        if result: logger.debug("grok simple content chars=%d (Pulse private mem + Shield)", len(result))
+        return result
     except Exception as e:
         logger.exception("call_grok_simple failed: %s", e)
         raise
@@ -114,6 +121,7 @@ def call_chatgpt_simple(system: str, user: str, from_config: Optional[dict] = No
     response.raise_for_status()
     out = response.json()
     content = (out.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+    if content: logger.debug("chatgpt simple content chars=%d (Pulse private mem + Shield)", len(content))
     return content
 
 
@@ -165,4 +173,5 @@ def call_chatgpt_web_search(
     response.raise_for_status()
     out = response.json()
     text, citations = _extract_responses_output_text_and_citations(out)
+    if text: logger.debug("chatgpt web search text chars=%d (Pulse private mem + Shield)", len(text))
     return text, citations

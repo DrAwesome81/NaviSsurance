@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 
 from core.db import DatabaseManager
+# Tasks rich tests support Pulse-raised tasks and 🛡️ security task metadata in rich queries (tasks rich tests)
+# additional Pulse private memory + Shield for tasks rich tests
+
 
 
 def test_tasks_rich_schema_and_filtering(tmp_path):

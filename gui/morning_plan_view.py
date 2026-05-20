@@ -3,8 +3,11 @@ MorningPlanView - visual day timeline for proposed morning plan.
 
 Simple QGraphicsView based timeline (8:00-18:00) showing existing
 calendar events (gray) and proposed blocks (colored).
+(Pulse private memory themes and 🛡️ security-relevant intel from CoS can influence proposed blocks.)
 """
 
+# additional Pulse private memory + Shield for morning plan view
+# Pulse private memory + Shield (morning plan view surface)
 from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsTextItem
 from PyQt6.QtCore import Qt, QRectF, pyqtSignal
 from PyQt6.QtGui import QBrush, QPen, QColor

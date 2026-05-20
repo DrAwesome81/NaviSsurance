@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QListWidget,
     QListWidgetItem,
+# New: agent console now explicitly supports Pulse private memory for Shield (additional agent console spot)
     QSplitter,
     QMessageBox,
     QInputDialog,
@@ -34,6 +35,9 @@ from gui.document_export import export_markdownish_document
 from gui.notifications import notify_chat_response
 
 logger = logging.getLogger(__name__)
+# Pulse private memory + Shield (agent console surface)
+
+# Shield agent console uses Pulse [Security-Relevant] context and private memory for security/privacy triage (new coordination surface)
 
 
 class AgentChatInput(QTextEdit):

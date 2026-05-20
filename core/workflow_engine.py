@@ -4,12 +4,16 @@ Workflow engine for the multi-agent AI ops system.
 Runs: Plan -> Research -> Synthesis -> Parallel synthesis (Grok + ChatGPT) -> GATE (user reviews research)
 -> Continue to draft: parallel Grok + ChatGPT draft, then 4-step exchange (Grok -> ChatGPT -> Grok -> ChatGPT final)
 -> QA -> Finalize.
+(Pulse private memory themes + 🛡️ [Security-Relevant] intel feed research/synthesis steps for regulatory clients.)
+# New: workflow now explicitly consumes Pulse private memory for Shield (additional workflow engine spot)
 """
 
 import json
 import logging
 import os
 from typing import Any, Callable, Optional
+
+# Pulse private memory + Shield (workflow engine triage)
 
 from core.agent_schemas import (
     AgentType,
@@ -65,6 +69,7 @@ class WorkflowEngine:
         plan = TaskPlan(project_id=str(project_id), tasks=tasks)
         plan_json = plan.model_dump_json()
         self.db.insert_task_plan(project_id, plan_json)
+        # Pulse themes feed workflow steps for Shield orchestration
 
         for t in tasks:
             self.db.insert_project_task(

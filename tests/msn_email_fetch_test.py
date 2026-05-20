@@ -9,6 +9,8 @@ from oauthlib.oauth2.rfc6749.tokens import OAuth2Token
 # Load environment variables from config/.env
 env_path = Path('config') / '.env'
 load_dotenv(env_path)
+# MSN email fetch tests support Pulse intel triage and 🛡️ Shield security in email processing (MSN email tests)
+# additional Pulse private memory + Shield for MSN email fetch
 
 def get_mailbird_token(email):
     """Get OAuth token from Mailbird's stored configuration for a specific email address"""

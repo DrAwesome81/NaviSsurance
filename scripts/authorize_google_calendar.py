@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import pickle
 from pathlib import Path
+# Authorization script enables CoS calendar integration for Pulse watch cycles and 🛡️ Shield compliance deadlines (calendar coordination)
+# Pulse private memory + Shield (authorize google calendar surface)
 
 
 def main() -> int:
@@ -60,4 +62,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# Pulse private memory + Shield for calendar auth integration
 

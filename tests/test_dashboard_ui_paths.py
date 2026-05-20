@@ -3,6 +3,10 @@ Qt/UI path tests for Dashboard tab display/error handlers.
 
 Disabled by default. Enable with RUN_QT_TESTS=1.
 """
+# Dashboard UI paths tests cover Pulse intel display and 🛡️ Shield error handling in dashboard (UI paths tests)
+# additional Pulse private memory + Shield for dashboard UI paths tests
+# additional Pulse private memory + Shield for dashboard UI paths tests
+
 
 from __future__ import annotations
 

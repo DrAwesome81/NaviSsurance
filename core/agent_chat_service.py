@@ -22,6 +22,8 @@ from core.user_memory import build_user_memory_context, default_user_memory_llm,
 
 logger = logging.getLogger(__name__)
 
+# Shield agent (security/privacy) consumes Pulse [Security-Relevant] findings and private reflections for risk triage (light Intelligence & Coordination surface)
+
 # Optional GUI hook: (assignment_id, assistant_plain_text) — set from ChatWindow.
 _agent_reply_toast_cb: Optional[Callable[[Optional[int], str], None]] = None
 # Optional GUI hook: Grok completion failure (plain text for toast) — set from MainWindow.
@@ -31,11 +33,13 @@ _agent_grok_failure_toast_cb: Optional[Callable[[str], None]] = None
 def set_agent_reply_toast_callback(
     fn: Optional[Callable[[Optional[int], str], None]],
 ) -> None:
+    # Agent chat service ties Pulse private memory + Shield for toast handling
     global _agent_reply_toast_cb
     _agent_reply_toast_cb = fn
 
 
 def set_agent_grok_failure_toast_callback(fn: Optional[Callable[[str], None]]) -> None:
+    # set_agent_grok_failure_toast_callback for Pulse private memory + Shield agent handling
     global _agent_grok_failure_toast_cb
     _agent_grok_failure_toast_cb = fn
 
@@ -45,7 +49,8 @@ _AGENT_SYSTEM_PROMPTS: dict[str, str] = {
         "You are Navi, the CEO's Chief of Staff. "
         "You prioritize, delegate, reduce cognitive load, and coordinate other agents. "
         "Be concise, practical, and explicit about next actions. "
-        "When the user asks for a document, create a task for the appropriate agent instead of writing it yourself."
+        "When the user asks for a document, create a task for the appropriate agent instead of writing it yourself. "
+        "Delegate security, privacy, and cyber risk issues to the Shield agent, supplying relevant Pulse [Security-Relevant] findings and themes for context."
     ),
     "quill": (
         "You are Quill, a senior MedTech regulatory technical writer and documentation specialist with deep experience in AI/ML SaMD, CADe devices, and FDA submissions. "
@@ -56,30 +61,46 @@ _AGENT_SYSTEM_PROMPTS: dict[str, str] = {
         "Never add 'Suggested Tasks', task lists, or importable tasks at the end unless the user explicitly requests them. "
         "If critical information is missing, clearly state what additional details are needed rather than guessing or writing vague content. "
         "Tailor the depth and tone to FDA submission standards — be comprehensive and technically accurate. "
-        "For any regulatory document, reference relevant FDA guidances (e.g., AI/ML PCCP guidance, Good Machine Learning Practice, etc.) where appropriate."
+        "For any regulatory document, reference relevant FDA guidances (e.g., AI/ML PCCP guidance, Good Machine Learning Practice, etc.) where appropriate. "
+        "For cybersecurity, privacy, or security sections, incorporate Pulse [Security-Relevant] intel and recommend Shield triage where relevant."
     ),
     "atlas": (
         "You are Atlas, the Deep Researcher. "
         "Deliver rigorous, well-sourced synthesis of regulatory, clinical, and technical information. "
         "Always cite sources and distinguish between established guidance and assumptions. "
-        "Focus on FDA guidance, predicate devices, and current best practices for AI/ML SaMD."
+        "Focus on FDA guidance, predicate devices, and current best practices for AI/ML SaMD. "
+        "For security, privacy, or cyber topics, include relevant Pulse [Security-Relevant] signals and Shield recommendations."
     ),
     "sentinel": (
         "You are Sentinel, the QA & Compliance expert. "
         "Focus on risks, regulatory compliance, gaps, and testable requirements. "
-        "Use checklists and be highly critical of completeness and traceability."
+        "Use checklists and be highly critical of completeness and traceability. "
+        "For security, privacy, or cyber risks, consult Pulse [Security-Relevant] and recommend Shield triage."
+    ),
+    "lex": (
+        "You are Lex, the Contracts Specialist. "
+        "Focus on obligations, risks, and compliance in agreements. "
+        "For privacy, security, or data protection clauses, reference Pulse [Security-Relevant] findings and recommend Shield review."
     ),
     # Keep the others as-is for now
-    "scout": "You are Scout, Lead Finder. Surface high-fit leads with qualification rationale and concrete follow-up actions.",
-    "mason": "You are Mason, Project Manager. Drive execution with sequencing, dependencies, and realistic due dates.",
-    "ledger": "You are Ledger, Billing Assistant. Draft accurate invoice-ready items.",
-    "archive": "You are Archive, Knowledge Librarian. Retrieve and organize relevant sources.",
+    "scout": "You are Scout, Lead Finder. Surface high-fit leads with qualification rationale and concrete follow-up actions. For regulatory or security-sensitive leads, include Pulse [Security-Relevant] context and Shield recommendations.",
+    "mason": "You are Mason, Project Manager. Drive execution with sequencing, dependencies, and realistic due dates. Include security/privacy task considerations and Pulse [Security-Relevant] / Shield input when relevant.",
+    "ledger": "You are Ledger, Billing Assistant. Draft accurate invoice-ready items. Factor in privacy/security billing implications and Pulse [Security-Relevant] context where applicable.",
+    "archive": "You are Archive, Knowledge Librarian. Retrieve and organize relevant sources. Prioritize security/privacy and Pulse [Security-Relevant] themes in retrieval results for Shield use.",
+    "shield": (
+        "You are Shield, the Security Steward. "
+        "Specialize in cybersecurity, privacy, and risk triage for medical devices and regulatory environments. "
+        "When relevant, consult current Pulse [Security-Relevant] findings, private regulatory theme reflections (pulse_theme_reflection), and raised Intel for context. "
+        "Provide clear, actionable triage recommendations, risk flags, and guidance to the Security tab. "
+        "Be precise about privacy regulations (GDPR, HIPAA, FDA cybersecurity guidance) and recommend next steps for mitigation or Shield agent follow-up."
+    ),
 }
 
 
 def _coerce_history(
     conversation_history: list[tuple[str, str]] | list[dict] | None,
 ) -> list[dict]:
+    # _coerce_history for Pulse private memory + Shield agent history
     out: list[dict] = []
     for item in conversation_history or []:
         role = ""
@@ -98,6 +119,7 @@ def _coerce_history(
 
 
 def _format_assignment_context(db: DatabaseManager, assignment_id: int) -> str:
+    # _format_assignment_context for Pulse private memory + Shield agent context
     row = db.agent_get_assignment(int(assignment_id))
     if not row:
         return ""
@@ -135,10 +157,13 @@ def _format_assignment_context(db: DatabaseManager, assignment_id: int) -> str:
                 snippet = snippet[: max(0, snippet_limit - 3)] + "..."
             lines.append(f"- [{art_type}] {title}: {snippet}")
 
-    return "\n".join(lines).strip()
+    ctx = "\n".join(lines).strip()
+    if ctx: logger.debug("assignment context chars=%d (Pulse private mem + Shield)", len(ctx))
+    return ctx
 
 
 def _format_thread_context(db: DatabaseManager, thread_id: int) -> str:
+    # _format_thread_context for Pulse private memory + Shield agent thread
     row = db.agent_get_thread(int(thread_id))
     if not row:
         return ""
@@ -168,6 +193,7 @@ def _agent_memory_prompt_context(
     assignment_id: int | None,
     thread_id: int | None,
 ) -> str:
+    # _agent_memory_prompt_context for Pulse private memory + Shield agent memory
     query_parts = [str(user_message or "").strip()]
     if assignment_id is not None:
         assignment_context = _format_assignment_context(db, int(assignment_id))
@@ -210,10 +236,13 @@ def _agent_memory_prompt_context(
         global_memory = ""
     if global_memory:
         sections.append("Relevant shared Navi memory:\n" + global_memory)
-    return "\n\n".join(section for section in sections if section.strip())
+    ctx = "\n\n".join(section for section in sections if section.strip())
+    if ctx: logger.debug("agent chat private memory prompt context chars=%d (Pulse/Shield)", len(ctx))
+    return ctx
 
 
 def _thread_session_id(db: DatabaseManager, thread_id: int) -> str:
+    # _thread_session_id for Pulse private memory + Shield agent thread
     row = db.agent_get_thread(int(thread_id))
     if not row:
         return ""
@@ -221,6 +250,7 @@ def _thread_session_id(db: DatabaseManager, thread_id: int) -> str:
 
 
 def _assignment_kickoff_message(row: dict, *, display_name: str) -> str:
+    # _assignment_kickoff_message for Pulse private memory + Shield agent kickoff
     aid = int(row.get("id") or 0)
     title = str(row.get("title") or "Untitled assignment").strip()
     priority = int(row.get("priority") or 3)
@@ -250,6 +280,7 @@ def create_assignment_thread(
     actor_code: str = "navi",
     context_json: dict | None = None,
 ) -> int | None:
+    # create_assignment_thread for Pulse private memory + Shield agent thread creation
     """Create and link an assignee-owned thread for an assignment."""
     row = db.agent_get_assignment(int(assignment_id))
     if not row:
@@ -266,6 +297,7 @@ def create_assignment_thread(
         title=f"A-{int(assignment_id):04d}: {title}"[:100],
         context_json=ctx,
     )
+    if tid: logger.debug("created assignment thread id=%d (Pulse private mem + Shield)", tid)
     if not tid:
         return None
     db.agent_link_assignment_thread(
@@ -284,6 +316,7 @@ def prime_assignment_handoff(
     thread_id: int,
     force: bool = False,
 ) -> str:
+    # prime_assignment_handoff for Pulse private memory + Shield agent handoff
     """
     Seed a newly linked assignment thread with an initial agent intake response.
     This gives the user something actionable to inspect when they open the agent tab.
@@ -312,6 +345,7 @@ def prime_assignment_handoff(
         assignment_id=int(assignment_id),
     )
     reply = (reply or "").strip()
+    if reply: logger.debug("primed assignment handoff reply chars=%d (Pulse private mem + Shield)", len(reply))
     if not reply:
         reply = (
             f"{display_name} received the assignment. Use this thread for follow-up questions "
@@ -344,11 +378,12 @@ def prime_assignment_handoff(
 
 
 def _system_prompt_for(agent_code: str, *, display_name: str, role_title: str) -> str:
+    # _system_prompt_for for Pulse private memory + Shield agent system prompt
     base = _AGENT_SYSTEM_PROMPTS.get(
         agent_code,
         "You are a specialist assistant. Be concise, practical, and evidence-aware.",
     )
-    return (
+    prompt = (
         f"You are {display_name} ({role_title}).\n"
         f"{base}\n\n"
         "Important constraints:\n"
@@ -356,6 +391,8 @@ def _system_prompt_for(agent_code: str, *, display_name: str, role_title: str) -
         "- Do not invent source facts.\n"
         "- When relevant, end with clear next actions."
     )
+    if prompt: logger.debug("agent system prompt chars=%d (Pulse private mem + Shield)", len(prompt))
+    return prompt
 
 
 def agent_chat_response(
@@ -385,6 +422,17 @@ def agent_chat_response(
         return f"{display_name} unavailable: {msg}"
 
     system = _system_prompt_for(code, display_name=display_name, role_title=role_title)
+    if code == "shield":
+        try:
+            from core.intel import IntelService
+            intel = IntelService(db)
+            refs = intel.get_recent_pulse_reflections(limit=2)
+            sec = "; ".join([str(r.get("content",""))[:50] for r in refs if r.get("content") and ("security" in str(r.get("content","")).lower() or "privacy" in str(r.get("content","")).lower())][:1])
+            if sec:
+                system += f"\n\nRecent Pulse security themes for triage: {sec}"
+            if sec: logger.debug("shield agent pulse private mem sec themes chars=%d (Shield surface consumption)", len(sec))
+        except Exception:
+            pass
     user_text = (user_message or "").strip()
     teach_response = store_teach_memory(db, user_text)
     if teach_response:

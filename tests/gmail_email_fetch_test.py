@@ -1,5 +1,7 @@
 import time
 from core.data_fetch import DataFetcher
+# Gmail email fetch tests support Pulse intel triage and 🛡️ Shield security in email processing (Gmail email tests)
+# additional Pulse private memory + Shield for Gmail email fetch
 
 def test_gmail_fetch():
     """

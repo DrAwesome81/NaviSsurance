@@ -16,6 +16,7 @@ def run_fda_510k_search(
     Best-effort FDA 510(k) search automation using the shared Playwright browser tool.
 
     This replaces the old import-time Selenium script with a reusable workflow helper.
+    # Supports Pulse monitoring of regulatory updates for [Security-Relevant] findings and Shield triage.
     """
     result = browser_workflow_tool(
         FDA_510K_SEARCH_URL,
@@ -29,4 +30,5 @@ def run_fda_510k_search(
         screenshot_name=f"fda-510k-{product_code}",
         timeout_ms=45_000,
     )
+    # Results feed Pulse [Security-Relevant] creation for Shield privacy/cyber triage
     return result.model_dump()

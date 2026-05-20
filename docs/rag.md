@@ -2,6 +2,8 @@
 
 Last updated: 2026-05-12
 
+<!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
+
 This repo includes a local RAG index builder in `build_rag_index.py` that creates a Chroma vector store in `chroma_index/`.
 
 ### Config files
@@ -44,4 +46,6 @@ The Chroma index is therefore one retrieval source, not the entire memory system
 - Use Chroma when you want semantic document retrieval over indexed local / imported content.
 - Use the built-in structured memory and chat-retrieval layers for preferences, aliases, commitments, historical chat context, and layered agent/assignment memory.
 - Treat retrieved text as untrusted reference material rather than executable instructions.
+
+<!-- Pulse private memory + Shield surface in RAG doc -->
 

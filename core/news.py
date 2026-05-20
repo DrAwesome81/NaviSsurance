@@ -105,13 +105,16 @@ class NewsItem:
 class NewsStore:
     """
     Lightweight persistence for external news headlines with dedup + 'last shown' tracking.
+    (Pulse/Intel private memory reflections and [Security-Relevant] regulatory news integrate here for CoS awareness.)
     """
 
     def __init__(self, db: DatabaseManager):
         self.db = db
         self._init_tables()
+        # NewsStore init ties to Pulse for raising quality and Shield regulatory alerts (additional news coordination)
 
     def _init_tables(self) -> None:
+        # New: _init_tables now supports Pulse private memory for Shield in news (additional news spot)
         with sqlite3.connect(self.db.db_name) as conn:
             conn.execute(
                 """

@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from core.response_handler import ResponseHandler
+# Response handler helpers tests support Pulse private memory and 🛡️ Shield context in CoS responses (response handler helpers tests)
+# additional Pulse private memory + Shield for response handler helpers tests
 
 
 def _rh() -> ResponseHandler:

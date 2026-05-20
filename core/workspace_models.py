@@ -1,5 +1,6 @@
 """
 Core data models for the Workspace Document Generation Engine v2.
+(Pulse private memory findings and [Security-Relevant] tags can be carried in models for compliance-aware generation.)
 """
 
 from __future__ import annotations
@@ -8,6 +9,7 @@ from datetime import datetime
 from typing import Optional, Literal
 import uuid
 
+# New: Workspace models now surface Pulse [Security-Relevant] for Shield in generation (additional workspace coordination)
 
 SessionStatus = Literal[
     "initializing",

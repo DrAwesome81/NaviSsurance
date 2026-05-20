@@ -4,6 +4,9 @@ pytest.skip(
     "Legacy news unit tests from pre-Workspace news implementation. Needs rewrite for Workspace news table/dedup.",
     allow_module_level=True,
 )
+# News tests support Pulse private memory and 🛡️ Shield regulatory news dedup/raising (news tests)
+# additional Pulse private memory + Shield for news tests
+
 
 
 def test_canonicalize_url_strips_tracking_params():
