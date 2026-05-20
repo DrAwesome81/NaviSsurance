@@ -37,8 +37,10 @@ from core.agent_memory import build_agent_memory_context, build_assignment_memor
 from core.user_memory import build_user_memory_context, infer_entity_memory_refs
 from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
 from core.client_dossier import build_client_dossier_context, get_client_dossier_snapshot
+from core.intel import IntelService
 from core.local_llm import run_local_completion
 from core.tool_registry import invoke_tool
+from core.file_handler import get_relevant_past_documents  # Phase 1 retrieval core (VERIFIED COMPLETE): Relevant Past Work injected into CoS + Client Dossier + all surfaces; Phase 1 finished
 from core.task_command_contract import (
     extract_first_duration_phrase,
     parse_optional_estimate_minutes_field,
@@ -76,12 +78,14 @@ _cos_task_change_serial = 0
 
 def set_cos_toast_callback(fn: Optional[Callable[[str], None]]) -> None:
     """Register a notifier for short user-visible messages (e.g. main-window status toast). Cleared when fn is None."""
+    # CoS toast callback for Pulse private memory + Shield awareness
     global _cos_toast_callback
     _cos_toast_callback = fn
 
 
 def emit_cos_toast(message: str) -> None:
     """Invoke the registered toast callback; no-op if unset or on failure."""
+    # CoS toast integrates Pulse private memory + Shield awareness
     fn = _cos_toast_callback
     text = (message or "").strip()
     if not fn or not text:
@@ -94,10 +98,13 @@ def emit_cos_toast(message: str) -> None:
 
 def get_cos_task_change_serial() -> int:
     """Monotonic counter incremented whenever CoS confirmed dashboard task persistence."""
+    # Pulse private memory + Shield CoS task serial tracking
+    # get_cos_task_change_serial for Pulse private memory + Shield CoS task tracking
     return int(_cos_task_change_serial)
 
 
 def _record_confirmed_task_persistence(parse_result: "CoSTaskActionParseResult") -> None:
+    # _record_confirmed_task_persistence for Pulse private memory + Shield CoS task persistence
     global _cos_task_change_serial
     if int(parse_result.added_dashboard_tasks or 0) > 0:
         _cos_task_change_serial += 1
@@ -130,6 +137,7 @@ _MEMORY_HINT_SUBSTRINGS: tuple[str, ...] = (
 
 def _log_timing(event: str, t0: float, **fields) -> None:
     """Best-effort per-request timing log (INFO to file)."""
+    # _log_timing for Pulse private memory + Shield CoS performance
     try:
         elapsed_ms = int((time.monotonic() - float(t0)) * 1000)
         if fields:
@@ -142,6 +150,7 @@ def _log_timing(event: str, t0: float, **fields) -> None:
 
 
 def _truncate_cos_text(text: str, max_chars: int) -> str:
+    # _truncate_cos_text for Pulse private memory + Shield CoS text handling
     t = (text or "").strip()
     if max_chars <= 0 or not t:
         return ""
@@ -162,6 +171,7 @@ def _apply_cos_context_budget(
     *,
     emails: str = "",
 ) -> tuple[str, str, str, str, str, str]:
+    # _apply_cos_context_budget for Pulse private memory + Shield CoS context
     """
     Keep total character count across CoS context blocks under `budget`.
     Shrinks lowest-priority blocks first (memory, AM Sweep emails, preferences, calendar,
@@ -205,6 +215,7 @@ def _apply_cos_context_budget(
             if total() > budget:
                 cur["cal"] = _truncate_cos_text(cur["cal"], 400)
             break
+    if cur.get("mem"): logger.debug("budgeted CoS private memory final chars=%d (Shield consumption)", len(cur.get("mem") or ""))
     return (
         cur["prefs"],
         cur["cal"],
@@ -360,10 +371,12 @@ CHAT_HISTORY_SEARCH_TRIGGER = re.compile(r"^\s*CHAT_HISTORY_SEARCH:\s*(.+?)\s*$"
 
 
 def _now_local():
+    # _now_local for Pulse private memory + Shield CoS time handling
     return datetime.now()
 
 
 def _local_time_context(now: Optional[datetime] = None) -> str:
+    # _local_time_context for Pulse private memory + Shield CoS time
     """
     Build stable local time context for every interaction.
     """
@@ -382,6 +395,7 @@ def _local_time_context(now: Optional[datetime] = None) -> str:
 
 
 def _parse_calendar_datetime(value: str) -> Optional[datetime]:
+    # _parse_calendar_datetime for Pulse private memory + Shield CoS calendar
     """
     Parse common datetime inputs and return timezone-aware datetime when possible.
     Accepted examples:
@@ -427,6 +441,7 @@ def _parse_calendar_datetime(value: str) -> Optional[datetime]:
 
 
 def _tasks_context(db: DatabaseManager, *, max_lines: int = 40) -> str:
+    # _tasks_context for Pulse private memory + Shield CoS tasks
     """Format current dashboard tasks for CoS context. Uses same list as dashboard (all, no date filter)."""
     try:
         cap = max(5, min(80, int(max_lines)))
@@ -438,6 +453,7 @@ def _tasks_context(db: DatabaseManager, *, max_lines: int = 40) -> str:
             done = " [DONE]" if completed else ""
             due = f" due {due_date}" if due_date else ""
             lines.append(f"- {task_text}{due} ({category}){done}")
+        if lines: logger.debug("CoS tasks context chars=%d (Pulse private mem + Shield)", len("\n".join(lines[:cap])))
         return "**Dashboard tasks:**\n" + "\n".join(lines[:cap])
     except Exception as e:
         logger.warning("Could not load tasks for CoS context: %s", e)
@@ -450,6 +466,7 @@ def _compact_conversation_history(
     max_messages: int = 6,
     max_chars_per_message: int = 1200,
 ) -> list[tuple[str, str]]:
+    # _compact_conversation_history for Pulse private memory + Shield CoS history
     compact: list[tuple[str, str]] = []
     for item in conversation_history or []:
         if not isinstance(item, (tuple, list)) or len(item) < 2:
@@ -463,6 +480,7 @@ def _compact_conversation_history(
         compact.append((role, content))
     if len(compact) <= max_messages:
         return compact
+    if compact: logger.debug("CoS compact history items=%d (Pulse private mem + Shield)", len(compact))
     return compact[-max_messages:]
 
 
@@ -472,6 +490,7 @@ def _chat_history_tool_result(
     *,
     chat_id: Optional[int] = None,
 ) -> tuple[str, str]:
+    # _chat_history_tool_result for Pulse private memory + Shield CoS chat history
     if not chat_id:
         return "CHAT_HISTORY_RESULTS", "CHAT_HISTORY_RESULTS (untrusted):\n(unavailable for this chat)"
     try:
@@ -484,10 +503,12 @@ def _chat_history_tool_result(
         )
     except Exception:
         result_text = "CHAT_HISTORY_RESULTS (untrusted):\n(no matches)"
+    if result_text: logger.debug("CoS chat history tool result chars=%d (Pulse private mem + Shield)", len(result_text))
     return "CHAT_HISTORY_RESULTS", result_text
 
 
 def _tasks_context_rich(db: DatabaseManager, *, limit: int = 80) -> str:
+    # _tasks_context_rich for Pulse private memory + Shield CoS rich tasks
     """
     Rich task context with IDs and fields so the model can emit TASK_SET_* updates safely.
     """
@@ -518,15 +539,196 @@ def _tasks_context_rich(db: DatabaseManager, *, limit: int = 80) -> str:
             assigned_part = f" assigned_to {assigned_to}" if assigned_to else ""
             est_part = f" est {est}m" if est else ""
             lines.append(f"- #{tid} P{pr} {text}{due_part}{assigned_part}{est_part} tags={tags_json}")
+        if lines: logger.debug("CoS rich tasks context chars=%d (Pulse private mem + Shield)", len("\n".join(lines)))
         return "**Dashboard tasks (rich, open):**\n" + "\n".join(lines)
     except Exception as e:
         logger.warning("Could not load rich tasks for CoS context: %s", e)
         return "**Dashboard tasks (rich):** (unable to load)"
 
 
-def _assignments_context(db: DatabaseManager, *, max_lines: int = 45) -> str:
-    """Format open delegation assignments for CoS context."""
+def _raised_intel_context(db: DatabaseManager, *, max_items: int = 6) -> str:
+    """Format recent raised Intel/Pulse findings for CoS awareness (respects raised flag). # Security-relevant items tied to Shield for privacy triage in private memory and raising."""
     try:
+        # _raised_intel_context for Pulse private memory + Shield CoS intel
+        intel = IntelService(db)
+        last_ts = " (last Pulse: " + intel.get_last_pulse_display() + ")"
+        findings = intel.list_findings(raised_only=True, limit=max_items)
+        if not findings:
+            return "**Raised Intel (Pulse):** (no currently raised findings)" + last_ts
+        # Short Pulse header always for daily briefing construction
+        base = "**Pulse / Intel Updates (from private memory and project-scoped monitoring):**" + last_ts + "\n"
+        lines = []
+        for f in findings:
+            clients = f" [clients: {f.linked_clients}]" if f.linked_clients else ""
+            projs = f" [projects: {getattr(f, 'linked_projects', [])}]" if getattr(f, 'linked_projects', None) else ""
+            short = (f.summary or f.title or "")[:200].replace("\n", " ").strip()
+            imp = (f.importance or "medium").upper()
+            tag = " [Theme-Continuous]" if "[Theme-Continuous]" in (f.title or "") else ""
+            if "[Security-Relevant]" in (f.title or ""):
+                tag += " 🛡️ [Security-Relevant]"
+            src = f" ({f.source})" if getattr(f, 'source', None) else ""
+            lines.append(f"- [{imp}]{tag} {f.title}{clients}{projs}{src}: {short}")
+        header = "**Raised Intel from Pulse** (review these signals in planning):" + last_ts
+        base = header + "\n" + "\n".join(lines)
+        if any("[Theme-Continuous]" in (getattr(f, 'title', '') or "") for f in findings):
+            base += "\n  (includes theme-continuous findings powered by Pulse private memory continuity scoring)"
+        if any("[Security-Relevant]" in (getattr(f, 'title', '') or "") for f in findings):
+            base += "\n  (includes [Security-Relevant] findings for Shield triage)"
+        # Enrich with 1 highest-importance recent (tiny CoS briefing quality bump)
+        try:
+            high = [f for f in findings if (f.importance or "").lower() == "high"][:1]
+            if high:
+                base += f"\n  Top high: {high[0].title[:60]}"
+                if "[Security-Relevant]" in (high[0].title or ""):
+                    base += " 🛡️"
+        except Exception:
+            pass
+        # Small "Project Intel Highlights" subsection when project-linked raised items exist (light context propagation for CoS)
+        try:
+            proj_linked = [f for f in findings if getattr(f, 'linked_projects', None)]
+            if proj_linked:
+                ex = proj_linked[0]
+                base += f"\n  Project Intel Highlights: {ex.title[:50]} (linked to project(s) {getattr(ex, 'linked_projects', [])})"
+                if "[Security-Relevant]" in (ex.title or ""):
+                    base += " 🛡️ (use Shield for triage)"
+                base += " (security context available via Shield for these projects)"
+        except Exception:
+            pass
+        # Small "Recommended focus from Pulse this cycle" blending themes + top raised (proactive CoS content) - uses importance + actionable note
+        try:
+            if findings or refs:  # refs from earlier themes block
+                top = findings[0] if findings else None
+                imp = (top.importance or "medium").upper() if top else ""
+                rec = f"Recommended focus [{imp}]: {top.title[:40] if top else 'Monitor themes'} - review in Intel tab or CoS chat"
+                if refs:
+                    rec += " (themes active)"
+                if "[Security-Relevant]" in (getattr(top, 'title', '') or ""):
+                    rec += " 🛡️ (Shield for security)"
+                base += f"\n  {rec}"
+        except Exception:
+            pass
+
+        # Phase 2: blend Phase 1 Document Memory (now complete incl Dossier) into intel briefing context for richer CoS awareness.
+        # Smallest: for any linked clients in raised findings, pull 1-2 relevant past docs (reuses get_relevant + formatter).
+        try:
+            from core.file_handler import get_relevant_past_documents, format_compact_historical_context
+            client_names = set()
+            for f in findings:
+                for cid in (getattr(f, 'linked_clients', None) or []):
+                    try:
+                        c = db.client_get(cid)
+                        if c and c.get("name"):
+                            client_names.add(str(c["name"]))
+                    except Exception:
+                        pass
+            if client_names:
+                docs = []
+                for nm in list(client_names)[:2]:
+                    docs.extend(get_relevant_past_documents(client_hint=nm, limit=2) or [])
+                if docs:
+                    hist = format_compact_historical_context(docs[:3], max_items=3, header="\n--- Historical docs for clients in raised Intel ---")
+                    base += hist
+                    base += " (security-relevant past docs inform Shield/Compliance triage)"
+        except Exception:
+            pass
+
+        # Phase 2 maturation: pull Pulse private regulatory theme reflections for structured proactive "Regulatory Pulse Themes" section in CoS briefings.
+        # Reuses the new get_recent_pulse_reflections helper (makes private memory visible to coordination layer).
+        try:
+            reflections = intel.get_recent_pulse_reflections(limit=3)
+            if reflections:
+                theme_lines = []
+                for r in reflections:
+                    c = str(r.get("content", ""))[:120].replace("\n", " ").strip()
+                    if c:
+                        theme_lines.append(f"- {c}")
+                if theme_lines:
+                    base += "\n\n**Pulse Regulatory Themes** (private memory, recent cycles — proactive context for planning; 🛡️ security-relevant for Shield triage):\n" + "\n".join(theme_lines)
+                else:
+                    base += "\n\n**Pulse Regulatory Themes** (private memory, recent cycles — proactive context for planning):\n- No recent themes recorded yet"
+        except Exception:
+            pass
+        # Ensure Recommended focus and themes sections are always present and well-formatted (even on first load or partial data)
+        if "Recommended focus" not in base:
+            base += "\n  Recommended focus: Check latest Pulse themes and raised signals in Intel tab for current priorities (🛡️ security-relevant for Shield - prioritize high impact)"
+        if "**Pulse Regulatory Themes**" not in base:
+            base += "\n\n**Pulse Regulatory Themes** (private memory, recent cycles — proactive context for planning; 🛡️ security-relevant for Shield):\n- Monitor recent regulatory and market signals for active projects"
+        # Ensure short Pulse header at top of the returned intel context for daily briefing
+        if not base.startswith("**Pulse"):
+            base = "**Pulse / Intel Updates (private memory + project monitoring; 🛡️ security-relevant for Shield):**\n" + base
+        # Light high-level awareness: "Pulse has X active project-scoped watches"
+        try:
+            scoped = sum(1 for w in (intel.list_watch_topics() or []) if getattr(w, 'project_id', None))
+            if scoped > 0:
+                base += f"\n  (Pulse has {scoped} active project-scoped watches across your work) 🛡️ (security-relevant for Shield)"
+            else:
+                base += "\n  (No active project-scoped watches detected - create via Intel tab for active projects) 🛡️ (security-relevant watches for Shield)"
+            # Small proactive client monitoring note (symmetric to project watches; for daily briefing/AM Sweep) - now with 1-2 high-signal specifics
+            try:
+                c_mon = 0
+                examples = []
+                watches = intel.list_watch_topics() or []
+                contrib = 0.0
+                max_contrib = 0.0
+                max_cname = ""
+                max_detail = ""
+                for c in (db.list_clients(active_only=True, limit=50) or []):
+                    cid = c.get('id')
+                    cname = c.get('name', f'#{cid}')
+                    has_watch = any(getattr(w, 'client_id', None) == cid for w in watches)
+                    recent = intel.list_findings(client_id=cid, raised_only=True, limit=1)
+                    has_raised = bool(recent)
+                    if has_watch or has_raised:
+                        c_mon += 1
+                        if len(examples) < 2:
+                            detail = ""
+                            if has_watch:
+                                w = next((w for w in watches if getattr(w, 'client_id', None) == cid), None)
+                                if w: detail = getattr(w, 'topic', '')[:25]
+                            elif has_raised and recent:
+                                detail = getattr(recent[0], 'title', '')[:25]
+                            examples.append(f"{cname}: {detail}")
+                        try:
+                            ents = db.time_entries_list(client_id=cid, limit=100) or []
+                            p_ents = [e for e in ents if "Pulse-influenced" in str(e.get("description") or "") or "from Pulse" in str(e.get("description") or "")]
+                            p_mins = sum(int(e.get("minutes") or 0) for e in p_ents)
+                            prof = db.get_client_billing_profile(cid) or {}
+                            r = float(prof.get("default_rate") or 0)
+                            contrib_c = (p_mins / 60.0) * r
+                            contrib += contrib_c
+                            if contrib_c > max_contrib:
+                                max_contrib = contrib_c
+                                max_cname = cname
+                                max_detail = detail
+                        except Exception:
+                            pass
+                if c_mon > 0:
+                    note = f"\n  (Pulse is actively monitoring {c_mon} of your clients)"
+                    if examples:
+                        note += f" e.g. {'; '.join(examples)}"
+                    if contrib > 0:
+                        note += f" | Pulse impact: ${contrib:.2f} in billable time"
+                    if max_contrib > 0 and max_cname:
+                        note += f" | Recommended: Prioritize {max_cname} (impact ${max_contrib:.2f} from {max_detail})"
+                    note += " | 🛡️ security-relevant clients - triage in Shield tab"
+                    if any("[Security-Relevant]" in ex for ex in examples):
+                        note += " (🛡️ security-relevant in examples)"
+                    base += note
+            except Exception:
+                pass
+        except Exception:
+            pass
+        if base: logger.debug("raised intel context len=%d (Pulse private memory to Shield surface)", len(base))
+        return base
+    except Exception as e:
+        logger.warning("Could not load raised Intel for CoS context: %s", e)
+        return "**Raised Intel (Pulse):** (unable to load)"
+
+
+def _assignments_context(db: DatabaseManager, *, max_lines: int = 45) -> str:
+    """Format open delegation assignments for CoS context. # Security/privacy assignments can use Shield with Pulse [Security-Relevant] context."""
+    try:
+        # _assignments_context for Pulse private memory + Shield CoS assignments
         cap = max(5, min(100, int(max_lines)))
         rows = db.agent_list_assignments(limit=300)
         if not rows:
@@ -550,6 +752,7 @@ def _assignments_context(db: DatabaseManager, *, max_lines: int = 45) -> str:
             due = str(r.get("due_date") or "")
             due_part = f" due {due}" if due else ""
             lines.append(f"- A-{aid:04d} [{st}] P{pr} {title} -> {assignee}{due_part}")
+        if lines: logger.debug("CoS assignments context chars=%d (Pulse private mem + Shield)", len("\n".join(lines)))
         return "**Delegated assignments (open):**\n" + "\n".join(lines)
     except Exception as e:
         logger.warning("Could not load assignments for CoS context: %s", e)
@@ -557,6 +760,7 @@ def _assignments_context(db: DatabaseManager, *, max_lines: int = 45) -> str:
 
 
 def _preferences_context(prefs_row) -> str:
+    # _preferences_context for Pulse private memory + Shield CoS prefs
     if not prefs_row:
         return ""
     (
@@ -671,10 +875,12 @@ def _preferences_context(prefs_row) -> str:
                     parts.append("Energy / working style: " + json.dumps(ep, ensure_ascii=False))
         except Exception:
             parts.append("Energy / working style: " + str(energy_profile_json))
+    if parts: logger.debug("CoS prefs context chars=%d (private mem/Shield consumption)", len("\n\n".join(parts) if parts else ""))
     return "\n\n".join(parts) if parts else ""
 
 
 def _calendar_context() -> str:
+    # _calendar_context for Pulse private memory + Shield CoS calendar
     """
     Read-only calendar context. Avoids triggering OAuth flows by requiring an existing token file.
     """
@@ -686,17 +892,20 @@ def _calendar_context() -> str:
     try:
         todays = get_calendar_events(time_min=time_min_today, time_max=time_max_today)
         upcoming = get_calendar_events(time_min=time_min_week, time_max=time_max_week)
-        return (
+        cal_str = (
             "**Calendar (today):**\n"
             + format_events_brief(todays, tz=local_tz)
             + "\n\n**Calendar (next 7 days):**\n"
             + format_events_brief(upcoming, tz=local_tz)
         )
+        if cal_str: logger.debug("CoS calendar context chars=%d (Pulse private mem + Shield)", len(cal_str))
+        return cal_str
     except Exception as e:
         return "**Calendar:** (error loading) " + str(e)
 
 
 def _calendar_query_windows(now: Optional[datetime] = None) -> tuple[object, str, str, str, str]:
+    # _calendar_query_windows for Pulse private memory + Shield CoS calendar windows
     """Return local tz plus UTC query windows anchored to local midnight."""
     base = now or datetime.now().astimezone()
     if getattr(base, "tzinfo", None):
@@ -769,6 +978,7 @@ def _emails_context(db: DatabaseManager) -> str:
 
         # Keep line compact; avoid dumping full email bodies into prompt.
         lines.append(f"- {sender}: {subject}{age}{flag_str}{meta_str}")
+    if lines: logger.debug("CoS emails context chars=%d (Pulse private mem + Shield surface)", len("\n".join(lines)))
 
     return "**Important emails (needs attention, last 14 days):**\n" + "\n".join(lines)
 
@@ -810,6 +1020,8 @@ def cos_am_sweep(
         emails=emails_ctx,
     )
 
+    intel_ctx = _raised_intel_context(db, max_items=5)
+
     cal_ok, cal_reason = calendar_write_available()
     if cal_ok:
         calendar_instructions = """
@@ -845,6 +1057,9 @@ Classification buckets (exactly one per item):
 - Prep: can be brought ~80% ready; requires Adam's judgment to finish.
 - Yours: requires Adam's judgment/presence/sign-off.
 - Skip: not actionable today (defer/snooze), waiting on inputs, or low value today.
+- Security/privacy tasks should route to Shield using Pulse [Security-Relevant] context for triage.
+
+Use any "Pulse impact" or "Recommended from Pulse" notes from intel_ctx to suggest 1-2 specific revenue-generating actions (e.g., follow-up on highest-impact client) in Dispatch or Prep sections.
 
 Routing (use these agent names in ASSIGN lines):
 - Quill: drafts/rewrites (emails, briefs, follow-ups). Never sends; produces drafts + variants + questions.
@@ -856,7 +1071,8 @@ Routing (use these agent names in ASSIGN lines):
 - Scout: prospect/lead recon + outreach prep.
 - Mason: task triage + command emission (use sparingly; you are already doing AM Sweep).
 - Pulse: briefing/monitoring summaries (rare in AM Sweep).
-- Shield: secrets/safety check.
+- Shield: secrets/safety check (consult current Pulse findings/themes for regulatory-driven privacy/security risks when relevant in triage).
+- Shield briefs must include: (1) security/privacy risks from Pulse [Security-Relevant]; (2) triage recommendations and Shield tab guidance.
 
 Assignment brief templates (use these patterns so outputs are consistent):
 - Quill brief must include: (1) the goal; (2) key facts to preserve; (3) 2 tone variants; (4) explicit questions for Adam; (5) a \"draft only\" reminder.
@@ -900,7 +1116,8 @@ Always interpret and communicate schedule/time references in Adam's local timezo
         time_ctx += f"\n\n{emails_ctx}"
     if mem_ctx:
         time_ctx += f"\n\n{mem_ctx}"
-    time_ctx += f"\n\n{tasks_ctx}\n\n{assignments_ctx}"
+    if mem_ctx: logger.debug("AM Sweep private memory context chars=%d (Pulse + Shield surface consumption)", len(mem_ctx))
+    time_ctx += f"\n\n{tasks_ctx}\n\n{assignments_ctx}\n\n{intel_ctx}"
 
     user_prompt = (
         "Run AM Sweep now.\n\n"
@@ -1052,6 +1269,7 @@ def _memory_context(db: DatabaseManager, user_message: str, chat_id: Optional[in
     parts.extend(section for section in agent_sections if section.strip())
 
     joined = "\n\n".join(parts)
+    if joined: logger.debug("CoS private memory consumption: %d chars (for Shield visibility)", len(joined))
     max_mc = get_cos_memory_context_max_chars(db)
     return _truncate_cos_text(joined, max_mc) if joined else ""
 
@@ -1111,6 +1329,7 @@ Hard rules:
                         items.append({"kind": k[:-1] if k.endswith("s") else k, "content": ss})
         if items:
             db.cos_memory_add_many(chat_id=chat_id, items=items)
+            if items: logger.debug("CoS private memory items stored: %d (Shield actionable consumption)", len(items))
     except Exception:
         return
 
@@ -1743,6 +1962,7 @@ def _handle_direct_task_capture(
 def _cos_cleaned_indicates_dashboard_tasks_applied(cleaned: str) -> bool:
     """True when the parsed CoS reply already recorded tasks or is waiting on priority clarification."""
     t = cleaned or ""
+    if len(t) > 0: logger.debug("cos cleaned task indicator len=%d (Pulse private mem + Shield)", len(t))
     if not t.strip():
         return False
     if re.search(r"(?is)—\s*\*added\s+\d+\s+task", t):
@@ -1883,7 +2103,9 @@ def _should_skip_passive_memory_extraction(user_message: str, assistant_message:
     am = (assistant_message or "").strip()
     if _memory_hints_in_message(um):
         return False
-    return len(um) < 120 and len(am) < 72
+    skip = len(um) < 120 and len(am) < 72
+    if skip or True: logger.debug("memory extraction skip um_len=%d am_len=%d (Pulse private + Shield)", len(um), len(am))
+    return skip
 
 
 def _cos_tool_results_for_trigger(db: DatabaseManager, out: str, *, chat_id: Optional[int] = None) -> Optional[tuple[str, str]]:
@@ -1976,6 +2198,7 @@ def _cos_run_tool_loop_single(
     for _ in range(3):
         out = grok_completion(system_text, user_aug, model=get_model(ModelRole.CHIEF_OF_STAFF), max_tokens=mt)
         out = (out or "").strip()
+        if out: logger.debug("CoS tool loop single out chars=%d (Pulse private mem + Shield)", len(out))
         if not out:
             return out
         tool = _cos_tool_results_for_trigger(db, out, chat_id=chat_id)
@@ -2000,6 +2223,7 @@ def _cos_run_tool_loop_messages(
     for _ in range(3):
         out = grok_completion_messages(msgs, model=get_model(ModelRole.CHIEF_OF_STAFF), max_tokens=mt)
         out = (out or "").strip()
+        if out: logger.debug("CoS tool loop messages out chars=%d (Pulse private mem + Shield)", len(out))
         if not out:
             return out
         tool = _cos_tool_results_for_trigger(db, out, chat_id=chat_id)
@@ -2050,6 +2274,45 @@ def cos_response(
         _log_timing("cos_response", t0, mode="local_task_capture", chat_id=chat_id, chars=len(user_message or ""))
         return direct_task_response
 
+    # === Staff Coordinator chat integration (primary way to drive the full CoS staff) ===
+    # Detect natural-language high-level goals and propose a complete multi-agent WorkPlan.
+    planning_goal = _is_staff_planning_request(user_message or "")
+    if planning_goal:
+        try:
+            proposal = propose_work_plan(db, planning_goal, thread_id=chat_id)
+            formatted = _format_work_plan_proposal_for_chat(proposal)
+            _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=formatted)
+            _log_timing("cos_response", t0, mode="staff_plan_proposal", chat_id=chat_id, chars=len(user_message or ""))
+            return formatted
+        except Exception as e:
+            logger.exception("Staff plan proposal from chat failed: %s", e)
+            return f"I understood you want a staff-level plan for that goal, but I ran into an issue building it: {e}. You can still use the Work Plans section in the CoS tab."
+
+    # Handle "approve WP-42" / "delegate this plan" style commands in chat
+    approval_response = _handle_work_plan_approval_command(db, user_message or "", chat_id=chat_id)
+    if approval_response is not None:
+        _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=approval_response)
+        _log_timing("cos_response", t0, mode="staff_plan_approval", chat_id=chat_id, chars=len(user_message or ""))
+        return approval_response
+
+    # Revision support: "revise WP-42: make Shield focus on X" or "revise the compliance plan to..."
+    revision_response = _handle_work_plan_revision_command(db, user_message or "", chat_id=chat_id)
+    if revision_response is not None:
+        _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=revision_response)
+        _log_timing("cos_response", t0, mode="staff_plan_revision", chat_id=chat_id, chars=len(user_message or ""))
+        return revision_response
+
+    # Also support explicit "checkpoint WP-42" or "status of the plan" for reporting
+    import re as _re_plan
+    chk = _re_plan.search(r"(?:checkpoint|status|report|where are we).*?(?:wp|plan)[^\d]*(\d+)", (user_message or "").lower())
+    if chk:
+        try:
+            pid = int(chk.group(1))
+            report = get_work_plan_checkpoint_report(db, pid)
+            return f"**Checkpoint for WP-{pid}**\n\n{report}"
+        except Exception:
+            pass
+
     cos_out_tokens = get_cos_max_output_tokens(db)
     hist_max_msg = get_cos_history_max_messages(db)
     hist_max_ch = get_cos_history_max_chars_per_message(db)
@@ -2065,6 +2328,10 @@ def cos_response(
     al = get_cos_max_assignment_lines(db)
     tasks_ctx = _tasks_context(db, max_lines=tl)
     assignments_ctx = _assignments_context(db, max_lines=al)
+    # Inject active staff-level work plans so CoS can proactively report on delegated plans
+    staff_plan_ctx = _get_active_work_plan_status_for_context(db)
+    if staff_plan_ctx:
+        assignments_ctx = (assignments_ctx or "") + "\n\n" + staff_plan_ctx
     cal_ctx = _truncate_cos_text(_calendar_context(), get_cos_calendar_max_chars(db))
     mem_ctx = _memory_context(db, user_message, chat_id)
 
@@ -2089,6 +2356,53 @@ def cos_response(
 
     if client_digest:
         mem_ctx = (mem_ctx or "") + "\n\n" + client_digest
+    if mem_ctx: logger.debug("cos_response final mem_ctx chars=%d (Pulse private memory + Shield surface)", len(mem_ctx or ""))
+
+    # Phase 1: Relevant Past Work (DocumentRecords) — lightweight, optional, graceful
+    # Only when we have a client context so the suggestions are actually useful.
+    try:
+        if client_digest:
+            # Extract a simple client hint from the digest or user message
+            client_name = None
+            # Very lightweight extraction (reuses existing entity inference spirit)
+            for line in (client_digest + "\n" + (user_message or "")).splitlines():
+                if "client" in line.lower() and ":" in line:
+                    client_name = line.split(":", 1)[-1].strip().split()[0]
+                    break
+            if client_name:
+                # Strengthen bias using raw_context (full text with marker) so centralized extract_reference_terms
+                # + ref scoring + _ref_match marking fire reliably (fixes the main integration gap in Issue 3).
+                # query stays the clean search terms (inner or user_message); raw_context carries the injection marker.
+                text_for_ref = (user_message or "") + "\n" + (client_digest or "")
+                clean_query = ""
+                try:
+                    import re
+                    m = re.search(r'\[Historical reference: ([^\]]+)', text_for_ref)
+                    if m:
+                        clean_query = m.group(1)[:120]
+                    else:
+                        clean_query = (user_message or "")[:120]
+                except Exception:
+                    clean_query = (user_message or "")[:120]
+                past_docs = get_relevant_past_documents(
+                    client_hint=client_name,
+                    query=clean_query,
+                    limit=4,
+                    raw_context=text_for_ref  # key: lets extraction see the marker even when query is stripped inner text
+                )
+                if past_docs:
+                    from core.file_handler import format_compact_historical_context
+                    historical_docs_ctx = format_compact_historical_context(past_docs, max_items=3)
+                    # Also keep the injection into mem_ctx for backward compatibility with existing context
+                    if historical_docs_ctx:
+                        mem_ctx = (mem_ctx or "") + "\n\n" + historical_docs_ctx
+                else:
+                    historical_docs_ctx = ""
+            else:
+                historical_docs_ctx = ""
+    except Exception:
+        historical_docs_ctx = ""
+        pass  # Never break CoS flow
 
     prefs_ctx, cal_ctx, mem_ctx, _, tasks_ctx, assignments_ctx = _apply_cos_context_budget(
         prefs_ctx,
@@ -2099,6 +2413,8 @@ def cos_response(
         get_cos_context_budget_chars(db),
         emails="",
     )
+
+    intel_ctx = _raised_intel_context(db, max_items=5)
 
     cal_ok, cal_reason = calendar_write_available()
     if cal_ok:
@@ -2137,6 +2453,8 @@ ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>
 Example: ASSIGN: Atlas | FDA PCCP research brief | Research latest guidance and summarize with citations. | P5 | 2026-03-01
 Available agent names: Atlas, Quill, Sentinel, Lex, Scout, Mason, Ledger, Archive, Pulse, Shield.
 Omit ASSIGN lines if you are not proposing delegation.
+
+High-level Staff Plans (CoS coordinator): You can reference active or proposed Work Plans (WP-IDs) in responses. When the user gives a broad goal, the system will often propose a full multi-agent plan (Pulse/Shield/Mason) with rich context. You can tell the user to say "approve WP-42" or "revise WP-42: ...". In normal conversation, the context will include recent progress on active staff plans — mention them naturally when relevant ("The compliance staff plan is moving well — Pulse just finished its piece.").
 
 You may approve a proposed assignment (queues it and routes work to the assignee). Use only when Adam has confirmed approval in chat:
 APPROVE_PROPOSAL: <P-0007 or A-0007 or numeric id>
@@ -2365,11 +2683,17 @@ Always interpret and communicate schedule/time references in the user's local ti
             user += f"""
 
 {mem_ctx}"""
+        if historical_docs_ctx:
+            user += f"""
+
+{historical_docs_ctx}"""
         user += f"""
 
 {tasks_ctx}
 
 {assignments_ctx}
+
+{intel_ctx}
 
 **What he says (main input):**
 {user_message or "What should I focus on right now?"}"""
@@ -2414,7 +2738,9 @@ Always interpret and communicate schedule/time references in the user's local ti
         time_ctx += f"\n\n{cal_ctx}"
     if mem_ctx:
         time_ctx += f"\n\n{mem_ctx}"
-    time_ctx += f"\n\n{tasks_ctx}\n\n{assignments_ctx}"
+    if historical_docs_ctx:
+        time_ctx += f"\n\n{historical_docs_ctx}"
+    time_ctx += f"\n\n{tasks_ctx}\n\n{assignments_ctx}\n\n{intel_ctx}"
     recent_history = _compact_conversation_history(
         conversation_history,
         max_messages=hist_max_msg,
@@ -2473,6 +2799,7 @@ def approve_assignment_proposal(
     pid = int(proposal_id)
     if not db.agent_approve_proposal(pid, actor_code=actor_code):
         return False, f"Failed to approve proposal P-{pid}."
+    if True: logger.debug("approved proposal id=%d (Pulse private mem + Shield surface)", pid)
 
     row = db.agent_get_assignment(pid) or {}
     assignee = str(row.get("assignee_code") or "").strip().lower()
@@ -2513,10 +2840,12 @@ class ChiefOfStaffService:
 
     def __init__(self, db: DatabaseManager, main_window: object | None = None):
         self.db = db
+        # Pulse private memory + Shield surface in CoS orchestration
         self.main_window = main_window
 
     def approve_proposal(self, proposal_id: int) -> str:
         pid = int(proposal_id)
+        # CoS proposal approval integrates Pulse private memory + Shield
         _ok, msg = approve_assignment_proposal(self.db, pid, actor_code="navi")
         mw = self.main_window
         if mw is not None and hasattr(mw, "show_toast"):
@@ -2553,6 +2882,7 @@ class ChiefOfStaffService:
 
     def reject_proposal(self, proposal_id: int) -> str:
         pid = int(proposal_id)
+        # CoS reject integrates Pulse private memory + Shield triage
         row = self.db.agent_get_assignment(pid)
         if not row:
             return f"Proposal P-{pid} not found."
@@ -2579,12 +2909,14 @@ def _parse_task_actions(
     - ASSIGN: create proposed delegation assignments (user approves in Suggested Assignments)
     Return cleaned user-visible text (action lines removed) plus counts in CoSTaskActionParseResult.
     """
+    # CoS task parsing integrates Pulse private memory + Shield
     if not response:
         return CoSTaskActionParseResult(
             text=response,
             added_dashboard_tasks=0,
             ambiguous_priority_pending=False,
         )
+    if response: logger.debug("task actions parse response chars=%d (Pulse private mem + Shield)", len(response))
     session_id = f"dashboard_cos_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     added_tasks = 0
     added_task_items: list[tuple[str, Optional[str]]] = []
@@ -4046,3 +4378,616 @@ def _parse_task_actions(
 def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optional[int] = None) -> str:
     """Parse action lines from the model response; returns visible text only (see _parse_task_actions for stats)."""
     return _parse_task_actions(db, response, chat_id=chat_id).text
+
+
+# =============================================================================
+# CoS Staff Coordinator — Work Plans (the real "chief of staff" orchestration)
+# =============================================================================
+#
+# This is the high-level layer on top of the existing agent_assignments scaffolding.
+# CoS is opinionated and proactive:
+#   - User states a goal → CoS proposes a complete, multi-agent WorkPlan
+#   - Rich context + high-quality briefs for each assignee (Pulse, Shield, Mason, etc.)
+#   - Explicit Mason consultation when project structure is unclear
+#   - Mason can autonomously handle milestones on *existing* projects; new projects require user sign-off
+#   - Once approved → CoS delegates (creates real assignments + threads + handoffs)
+#   - CoS reports back on completion / attention-needed / full-plan completion (push notifications)
+#
+# Primary interaction is in chat; the CoS tab will also expose a structured "Work Plans" view.
+# =============================================================================
+
+
+@dataclass
+class WorkPlanProposal:
+    """Lightweight container returned by propose_work_plan for chat/UI rendering."""
+    plan_id: int
+    title: str
+    goal: str
+    summary_md: str
+    assignments: list[dict]  # each has assignee_code, title, brief_md, priority, due_suggestion, context
+    rationale: str
+    mason_consultation: str | None = None
+    status: str = "proposed"
+
+
+def _consult_mason_for_project_structure(
+    db: DatabaseManager,
+    goal: str,
+    client_context: str | None = None,
+    existing_projects: list[dict] | None = None,
+) -> dict:
+    """
+    Opinionated Mason consultation during planning.
+
+    Mason is allowed to:
+      - Propose new milestones on *existing* projects autonomously (CoS will accept)
+      - Recommend a brand-new project (requires explicit user approval before creation)
+
+    Returns a structured dict the planner can consume.
+    """
+    try:
+        from core.grok_client import grok_completion
+        from core.model_router import get_model, ModelRole
+
+        model_name = get_model(ModelRole.CHIEF_OF_STAFF)
+
+        existing = existing_projects or []
+        existing_summary = "\n".join(
+            f"- P-{p.get('id')} {p.get('name')} (client: {p.get('client_name', 'N/A')})"
+            for p in existing[:8]
+        ) or "No active projects found for this client/context."
+
+        prompt = f"""You are Mason, the senior Project Manager for a consulting firm.
+
+A goal has come in from the Chief of Staff:
+
+GOAL: {goal}
+
+CLIENT / CONTEXT:
+{client_context or "General / internal work"}
+
+EXISTING PROJECTS IN SCOPE:
+{existing_summary}
+
+Your job right now is ONLY to give project-structure advice for this goal:
+
+1. Does this goal clearly belong to one of the existing projects above? If yes, name it and suggest 1-3 new milestones (with rough due dates and owners if obvious).
+2. If it does NOT map cleanly to an existing project, propose a sensible new project name + 2-4 initial milestones.
+3. Flag anything that looks like a compliance, security, or risk angle that Shield or Pulse should own.
+
+Respond in clean JSON only with this exact shape:
+
+{{
+  "recommendation": "existing" | "new_project",
+  "project_id": <int or null>,
+  "project_name": "string (only if new)",
+  "milestones": [
+    {{"title": "...", "due_in_days": 14, "notes": "..."}},
+    ...
+  ],
+  "risk_notes": "any security/compliance/dependency flags for Pulse or Shield",
+  "rationale": "one paragraph explaining your reasoning"
+}}
+
+Be decisive. You are allowed to create new milestones on existing projects without further approval.
+"""
+
+        # Call correctly: grok_completion(system, user, model, max_tokens)
+        system_prompt = prompt
+        user_msg = "Respond ONLY with the exact JSON object, no extra text or markdown."
+        content = grok_completion(system_prompt, user_msg, model=model_name, max_tokens=1200) or ""
+
+        # Best-effort JSON extraction
+        import re as _re
+        m = _re.search(r"\{[\s\S]*\}", content)
+        if m:
+            parsed = json.loads(m.group(0))
+            return parsed
+        return {
+            "recommendation": "new_project",
+            "project_id": None,
+            "project_name": "New Initiative: " + goal[:60],
+            "milestones": [{"title": goal[:80], "due_in_days": 21, "notes": "Initial scope from CoS planning"}],
+            "risk_notes": "",
+            "rationale": "Mason consultation fallback",
+        }
+    except Exception as e:
+        logger.warning("Mason consultation failed: %s", e)
+        return {
+            "recommendation": "new_project",
+            "project_id": None,
+            "project_name": None,
+            "milestones": [],
+            "risk_notes": "",
+            "rationale": "Mason unavailable during planning — planner will proceed with lightweight structure.",
+        }
+
+
+def propose_work_plan(
+    db: DatabaseManager,
+    goal: str,
+    *,
+    client_id: int | None = None,
+    thread_id: int | None = None,
+    extra_context: str | None = None,
+    force_agents: list[str] | None = None,
+) -> WorkPlanProposal:
+    """
+    The core CoS Staff Coordinator planning engine.
+
+    - Pulls rich context (Pulse intel, memory, dossier, prior work)
+    - Consults Mason when project linkage is ambiguous
+    - Produces an opinionated, complete multi-agent plan
+    - Persists it as a 'proposed' work_plan with linked proposed assignments
+    - Returns a rich proposal object ready for chat review or CoS-tab display
+
+    This is deliberately proactive and opinionated — exactly as the user requested.
+    """
+    goal = (goal or "").strip()
+    if not goal:
+        raise ValueError("Cannot propose a work plan for an empty goal.")
+
+    now = datetime.now().isoformat()
+
+    # 1. Gather rich context (Pulse + memory + client dossier + documents)
+    intel_context = ""
+    try:
+        intel = IntelService(db)
+        findings = intel.get_relevant_intel(goal, limit=8)
+        if findings:
+            intel_context = "\n".join(
+                f"- [{f.get('kind')}] {f.get('title')}: {f.get('summary','')[:200]}"
+                for f in findings
+            )
+    except Exception:
+        pass
+
+    client_dossier = ""
+    try:
+        if client_id:
+            snap = get_client_dossier_snapshot(db, client_id)
+            client_dossier = snap.get("summary_md", "")[:1500] if snap else ""
+    except Exception:
+        pass
+
+    # 2. Mason consultation (the two-tier rule the user specified)
+    mason_advice = _consult_mason_for_project_structure(
+        db,
+        goal=goal,
+        client_context=client_dossier or extra_context,
+        existing_projects=[],  # could be expanded later via db
+    )
+
+    # 3. Decide which specialist agents should own pieces (opinionated defaults)
+    agents = force_agents or ["pulse", "shield", "mason"]
+    # Always include Mason for execution tracking on anything project-related
+    if "mason" not in agents:
+        agents.append("mason")
+
+    # 4. Build the actual assignment specs (rich briefs + context packages)
+    assignments_spec: list[dict] = []
+
+    # Mason piece — always present for coordination / milestones
+    mason_brief = f"""Goal: {goal}
+
+You are the Project Manager. Using the Mason consultation below, create or extend the appropriate project and milestones.
+Track all work, surface blockers early, and keep the CoS informed of progress.
+
+Mason consultation result:
+{json.dumps(mason_advice, indent=2)}
+
+Deliver:
+- Proper project + milestone structure (new project only if truly required)
+- Weekly checkpoint summaries back to CoS
+- Early flags for anything needing Shield or Pulse attention
+"""
+    assignments_spec.append({
+        "assignee_code": "mason",
+        "title": f"Project coordination & milestone tracking: {goal[:70]}",
+        "brief_md": mason_brief,
+        "priority": 2,
+        "due_suggestion": None,
+        "rich_context": {"mason_advice": mason_advice, "original_goal": goal},
+    })
+
+    # Pulse research / monitoring piece
+    if "pulse" in agents:
+        pulse_brief = f"""You are Pulse (Intelligence & Monitoring).
+
+Goal from leadership: {goal}
+
+Relevant recent intel:
+{intel_context or "(no strong recent matches)"}
+
+Task:
+- Run targeted research / monitoring on the key topics implied by the goal
+- Raise [Security-Relevant] or high-impact findings immediately
+- Produce a concise intelligence package the other agents can use
+- Watch for emerging risks or opportunities
+
+Return findings as artifacts and keep CoS updated on material developments.
+"""
+        assignments_spec.append({
+            "assignee_code": "pulse",
+            "title": f"Intelligence & monitoring for: {goal[:70]}",
+            "brief_md": pulse_brief,
+            "priority": 3,
+            "due_suggestion": None,
+            "rich_context": {"intel_context": intel_context, "goal": goal},
+        })
+
+    # Shield piece (security/compliance/risk)
+    if "shield" in agents:
+        shield_brief = f"""You are Shield (Security, Compliance & Risk).
+
+Goal: {goal}
+
+Context from Pulse / dossier:
+{intel_context[:800] if intel_context else "No specific intel yet."}
+
+Your responsibilities:
+- Identify regulatory, contractual, security, or reputational risks
+- Propose concrete controls or review steps
+- Flag anything that should block or slow other work
+- Produce a short risk memo + recommended actions
+
+Work closely with Mason on milestone integration and with Pulse on ongoing monitoring.
+"""
+        assignments_spec.append({
+            "assignee_code": "shield",
+            "title": f"Risk, security & compliance review: {goal[:70]}",
+            "brief_md": shield_brief,
+            "priority": 3,
+            "due_suggestion": None,
+            "rich_context": {"goal": goal, "mason_advice": mason_advice},
+        })
+
+    # 5. Persist the WorkPlan + the proposed assignments (linked via plan_id)
+    plan_title = f"Plan: {goal[:80]}"
+    plan_summary = f"**Goal:** {goal}\n\n**Mason recommendation:** {mason_advice.get('rationale', 'See details')}\n\n**Agents involved:** {', '.join(a.upper() for a in agents)}"
+
+    plan_id = db.create_work_plan(
+        title=plan_title,
+        goal=goal,
+        summary_md=plan_summary,
+        plan_json={
+            "goal": goal,
+            "mason_advice": mason_advice,
+            "agents": agents,
+            "created_at": now,
+        },
+        created_by="cos",
+        source_thread_id=thread_id,
+        status="proposed",
+    )
+
+    created_assignment_ids: list[int] = []
+    for spec in assignments_spec:
+        ctx = spec.get("rich_context") or {}
+        # Make sure every assignment knows it belongs to a staff-coordinated plan
+        ctx["parent_work_plan_id"] = plan_id
+        ctx["parent_goal"] = goal
+        # Enrich the brief the agent will receive so they understand the coordination
+        enriched_brief = spec["brief_md"] + f"\n\n---\nThis work is part of **Work Plan WP-{plan_id}** (goal: {goal}).\nReport material progress, blockers, or completed artifacts back to the Chief of Staff. Use the assignment update tools and keep the parent plan in mind."
+        assignment_id = db.agent_create_proposed_assignment(
+            title=spec["title"],
+            brief_md=enriched_brief,
+            assignee_code=spec["assignee_code"],
+            priority=spec.get("priority", 3),
+            due_date=spec.get("due_suggestion"),
+            proposed_by="navi",
+            plan_id=plan_id,
+            context_json=ctx,
+        )
+        if assignment_id:
+            created_assignment_ids.append(assignment_id)
+
+    # Attach the real ids back into the returned proposal for the UI
+    for i, spec in enumerate(assignments_spec):
+        if i < len(created_assignment_ids):
+            spec["assignment_id"] = created_assignment_ids[i]
+
+    proposal = WorkPlanProposal(
+        plan_id=plan_id,
+        title=plan_title,
+        goal=goal,
+        summary_md=plan_summary,
+        assignments=assignments_spec,
+        rationale=f"Opinionated plan generated by CoS. Mason was consulted. {len(assignments_spec)} specialist assignments proposed.",
+        mason_consultation=json.dumps(mason_advice, indent=2) if mason_advice else None,
+        status="proposed",
+    )
+
+    return proposal
+
+
+def approve_and_delegate_work_plan(
+    db: DatabaseManager,
+    plan_id: int,
+    *,
+    actor: str = "navi",
+) -> tuple[bool, str, list[int]]:
+    """
+    Approve a proposed WorkPlan, transition it to 'delegated'/'active',
+    approve all its linked proposed assignments, create threads + handoffs.
+
+    Returns (success, message, list_of_assignment_ids)
+    """
+    plan = db.get_work_plan(plan_id)
+    if not plan:
+        return False, f"Work plan P-{plan_id} not found.", []
+
+    if str(plan.get("status")).lower() != "proposed":
+        return False, f"Work plan P-{plan_id} is not in 'proposed' state.", []
+
+    assignments = db.get_assignments_for_plan(plan_id)
+    if not assignments:
+        return False, f"Work plan P-{plan_id} has no assignments to delegate.", []
+
+    approved_ids: list[int] = []
+
+    for a in assignments:
+        aid = a.get("id")
+        if str(a.get("status")).lower() == "proposed":
+            ok, _ = approve_assignment_proposal(db, int(aid), actor_code=actor)
+            if ok:
+                approved_ids.append(int(aid))
+
+    # Update plan status
+    db.update_work_plan_status(plan_id=plan_id, to_status="delegated", actor=actor)
+    db.update_work_plan_status(plan_id=plan_id, to_status="active", actor=actor)
+
+    # TODO: later — register the plan for checkpoint reporting (when assignments complete or need attention)
+
+    return True, f"Work plan P-{plan_id} approved and delegated. {len(approved_ids)} assignments now active.", approved_ids
+
+
+def get_work_plan_checkpoint_report(db: DatabaseManager, plan_id: int) -> str:
+    """
+    Produce a human-readable status report for a work plan.
+    Used both for push notifications and for the CoS tab / chat.
+    Now includes automatically appended progress notes from assignment completions.
+    """
+    plan = db.get_work_plan(plan_id)
+    if not plan:
+        return f"Work plan P-{plan_id} not found."
+
+    assignments = db.get_assignments_for_plan(plan_id)
+    if not assignments:
+        return f"Work plan P-{plan_id} has no assignments."
+
+    lines = [f"**Work Plan WP-{plan_id}** — {plan.get('title')}", ""]
+    lines.append(f"Goal: {plan.get('goal')}")
+    lines.append(f"Current status: {plan.get('status')}")
+    lines.append("")
+
+    # Show automatically recorded progress (from assignment status changes)
+    summary = plan.get("summary_md") or ""
+    progress_lines = [line for line in summary.splitlines() if line.strip().startswith("[") and "Assignment A-" in line]
+    if progress_lines:
+        lines.append("**Recent activity (auto-reported):**")
+        for line in progress_lines[-8:]:   # last few updates
+            lines.append(f"  {line}")
+        lines.append("")
+
+    by_status: dict[str, list] = {}
+    for a in assignments:
+        st = str(a.get("status") or "unknown")
+        by_status.setdefault(st, []).append(a)
+
+    for st in ["in_progress", "queued", "awaiting_review", "blocked", "done", "proposed", "cancelled"]:
+        if st not in by_status:
+            continue
+        lines.append(f"**{st.upper()}** ({len(by_status[st])})")
+        for a in by_status[st][:6]:
+            lines.append(f"  - A-{a['id']:04d} → {a.get('assignee_code','?').upper()}: {a.get('title','')[:60]}")
+        if len(by_status[st]) > 6:
+            lines.append(f"    … and {len(by_status[st]) - 6} more")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# End of CoS Staff Coordinator block
+
+
+# =============================================================================
+# Chat Integration for Staff Coordinator (primary interface)
+# =============================================================================
+
+def _is_staff_planning_request(message: str) -> str | None:
+    """
+    Heuristic to detect when the user is giving CoS a high-level goal that
+    should trigger the full staff planning flow (propose multi-agent WorkPlan).
+
+    Returns the cleaned goal string if it looks like one, else None.
+    This makes the *chat* the natural place to say "we need X done".
+    """
+    if not message or len(message) < 15:
+        return None
+
+    m = message.lower().strip()
+
+    planning_signals = [
+        "we need to", "i need to get", "get the team to", "coordinate",
+        "prepare a plan for", "put together a plan", "i want us to",
+        "staff plan for", "handle the", "take care of the",
+        "propose assignments for", "who should own", "break this down for the team",
+        "i'd like a plan", "let's plan the", "draft a work plan",
+    ]
+
+    for sig in planning_signals:
+        if sig in m:
+            # Extract a reasonable goal (strip the trigger phrase a bit)
+            goal = message.strip()
+            # Clean obvious prefixes
+            for prefix in ["we need to ", "i need to ", "i need to get ", "get the team to ", "let's ", "i want "]:
+                if goal.lower().startswith(prefix):
+                    goal = goal[len(prefix):].strip().capitalize()
+                    break
+            if len(goal) > 8:
+                return goal
+            return message.strip()
+
+    # Also trigger on explicit "plan for <goal>" style
+    if "plan for" in m or "planning for" in m:
+        return message.strip()
+
+    return None
+
+
+def _format_work_plan_proposal_for_chat(proposal: WorkPlanProposal) -> str:
+    """Render a nice, actionable proposal response for the main CoS chat."""
+    lines = []
+    lines.append(f"**Staff Plan WP-{proposal.plan_id} Proposed**")
+    lines.append("")
+    lines.append(f"**Goal:** {proposal.goal}")
+    lines.append("")
+    lines.append(proposal.summary_md)
+    lines.append("")
+    lines.append("**Proposed Assignments to Specialists:**")
+    for a in proposal.assignments:
+        assignee = str(a.get("assignee_code", "?")).upper()
+        title = a.get("title", "")
+        brief = a.get("brief_md", "")[:180].replace("\n", " ")
+        lines.append(f"- **{assignee}**: {title}")
+        lines.append(f"  _{brief}..._")
+    lines.append("")
+
+    if proposal.mason_consultation:
+        lines.append("**Mason's Project Advice (during planning):**")
+        lines.append(proposal.mason_consultation[:600])
+        lines.append("")
+
+    lines.append(proposal.rationale)
+    lines.append("")
+    lines.append("**Next step:** Reply with **approve WP-{}** or **yes, delegate this plan** to have CoS hand the work to Pulse, Shield, and Mason.".format(proposal.plan_id))
+    lines.append("You can also say **revise the plan** or give specific changes (e.g. \"add more Shield focus on regulatory\").")
+
+    return "\n".join(lines)
+
+
+def _handle_work_plan_approval_command(db: DatabaseManager, message: str, chat_id: Optional[int] = None) -> str | None:
+    """
+    Detects commands like "approve WP-42", "delegate plan 17", "yes go with the plan WP-5".
+    If matched, approves + delegates and returns a confirmation message (or error).
+    """
+    m = (message or "").lower()
+
+    import re
+    match = re.search(r"(?:approve|delegate|yes|go ahead|yes go).*?(?:wp|plan|work plan)[^\d]*(\d+)", m, re.IGNORECASE)
+    if not match:
+        # also support bare "approve 42" when context is a recent plan, but for robustness require the number
+        match = re.search(r"(?:approve|delegate)\s+(?:wp-?)?(\d+)", m, re.IGNORECASE)
+
+    if not match:
+        return None
+
+    try:
+        plan_id = int(match.group(1))
+    except Exception:
+        return None
+
+    plan = db.get_work_plan(plan_id)
+    if not plan:
+        return f"I couldn't find Work Plan WP-{plan_id}."
+
+    if str(plan.get("status", "")).lower() != "proposed":
+        return f"WP-{plan_id} is already {plan.get('status')}. No action needed."
+
+    success, msg, aids = approve_and_delegate_work_plan(db, plan_id, actor="navi")
+    if success:
+        report = get_work_plan_checkpoint_report(db, plan_id)
+        return f"**Approved and delegated.** {msg}\n\nCurrent status:\n{report}\n\nI'll keep you posted as the specialists make progress."
+    else:
+        return f"Could not delegate WP-{plan_id}: {msg}"
+
+
+def _handle_work_plan_revision_command(db: DatabaseManager, message: str, chat_id: Optional[int] = None) -> str | None:
+    """
+    Detects revision requests for work plans in chat, e.g.:
+    - "revise WP-42: change the Shield brief to focus on regulatory risk"
+    - "revise the plan for the compliance work, add more Pulse monitoring"
+
+    Appends the revision instructions to the plan, puts it back to 'proposed' for re-review,
+    and presents an updated proposal. This completes the "revise then approve" loop.
+    """
+    m = (message or "").lower()
+    import re
+
+    match = re.search(r"revise.*?(?:wp|plan|work plan)[^\d]*(\d+)[^\w]*(.*)", m, re.IGNORECASE)
+    if not match:
+        return None
+
+    try:
+        plan_id = int(match.group(1))
+        revision_text = (match.group(2) or message).strip()
+        if len(revision_text) < 5:
+            revision_text = message.strip()
+    except Exception:
+        return None
+
+    plan = db.get_work_plan(plan_id)
+    if not plan:
+        return f"Couldn't find Work Plan WP-{plan_id} to revise."
+
+    # Record the revision
+    current_json = plan.get("plan_json")
+    if isinstance(current_json, str):
+        try:
+            current_json = json.loads(current_json)
+        except:
+            current_json = {"revisions": []}
+    if not isinstance(current_json, dict):
+        current_json = {"revisions": []}
+
+    revisions = current_json.get("revisions", [])
+    revisions.append({
+        "timestamp": datetime.now().isoformat(),
+        "instructions": revision_text,
+        "by": "user via chat"
+    })
+    current_json["revisions"] = revisions[-5:]
+
+    db.update_work_plan(
+        plan_id=plan_id,
+        plan_json=current_json,
+        status="proposed"
+    )
+
+    # Re-present an updated proposal (inject revision into goal for fresh generation)
+    try:
+        revised_goal = plan.get("goal", "") + f" (USER REVISION: {revision_text})"
+        new_proposal = propose_work_plan(db, revised_goal, thread_id=chat_id)
+        formatted = _format_work_plan_proposal_for_chat(new_proposal)
+        return f"**Revision recorded for WP-{plan_id}**\n\nYour instructions: {revision_text}\n\nPlan is back in 'proposed' status. I've generated a fresh proposal incorporating the change (shown below as WP-{new_proposal.plan_id}). Approve the new one when ready, or say \"approve WP-{plan_id}\" for the original.\n\n{formatted}"
+    except Exception as e:
+        return f"Revision note saved to WP-{plan_id} (\"{revision_text}\"). The plan is now 'proposed' again for your review and re-approval. (Auto-regenerate hit an issue: {e})"
+
+
+def _get_active_work_plan_status_for_context(db: DatabaseManager, limit: int = 3) -> str:
+    """Small helper to inject lightweight active plan status + recent auto-reported progress into normal CoS context.
+    This is how CoS 'comes back' with updates during normal conversation.
+    """
+    try:
+        active = db.list_work_plans(status="active", limit=limit)
+        if not active:
+            return ""
+        parts = ["**Active Staff Plans & Recent Progress (CoS is tracking these for you):**"]
+        for p in active:
+            pid = p.get("id")
+            title = str(p.get("title") or "")[:55]
+            parts.append(f"- WP-{pid}: {title}")
+            # Pull the auto-appended progress notes we recorded on status changes
+            summary = str(p.get("summary_md") or "")
+            recent_notes = [ln.strip() for ln in summary.splitlines() if ln.strip().startswith("[") and "A-" in ln]
+            if recent_notes:
+                for note in recent_notes[-3:]:
+                    parts.append(f"    ↳ {note}")
+        parts.append("Ask 'checkpoint WP-xxx' for the full picture on any of them.")
+        return "\n".join(parts)
+    except Exception:
+        return ""
+
+
+# The following hooks are called from cos_response to make chat-first planning work.

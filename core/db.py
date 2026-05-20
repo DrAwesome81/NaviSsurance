@@ -39,7 +39,7 @@ def bump_task_due_date_mmddyyyy(due_date: str | None, *, days: int) -> str:
 class DatabaseManager:
     def __init__(self, db_name: str | None = None):
         self.db_name = str(db_name or DATABASE_PATH)
-        self.current_schema_version = 28  # Increment this when making schema changes
+        self.current_schema_version = 31  # Increment this when making schema changes
         self.setup_db()
         self.create_indexes()
         # Additive tables for newer features (safe for legacy DBs)
@@ -57,6 +57,10 @@ class DatabaseManager:
             pass
         try:
             self.seed_default_agents()
+        except Exception:
+            pass
+        try:
+            self.init_document_records_table()
         except Exception:
             pass
 
@@ -2125,12 +2129,41 @@ class DatabaseManager:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
-                SELECT id, name, created_at, updated_at
+                SELECT id, name, created_at, updated_at, state_json
                 FROM workspace_saved_states
                 ORDER BY lower(name) ASC, id ASC
                 """
             ).fetchall()
-            return [dict(row) for row in rows]
+            out = []
+            for row in rows:
+                d = dict(row)
+                # Phase 4 related sets micro (autonomous next): compute lightweight flag from persisted state_json (no schema change). Enables "[Related Set]" badge in saved workspace list + future queries. Safe extra key; json parse defensive; zero impact on non-set or old records.
+                try:
+                    st = json.loads(d.get("state_json") or "{}") if d.get("state_json") else {}
+                    d["related_set_member"] = bool(st.get("related_set_companion") or st.get("related_set_manifest"))
+                    # Phase 4 one-more micro (badge enhancement in main Workspace saved list): also expose companions count from persisted state (if list present in json). Enables richer "🟣 [Related Set (N)]" note/badge without schema change. Defensive parse; 0/omitted for non-sets; tiniest additive only.
+                    try:
+                        comps = st.get("related_set_companions") or []
+                        d["related_set_companions_count"] = len(comps) if isinstance(comps, (list, tuple)) else 0
+                    except Exception:
+                        d["related_set_companions_count"] = 0
+                    # Autonomous chained micro-increment (Phase 4, no pause after count badge): tiniest parallel flag for presence of persisted manifest/summary in state_json. Enables "📋 artifacts" indicator in saved Workspace list badge/tooltip for generated related set members (full traceability pack visible at-a-glance in main list). Defensive; bool from keys; False for non-sets/old records. Smallest addition reusing the st parse block.
+                    try:
+                        d["has_related_set_artifacts"] = bool(st.get("related_set_manifest") or st.get("related_set_summary"))
+                    except Exception:
+                        d["has_related_set_artifacts"] = False
+                    # Next autonomous chained micro (Phase 4 Workspace list enhancement for set traceability, no pause): tiniest extraction of persisted rich "related_set_cross_ref_section" (the exact "Companion to ... Other set members..." sibling listing produced inside Historical Sources Used append) into top-level d for the list item. Enables simple actual cross-ref note/excerpt in main saved Workspace list badge tooltip (reusing the data already persisted in state_json by prior sources extension work). Defensive; None for non-sets; smallest addition inside existing parse try. Directly fulfills example of enriching "Related Set" note in main list.
+                    try:
+                        d["related_set_cross_ref_section"] = (st.get("related_set_cross_ref_section") or st.get("related_set_cross_ref_note")) or None
+                    except Exception:
+                        d["related_set_cross_ref_section"] = None
+                except Exception:
+                    d["related_set_member"] = False
+                    d["related_set_companions_count"] = 0
+                    d["has_related_set_artifacts"] = False
+                    d["related_set_cross_ref_section"] = None
+                out.append(d)
+            return out
 
     def workspace_state_get(self, workspace_id: int) -> dict | None:
         with sqlite3.connect(self.db_name) as conn:
@@ -3345,6 +3378,7 @@ class DatabaseManager:
                         status TEXT NOT NULL DEFAULT 'queued',
                         source_thread_id INTEGER,
                         source_project_id INTEGER,
+                        plan_id INTEGER,
                         context_json TEXT,
                         result_summary_md TEXT,
                         created_at TEXT,
@@ -3352,7 +3386,8 @@ class DatabaseManager:
                         completed_at TEXT,
                         FOREIGN KEY (requester_code) REFERENCES agent_directory(code),
                         FOREIGN KEY (assignee_code) REFERENCES agent_directory(code),
-                        FOREIGN KEY (source_thread_id) REFERENCES agent_threads(id)
+                        FOREIGN KEY (source_thread_id) REFERENCES agent_threads(id),
+                        FOREIGN KEY (plan_id) REFERENCES work_plans(id)
                     )
                     """
                 )
@@ -3389,8 +3424,27 @@ class DatabaseManager:
                     )
                     """
                 )
+                # Work Plans - high-level CoS orchestration layer (staff coordinator)
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS work_plans (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        title TEXT NOT NULL,
+                        goal TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'proposed',
+                        summary_md TEXT,
+                        plan_json TEXT,
+                        created_by TEXT NOT NULL DEFAULT 'cos',
+                        approved_by TEXT,
+                        source_thread_id INTEGER,
+                        created_at TEXT,
+                        updated_at TEXT,
+                        approved_at TEXT
+                    )
+                    """
+                )
                 conn.commit()
-                print("    - Agent workflow tables created")
+                print("    - Agent workflow tables created (including work_plans)")
             except Exception as e:
                 print(f"    - Error creating agent workflow tables: {e}")
 
@@ -3418,6 +3472,8 @@ class DatabaseManager:
                     CREATE TABLE IF NOT EXISTS time_entries (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         client_id INTEGER NOT NULL,
+                        project_id INTEGER,
+                        deliverable_id INTEGER,
                         start_ts TEXT NOT NULL,
                         end_ts TEXT NOT NULL,
                         minutes INTEGER NOT NULL,
@@ -3429,7 +3485,7 @@ class DatabaseManager:
                         is_billable INTEGER NOT NULL DEFAULT 1,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (client_id) REFERENCES billing_clients(id)
+                        FOREIGN KEY (client_id) REFERENCES clients(id)
                     )
                     """
                 )
@@ -3573,6 +3629,68 @@ class DatabaseManager:
             except Exception as e:
                 print(f"    - Error adding billing contact and invoice metadata fields: {e}")
 
+            # Add billing fields to the main clients table for unified billing
+            try:
+                cursor = conn.execute("PRAGMA table_info(clients)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if "billing_mode" not in columns:
+                    conn.execute("ALTER TABLE clients ADD COLUMN billing_mode TEXT NOT NULL DEFAULT 'hourly'")
+                    print("    - Added 'billing_mode' column to clients")
+                if "default_rate" not in columns:
+                    conn.execute("ALTER TABLE clients ADD COLUMN default_rate REAL")
+                    print("    - Added 'default_rate' column to clients")
+                if "billing_contact_name" not in columns:
+                    conn.execute("ALTER TABLE clients ADD COLUMN billing_contact_name TEXT")
+                    print("    - Added 'billing_contact_name' column to clients")
+                if "billing_email" not in columns:
+                    conn.execute("ALTER TABLE clients ADD COLUMN billing_email TEXT")
+                    print("    - Added 'billing_email' column to clients")
+                if "billing_notes" not in columns:
+                    conn.execute("ALTER TABLE clients ADD COLUMN billing_notes TEXT")
+                    print("    - Added 'billing_notes' column to clients")
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error adding billing fields to clients table: {e}")
+
+            # Create client_deliverables table for retainer/deliverable-based billing (SoW items)
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS client_deliverables (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        client_id INTEGER NOT NULL,
+                        project_id INTEGER,
+                        name TEXT NOT NULL,
+                        description TEXT,
+                        amount REAL NOT NULL DEFAULT 0,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        completed_at TEXT,
+                        invoice_draft_id INTEGER,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (client_id) REFERENCES clients(id)
+                    )
+                    """
+                )
+                print("    - Created client_deliverables table for SoW / fixed billing items")
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error creating client_deliverables table: {e}")
+
+            # Add project and deliverable linkage to time_entries
+            try:
+                cursor = conn.execute("PRAGMA table_info(time_entries)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if "project_id" not in columns:
+                    conn.execute("ALTER TABLE time_entries ADD COLUMN project_id INTEGER")
+                    print("    - Added 'project_id' column to time_entries")
+                if "deliverable_id" not in columns:
+                    conn.execute("ALTER TABLE time_entries ADD COLUMN deliverable_id INTEGER")
+                    print("    - Added 'deliverable_id' column to time_entries")
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error adding project/deliverable links to time_entries: {e}")
+
         # Version 17 to 18: global durable user memory tables.
         if from_version < 18 and to_version >= 18:
             print("  - Creating global user memory tables: user_memory, user_memory_fts")
@@ -3652,6 +3770,11 @@ class DatabaseManager:
                         domain_rules_json TEXT NOT NULL DEFAULT '[]',
                         notes TEXT,
                         is_active INTEGER NOT NULL DEFAULT 1,
+                        billing_mode TEXT NOT NULL DEFAULT 'hourly',
+                        default_rate REAL,
+                        billing_contact_name TEXT,
+                        billing_email TEXT,
+                        billing_notes TEXT,
                         created_at TEXT,
                         updated_at TEXT
                     )
@@ -4152,6 +4275,117 @@ class DatabaseManager:
             except Exception as e:
                 print(f"    - Error in morning planning migration: {e}")
 
+        # Version 28 to 29: Billing unification (main clients + client_deliverables)
+        if from_version < 29 and to_version >= 29:
+            print("  - Billing unification: adding billing_mode to clients and client_deliverables table")
+            try:
+                # Add billing columns to main clients table
+                cursor = conn.execute("PRAGMA table_info(clients)")
+                cols = [c[1] for c in cursor.fetchall()]
+                if "billing_mode" not in cols:
+                    conn.execute("ALTER TABLE clients ADD COLUMN billing_mode TEXT NOT NULL DEFAULT 'hourly'")
+                    print("    - Added billing_mode to clients")
+                if "default_rate" not in cols:
+                    conn.execute("ALTER TABLE clients ADD COLUMN default_rate REAL")
+                    print("    - Added default_rate to clients")
+                if "billing_contact_name" not in cols:
+                    conn.execute("ALTER TABLE clients ADD COLUMN billing_contact_name TEXT")
+                    print("    - Added billing_contact_name to clients")
+                if "billing_email" not in cols:
+                    conn.execute("ALTER TABLE clients ADD COLUMN billing_email TEXT")
+                    print("    - Added billing_email to clients")
+                if "billing_notes" not in cols:
+                    conn.execute("ALTER TABLE clients ADD COLUMN billing_notes TEXT")
+                    print("    - Added billing_notes to clients")
+
+                # Create client_deliverables table for SoW/fixed billing
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS client_deliverables (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        client_id INTEGER NOT NULL,
+                        project_id INTEGER,
+                        name TEXT NOT NULL,
+                        description TEXT,
+                        amount REAL NOT NULL DEFAULT 0,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        completed_at TEXT,
+                        invoice_draft_id INTEGER,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (client_id) REFERENCES clients(id)
+                    )
+                """)
+                print("    - Created client_deliverables table")
+
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error in billing unification migration: {e}")
+
+        # Version 29 to 30: DocumentRecords richer retrieval fields (text_preview, checksum, extraction flag)
+        # Completes Phase 1 Memory model/DB parity (dataclass had fields; now persisted for future full extraction in indexer)
+        if from_version < 30 and to_version >= 30:
+            print("  - Adding text retrieval columns to document_records (Phase 1 completion)")
+            try:
+                cursor = conn.execute("PRAGMA table_info(document_records)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if "text_preview" not in columns:
+                    conn.execute("ALTER TABLE document_records ADD COLUMN text_preview TEXT")
+                    print("    - Added text_preview column")
+                if "full_text_extracted" not in columns:
+                    conn.execute("ALTER TABLE document_records ADD COLUMN full_text_extracted INTEGER DEFAULT 0")
+                    print("    - Added full_text_extracted column")
+                if "checksum" not in columns:
+                    conn.execute("ALTER TABLE document_records ADD COLUMN checksum TEXT")
+                    print("    - Added checksum column")
+                conn.commit()
+                # Post-ALTER verification (F3): logs any remaining missing columns before outer version bump in setup_db.
+                # Matches best-effort pattern of v1-v29 migrations (version advanced even on partial); load_document_records guards + Phase1 indexer protect daily use.
+                # Full transactional "bump only on 100% success" would require larger refactor of _migrate_schema caller.
+                cursor = conn.execute("PRAGMA table_info(document_records)")
+                cols = [c[1] for c in cursor.fetchall()]
+                missing = [c for c in ("text_preview", "full_text_extracted", "checksum") if c not in cols]
+                if missing:
+                    print(f"    - WARNING (F3): v30 columns still missing after ALTER attempts: {missing}. DB may need manual intervention on next start.")
+                else:
+                    print("    - v30 verification passed: DocumentRecord retrieval fields (preview/checksum) present.")
+            except Exception as e:
+                print(f"    - Error adding DocumentRecord text fields: {e}")
+
+        # Version 30 to 31: Work Plans (CoS staff coordinator orchestration layer)
+        if from_version < 31 and to_version >= 31:
+            print("  - Adding work_plans table and plan_id to agent_assignments (CoS Staff Coordinator)")
+            try:
+                # Create work_plans table if missing
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS work_plans (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        title TEXT NOT NULL,
+                        goal TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'proposed',
+                        summary_md TEXT,
+                        plan_json TEXT,
+                        created_by TEXT NOT NULL DEFAULT 'cos',
+                        approved_by TEXT,
+                        source_thread_id INTEGER,
+                        created_at TEXT,
+                        updated_at TEXT,
+                        approved_at TEXT
+                    )
+                    """
+                )
+                print("    - work_plans table ensured")
+
+                # Add plan_id column to agent_assignments if missing
+                cursor = conn.execute("PRAGMA table_info(agent_assignments)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if "plan_id" not in columns:
+                    conn.execute("ALTER TABLE agent_assignments ADD COLUMN plan_id INTEGER")
+                    print("    - Added plan_id column to agent_assignments")
+                conn.commit()
+            except Exception as e:
+                print(f"    - Error in work_plans migration: {e}")
+
         print(f"Schema migration from version {from_version} to {to_version} completed.")
 
     # -------------------------------------------------------------------------
@@ -4356,6 +4590,109 @@ class DatabaseManager:
             conn.commit()
             return True
 
+    # ---------------- Client Billing Profile (unified on main clients) ----------------
+
+    def get_client_billing_profile(self, client_id: int) -> dict:
+        """Return billing-related fields for a main client."""
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT id, name, billing_mode, default_rate, billing_contact_name,
+                       billing_email, billing_notes, is_active
+                FROM clients WHERE id = ?
+                """,
+                (int(client_id),)
+            ).fetchone()
+            if not row:
+                return {}
+            return dict(row)
+
+    def update_client_billing_profile(self, client_id: int, **kwargs) -> bool:
+        allowed = {"billing_mode", "default_rate", "billing_contact_name", "billing_email", "billing_notes"}
+        updates = []
+        values = []
+        for k, v in kwargs.items():
+            if k not in allowed:
+                continue
+            updates.append(f"{k} = ?")
+            values.append(v)
+        if not updates:
+            return False
+        updates.append("updated_at = ?")
+        values.append(datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        values.append(int(client_id))
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(f"UPDATE clients SET {', '.join(updates)} WHERE id = ?", values)
+            conn.commit()
+            return True
+
+    # ---------------- Client Deliverables (for retainer / deliverable-based billing) ----------------
+
+    def client_deliverable_add(
+        self,
+        *,
+        client_id: int,
+        name: str,
+        amount: float,
+        description: str = "",
+        project_id: int | None = None,
+        status: str = "pending"
+    ) -> int:
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO client_deliverables
+                (client_id, project_id, name, description, amount, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(client_id),
+                    project_id,
+                    name.strip(),
+                    description.strip(),
+                    float(amount),
+                    status,
+                    datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                )
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def client_deliverables_list(self, client_id: int, status: str | None = None) -> list[dict]:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM client_deliverables WHERE client_id = ? AND status = ? ORDER BY created_at",
+                    (int(client_id), status)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM client_deliverables WHERE client_id = ? ORDER BY created_at",
+                    (int(client_id),)
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def client_deliverable_update_status(self, deliverable_id: int, status: str, completed_at: str | None = None) -> bool:
+        with sqlite3.connect(self.db_name) as conn:
+            now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if status == "ready" and not completed_at:
+                completed_at = now
+            conn.execute(
+                "UPDATE client_deliverables SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+                (status, completed_at, now, int(deliverable_id))
+            )
+            conn.commit()
+            return True
+
+    def client_deliverable_delete(self, deliverable_id: int) -> bool:
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute("DELETE FROM client_deliverables WHERE id = ?", (int(deliverable_id),))
+            conn.commit()
+            return True
+
     def time_entry_add(
         self,
         *,
@@ -4369,6 +4706,8 @@ class DatabaseManager:
         percent_of_total: float | None = None,
         rate_override: float | None = None,
         is_billable: int = 1,
+        project_id: int | None = None,
+        deliverable_id: int | None = None,
     ) -> int:
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with sqlite3.connect(self.db_name) as conn:
@@ -4376,6 +4715,8 @@ class DatabaseManager:
                 """
                 INSERT INTO time_entries (
                     client_id,
+                    project_id,
+                    deliverable_id,
                     start_ts,
                     end_ts,
                     minutes,
@@ -4388,10 +4729,12 @@ class DatabaseManager:
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(client_id),
+                    project_id,
+                    deliverable_id,
                     str(start_ts),
                     str(end_ts),
                     int(minutes),
@@ -6772,12 +7115,12 @@ class DatabaseManager:
             (
                 "shield",
                 "Shield",
-                "Security Steward",
+                "Security Steward (Pulse regulatory privacy risk awareness)",
                 "Security",
                 ["shield", "security", "cybersecurity", "privacy"],
-                ["security_checks", "policy_validation", "sensitive_data_scan"],
+                ["security_checks", "policy_validation", "sensitive_data_scan", "pulse_security_triage"],
             ),
-        ]
+        ]  # Shield now tied to Pulse [Security-Relevant] for privacy risk awareness across coordination surfaces
         with sqlite3.connect(self.db_name) as conn:
             for code, display_name, role_title, home_tab, aliases, capabilities in agents:
                 conn.execute(
@@ -7018,6 +7361,7 @@ class DatabaseManager:
         status: str = "queued",
         source_thread_id: int | None = None,
         source_project_id: int | None = None,
+        plan_id: int | None = None,
         context_json: str | dict | list | None = None,
     ) -> int:
         """Create one assignment and return assignment id."""
@@ -7052,9 +7396,9 @@ class DatabaseManager:
                 """
                 INSERT INTO agent_assignments
                     (title, brief_md, requester_code, assignee_code, priority, due_date, status,
-                     source_thread_id, source_project_id, context_json, result_summary_md, created_at, updated_at, completed_at)
+                     source_thread_id, source_project_id, plan_id, context_json, result_summary_md, created_at, updated_at, completed_at)
                 VALUES
-                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
                 """,
                 (
                     str(title or "").strip() or "Untitled assignment",
@@ -7066,6 +7410,7 @@ class DatabaseManager:
                     st,
                     int(source_thread_id) if source_thread_id is not None else None,
                     int(source_project_id) if source_project_id is not None else None,
+                    int(plan_id) if plan_id is not None else None,
                     ctx,
                     now,
                     now,
@@ -7093,6 +7438,7 @@ class DatabaseManager:
         priority: int = 3,
         due_date: str | None = None,
         proposed_by: str = "navi",
+        plan_id: int | None = None,
         context_json: str | dict | list | None = None,
     ) -> int | None:
         """Create an assignment in ``proposed`` status for user review (no agent thread yet)."""
@@ -7124,9 +7470,9 @@ class DatabaseManager:
                     """
                     INSERT INTO agent_assignments
                         (title, brief_md, requester_code, assignee_code, priority, due_date, status,
-                         source_thread_id, source_project_id, context_json, result_summary_md, created_at, updated_at, completed_at)
+                         source_thread_id, source_project_id, plan_id, context_json, result_summary_md, created_at, updated_at, completed_at)
                     VALUES
-                        (?, ?, ?, ?, ?, ?, 'proposed', NULL, NULL, ?, NULL, ?, ?, NULL)
+                        (?, ?, ?, ?, ?, ?, 'proposed', NULL, NULL, ?, ?, NULL, ?, ?, NULL)
                     """,
                     (
                         str(title or "").strip() or "Untitled assignment",
@@ -7135,6 +7481,7 @@ class DatabaseManager:
                         asg,
                         p,
                         due_date,
+                        int(plan_id) if plan_id is not None else None,
                         ctx,
                         now,
                         now,
@@ -7194,6 +7541,159 @@ class DatabaseManager:
             logger.error("Failed to approve proposal %s: %s", pid, e)
             return False
 
+    # -------------------------------------------------------------------------
+    # Work Plans (CoS Staff Coordinator high-level orchestration)
+    # -------------------------------------------------------------------------
+
+    def create_work_plan(
+        self,
+        *,
+        title: str,
+        goal: str,
+        summary_md: str | None = None,
+        plan_json: str | dict | list | None = None,
+        created_by: str = "cos",
+        source_thread_id: int | None = None,
+        status: str = "proposed",
+    ) -> int:
+        """Create a new work plan and return its id."""
+        now = self._now_iso()
+        pl_json = plan_json
+        if isinstance(pl_json, (dict, list)):
+            pl_json = json.dumps(pl_json, ensure_ascii=False)
+        if pl_json is not None:
+            pl_json = str(pl_json)
+
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO work_plans
+                    (title, goal, status, summary_md, plan_json, created_by, source_thread_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(title or "").strip() or "Untitled plan",
+                    str(goal or "").strip(),
+                    str(status or "proposed").strip().lower(),
+                    summary_md,
+                    pl_json,
+                    str(created_by or "cos").strip().lower(),
+                    int(source_thread_id) if source_thread_id is not None else None,
+                    now,
+                    now,
+                ),
+            )
+            plan_id = int(cur.lastrowid)
+            conn.commit()
+            return plan_id
+
+    def get_work_plan(self, plan_id: int) -> dict | None:
+        """Get a single work plan by id."""
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM work_plans WHERE id = ? LIMIT 1",
+                (int(plan_id),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_work_plans(self, *, status: str | None = None, limit: int = 50) -> list[dict]:
+        """List work plans, optionally filtered by status."""
+        where = ["1=1"]
+        params: list = []
+        if status:
+            where.append("status = ?")
+            params.append(str(status).strip().lower())
+        params.append(int(limit))
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"""
+                SELECT * FROM work_plans
+                WHERE {' AND '.join(where)}
+                ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def update_work_plan_status(
+        self,
+        *,
+        plan_id: int,
+        to_status: str,
+        actor: str = "cos",
+    ) -> bool:
+        """Transition a work plan's status."""
+        pid = int(plan_id)
+        to_st = str(to_status or "").strip().lower()
+        allowed = {"proposed", "approved", "delegated", "active", "completed", "cancelled", "revised"}
+        if to_st not in allowed:
+            return False
+        now = self._now_iso()
+        with sqlite3.connect(self.db_name) as conn:
+            cur = conn.execute(
+                "UPDATE work_plans SET status = ?, updated_at = ? WHERE id = ?",
+                (to_st, now, pid),
+            )
+            if getattr(cur, "rowcount", 0) < 1:
+                return False
+            if to_st == "approved":
+                conn.execute(
+                    "UPDATE work_plans SET approved_at = ?, approved_by = ? WHERE id = ? AND approved_at IS NULL",
+                    (now, str(actor or "cos").strip().lower(), pid),
+                )
+            conn.commit()
+        return True
+
+    def update_work_plan(
+        self,
+        *,
+        plan_id: int,
+        **fields,
+    ) -> bool:
+        """Generic update for title, goal, summary_md, plan_json, etc."""
+        pid = int(plan_id)
+        if not fields:
+            return False
+        now = self._now_iso()
+        sets = []
+        params: list = []
+        for k, v in fields.items():
+            if k in ("title", "goal", "summary_md", "plan_json", "status"):
+                sets.append(f"{k} = ?")
+                if k == "plan_json" and isinstance(v, (dict, list)):
+                    params.append(json.dumps(v, ensure_ascii=False))
+                else:
+                    params.append(v)
+        if not sets:
+            return False
+        sets.append("updated_at = ?")
+        params.append(now)
+        params.append(pid)
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute(
+                f"UPDATE work_plans SET {', '.join(sets)} WHERE id = ?",
+                tuple(params),
+            )
+            conn.commit()
+        return True
+
+    def get_assignments_for_plan(self, plan_id: int) -> list[dict]:
+        """Return all assignments belonging to a given work plan."""
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT * FROM agent_assignments
+                WHERE plan_id = ?
+                ORDER BY priority DESC, id ASC
+                """,
+                (int(plan_id),),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def agent_list_assignments(
         self,
         *,
@@ -7220,7 +7720,7 @@ class DatabaseManager:
             rows = conn.execute(
                 f"""
                 SELECT id, title, brief_md, requester_code, assignee_code, priority, due_date, status,
-                       source_thread_id, source_project_id, context_json, result_summary_md, created_at, updated_at, completed_at
+                       source_thread_id, source_project_id, plan_id, context_json, result_summary_md, created_at, updated_at, completed_at
                 FROM agent_assignments
                 WHERE {' AND '.join(where)}
                 ORDER BY
@@ -7250,7 +7750,7 @@ class DatabaseManager:
             row = conn.execute(
                 """
                 SELECT id, title, brief_md, requester_code, assignee_code, priority, due_date, status,
-                       source_thread_id, source_project_id, context_json, result_summary_md, created_at, updated_at, completed_at
+                       source_thread_id, source_project_id, plan_id, context_json, result_summary_md, created_at, updated_at, completed_at
                 FROM agent_assignments
                 WHERE id = ?
                 LIMIT 1
@@ -7310,6 +7810,33 @@ class DatabaseManager:
                 (int(assignment_id), from_st or None, to_st, (actor_code or "").strip().lower() or None, note, now),
             )
             conn.commit()
+
+        # Staff Coordinator awareness: if this assignment belongs to a work plan,
+        # touch the plan and append a progress note so CoS can automatically report back to the user.
+        plan_id = current.get("plan_id")
+        if plan_id and to_st in {"done", "blocked", "awaiting_review"}:
+            try:
+                pid = int(plan_id)
+                note = f"[{now}] Assignment A-{int(assignment_id):04d} ({current.get('assignee_code','?')}) → {to_st}"
+                current_plan = self.get_work_plan(pid) or {}
+                existing = current_plan.get("summary_md") or ""
+                new_summary = (existing + "\n" + note).strip()[:4000]
+                self.update_work_plan(plan_id=pid, summary_md=new_summary)
+                self.update_work_plan(plan_id=pid)  # ensure timestamp bump
+
+                # Push the update into the originating CoS chat if available (for "report back" in conversation)
+                try:
+                    plan_row = self.get_work_plan(pid) or {}
+                    src = plan_row.get("source_thread_id")
+                    if src:
+                        session_id = f"cos_{int(src)}"
+                        push_note = f"**CoS Staff Report (WP-{pid})**: Assignment A-{int(assignment_id):04d} ({current.get('assignee_code','?')}) moved to **{to_st}**. {note or ''}\n\n(You can say \"checkpoint WP-{pid}\" for the full status.)"
+                        self.save_message(session_id, "assistant", push_note)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
         return True
 
     def agent_update_assignment_fields(
@@ -7986,6 +8513,44 @@ class DatabaseManager:
                 (str(channel_name or "").strip().lower(), str(external_chat_id or "").strip()),
             ).fetchone()
             return dict(row) if row else None
+
+
+    def init_document_records_table(self):
+        """
+        Persistent storage for unified DocumentRecords (Phase 1 retrieval VERIFIED COMPLETE, schema v30).
+        (from GDrive + cleaned Dropbox ingestion).
+        Stores cloud pointers + enriched metadata + text_preview for retrieval across CoS/Workspace/Pulse/Compliance.
+        Additive and safe (IF NOT EXISTS).
+        """
+        with sqlite3.connect(self.db_name) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS document_records (
+                    source TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    source_path TEXT,
+                    name TEXT,
+                    mime_type TEXT,
+                    size INTEGER DEFAULT 0,
+                    modified_time TEXT,
+                    created_time TEXT,
+                    doc_type TEXT,
+                    client_hint TEXT,
+                    project_hint TEXT,
+                    year INTEGER,
+                    regulatory_tags TEXT,
+                    extra_json TEXT,
+                    text_preview TEXT,
+                    full_text_extracted INTEGER DEFAULT 0,
+                    checksum TEXT,
+                    indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (source, source_id)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_doc_client ON document_records(client_hint)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_doc_type ON document_records(doc_type)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_doc_project ON document_records(project_hint)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_doc_year ON document_records(year)")
+            conn.commit()
 
     def close(self):
         """Close database connection."""

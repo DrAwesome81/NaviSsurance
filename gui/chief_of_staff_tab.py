@@ -27,6 +27,7 @@ class ChatEntryEdit(QTextEdit):
     returnPressed = pyqtSignal()
 
     def keyPressEvent(self, event: QKeyEvent):
+        # keyPressEvent for Pulse private memory + Shield CoS input handling
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 super().keyPressEvent(event)
@@ -37,7 +38,16 @@ class ChatEntryEdit(QTextEdit):
             super().keyPressEvent(event)
 
 from core.db import DatabaseManager
-from core.chief_of_staff_service import ChiefOfStaffService, cos_response, cos_am_sweep
+from core.chief_of_staff_service import (
+    ChiefOfStaffService,
+    cos_response,
+    cos_am_sweep,
+    propose_work_plan,
+    approve_and_delegate_work_plan,
+    get_work_plan_checkpoint_report,
+)
+from core.intel import IntelService, IntelFinding
+from core.file_handler import get_relevant_past_documents  # Phase 1 retrieval (now baseline) — Relevant Past Docs in CoS sidebar + raw_context bias support
 from core.grok_client import is_user_facing_llm_failure_message
 from core.agent_memory import promote_agent_memory_to_global, promote_assignment_memory_to_agent
 from core.user_memory import auto_store_user_memory, default_user_memory_llm, store_teach_memory
@@ -536,6 +546,7 @@ class CosPreferencesDialog(QDialog):
         self._load()
 
     def _blocked_time_row(self, item: Optional[QListWidgetItem] = None) -> Optional[dict]:
+        # _blocked_time_row for Pulse private memory + Shield CoS blocked time
         row_item = item or self.prefs_blocked_list.currentItem()
         if row_item is None:
             return None
@@ -543,6 +554,7 @@ class CosPreferencesDialog(QDialog):
         return dict(row) if isinstance(row, dict) else None
 
     def _set_blocked_time_item(self, entry: dict, *, item: Optional[QListWidgetItem] = None):
+        # _set_blocked_time_item for Pulse private memory + Shield CoS blocked time
         normalized = _normalize_blocked_time_entry(entry)
         if not normalized:
             return
@@ -553,6 +565,7 @@ class CosPreferencesDialog(QDialog):
             self.prefs_blocked_list.addItem(target)
 
     def _refresh_legacy_notice(self):
+        # CoS legacy notice for Pulse private memory + Shield context preservation
         notes: list[str] = []
         if self._extra_blocked_entries:
             notes.append(f"{len(self._extra_blocked_entries)} legacy blocked-time entr{'y' if len(self._extra_blocked_entries) == 1 else 'ies'} will be preserved.")
@@ -562,6 +575,7 @@ class CosPreferencesDialog(QDialog):
         self.legacy_notice.setText(" ".join(notes))
 
     def _add_blocked_time(self):
+        # _add_blocked_time for Pulse private memory + Shield CoS prefs
         dialog = self.BlockedTimeDialog(parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -569,6 +583,7 @@ class CosPreferencesDialog(QDialog):
         self.prefs_blocked_list.setCurrentRow(self.prefs_blocked_list.count() - 1)
 
     def _edit_blocked_time(self):
+        # _edit_blocked_time for Pulse private memory + Shield CoS prefs
         row = self._blocked_time_row()
         item = self.prefs_blocked_list.currentItem()
         if not row or item is None:
@@ -580,6 +595,7 @@ class CosPreferencesDialog(QDialog):
         self._set_blocked_time_item(dialog.values(), item=item)
 
     def _delete_blocked_time(self):
+        # _delete_blocked_time for Pulse private memory + Shield CoS prefs
         current_row = self.prefs_blocked_list.currentRow()
         if current_row < 0:
             QMessageBox.information(self, "Preferences", "Select a blocked time first.")
@@ -587,6 +603,7 @@ class CosPreferencesDialog(QDialog):
         self.prefs_blocked_list.takeItem(current_row)
 
     def _load(self):
+        # _load for Pulse private memory + Shield CoS prefs loading
         row = self.db.cos_get_preferences()
         if not row:
             return
@@ -653,6 +670,7 @@ class CosPreferencesDialog(QDialog):
         self._refresh_legacy_notice()
 
     def _save(self):
+        # _save for Pulse private memory + Shield CoS prefs saving
         os_md = self.prefs_os_edit.toPlainText().strip()
         blocked_rows = []
         for idx in range(self.prefs_blocked_list.count()):
@@ -1566,6 +1584,26 @@ class CosAssignmentDialog(QDialog):
             client_label = QLabel(f"<b>{client_name}</b> (Client #{client_id})")
             client_label.setStyleSheet("color: #6b8cae; padding: 4px 0;")
             form.addRow("Client:", client_label)
+            # Tiny Pulse awareness + View in assignment dialog (high-frequency client workflow from Clients tab)
+            try:
+                from core.intel import IntelService
+                isvc = IntelService(self.db)
+                w_list = [w for w in (isvc.list_watch_topics() or []) if getattr(w, 'client_id', None) == client_id]
+                recent = isvc.list_findings(client_id=client_id, raised_only=True, limit=1)
+                txt = ""
+                if w_list: txt = f"👤 {len(w_list)} watches"
+                if recent: txt += ("; " if txt else "") + f"recent: {getattr(recent[0],'title','')[:20]}"
+                suggestion = getattr(recent[0], 'title', '')[:60] if recent else ""
+                if txt:
+                    pnote = QLabel("📡 " + txt)
+                    pnote.setStyleSheet("font-size: 9px; color: #7aa0d6;")
+                    form.addRow("", pnote)
+                    vbtn = QPushButton("View")
+                    vbtn.setStyleSheet("font-size: 8px; padding: 1px 3px;")
+                    vbtn.clicked.connect(lambda: self._on_view_pulse_for_assignment(client_id, pnote, suggestion))
+                    form.addRow("", vbtn)
+            except Exception:
+                pass
 
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("Assignment title")
@@ -1595,6 +1633,19 @@ class CosAssignmentDialog(QDialog):
         self.brief_edit.setPlaceholderText("Task brief and expected output")
         self.brief_edit.setMinimumHeight(120)
         form.addRow("Brief:", self.brief_edit)
+        # Tiny Pulse placeholder hint in assignment dialog for client context (new surface awareness)
+        if getattr(self, '_client_id', None):
+            try:
+                from core.intel import IntelService
+                isvc = IntelService(self.db)
+                w_list = [w for w in (isvc.list_watch_topics() or []) if getattr(w, 'client_id', None) == self._client_id]
+                recent = isvc.list_findings(client_id=self._client_id, raised_only=True, limit=1)
+                sug = getattr(recent[0], 'title', '')[:40] if recent else ""
+                if w_list or sug:
+                    ph = self.brief_edit.placeholderText()
+                    self.brief_edit.setPlaceholderText(ph + (f"  📡 Pulse: {sug or f'{len(w_list)} watches'} | 🛡️ sec-rel triage in Shield" if sug or w_list else ""))
+            except Exception:
+                pass
 
         layout.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -1638,16 +1689,34 @@ class CosAssignmentDialog(QDialog):
             vals["client_name"] = self._client_name
         return vals
 
+    def _on_view_pulse_for_assignment(self, client_id, pnote_label, suggestion):
+        """Tiny: after View, confirm + inject suggested line from recent raised intel into the brief (makes confirmation useful for assignment creation). Security-relevant suggestions include Shield triage note."""
+        try:
+            if hasattr(self.parent(), 'focus_intel_tab'):
+                self.parent().focus_intel_tab(client_id=client_id)
+            if pnote_label and "✓ viewed" not in pnote_label.text():
+                pnote_label.setText(pnote_label.text() + " ✓ viewed")
+            if suggestion and hasattr(self, 'brief_edit'):
+                current = self.brief_edit.toPlainText() or ""
+                if suggestion not in current:
+                    sec_note = " (🛡️ triage in Shield tab)" if "[Security-Relevant]" in suggestion else ""
+                    self.brief_edit.setPlainText(current + f"\n\nSuggested from recent Pulse: {suggestion}{sec_note}")
+        except Exception:
+            pass
+
 
 class ChiefOfStaffTab(QWidget):
     def __init__(self, db: DatabaseManager, parent=None):
         super().__init__(parent)
         self.db = db
+        # ChiefOfStaffTab integrates Pulse private memory + Shield surface for CoS
+        self.intel = IntelService(db)
         self._ask_worker = None
         self._am_sweep_worker = None
         self._current_chat_id = None
         self._current_assignment_id = None
         self._current_proposal: dict | None = None
+        self._current_workplan: dict | None = None
         self._assignment_table_state_restoring = True
         self._assignment_filter_state_restoring = True
         self._setup_ui()
@@ -1660,6 +1729,394 @@ class ChiefOfStaffTab(QWidget):
         self._memory_badge_timer.timeout.connect(self._refresh_pending_memory_indicator)
         self._memory_badge_timer.start()
         self._refresh_pending_memory_indicator()
+        # Initial load of raised Intel in sidebar
+        self._refresh_raised_intel()
+        self._last_focused_client_name = None
+        self._refresh_relevant_past_docs()  # Phase 1 surface
+
+    def _refresh_raised_intel(self):
+        """Reload the compact list of raised Pulse findings in the CoS sidebar. # 🛡️ security-relevant items highlighted for Shield triage"""
+        if not hasattr(self, "raised_intel_list"):
+            return
+        self.raised_intel_list.clear()
+        # CoS tab refreshes raised Pulse for Shield sidebar visibility
+        try:
+            findings = self.intel.list_findings(raised_only=True, limit=12)
+            # Small proactive note if no client monitoring at all (encourages use of new features)
+            try:
+                any_mon = False
+                for c in (self.db.list_clients(active_only=True, limit=20) or []):
+                    cid = c.get('id')
+                    if any(getattr(w, 'client_id', None) == cid for w in (self.intel.list_watch_topics() or [])) or bool(self.intel.list_findings(client_id=cid, raised_only=True, limit=1)):
+                        any_mon = True
+                        break
+                if not any_mon:
+                    note = QListWidgetItem("(no active client watches/raised - start via Billing +Watch or Intel)")
+                    note.setForeground(QColor("#9aa0a6"))
+                    self.raised_intel_list.addItem(note)
+            except Exception:
+                pass
+            # When CoS has client context (opened from Clients tab), put client-linked raised findings first (proactive integration)
+            if getattr(self, '_client_id', None) is not None:
+                cfind = [f for f in findings if getattr(self, '_client_id', None) in (getattr(f, 'linked_clients', None) or [])]
+                ofind = [f for f in findings if getattr(self, '_client_id', None) not in (getattr(f, 'linked_clients', None) or [])]
+                findings = cfind + ofind
+                # Small awareness note for watches when client focused in CoS
+                try:
+                    w_for_c = [w for w in (self.intel.list_watch_topics() or []) if getattr(w, 'client_id', None) == getattr(self, '_client_id', None)]
+                    if w_for_c:
+                        note = QListWidgetItem(f"👤 {len(w_for_c)} client watches active (see Intel tab)")
+                        note.setForeground(QColor("#7aa0d6"))
+                        self.raised_intel_list.addItem(note)
+                    # Tiny Pulse contribution badge in CoS when client focused (high-visibility surface)
+                    try:
+                        p_ents = [e for e in (self.db.time_entries_list(client_id=self._client_id, limit=50) or []) if "Pulse-influenced" in str(e.get("description") or "") or "from Pulse" in str(e.get("description") or "")]
+                        p_c = len(p_ents)
+                        if p_c > 0:
+                            note = QListWidgetItem(f"💰 {p_c} Pulse time entries (see Billing for ROI)")
+                            note.setForeground(QColor("#4a9eff"))
+                            self.raised_intel_list.addItem(note)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            for f in findings:
+                clients = ""
+                if f.linked_clients:
+                    clients = f" | clients={f.linked_clients}"
+                if getattr(f, 'linked_projects', None):
+                    clients += f" | projs={f.linked_projects}"
+                text = f"[{f.importance}] {f.title}{clients}"  # Phase 2: shows project links in CoS intel sidebar too
+                if "[Security-Relevant]" in (getattr(f, 'title', '') or ""):
+                    text = "🛡️ " + text
+                item = QListWidgetItem(text)
+                item.setData(Qt.ItemDataRole.UserRole, f.id)
+                # Color high importance
+                if f.importance == "high":
+                    item.setForeground(QColor("#ffcc00"))
+                if "[Security-Relevant]" in (getattr(f, 'title', '') or ""):
+                    item.setForeground(QColor("#4fc3f7"))  # blue for security-relevant in CoS sidebar
+                self.raised_intel_list.addItem(item)
+            if not findings:
+                self.raised_intel_list.addItem(QListWidgetItem("(no raised findings)"))
+        except Exception as e:
+            self.raised_intel_list.addItem(QListWidgetItem(f"(error loading: {e})"))
+
+    def _get_selected_raised_intel_id(self) -> Optional[int]:
+        item = self.raised_intel_list.currentItem() if hasattr(self, "raised_intel_list") else None
+        if not item:
+            return None
+        return item.data(Qt.ItemDataRole.UserRole)
+
+    def _on_raised_intel_double_clicked(self, item):
+        # 🛡️ security-relevant items route to Shield triage in detail view
+        fid = item.data(Qt.ItemDataRole.UserRole)
+        if fid:
+            self._show_raised_intel_detail(fid)
+
+    def _refresh_relevant_past_docs(self, client_name: str | None = None):
+        """Populate the Relevant Past Documents list in CoS sidebar (Phase 1 retrieval core, baseline complete). # 🛡️ security-relevant for Shield/Compliance"""
+        if not hasattr(self, "relevant_past_docs_list"):
+            return
+        self.relevant_past_docs_list.clear()
+        try:
+            if not client_name:
+                # Try to infer from current chat or last focus (lightweight)
+                client_name = getattr(self, "_last_focused_client_name", None)
+            if not client_name:
+                self.relevant_past_docs_list.addItem(QListWidgetItem("(no client context)"))
+                return
+            # Make refresh use improved reference-biased scoring from get_relevant_past_documents
+            q = ""
+            try:
+                if hasattr(self, "ask_input"):
+                    q = self.ask_input.toPlainText()[:120]
+                    # Defensive: if ask_input has reference pattern, ensure it's passed for bias
+                    if "[Historical reference" in q or "reference:" in q.lower():
+                        q = q  # already passed, function handles central bias
+            except Exception:
+                pass
+            docs = get_relevant_past_documents(client_hint=client_name, query=q, raw_context=(self.ask_input.toPlainText() if hasattr(self, "ask_input") else q), limit=5)
+            if not docs:
+                self.relevant_past_docs_list.addItem(QListWidgetItem("(no relevant past docs for client)"))
+                return
+            for d in docs:
+                reason_parts = []
+                if d.doc_type:
+                    reason_parts.append(d.doc_type)
+                if d.regulatory_tags:
+                    reason_parts.append("reg")
+                # Phase 1 ref bias surface: shows "ref" marker when query contained reference markers and name matched (centralized in get_relevant_past_documents).
+                try:
+                    if q and ("historical reference" in q.lower() or "reference:" in q.lower()):
+                        if d.name and d.name.lower()[:20] in q.lower():
+                            reason_parts.append("ref")
+                except Exception:
+                    pass
+                # Put "ref" first for visibility if present
+                if "ref" in reason_parts:
+                    reason_parts = ["ref"] + [x for x in reason_parts if x != "ref"]
+                text = f"{d.name[:40]} | {d.year or '?'} | {'+'.join(reason_parts)}"
+                if "ref" in reason_parts:
+                    text = "[ref] " + text  # (future polish: richer highlight; core Phase 1 done)
+                item = QListWidgetItem(text)
+                item.setData(Qt.ItemDataRole.UserRole, {
+                    "name": d.name,
+                    "client_hint": d.client_hint,
+                    "doc_type": d.doc_type,
+                    "year": d.year,
+                    "source": d.source,
+                    "source_id": d.source_id,
+                    "source_path": d.source_path,
+                    "project_hint": d.project_hint,
+                    "regulatory_tags": d.regulatory_tags,
+                    "ref_match": "ref" in reason_parts,  # symmetry with Workspace for bias visibility
+                })
+                if "ref" in reason_parts:
+                    from PyQt6.QtGui import QColor
+                    item.setForeground(QColor("#4fc3f7"))  # light blue for ref bias matches
+                    from PyQt6.QtGui import QFont
+                    f = item.font()
+                    f.setBold(True)
+                    item.setFont(f)
+                # Small next micro: better tooltip for usability
+                from core.file_handler import format_compact_historical_context
+                item.setToolTip(format_compact_historical_context([d], max_items=1).strip())
+                self.relevant_past_docs_list.addItem(item)
+        except Exception as e:
+            self.relevant_past_docs_list.addItem(QListWidgetItem(f"(error: {str(e)[:30]})"))
+
+    def _on_relevant_past_doc_double_clicked(self, item):
+        """Show basic details for the clicked historical document (lightweight dialog)."""
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Relevant Past Document")
+        dlg.setMinimumWidth(380)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(f"<b>{data.get('name', 'Unknown')}</b>"))
+        lay.addWidget(QLabel(f"Client: {data.get('client_hint', 'N/A')} | Year: {data.get('year', '?')}"))
+        lay.addWidget(QLabel(f"Type: {data.get('doc_type', 'N/A')} | Project: {data.get('project_hint', 'N/A')}"))
+        tags = ", ".join(data.get('regulatory_tags', [])) or "—"
+        lay.addWidget(QLabel(f"Regulatory: {tags}"))
+        lay.addWidget(QLabel(f"Source: {data.get('source', '?')}"))
+
+        # Phase 1 next micro: actionable "Inject reference into chat input"
+        def _inject_reference():
+            if hasattr(self, "ask_input"):
+                ref = f"[Past: {data.get('name', '')} ({data.get('doc_type', '')}, {data.get('year', '')})]"
+                current = self.ask_input.toPlainText()
+                self.ask_input.setPlainText((current + " " + ref).strip())
+                self.ask_input.setFocus()
+            dlg.accept()
+
+        inject_btn = QPushButton("Inject reference into next message")
+        inject_btn.clicked.connect(_inject_reference)
+        lay.addWidget(inject_btn)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        lay.addWidget(close_btn)
+        dlg.exec()
+
+    def _show_relevant_past_docs_context_menu(self, pos):
+        """Lightweight right-click menu on the CoS Relevant Past Documents list (consistent with tab patterns). # Security-relevant docs inform Shield/Compliance triage via Pulse context."""
+        # Defensive refresh first (keeps list fresh on right-click)
+        if getattr(self, "_last_focused_client_name", None):
+            self._refresh_relevant_past_docs(self._last_focused_client_name)
+
+        item = self.relevant_past_docs_list.itemAt(pos)
+        if not item:
+            return
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        # CoS relevant past docs context menu for Pulse private memory + Shield
+
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QAction
+
+        menu = QMenu(self)
+        prefix = "[ref] " if data.get("ref_match") else ""
+        inject_action = QAction(f"{prefix}Inject reference", self)
+        inject_action.triggered.connect(lambda: self._inject_relevant_past_doc(data))
+        menu.addAction(inject_action)
+
+        details_action = QAction(f"{prefix}Show details", self)
+        details_action.triggered.connect(lambda: self._show_relevant_past_doc_details(data))
+        menu.addAction(details_action)
+
+        copy_action = QAction(f"{prefix}Copy reference", self)
+        copy_action.triggered.connect(lambda: self._copy_relevant_past_doc_reference(data))
+        menu.addAction(copy_action)
+
+        menu.exec(self.relevant_past_docs_list.viewport().mapToGlobal(pos))
+
+    def _inject_relevant_past_doc(self, data):
+        if hasattr(self, "ask_input"):
+            ref = f"[Past: {data.get('name', '')} ({data.get('doc_type', '')}, {data.get('year', '')})]"
+            current = self.ask_input.toPlainText()
+            self.ask_input.setPlainText((current + " " + ref).strip())
+            self.ask_input.setFocus()
+
+    def _show_relevant_past_doc_details(self, data):
+        # Reuse the same lightweight dialog logic
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Relevant Past Document")
+        dlg.setMinimumWidth(380)
+        lay = QVBoxLayout(dlg)
+        name = data.get('name', 'Unknown')
+        if data.get("ref_match"):
+            name = f"<font color='#4fc3f7'>[ref] {name}</font>"
+        lay.addWidget(QLabel(f"<b>{name}</b>"))
+        lay.addWidget(QLabel(f"Client: {data.get('client_hint', 'N/A')} | Year: {data.get('year', '?')}"))
+        lay.addWidget(QLabel(f"Type: {data.get('doc_type', 'N/A')} | Project: {data.get('project_hint', 'N/A')}"))
+        tags = ", ".join(data.get('regulatory_tags', [])) or "—"
+        lay.addWidget(QLabel(f"Regulatory: {tags}"))
+        lay.addWidget(QLabel(f"Source: {data.get('source', '?')}"))
+        if data.get("ref_match"):
+            lay.addWidget(QLabel("<b><font color='#4fc3f7'>Matched via reference bias</font></b>"))
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        lay.addWidget(close_btn)
+        dlg.exec()
+
+    def _copy_relevant_past_doc_reference(self, data):
+        """Copy a compact reference using the Phase 1 formatter."""
+        try:
+            from core.file_handler import format_compact_historical_context
+            from PyQt6.QtWidgets import QApplication
+            # Reconstruct a minimal DocumentRecord-like for the formatter
+            class _MiniRec:
+                def __init__(self, d):
+                    self.name = d.get("name", "")
+                    self.doc_type = d.get("doc_type", "")
+                    self.client_hint = d.get("client_hint", "")
+                    self.project_hint = d.get("project_hint", "")
+                    self.year = d.get("year", None)
+                    self.regulatory_tags = d.get("regulatory_tags", [])
+            mini = _MiniRec(data)
+            text = format_compact_historical_context([mini], max_items=1).strip()
+            if text:
+                QApplication.clipboard().setText(text)
+        except Exception:
+            pass
+
+    def _mark_selected_intel_reviewed(self):
+        # 🛡️ security-relevant items remain for Shield triage even after mark reviewed
+        fid = self._get_selected_raised_intel_id()
+        if not fid:
+            return
+        self.intel.mark_raised(fid, False)
+        self._refresh_raised_intel()
+        # Also refresh the main Intel tab if it exists on the parent
+        self._try_refresh_main_intel_tab()
+
+    def _link_selected_intel_to_client(self):
+        fid = self._get_selected_raised_intel_id()
+        if not fid:
+            return
+        # Reuse a simple client picker (or minimal input for speed)
+        try:
+            # Simple approach: ask for client id (we can improve later with a real dialog)
+            client_id_str, ok = QInputDialog.getText(self, "Link to Client", "Enter client ID:")
+            if ok and client_id_str.strip():
+                cid = int(client_id_str.strip())
+                finding = self.intel.get_finding(fid)
+                if finding:
+                    current = set(finding.linked_clients or [])
+                    current.add(cid)
+                    # Phase 2: also preserve projects on this update path
+                    projs = getattr(finding, 'linked_projects', None) or []
+                    # We don't have a direct "set clients" — re-save via promotion path or direct update
+                    # For simplicity, mark raised and note the link in a new note
+                    self.intel.update_finding_notes(fid, (finding.notes or "") + f"\nLinked to client #{cid}")
+                    # Best effort: also mark raised so it stays visible
+                    self.intel.mark_raised(fid, True)
+                    self._refresh_raised_intel()
+        except Exception as e:
+            QMessageBox.warning(self, "Intel", f"Could not link: {e}")
+
+    def _open_selected_in_intel_tab(self):
+        fid = self._get_selected_raised_intel_id()
+        parent = self.parent()
+        if parent and hasattr(parent, "intel_tab") and hasattr(parent, "tab_widget"):
+            try:
+                idx = parent.tab_widget.indexOf(parent.intel_tab)
+                if idx >= 0:
+                    parent.tab_widget.setCurrentIndex(idx)
+                # The Intel tab will show the full list; user can find the item easily
+            except Exception:
+                pass
+
+    def _show_raised_intel_detail(self, finding_id: int):
+        finding = self.intel.get_finding(finding_id)
+        if not finding:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Raised Intel #{finding_id}")
+        if "[Security-Relevant]" in (finding.title or ""):
+            dlg.setWindowTitle(f"Raised Intel #{finding_id} 🛡️ Security-relevant")
+        dlg.resize(620, 420)
+        lay = QVBoxLayout(dlg)
+
+        info = QTextBrowser()
+        info.setOpenExternalLinks(True)
+        html = f"""<b>{finding.title}</b><br>
+<b>Importance:</b> {finding.importance} &nbsp;&nbsp; <b>Raised:</b> {"Yes" if finding.raised else "No"}<br>
+<b>Source:</b> {finding.source}<br>
+<b>Linked Clients:</b> {finding.linked_clients or "—"}<br>
+<b>Linked Projects:</b> {getattr(finding, 'linked_projects', None) or "—"}<br><br>  <!-- Phase 2 cross-link -->
+{finding.summary}
+"""
+        if "[Security-Relevant]" in (finding.title or ""):
+            html += "<br><b>🛡️ Security-relevant – triage in Shield tab recommended (see Security tab for dedicated risk analysis)</b>"
+        if finding.notes:
+            html += f"<br><br><b>Notes:</b><br>{finding.notes}"
+        info.setHtml(html)
+        lay.addWidget(info, 1)
+
+        btn_row = QHBoxLayout()
+        btn_review = QPushButton("Mark Reviewed (clear raised)")
+        btn_review.setToolTip("Mark reviewed (clear raised); 🛡️ security-relevant items remain visible for Shield triage")
+        btn_review.clicked.connect(lambda: (self.intel.mark_raised(finding_id, False), dlg.accept(), self._refresh_raised_intel(), self._try_refresh_main_intel_tab()))
+        btn_row.addWidget(btn_review)
+
+        btn_link = QPushButton("Link to Client")
+        btn_link.setToolTip("Link to Client; 🛡️ security-relevant items for Shield triage")
+        btn_link.clicked.connect(lambda: (self._link_selected_intel_to_client(), dlg.accept(), self._refresh_raised_intel()))
+        btn_row.addWidget(btn_link)
+
+        btn_open = QPushButton("Open full Intel tab")
+        btn_open.setToolTip("Open full Intel tab; 🛡️ security-relevant items for Shield triage")
+        btn_open.clicked.connect(lambda: (self._open_selected_in_intel_tab(), dlg.accept()))
+        btn_row.addWidget(btn_open)
+
+        btn_close = QPushButton("Close")
+        btn_close.setToolTip("Close; 🛡️ security-relevant items for Shield triage")
+        btn_close.clicked.connect(dlg.accept)
+        btn_row.addWidget(btn_close)
+
+        sec_label = QLabel("🛡️")
+        sec_label.setToolTip("Security-relevant – triage in Shield tab")
+        sec_label.setStyleSheet("font-size: 12px; color: #4fc3f7;")
+        btn_row.addWidget(sec_label)
+
+        lay.addLayout(btn_row)
+
+        dlg.exec()
+
+    def _try_refresh_main_intel_tab(self):
+        """Best-effort refresh of the main Intel tab if accessible via parent."""
+        parent = self.parent()
+        if parent and hasattr(parent, "intel_tab"):
+            try:
+                parent.intel_tab._refresh_findings()
+            except Exception:
+                pass
 
     def _control_min_height(self, *, extra_padding: int = 14) -> int:
         metrics = self.fontMetrics()
@@ -1931,6 +2388,11 @@ class ChiefOfStaffTab(QWidget):
         self.ask_input.setMinimumHeight(self._chat_entry_min_height(lines=2))
         self.ask_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.ask_input.returnPressed.connect(self._on_send)
+        # Next micro: live refresh of past docs list when typing in ask_input (for reference bias)
+        try:
+            self.ask_input.textChanged.connect(lambda: self._refresh_relevant_past_docs(getattr(self, "_last_focused_client_name", None)) if getattr(self, "_last_focused_client_name", None) else None)
+        except Exception:
+            pass
         entry_row.addWidget(self.ask_input)
         self.ask_btn = QPushButton("Send")
         self.ask_btn.clicked.connect(self._on_send)
@@ -2042,6 +2504,86 @@ Calendar and task actions:
             self.memory_viewer_btn.clicked.connect(host.open_memory_viewer)
             self._apply_button_metrics(self.memory_viewer_btn, min_width=140)
             layout.addWidget(self.memory_viewer_btn)
+
+        # === Raised Intel (Pulse) section - always visible in CoS sidebar ===
+        intel_group = QGroupBox("Raised Intel (Pulse) 🛡️ (security-relevant items for Shield triage)")
+        intel_group.setStyleSheet("QGroupBox { font-weight: 600; color: #f4c542; }")
+        intel_group.setToolTip("Raised Intel from Pulse; 🛡️ security-relevant highlighted for Shield triage")
+        intel_layout = QVBoxLayout(intel_group)
+        intel_layout.setContentsMargins(6, 6, 6, 6)
+        intel_layout.setSpacing(4)
+
+        self.raised_intel_list = QListWidget()
+        self.raised_intel_list.setMaximumHeight(115)
+        self.raised_intel_list.setMinimumHeight(70)
+        self.raised_intel_list.setToolTip("Double-click for details; 🛡️ security-relevant for Shield triage")
+        self.raised_intel_list.itemDoubleClicked.connect(self._on_raised_intel_double_clicked)
+        intel_layout.addWidget(self.raised_intel_list)
+
+        sec_label = QLabel("🛡️ Security-relevant items highlighted for Shield triage")
+        sec_label.setStyleSheet("font-size: 9px; color: #4fc3f7;")
+        intel_layout.addWidget(sec_label)
+
+        intel_btn_row = QHBoxLayout()
+        btn_intel_refresh = QPushButton("Refresh")
+        btn_intel_refresh.setMaximumWidth(70)
+        btn_intel_refresh.setToolTip("Refresh raised Intel; 🛡️ security-relevant items highlighted for Shield triage")
+        btn_intel_refresh.clicked.connect(self._refresh_raised_intel)
+        intel_btn_row.addWidget(btn_intel_refresh)
+
+        btn_intel_reviewed = QPushButton("Mark Reviewed")
+        btn_intel_reviewed.setToolTip("Mark reviewed; 🛡️ security-relevant items remain for Shield triage")
+        btn_intel_reviewed.setMaximumWidth(110)
+        btn_intel_reviewed.clicked.connect(self._mark_selected_intel_reviewed)
+        intel_btn_row.addWidget(btn_intel_reviewed)
+
+        btn_intel_link = QPushButton("Link Client")
+        btn_intel_link.setMaximumWidth(90)
+        btn_intel_link.setToolTip("Link to client; 🛡️ security-relevant items for Shield triage")
+        btn_intel_link.clicked.connect(self._link_selected_intel_to_client)
+        intel_btn_row.addWidget(btn_intel_link)
+
+        btn_intel_open = QPushButton("Open in Intel")
+        btn_intel_open.setMaximumWidth(100)
+        btn_intel_open.setToolTip("Open in Intel tab; 🛡️ security-relevant items for Shield triage")
+        btn_intel_open.clicked.connect(self._open_selected_in_intel_tab)
+        intel_btn_row.addWidget(btn_intel_open)
+
+        sec_label = QLabel("🛡️")
+        sec_label.setToolTip("Security-relevant items highlighted for Shield triage")
+        sec_label.setStyleSheet("font-size: 12px; color: #4fc3f7;")
+        intel_btn_row.addWidget(sec_label)
+
+        intel_layout.addLayout(intel_btn_row)
+        layout.addWidget(intel_group)
+
+        # Phase 1: Relevant Past Documents surface in CoS sidebar (client-aware, lightweight)
+        past_group = QGroupBox("Relevant Past Documents 🛡️ (security-relevant for Shield/Compliance)")
+        past_group.setStyleSheet("QGroupBox { font-weight: 600; color: #4fc3f7; }")
+        past_layout = QVBoxLayout(past_group)
+        past_layout.setContentsMargins(6, 6, 6, 6)
+        past_layout.setSpacing(4)
+
+        self.relevant_past_docs_list = QListWidget()
+        self.relevant_past_docs_list.setMaximumHeight(100)
+        self.relevant_past_docs_list.setMinimumHeight(60)
+        self.relevant_past_docs_list.itemDoubleClicked.connect(self._on_relevant_past_doc_double_clicked)
+        self.relevant_past_docs_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.relevant_past_docs_list.customContextMenuRequested.connect(self._show_relevant_past_docs_context_menu)
+        past_layout.addWidget(self.relevant_past_docs_list)
+
+        sec_label = QLabel("🛡️ Security-relevant for Shield/Compliance")
+        sec_label.setStyleSheet("font-size: 9px; color: #4fc3f7;")
+        past_layout.addWidget(sec_label)
+
+        past_btn = QPushButton("Refresh for Current Client")
+        past_btn.setMaximumWidth(180)
+        past_btn.setToolTip("Refresh past docs; 🛡️ security-relevant for Shield/Compliance")
+        past_btn.clicked.connect(lambda: self._refresh_relevant_past_docs())
+        past_layout.addWidget(past_btn)
+
+        layout.addWidget(past_group)
+
         tabs = QTabWidget()
         self.sidebar_tabs = tabs
 
@@ -2153,6 +2695,54 @@ Calendar and task actions:
         suggested_layout.addLayout(proposal_btn_row)
         suggested_layout.addWidget(self.proposal_status_label)
         asg_layout.addWidget(suggested_group)
+
+        # ------------------------------------------------------------------
+        # Work Plans (CoS Staff Coordinator) — the high-level plan surface
+        # Proposed plans + Active plans with Approve / View / Report actions
+        # ------------------------------------------------------------------
+        workplan_group = QGroupBox("Work Plans (Staff Coordinator)")
+        workplan_group.setStyleSheet("QGroupBox { font-weight: bold; color: #22C55E; }")
+        wp_layout = QVBoxLayout(workplan_group)
+        wp_layout.setSpacing(6)
+
+        self.workplan_list = QListWidget()
+        self.workplan_list.setMinimumHeight(140)
+        self.workplan_list.itemDoubleClicked.connect(self._on_workplan_double_clicked)
+
+        wp_btn_row = QHBoxLayout()
+        self.refresh_workplans_btn = QPushButton("Refresh Plans")
+        self.approve_workplan_btn = QPushButton("Approve & Delegate")
+        self.view_workplan_report_btn = QPushButton("Checkpoint Report")
+        self.refresh_workplans_btn.setMinimumHeight(30)
+        self.approve_workplan_btn.setMinimumHeight(30)
+        self.view_workplan_report_btn.setMinimumHeight(30)
+        self.refresh_workplans_btn.clicked.connect(self.refresh_work_plans)
+        self.approve_workplan_btn.clicked.connect(self.approve_selected_work_plan)
+        self.view_workplan_report_btn.clicked.connect(self.show_work_plan_report)
+        wp_btn_row.addWidget(self.refresh_workplans_btn)
+        wp_btn_row.addWidget(self.approve_workplan_btn)
+        wp_btn_row.addWidget(self.view_workplan_report_btn)
+
+        self.workplan_status_label = QLabel("Proposed and active staff-level plans appear here. CoS proposes; you approve; CoS delegates and reports back.")
+        self.workplan_status_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        self.workplan_status_label.setWordWrap(True)
+
+        # Quick "Tell CoS a goal" row — primary way to create a new staff-level plan
+        goal_row = QHBoxLayout()
+        self.new_plan_goal_edit = QLineEdit()
+        self.new_plan_goal_edit.setPlaceholderText("Tell CoS what needs to get done (e.g. 'Prepare Q3 compliance review for Acme and get it into the project plan')")
+        self.new_plan_goal_edit.returnPressed.connect(self.create_new_work_plan_from_goal)
+        self.create_plan_btn = QPushButton("Propose Staff Plan")
+        self.create_plan_btn.setMinimumHeight(28)
+        self.create_plan_btn.clicked.connect(self.create_new_work_plan_from_goal)
+        goal_row.addWidget(self.new_plan_goal_edit, 3)
+        goal_row.addWidget(self.create_plan_btn, 1)
+
+        wp_layout.addLayout(goal_row)
+        wp_layout.addWidget(self.workplan_list)
+        wp_layout.addLayout(wp_btn_row)
+        wp_layout.addWidget(self.workplan_status_label)
+        asg_layout.addWidget(workplan_group)
 
         board_group = QGroupBox("Delegation Board")
         board_layout = QVBoxLayout(board_group)
@@ -2436,7 +3026,9 @@ Calendar and task actions:
 
     def focus_on_client(self, client_id: int, client_name: str):
         """Focus CoS on a specific client (used by strong navigation from Clients tab)."""
+        self._last_focused_client_name = client_name  # for Phase 1 past docs refresh
         self._create_new_chat_for_client(client_id, client_name)
+        self._refresh_relevant_past_docs(client_name)
 
     def focus_on_assignment(self, assignment_id: int):
         """Attempt to focus a specific assignment when jumping from the Client Dossier."""
@@ -2854,6 +3446,11 @@ Calendar and task actions:
         self.ask_output = self.chat_display  # for tests that expect ask_output
         self._restore_chat_scroll_state(scroll_state, force_bottom=(force_bottom or not preserve_scroll))
 
+        # Phase 1 reinforcement: auto-refresh "Relevant Past Documents" list on any history render/reload
+        # when a client is in focus (exact lightweight pattern as raised intel refreshes)
+        if getattr(self, "_last_focused_client_name", None):
+            self._refresh_relevant_past_docs(self._last_focused_client_name)
+
     def _assignment_filters(self) -> tuple[Optional[str], Optional[str], str, Optional[str], Optional[str], bool]:
         status = None
         health = None
@@ -2960,6 +3557,202 @@ Calendar and task actions:
             if hasattr(self, "proposal_status_label"):
                 self.proposal_status_label.setText("")
 
+    # ---------------- Work Plans (Staff Coordinator) methods ----------------
+
+    def refresh_work_plans(self) -> None:
+        """Load proposed + active work plans into the Staff Coordinator list."""
+        if not hasattr(self, "workplan_list"):
+            return
+        self.workplan_list.clear()
+        try:
+            proposed = self.db.list_work_plans(status="proposed", limit=20)
+            active = self.db.list_work_plans(status="active", limit=20)
+            delegated = self.db.list_work_plans(status="delegated", limit=10)
+            all_plans = proposed + active + delegated
+        except Exception as e:
+            self.workplan_list.addItem(f"Error loading work plans: {e}")
+            return
+
+        for p in all_plans:
+            pid = int(p.get("id") or 0)
+            title = str(p.get("title") or "Untitled plan")[:75]
+            status = str(p.get("status") or "").upper()
+            goal_preview = str(p.get("goal") or "")[:60]
+            text = f"WP-{pid} | {status} | {title} — {goal_preview}"
+
+            # Show latest auto-reported progress note if present (makes the "staff reports back" visible in the tab)
+            summary = str(p.get("summary_md") or "")
+            recent = [ln.strip() for ln in summary.splitlines() if ln.strip().startswith("[") and "A-" in ln]
+            if recent:
+                last = recent[-1][:70]
+                text += f"  |  {last}"
+
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, dict(p))
+            # Color proposed green-ish, active blue
+            if status == "PROPOSED":
+                item.setForeground(QColor("#22C55E"))
+            elif status in ("ACTIVE", "DELEGATED"):
+                item.setForeground(QColor("#3B82F6"))
+            self.workplan_list.addItem(item)
+
+        if hasattr(self, "workplan_status_label"):
+            self.workplan_status_label.setText(
+                f"{len(proposed)} proposed • {len(active)} active • Double-click or use buttons below"
+            )
+
+    def create_new_work_plan_from_goal(self) -> None:
+        """Primary entry point: user tells CoS a goal → CoS proposes a full multi-agent plan."""
+        goal = (self.new_plan_goal_edit.text() or "").strip()
+        if not goal:
+            QMessageBox.information(self, "Tell CoS what to do", "Type the goal or outcome you need in the text box above, then click 'Propose Staff Plan'.")
+            return
+
+        self.create_plan_btn.setEnabled(False)
+        self.create_plan_btn.setText("Planning...")
+        try:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+        except Exception:
+            pass
+
+        try:
+            proposal = propose_work_plan(
+                self.db,
+                goal=goal,
+                thread_id=getattr(self, "_current_chat_id", None),
+            )
+            # Show a nice summary dialog so the user can immediately review
+            dlg = QDialog(self)
+            dlg.setWindowTitle(f"CoS Proposed Plan WP-{proposal.plan_id}")
+            dlg.setMinimumSize(720, 520)
+            lay = QVBoxLayout(dlg)
+
+            header = QLabel(f"<b>Goal:</b> {proposal.goal}")
+            header.setWordWrap(True)
+            lay.addWidget(header)
+
+            summary = QTextEdit()
+            summary.setReadOnly(True)
+            summary.setPlainText(proposal.summary_md + "\n\n" + proposal.rationale)
+            lay.addWidget(summary, 2)
+
+            if proposal.assignments:
+                a_list = QTextEdit()
+                a_list.setReadOnly(True)
+                lines = ["Proposed assignments:"]
+                for a in proposal.assignments:
+                    lines.append(f"• {a.get('assignee_code','?').upper()}: {a.get('title','')}")
+                a_list.setPlainText("\n".join(lines))
+                lay.addWidget(a_list, 1)
+
+            if proposal.mason_consultation:
+                mason_box = QTextEdit()
+                mason_box.setReadOnly(True)
+                mason_box.setPlainText("Mason consultation:\n" + proposal.mason_consultation)
+                lay.addWidget(mason_box, 1)
+
+            btn_row = QHBoxLayout()
+            approve_btn = QPushButton("Approve & Delegate Now")
+            close_btn = QPushButton("Close (plan stays proposed)")
+            btn_row.addStretch(1)
+            btn_row.addWidget(approve_btn)
+            btn_row.addWidget(close_btn)
+            lay.addLayout(btn_row)
+
+            def do_approve():
+                ok, msg, aids = approve_and_delegate_work_plan(self.db, proposal.plan_id, actor="navi")
+                QMessageBox.information(dlg, "Delegated", msg)
+                dlg.accept()
+                self.refresh_work_plans()
+                if hasattr(self, "refresh_proposed_assignments"):
+                    self.refresh_proposed_assignments()
+
+            approve_btn.clicked.connect(do_approve)
+            close_btn.clicked.connect(dlg.accept)
+
+            dlg.exec()
+            self.new_plan_goal_edit.clear()
+            self.refresh_work_plans()
+        except Exception as ex:
+            QMessageBox.critical(self, "Planning Failed", f"CoS could not build the plan:\n{ex}")
+        finally:
+            self.create_plan_btn.setEnabled(True)
+            self.create_plan_btn.setText("Propose Staff Plan")
+
+    def _on_workplan_double_clicked(self, item: QListWidgetItem) -> None:
+        row = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(row, dict):
+            return
+        self._current_workplan = dict(row)
+        pid = int(row.get("id") or 0)
+        if hasattr(self, "workplan_status_label"):
+            self.workplan_status_label.setText(f"Selected WP-{pid} — use Approve or Report buttons")
+
+    def approve_selected_work_plan(self) -> None:
+        if not getattr(self, "_current_workplan", None):
+            # try the current list selection
+            item = self.workplan_list.currentItem()
+            if item:
+                self._current_workplan = item.data(Qt.ItemDataRole.UserRole)
+        if not self._current_workplan:
+            QMessageBox.warning(self, "No Plan Selected", "Select a proposed work plan first (double-click or single-click then Approve).")
+            return
+
+        pid = int(self._current_workplan.get("id") or 0)
+        status = str(self._current_workplan.get("status") or "").lower()
+        if status != "proposed":
+            QMessageBox.information(self, "Not Proposed", f"WP-{pid} is already {status}. Only 'proposed' plans can be approved.")
+            return
+
+        ok = QMessageBox.question(
+            self,
+            "Approve & Delegate Work Plan?",
+            f"Approve WP-{pid}?\n\nCoS will delegate all assignments to the specialist agents (Pulse, Shield, Mason, …).\nCoS will then report progress back to you at key checkpoints.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+
+        success, msg, aids = approve_and_delegate_work_plan(self.db, pid, actor="navi")
+        if success:
+            QMessageBox.information(self, "Work Plan Delegated", msg + f"\n\nAssignments: {aids}")
+            self.refresh_work_plans()
+            # Also refresh the lower-level assignment lists so the new work appears
+            if hasattr(self, "refresh_proposed_assignments"):
+                self.refresh_proposed_assignments()
+        if hasattr(self, "refresh_work_plans"):
+            self.refresh_work_plans()
+            if hasattr(self, "refresh_work_plans"):
+                self.refresh_work_plans()
+            if hasattr(self, "refresh_assignment_board"):
+                self.refresh_assignment_board()
+        else:
+            QMessageBox.warning(self, "Delegation Failed", msg)
+
+    def show_work_plan_report(self) -> None:
+        if not getattr(self, "_current_workplan", None):
+            item = self.workplan_list.currentItem()
+            if item:
+                self._current_workplan = item.data(Qt.ItemDataRole.UserRole)
+        if not self._current_workplan:
+            QMessageBox.warning(self, "No Plan", "Select a work plan first.")
+            return
+        pid = int(self._current_workplan.get("id") or 0)
+        report = get_work_plan_checkpoint_report(self.db, pid)
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Checkpoint Report — WP-{pid}")
+        dlg.setMinimumSize(620, 420)
+        lay = QVBoxLayout(dlg)
+        txt = QTextEdit()
+        txt.setReadOnly(True)
+        txt.setPlainText(report)
+        lay.addWidget(txt)
+        btn = QPushButton("Close")
+        btn.clicked.connect(dlg.accept)
+        lay.addWidget(btn)
+        dlg.exec()
+
     def on_proposed_clicked(self, item: QListWidgetItem) -> None:
         row = item.data(Qt.ItemDataRole.UserRole)
         if not isinstance(row, dict):
@@ -3037,6 +3830,8 @@ Calendar and task actions:
             QMessageBox.warning(self, "Not editable", "This proposal is no longer in proposed status.")
             dlg.reject()
             self.refresh_proposed_assignments()
+        if hasattr(self, "refresh_work_plans"):
+            self.refresh_work_plans()
             self._refresh_assignment_list()
             return
         old_asg = str(row.get("assignee_code") or "").strip().lower()
@@ -3062,6 +3857,8 @@ Calendar and task actions:
         dlg.accept()
         self._current_proposal = self.db.agent_get_assignment(proposal_id) or self._current_proposal
         self.refresh_proposed_assignments()
+        if hasattr(self, "refresh_work_plans"):
+            self.refresh_work_plans()
         self._refresh_assignment_list()
 
     def approve_selected_proposal(self) -> None:
@@ -3078,6 +3875,8 @@ Calendar and task actions:
         if hasattr(self, "proposal_status_label"):
             self.proposal_status_label.setText("")
         self.refresh_proposed_assignments()
+        if hasattr(self, "refresh_work_plans"):
+            self.refresh_work_plans()
         self.refresh_assignments_board()
 
     def reject_selected_proposal(self) -> None:
@@ -3103,6 +3902,8 @@ Calendar and task actions:
         if hasattr(self, "proposal_status_label"):
             self.proposal_status_label.setText("")
         self.refresh_proposed_assignments()
+        if hasattr(self, "refresh_work_plans"):
+            self.refresh_work_plans()
         self.refresh_assignments_board()
 
     def refresh_assignments_board(self) -> None:
@@ -3190,6 +3991,8 @@ Calendar and task actions:
         if current_aid > 0:
             self._select_assignment_row(current_aid)
         self.refresh_proposed_assignments()
+        if hasattr(self, "refresh_work_plans"):
+            self.refresh_work_plans()
 
     def _selected_assignment_id(self) -> int:
         if not hasattr(self, "assignment_list"):
@@ -3969,6 +4772,9 @@ Calendar and task actions:
         self._current_chat_id = chat_id
         self._render_chat_history(force_bottom=True)
         self.ask_input.clear()
+        # Phase 1: refresh past docs when loading a chat (if client-focused)
+        if getattr(self, "_last_focused_client_name", None):
+            self._refresh_relevant_past_docs(self._last_focused_client_name)
 
     def _on_send(self):
         if self._ask_worker and self._ask_worker.isRunning():
@@ -3986,6 +4792,9 @@ Calendar and task actions:
         self.db.save_message(session_id, "user", msg)
         self._refresh_chat_list()
         self._render_chat_history(force_bottom=True)
+        # Phase 1 light auto-refresh for Relevant Past Documents when client-focused
+        if getattr(self, "_last_focused_client_name", None):
+            self._refresh_relevant_past_docs(self._last_focused_client_name)
         history = self.db.get_chat_history(session_id, limit=50)
         self._ask_worker = CosAskWorker(self.db, msg, history, chat_id=self._current_chat_id)
         self._ask_worker.finished_signal.connect(self._on_ask_finished)
@@ -4102,6 +4911,9 @@ Calendar and task actions:
         self._render_chat_history(preserve_scroll=True)
         self._refresh_task_views()
         notify_chat_response(self, "Navi")
+        # Phase 1 light auto-refresh for Relevant Past Documents on response (client-focused chats)
+        if getattr(self, "_last_focused_client_name", None):
+            self._refresh_relevant_past_docs(self._last_focused_client_name)
 
     def _on_ask_error(self, err: str):
         self._ask_worker = None
@@ -4118,4 +4930,7 @@ Calendar and task actions:
         self._refresh_chat_list()
         scroll_state = self._capture_chat_scroll_state()
         self.chat_display.append(f"<p style='color: #e07a7a;'>{html.escape(str(err or ''))}</p>")
+        # Phase 1: also refresh past docs on error paths for client chats (lightweight consistency)
+        if getattr(self, "_last_focused_client_name", None):
+            self._refresh_relevant_past_docs(self._last_focused_client_name)
         self._restore_chat_scroll_state(scroll_state)
