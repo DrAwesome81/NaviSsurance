@@ -332,36 +332,47 @@ From there you can:
 
 ## 7. Workspace
 
-Use `Workspace` for collaborative drafting from source files.
+Use `Workspace` for professional document production and collaborative drafting from your source files + historical work. It is the main "production engine" for regulatory deliverables (plans, reports, matrices, etc.).
 
-### What it does
-- lets you add individual files or folders,
-- supports drag-and-drop,
-- lets you mark which files are in scope,
-- previews source content,
-- runs a collaborative drafting workflow,
-- gives you an editable markdown draft,
-- can extract suggested tasks from the draft for review before import.
+### What you can currently do
+- Add source files/folders (PDF, DOCX, MD, TXT) via Select, Add Folder, or drag-and-drop. Mark items in scope. Preview content.
+- See auto-retrieved "Relevant Historical Documents" from your archive (strong matches by type/client/topic). Double-click or use context menu to inject as references. These are automatically used for style/structure guidance during generation (Phase 1 retrieval fully active here).
+- Choose **Prompt Templates** (e.g. CEO Strategy Memo, Board Update, Product Brief → Plan) or custom instructions in the prompt box.
+- Choose **Document Templates** (structured .docx-based from your templates folder) for fill-in-the-blanks style output with LLM assistance.
+- Click **Generate Draft**: Runs dual-LLM collaboration (Grok primary + ChatGPT review) with full reference pack from sources + historical cluster. Streams into Grok/ChatGPT panes + editable Markdown. Supports outline + section generation, revisions via natural language.
+- For complex regulatory work: In the "Relevant Historical Documents" list, right-click a strong cluster (ref + related matches) and select **"Generate Related Set (presets...)"**. It:
+  - Uses presets for common companions (e.g. Validation Plan + Risk Management File + Traceability Matrix).
+  - Reuses the *exact same historical cluster* for all companions (style, structure, references, consistency).
+  - Auto-starts generation for the set members.
+  - Produces: Related Set Manifest (traceability note), Summary, Cross-References subsection in "Historical Sources Used", and runs Consistency Checker (reports contradictions, scope drift, etc. across the set).
+- Saved Workspaces: "Save" / "Save As…" full session state (files, generated content, related-set metadata, consistency reports, billing artifacts, templates used). Later reload restores everything including set companions and reports. List of saved workspaces in the UI.
+- Exports:
+  - Save Markdown.
+  - Export as... (DOCX, PDF via integration, etc.).
+  - Quick-export to client folder (auto-includes manifest, summary, cross-refs, consistency report, billing summary for sets).
+  - GDrive auto-upload toggle (persisted): when enabled, related-set exports + all artifacts go to client folder on GDrive.
+  - Export Question Packet.
+- **Generate Billing Summary for Set** (from historical list menu, after Generate Related Set or strong cluster): Produces lightweight billing artifact (time/deliverables snapshot + cluster style notes) without full invoice. Auto-included in exports.
+- Consistency: Post-generation for sets (and now enhanced single-doc intra-review). Reports visible in saved state, exports, and surfaced in CoS/briefings.
+- Extract Suggested Tasks from the draft (review/import to Tasks tab).
+- Full traceability: Generated docs include "Historical Sources Used" with Related Document Set Cross-References listing companions and cluster.
+- Integration: Send research from Deep Research tab. Delegate drafting/review to sub-agents (Quill etc.) via CoS. Link to clients/projects. Use with CoS for planning.
+- Templates system: Discover/import structured templates with machine tags for fields; preview, validate, render to DOCX.
 
-### Typical workflow
-1. Open `Workspace`.
-2. Add material with `Select File/Folder`, `Add Folder…`, or drag and drop.
-3. Mark the files you want included.
-4. Preview files if needed.
-5. Click `Generate Draft`.
-6. Enter the instruction prompt.
-7. Review the three panes:
-   - `Grok (API)`
-   - `ChatGPT (API)`
-   - `Markdown Document`
-8. Edit the markdown manually if needed.
-9. Use `Save Markdown` to save the `.md` draft.
-10. Use `Export as...` to export the draft in another format.
-11. Optionally click `Extract Suggested Tasks…` to review and import tasks from the draft.
+### Typical advanced workflow (Phase 4 production)
+1. Pull strong historical refs in the list (auto or from prior).
+2. Right-click → Generate Related Set (uses preset + cluster).
+3. Review companions auto-generating with shared context + consistency report.
+4. Save as workspace (full state preserved).
+5. Quick-export (or GDrive) → client folder gets doc + manifest + summary + consistency report + cross-refs.
+6. Optionally Generate Billing for Set → included in export.
+7. Use in CoS (surface reports, delegate fixes to Sentinel).
 
 ### When to use Workspace vs Deep Research
-- Use `Workspace` when your main inputs are files and folders you already have.
-- Use `Deep Research` when your main input is a web research question and you want an external research brief.
+- Use `Workspace` when your main inputs are files/folders you already have (or historical archive) and you want polished, traceable client deliverables (especially sets of related docs).
+- Use `Deep Research` when you need external web research first (it can feed into Workspace).
+
+The Workspace is heavily focused on MedTech regulatory work (FDA-style docs, consistency, traceability, client-folder exports). All Phase 4 elements (historical reuse, related sets, consistency, GDrive) are actively wired and usable.
 
 ## 8. Deep Research
 

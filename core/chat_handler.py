@@ -5,8 +5,13 @@ from datetime import datetime, timedelta, UTC
 from dateutil import parser
 from core.db import DatabaseManager
 from core.data_fetch import DataFetcher
+from core.chief_of_staff_service import _consistency_context
 from core.email_importance import evaluate_email_importance
 from core.email_utils import classify_email, normalize_message_id
+
+import logging
+logger = logging.getLogger(__name__)
+
 
 class ChatHandler(QObject):
     # Email analysis prompt template (static content)
@@ -640,11 +645,27 @@ Return only the relevant emails, nothing else."""
             deliv_str = "\n".join(deliv_lines)
         except Exception:
             deliv_str = "[SECTION:Open High-Priority Deliverables]\n(Unable to load deliverable snapshot this run; use Projects/Tasks tabs for full view)"
+        consistency_str = _consistency_context(self.db)
         focus_lines = ["[SECTION:Suggested Focus Areas]"]
         focus_lines.append("Prioritize client work aligned with today's calendar blocks, high-prio tasks, and recent raised Pulse regulatory/market signals (private theme memory active). Delegate lightweight research to Pulse via chat (e.g. 'research recent FDA guidance on X'). Use 'What should I work on today?' CoS command for full reasoned list with memory context.")
         if 'raised_findings' in locals() and raised_findings:
             focus_lines.append("Align actions with latest Pulse intel for maximum client/regulatory impact. 🛡️ security-relevant ones for Shield privacy triage.")
         focus_str = "\n".join(focus_lines)
+
+        # Smallest Phase 3 sub-agent polish: include recent agent/assignment reflections (new support) in daily briefing.
+        # Uses db.memory_reflection_recent (now with scopes). Non-blocking, defensive, reuses existing style.
+        agent_ref_lines = ["[SECTION:Recent Sub-Agent Reflections (for delegation awareness)]"]
+        for code in ["atlas", "mason", "pulse", "sentinel"]:
+            try:
+                refs = self.db.memory_reflection_recent(scope=f"agent:{code}", limit=1)
+                if refs and refs[0].get("summary_text"):
+                    s = str(refs[0]["summary_text"])[:80].replace("\n", " ")
+                    agent_ref_lines.append(f"- {code}: {s}")
+            except Exception:
+                pass
+        if len(agent_ref_lines) == 1:
+            agent_ref_lines.append("(no recent summaries; reflections auto-generated post agent chats)")
+        agent_ref_str = "\n".join(agent_ref_lines)
 
         # ========== BUILD BRIEFING ==========
         briefing = f"Daily Briefing for {today.strftime('%B %d, %Y')}:\n\n" \
@@ -655,7 +676,9 @@ Return only the relevant emails, nothing else."""
                   f"{pulse_str}\n\n" \
                   f"{billing_snapshot}\n\n" \
                   f"{deliv_str}\n\n" \
-                  f"{focus_str}\n"
+                  f"{consistency_str}\n\n" \
+                  f"{focus_str}\n" \
+                  f"{agent_ref_str}\n"
         if 'pulse_str' in locals(): logger.debug("daily briefing pulse_str chars=%d (Pulse private mem + Shield surface)", len(pulse_str or ""))
         
         if urgent_emails_str:

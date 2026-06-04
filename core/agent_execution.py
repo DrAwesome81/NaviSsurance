@@ -316,6 +316,74 @@ def _run_scout_bootstrap(db: DatabaseManager, assignment: dict, *, thread_id: in
     return {"created": True, "artifact_type": "lead_execution_snapshot", "artifact_id": artifact_id}
 
 
+def _run_sentinel_bootstrap(db: DatabaseManager, assignment: dict, *, thread_id: int | None = None) -> dict:
+    """Smallest bootstrap for Sentinel (QA & Compliance specialist) to support sub-agent delegation (Phase 3)."""
+    assignment_id = int(assignment.get("id") or 0)
+    if _artifact_exists(db, assignment_id=assignment_id, artifact_type="qa_compliance_snapshot"):
+        return {"created": False, "artifact_type": "qa_compliance_snapshot"}
+    try:
+        from core.intel import IntelService
+        intel = IntelService(db)
+        findings = intel.list_findings(raised_only=True, limit=5) or []
+    except Exception:
+        findings = []
+    lines = [
+        "## Sentinel QA/Compliance snapshot",
+        "",
+        f"- Assignment: `A-{assignment_id:04d}`",
+        f"- Raised findings (proxy for compliance signals): `{len(findings)}`",
+    ]
+    if findings:
+        for f in findings[:3]:
+            t = str(f.get("title") or f.get("content", ""))[:60]
+            lines.append(f"- {t}")
+    else:
+        lines.append("- (no raised findings for snapshot)")
+    artifact_id = db.agent_add_artifact(
+        artifact_type="qa_compliance_snapshot",
+        assignment_id=assignment_id,
+        thread_id=int(thread_id) if thread_id is not None else None,
+        title=f"QA/Compliance snapshot A-{assignment_id:04d}",
+        content_md="\n".join(lines).strip(),
+        content_json={"raised_count": len(findings)},
+    )
+    db.agent_set_assignment_result_summary(
+        assignment_id=assignment_id,
+        summary_md="QA/Compliance snapshot prepared from raised findings.",
+        actor_code="navi",
+        note="Sentinel execution bootstrap",
+    )
+    return {"created": True, "artifact_type": "qa_compliance_snapshot", "artifact_id": artifact_id}
+
+
+def _run_lex_bootstrap(db: DatabaseManager, assignment: dict, *, thread_id: int | None = None) -> dict:
+    """Smallest bootstrap for Lex (Contracts Specialist) sub-agent support."""
+    assignment_id = int(assignment.get("id") or 0)
+    if _artifact_exists(db, assignment_id=assignment_id, artifact_type="contract_snapshot"):
+        return {"created": False, "artifact_type": "contract_snapshot"}
+    lines = [
+        "## Lex Contracts snapshot",
+        "",
+        f"- Assignment: `A-{assignment_id:04d}`",
+        "- (no specific contract data; placeholder for review artifacts)",
+    ]
+    artifact_id = db.agent_add_artifact(
+        artifact_type="contract_snapshot",
+        assignment_id=assignment_id,
+        thread_id=int(thread_id) if thread_id is not None else None,
+        title=f"Contract snapshot A-{assignment_id:04d}",
+        content_md="\n".join(lines).strip(),
+        content_json={},
+    )
+    db.agent_set_assignment_result_summary(
+        assignment_id=assignment_id,
+        summary_md="Contract snapshot prepared.",
+        actor_code="navi",
+        note="Lex execution bootstrap",
+    )
+    return {"created": True, "artifact_type": "contract_snapshot", "artifact_id": artifact_id}
+
+
 def bootstrap_assignment_execution(db: DatabaseManager, *, assignment_id: int, thread_id: int | None = None) -> dict:
     assignment = db.agent_get_assignment(int(assignment_id))
     if not assignment:
@@ -333,4 +401,8 @@ def bootstrap_assignment_execution(db: DatabaseManager, *, assignment_id: int, t
         return _run_archive_bootstrap(db, assignment, thread_id=thread_id)
     if code == "scout":
         return _run_scout_bootstrap(db, assignment, thread_id=thread_id)
+    if code == "sentinel":
+        return _run_sentinel_bootstrap(db, assignment, thread_id=thread_id)
+    if code == "lex":
+        return _run_lex_bootstrap(db, assignment, thread_id=thread_id)
     return {"created": False, "reason": "unsupported_agent", "agent_code": code}

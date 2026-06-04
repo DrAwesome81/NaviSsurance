@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Callable, Iterable, Optional
 
 from core.agent_execution import bootstrap_assignment_execution
@@ -236,6 +237,16 @@ def _agent_memory_prompt_context(
         global_memory = ""
     if global_memory:
         sections.append("Relevant shared Navi memory:\n" + global_memory)
+    try:
+        # Use recent agent reflection summary (from post-chat build) for sub-agent self-awareness (Phase 3 follow-up).
+        refs = db.memory_reflection_recent(scope=f"agent:{agent_code}", limit=1)
+        if refs:
+            r = refs[0]
+            s = str(r.get("summary_text") or "")[:300]
+            if s:
+                sections.append(f"Recent {agent_code} reflection summary:\n{s}")
+    except Exception:
+        pass
     ctx = "\n\n".join(section for section in sections if section.strip())
     if ctx: logger.debug("agent chat private memory prompt context chars=%d (Pulse/Shield)", len(ctx))
     return ctx
@@ -460,11 +471,12 @@ def agent_chat_response(
         return mem_cmd["response"]
 
     context_parts: list[str] = []
-    if assignment_id is not None:
+    is_intel_pulse_chat = bool(thread_id and str(thread_id).startswith("intel_pulse"))
+    if assignment_id is not None and not is_intel_pulse_chat:
         asg_ctx = _format_assignment_context(db, int(assignment_id))
         if asg_ctx:
             context_parts.append(asg_ctx)
-    if thread_id is not None:
+    if thread_id is not None and not is_intel_pulse_chat:
         thr_ctx = _format_thread_context(db, int(thread_id))
         if thr_ctx:
             context_parts.append(thr_ctx)
@@ -482,6 +494,55 @@ def agent_chat_response(
     if memory_context:
         context_parts.append(memory_context)
 
+    # For the Pulse agent specifically: use the new pure local-only Intel retrieval layer
+    # with hybrid (kw + vector) + local LLM synthesis when useful.
+    pulse_intel_injection = None
+    if code == "pulse" and user_text:
+        try:
+            from core.intel_retrieval import retrieve_relevant_intel_hybrid
+
+            # First call: always get the hybrid (kw + vector) result cheaply
+            local_ctx = retrieve_relevant_intel_hybrid(
+                db, user_text,
+                max_items=20,
+                max_chars=6500,
+                use_synthesis=False,
+            )
+
+            # Heuristic: only attempt local LLM synthesis when there is a meaningful
+            # number of candidates. This avoids paying the synthesis cost on small queries.
+            from core.intel_retrieval import SYNTHESIS_MIN_CANDIDATES
+            if local_ctx.total_candidates_considered and local_ctx.total_candidates_considered > SYNTHESIS_MIN_CANDIDATES:
+                logger.info("Pulse intel synthesis engaged (candidates=%d > threshold=%d)",
+                            local_ctx.total_candidates_considered, SYNTHESIS_MIN_CANDIDATES)
+                local_ctx = retrieve_relevant_intel_hybrid(
+                    db, user_text,
+                    max_items=20,
+                    max_chars=6500,
+                    use_synthesis=True,
+                )
+            else:
+                logger.debug("Pulse synthesis skipped: %s candidates (threshold %d)",
+                             local_ctx.total_candidates_considered, SYNTHESIS_MIN_CANDIDATES)
+
+            if local_ctx.formatted_block:
+                context_parts.append(local_ctx.formatted_block)
+
+            # === DIAGNOSTIC ===
+            pulse_intel_injection = {
+                "local_layer": True,
+                "used_synthesis": local_ctx.used_local_synthesis,
+                "formatted_block_chars": local_ctx.chars_used,
+                "items": [
+                    {"title": h.title, "source_title": h.source_title, "matched_fields": h.matched_fields}
+                    for h in (local_ctx.items or [])[:5]
+                ],
+                "note": local_ctx.note,
+            }
+        except Exception:
+            # Never break the Pulse chat.
+            pass
+
     messages: list[dict] = [{"role": "system", "content": system}]
     if context_parts:
         messages.append(
@@ -497,6 +558,34 @@ def agent_chat_response(
         # Avoid duplicate user turn if caller already included it in history.
         if not hist or hist[-1].get("role") != "user" or hist[-1].get("content") != user_text:
             messages.append({"role": "user", "content": user_text})
+
+    # =====================================================================
+    # DIAGNOSTIC DUMP — exact prompt sent to Pulse (user request 2026-05-24)
+    # Gated behind PULSE_DIAGNOSTIC=1 to reduce production stdout exposure of
+    # rich intel content (addresses security/diagnostic review finding while
+    # preserving the exact tool for targeted debugging of retrieval injection).
+    # The injected formatted_block itself remains compact by design.
+    # =====================================================================
+    if code == "pulse" and os.environ.get("PULSE_DIAGNOSTIC") == "1":
+        try:
+            print("\n" + "="*80)
+            print("PULSE PROMPT DIAGNOSTIC (exact text sent to model)")
+            print("="*80)
+            print(f"agent_code={code}  thread_id={thread_id}  assignment_id={assignment_id}")
+            print(f"user_message (last turn): {user_text!r}")
+            print("\n--- RAW get_relevant_intel RESULT (what retrieval actually returned) ---")
+            print(repr(pulse_intel_injection))
+            print("\n--- FULL MESSAGES ARRAY (this is the exact prompt) ---")
+            for i, m in enumerate(messages):
+                role = m.get("role")
+                content = m.get("content", "")
+                print(f"\n[{i}] ROLE: {role}")
+                print("-" * 40)
+                print(content)
+                print("-" * 40)
+            print("\n" + "="*80 + "\n")
+        except Exception as _diag_err:
+            print(f"[PULSE DIAGNOSTIC FAILED TO PRINT] {_diag_err}")
 
     try:
         out = grok_completion_messages(messages, model=MODEL_FAST)
@@ -551,6 +640,16 @@ def agent_chat_response(
             )
         except Exception as exc:
             logger.debug("assignment memory writeback failed for %s: %s", code, exc)
+
+        # Sub-agent reflection summaries (Phase 3 follow-up gap per roadmap_status active items): trigger after chat so agents/assignments get periodic durable summaries.
+        # Reuses global memory_reflection (now supports agent: scope via agent_memory). Smallest, non-blocking, defensive.
+        try:
+            from core.memory_reflection import build_memory_reflection
+            build_memory_reflection(db, scope=f"agent:{code}")
+            if assignment_id is not None:
+                build_memory_reflection(db, scope=f"assignment:{int(assignment_id)}")
+        except Exception as exc:
+            logger.debug("agent/assignment reflection summary failed for %s: %s", code, exc)
 
         # Also persist turn to Mem0 with metadata
         try:

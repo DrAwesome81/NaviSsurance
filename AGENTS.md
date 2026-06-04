@@ -128,6 +128,7 @@ Follow `docs/contributor_guide.md` exactly:
 - Large refactors without representative tests or breaking existing flows.
 - Treating old plans as current spec without checking roadmap_status/TODO/code.
 - Skipping verification ("it looks good in the diff").
+- Using expanding hardcoded keyword/phrase lists in Python for high-level user *intent classification* or complex routing decisions (e.g. "is this a broad multi-agent coordination goal requiring a Work Plan?"). The LLM (with full context) should decide via natural output or explicit markers (e.g. PROPOSE_STAFF_PLAN:). Structured exact command syntax (ADD_TASK:, ASSIGN: and friends) is the deliberate exception for deterministic execution. See chief_of_staff.md audit note.
 
 ## References
 - `docs/contributor_guide.md` (source of truth + update rule — read this first)

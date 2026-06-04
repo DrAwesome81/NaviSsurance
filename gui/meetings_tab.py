@@ -122,13 +122,7 @@ class MeetingMetadataDialog(QDialog):
             if initial_cos_project_id is not None and project_id == int(initial_cos_project_id):
                 self.project_combo.setCurrentIndex(self.project_combo.count() - 1)
 
-        self.client_combo.currentIndexChanged.connect(self._update_pulse_note)
-        self._update_pulse_note()  # initial
-
-        form.addRow("Meeting date", self.date_edit)
-        form.addRow("Meeting with", self.with_edit)
-        form.addRow("Client", self.client_combo)
-        form.addRow("Project", self.project_combo)
+        # Create Pulse note widgets *before* calling _update_pulse_note (which references them)
         self.pulse_note = QLabel("", self)
         self.pulse_note.setStyleSheet("font-size: 9px; color: #7aa0d6;")
         pulse_container = QWidget()
@@ -139,6 +133,14 @@ class MeetingMetadataDialog(QDialog):
         self.view_pulse_btn.setStyleSheet("font-size: 8px; padding: 1px 3px;")
         self.view_pulse_btn.clicked.connect(self._view_pulse_intel)
         ph.addWidget(self.view_pulse_btn)
+
+        self.client_combo.currentIndexChanged.connect(self._update_pulse_note)
+        self._update_pulse_note()  # initial
+
+        form.addRow("Meeting date", self.date_edit)
+        form.addRow("Meeting with", self.with_edit)
+        form.addRow("Client", self.client_combo)
+        form.addRow("Project", self.project_combo)
         form.addRow("Pulse Intel", pulse_container)
         form.addRow("Notes", self.notes_edit)
 
@@ -166,7 +168,8 @@ class MeetingMetadataDialog(QDialog):
         try:
             cid = self.client_combo.currentData()
             if not cid or not self.db:
-                self.pulse_note.setText("")
+                if hasattr(self, 'pulse_note'):
+                    self.pulse_note.setText("")
                 return
             from core.intel import IntelService
             isvc = IntelService(self.db)
@@ -177,19 +180,24 @@ class MeetingMetadataDialog(QDialog):
                 txt = f"👤 {len(w_list)} watches"
             if recent:
                 txt += ("; " if txt else "") + f"recent: {getattr(recent[0],'title','')[:25]}"
-            self.pulse_note.setText("📡 " + txt if txt else "")
+            if hasattr(self, 'pulse_note'):
+                self.pulse_note.setText("📡 " + txt if txt else "")
             if hasattr(self, 'view_pulse_btn'):
                 self.view_pulse_btn.setVisible(bool(txt))
-            self.notes_edit.setToolTip(f"Pulse for client: {txt}" if txt else "Key decisions, action items, follow-ups…")
-            # tiny extra: hint in with_edit placeholder when Pulse active for the client
-            base_ph = "e.g., Acme — John Smith (Reg Affairs)"
-            self.with_edit.setPlaceholderText(base_ph + (f"  📡 Pulse active 🛡️ Shield for sec-relevant" if txt else ""))
+            if hasattr(self, 'notes_edit'):
+                self.notes_edit.setToolTip(f"Pulse for client: {txt}" if txt else "Key decisions, action items, follow-ups…")
+            if hasattr(self, 'with_edit'):
+                base_ph = "e.g., Acme — John Smith (Reg Affairs)"
+                self.with_edit.setPlaceholderText(base_ph + (f"  📡 Pulse active 🛡️ Shield for sec-relevant" if txt else ""))
         except Exception:
-            self.pulse_note.setText("")
+            if hasattr(self, 'pulse_note'):
+                self.pulse_note.setText("")
             if hasattr(self, 'view_pulse_btn'):
                 self.view_pulse_btn.setVisible(False)
-            self.notes_edit.setToolTip("Key decisions, action items, follow-ups…")
-            self.with_edit.setPlaceholderText("e.g., Acme — John Smith (Reg Affairs)")
+            if hasattr(self, 'notes_edit'):
+                self.notes_edit.setToolTip("Key decisions, action items, follow-ups…")
+            if hasattr(self, 'with_edit'):
+                self.with_edit.setPlaceholderText("e.g., Acme — John Smith (Reg Affairs)")
 
     def _view_pulse_intel(self):
         """Tiny: View in Intel filtered to current client from the meeting dialog Pulse note."""

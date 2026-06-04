@@ -711,11 +711,32 @@ class ChatWindow(QMainWindow):
         duration_ms: int | None = None,
         color: str | None = None,
     ) -> None:
-        """Brief on-window toast (bottom-center overlay); also mirrors to the status bar."""
+        """Brief on-window toast (bottom-center overlay); also mirrors to the status bar.
+        Thread-safe: if called from a non-GUI thread, marshals the call back to the main thread.
+        """
         text = str(message or "").strip()
         if not text:
             return
         ms = int(duration_ms) if duration_ms is not None else int(duration)
+
+        # Thread safety: if we're not on the GUI thread, invoke on the main thread
+        from PyQt6.QtCore import QThread
+        if QThread.currentThread() != self.thread():
+            QMetaObject.invokeMethod(
+                self,
+                "_show_toast_impl",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, text),
+                Q_ARG(int, ms),
+                Q_ARG(str, color or ""),
+            )
+            return
+
+        self._show_toast_impl(text, ms, color or "")
+
+    @pyqtSlot(str, int, str)
+    def _show_toast_impl(self, text: str, ms: int, color: str) -> None:
+        """Actual toast creation - must only be called on the GUI thread."""
         try:
             self.statusBar().showMessage(text, max(500, ms))
         except Exception:
@@ -960,7 +981,10 @@ class ChatWindow(QMainWindow):
             return
 
     def _billing_autorun_runtime_tick(self) -> None:
-        """Drain runtime jobs and surface billing review prompts; enqueue only if the scheduler never started."""
+        """Drain runtime jobs and surface billing review prompts; ensure runtime is started (deferred) so heavy first-run
+        jobs like daily briefing / morning planning do not block main window show or initial responsiveness.
+        The BackgroundScheduler + its worker threads own the actual job execution.
+        """
         if self._billing_autorun_worker is not None:
             return
         try:
@@ -974,14 +998,9 @@ class ChatWindow(QMainWindow):
 
             runtime = get_runtime_service(db=self.db)
             if not getattr(runtime, "_started", False):
-                try:
-                    enqueue_billing_autorun(self.db)
-                except Exception:
-                    pass
-            try:
-                runtime.process_due_jobs()
-            except Exception:
-                pass
+                # Defer starting the runtime / enqueuing heavy jobs (daily briefing, morning planning)
+                # so the main window can show immediately. The scheduler will handle them in background.
+                QTimer.singleShot(2000, lambda: self._start_runtime_service_deferred())
 
             # Billing dialog: at most once per calendar month after dismiss (other jobs still drain above).
             if last_prompt == yyyymm:
@@ -1006,6 +1025,29 @@ class ChatWindow(QMainWindow):
                 box.exec()
                 if box.clickedButton() == open_btn:
                     self._open_billing_tab()
+        except Exception:
+            pass
+
+    def _start_runtime_service_deferred(self):
+        """Deferred start of runtime service to avoid blocking main window creation on startup.
+        Called via QTimer from the billing tick path (and can be called from main defer too).
+        Starting the service schedules the poll/ensure jobs; the first ensure_recurring_jobs runs in a
+        daemon thread and only enqueues (actual heavy daily_briefing etc execute later in scheduler workers).
+        """
+        try:
+            from core.runtime.service import get_runtime_service
+            from core.runtime.jobs import enqueue_billing_autorun
+
+            runtime = get_runtime_service(db=self.db)
+            if not getattr(runtime, "_started", False):
+                try:
+                    runtime.start()
+                except Exception:
+                    pass
+                try:
+                    enqueue_billing_autorun(self.db)
+                except Exception:
+                    pass
         except Exception:
             pass
 

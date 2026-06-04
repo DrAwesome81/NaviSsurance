@@ -1,93 +1,103 @@
 # Intel Tab (Pulse)
 
-**Status:** In active development (as of May 2026)
+**Status:** Beta — core local retrieval & synthesis engine is functional and passing its test suite, but could use additional tuning and incremental accuracy/breadth improvements (as of May 2026).
 
 ## Purpose
 
-The Intel tab is a dedicated workspace for **market intelligence and regulatory intelligence**. It acts as a proactive specialist ("Pulse") that:
+The Intel tab provides a dedicated, proactive intelligence capability ("Pulse") for market, regulatory, and competitive intelligence. Its primary goal is to act as a reliable "analyst on staff" that:
 
-- Monitors topics you care about (your personal watchlist).
-- Allows you to request research on specific subjects.
-- Surfaces important findings with a visual indicator (badge on the tab).
-- Lets you link intelligence to specific clients.
-- Makes findings available to other agents (especially the Chief of Staff) when relevant.
+- Surfaces relevant research and monitoring findings with high **accuracy and breadth**.
+- Uses a fully local hybrid retrieval + synthesis system (no remote models in the retrieval or relevance filtering path).
+- Makes high-signal intelligence available to Pulse itself and downstream agents (especially the Chief of Staff).
+- Tracks freshness and importance of findings.
 
-The goal is to have an "analyst on staff" who watches the regulatory and competitive landscape and raises things you should see sooner rather than later.
+## Core Technical Approach (Local-Only)
+
+Pulse findings are stored in private agent memory (`agent_memory`, `kind="intel_finding"`). A dedicated local retrieval layer (`core/intel_retrieval.py`) provides:
+
+- **Hybrid retrieval** (primary engine):
+  - Rich keyword search across `source_title`, `key_points`, notes, mentioned companies, content, etc.
+  - Local vector similarity (SentenceTransformer + isolated Chroma `intel_index`).
+  - Multi-path fusion with credit for items found by both methods.
+  - Strong ranking that boosts raised items, high-importance findings, client/project affinity, recency (via `indexed_at`), high-value field matches (`source_title` / `key_points`), and exact title/phrase matches.
+
+- **Local LLM relevance filter** (when synthesis is requested):
+  - High-recall hybrid results are passed to a local model (via registered `intel_batch_digest` / `intel_relevance_batch` profiles).
+  - The model acts as a ruthless high-precision filter.
+  - Strong defensive guards ensure raised and high-importance items are never silently dropped.
+  - This turns broad recall into usable, high-precision context for prompts.
+
+- **Freshness & Health**:
+  - `indexed_at` timestamps are maintained on save, update, raise, and notes changes.
+  - Index health and age are exposed in the UI (health label + rebuild status).
+  - Full local index rebuild is supported from the tab.
+
+All retrieval, embedding, and synthesis steps are 100% local and offline after initial model download.
 
 ## Current Capabilities
 
-### Watchlist
-- You maintain a list of topics/keywords directly in the tab.
-- Each topic can have associated keywords and a priority (high/medium/low).
-- The background monitoring job periodically checks these topics.
+### Findings Storage & Management
+- Rich findings with `source_title`, summary/content, `key_points`, importance, raised flag, client/project links, and free-form notes.
+- "Raised" items drive the tab badge (`Intel ★ (n)`) and receive strong ranking priority.
+- Notes can be edited directly; changes are re-indexed for freshness.
 
-### Research Requests
-- You can type a topic or question in the "Request Research" field.
-- This creates a high-priority finding and automatically adds the topic to your watchlist.
+### Retrieval into Pulse & Other Surfaces
+- When Pulse (or other agents) needs relevant intelligence, the hybrid retriever (with optional local LLM filter) supplies context.
+- Results appear in the actual prompt sent to the local model.
+- A gated diagnostic (`PULSE_DIAGNOSTIC=1`) shows exactly what retrieval evidence was injected.
 
-### Findings
-- Intelligence items are stored in Pulse’s private agent memory (`agent_memory` with `kind="intel_finding"`).
-- Each finding includes:
-  - Title and summary
-  - Importance level
-  - "Raised" flag (drives the tab badge)
-  - Links to one or more clients
-  - Free-form notes
-- Findings can be promoted to global memory so Navi and the Chief of Staff can see them.
+### Index Health & Rebuild
+- The Intel tab shows current vector index health and last indexed age.
+- Manual rebuild is available for maintenance or after large data changes.
 
-### Background Monitoring
-- A recurring `intel_monitoring` job runs via the runtime system (every ~2 hours by default) once Runtime + Browser tools are enabled.
-- The job performs real web searches (via Grok's native web_search tool) for each watch topic using its keywords.
-- Findings are created only when substantive results are returned. High-priority topics and strong regulatory signals (FDA guidance, warnings, enforcement, etc.) are more likely to be raised.
-- Pulse can also proactively surface high-signal items outside your explicit watchlist when they appear relevant to your practice/clients.
-- You can force an immediate cycle from the Intel tab using the "Run Monitoring Now" button (very useful for testing).
-
-### Badge & Visibility
-- When findings are marked as "raised", the Intel tab shows a badge (`Intel ★ (n)`).
-- The Chief of Staff only sees important Intel items when **you** review the Intel tab (no automatic pinging).
-
-### Cross-Agent Access ("Poke Your Head In")
-- Most intelligence requests from other agents go through the Chief of Staff (Tier 1).
-- Limited direct queries (Tier 2) between agents are supported but kept narrow and are logged for review.
+### Client & Cross-Agent Linkage
+- Findings can be explicitly linked to clients.
+- Relevant intel can surface in client dossiers and is available to the Chief of Staff for planning.
 
 ## Where It Lives
 
-- **UI**: `gui/intel_tab.py` (`IntelTab`)
-- **Service Layer**: `core/intel.py` (`IntelService`)
-- **Agent**: Uses the `pulse` specialist agent
-- **Storage**: `agent_memory` (kind = `intel_watch_topic` and `intel_finding`) + promotion to `user_memory` / client-linked memory when appropriate
-- **Background Jobs**: `core/runtime/jobs.py` (`intel_monitoring` job type)
+- **Core Retrieval Engine**: `core/intel_retrieval.py` (hybrid search, ranking, local LLM filter, synthesis)
+- **Service Layer**: `core/intel.py` (finding CRUD + re-indexing callbacks)
+- **UI**: `gui/intel_tab.py` (findings list, notes, health label, rebuild)
+- **Prompt Integration**: `core/agent_chat_service.py` (Pulse branch calls the retriever)
+- **Storage**: `agent_memory` (`kind="intel_finding"`) + isolated local Chroma `intel_index`
 
-## Model Usage
+## Model Usage (Strictly Local for Retrieval/Synthesis)
 
-- Intel monitoring and research requests use the heavy multi-agent model when appropriate.
-- The left-side Navi chat uses a lighter model (`grok-latest`) via the `NAV_CHAT` role.
+- Embeddings: Local `SentenceTransformer` (default `all-MiniLM-L6-v2`, fully offline).
+- Relevance filtering / synthesis: Local LLM via `llama.cpp` (registered profiles such as `intel_batch_digest`).
+- No remote models are used in the retrieval, ranking, or relevance filtering paths.
 
-## Relationship to Other Tabs
+## Relationship to Other Parts of the System
 
-- **Chief of Staff**: Primary consumer of Intel findings. When you are in the CoS tab and review the Intel tab, relevant intelligence becomes available for planning and delegation.
-- **Deep Research**: Intel does *not* automatically trigger Deep Research. You or the CoS decide when a finding warrants a deeper research project.
-- **Clients**: Findings can be explicitly linked to clients. Relevant intel can surface in a client’s dossier view.
-- **Library**: Intel is kept separate (you decided Library could eventually be folded into Deep Research, but Intel should remain a distinct top-level tab).
+- **Chief of Staff**: Primary consumer. Relevant raised or high-signal intel is available when the CoS reviews the Intel tab or requests context.
+- **Clients**: Findings can be linked; relevant items can appear in client-specific views.
+- **Workspace / Reports**: High-signal intel can be referenced during document generation when appropriate.
+- **Monitoring / Research Requests**: Still evolving. The retrieval engine is ready to consume and rank results from any source (manual research, background jobs, etc.).
 
-## Future / Planned Work
+## Current Status
 
-- Real web/regulatory feed integration inside `run_monitoring_cycle()` (currently simulated with heuristics + model judgment).
-- Smarter importance scoring and deduplication of findings.
-- Deeper integration with the CoS so it can proactively pull recent raised Intel items during planning.
-- Ability for other specialists to make scoped queries to Pulse (Tier 2 "direct poke" support).
-- Better visualization of findings over time and trend detection.
+The Intel feature (local hybrid retrieval + LLM relevance filter) is in beta. The core engine is functional, passes its representative test suite (20/20 under `INTEL_DISABLE_VECTOR=1`), and is usable for Pulse/CoS workflows. It would benefit from additional tuning and incremental improvements on the two accuracy + breadth fronts (ranking/scoring and LLM filter quality).
 
-## How to Use (Current)
+Index freshness, health visibility, and prompt integration are in good shape. No major unfinished components remain.
+
+## Future / Next Priorities
+
+- Additional tuning and incremental hardening of the two accuracy + breadth fronts (ranking, scoring, fusion, and LLM filter prompts/guards).
+- Stronger integration of high-signal intel into Chief of Staff briefings and proactive planning.
+- Evolution of background monitoring / research request flows (leveraging the beta retrieval engine).
+- Improved visibility of themes and cross-finding patterns.
+- Optional Tier-2 direct query support from other specialists (with logging).
+
+## How to Use
 
 1. Open the **Intel** tab.
-2. Add topics to your watchlist (e.g. "FDA AI/ML Guidance", "reimbursement changes for SaMD", competitor names).
-3. Use the **Research** field to request information on a specific topic.
-4. Let the background `intel_monitoring` job run (or trigger it manually via the runtime).
-5. Review raised findings (they appear with a badge on the tab).
-6. Link important findings to the relevant clients.
-7. When working in the Chief of Staff tab, check the Intel tab for any new signals.
+2. Create or review findings (via Research field, manual entry, or monitoring).
+3. Mark important items as "raised" (strong effect on ranking and visibility).
+4. Add notes — these are re-indexed and become searchable.
+5. When working in the Chief of Staff tab, review the Intel tab for relevant context.
+6. Use the index health indicator and rebuild button as needed for maintenance.
 
 ---
 
-*Last updated: May 2026*
+*Last updated: May 2026 (Intel feature marked as beta; core engine functional and tested, with room for additional tuning)*

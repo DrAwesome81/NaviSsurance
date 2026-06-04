@@ -386,6 +386,7 @@ def upload_workspace_artifacts_to_gdrive(
     summary_text: Optional[str] = None,
     billing_text: Optional[str] = None,  # Billing Depth micro: optional billing summary artifact (from workspace related-set extension) for client folder in GDrive. Defensive default; no impact on prior calls.
     cross_ref_text: Optional[str] = None,  # Phase 4 2f4c91b8 chained micro (keep going no pause after sources cross-refs extension): optional Related Document Set Cross-References subsection text (the rich "Companion to ... Other set members..." sibling listing produced inside each member's Historical Sources Used). Uploaded as dedicated artifact for full set traceability pack in client GDrive folder. Defensive; zero impact prior callers.
+    consistency_report_text: Optional[str] = None,  # Phase 4 effort--5: optional Related Set Consistency Report (from ConsistencyChecker cross-document analysis). Uploaded as _Related_Set_Consistency_Report.txt for full traceability pack in client GDrive. Defensive; zero impact on prior callers.
     service=None,
 ) -> bool:
     """Primary small entrypoint for the Phase 4 feature.
@@ -426,5 +427,9 @@ def upload_workspace_artifacts_to_gdrive(
     if cross_ref_text:
         # Phase 4 2f4c91b8 chained keep-going micro (after sources extension + cr_t compute in caller): upload the Related Document Set Cross-References (the exact subsection text listing companions + "Companion to the Validation Plan via the same historical cluster for traceability and consistency" + Other set members relationships, as extended into Historical Sources Used). Provides standalone .txt artifact in client GDrive for complete traceability without opening member docs. Defensive; only for sets; naming parallel to manifest/summary.
         if upload_text_to_gdrive_folder(cross_ref_text, f"{safe}_Related_Set_Cross_References.txt", folder_id, service=service):
+            any_ok = True
+    if consistency_report_text:
+        # Phase 4 effort--5: upload the Related Set Consistency Report (cross-document analysis from ConsistencyChecker) as standalone artifact in client GDrive folder. Completes the full set pack (docs + Manifest + Summary + Cross-Refs + Consistency Report). Defensive; only when present.
+        if upload_text_to_gdrive_folder(consistency_report_text, f"{safe}_Related_Set_Consistency_Report.txt", folder_id, service=service):
             any_ok = True
     return any_ok

@@ -120,12 +120,13 @@ def test_agent_chat_response_injects_agent_memory_without_cross_agent_leakage():
         with patch.object(agent_chat_service, "grok_available", return_value=(True, "available")):
             with patch.object(agent_chat_service, "grok_completion_messages", side_effect=_fake_completion):
                 with patch.object(agent_chat_service, "auto_store_agent_memory", return_value=1) as store_mock:
-                    out = agent_chat_service.agent_chat_response(
-                        db,
-                        agent_code="atlas",
-                        user_message="Please help with Acme regulatory strategy.",
-                        conversation_history=[],
-                    )
+                    with patch.object(db, "memory_reflection_recent", return_value=[]):  # isolate new agent reflection recent call in prompt context
+                        out = agent_chat_service.agent_chat_response(
+                            db,
+                            agent_code="atlas",
+                            user_message="Please help with Acme regulatory strategy.",
+                            conversation_history=[],
+                        )
 
         assert out == "Atlas reply"
         joined = "\n\n".join(str(m.get("content") or "") for m in captured["messages"])

@@ -101,25 +101,31 @@ if __name__ == "__main__":
             sys.exit(1)
         app.processEvents()
 
-        runtime_service = None
         local_api_service = None
         telegram_bot_service = None
         _db = getattr(chatWindow, "db", None)
-        if is_runtime_enabled(_db):
-            try:
-                from core.runtime.service import get_runtime_service
-
-                runtime_service = get_runtime_service(db=_db)
-                if runtime_service.start():
-                    try:
-                        poll_s = max(5, int(get_runtime_poll_interval_s(_db)))
-                    except Exception:
-                        poll_s = 30
-                    logger.info("Runtime service started (job poll interval %ss).", poll_s)
-            except Exception as e:
-                logger.warning(f"Runtime service failed to start: {e}")
-        else:
+        if not is_runtime_enabled(_db):
             logger.info("Background runtime scheduler disabled in App preferences; recurring jobs are not auto-enqueued by the worker.")
+        else:
+            # Defer the runtime service start (and thus first ensure_recurring_jobs which enqueues
+            # daily_briefing_refresh + other work that can lead to morning planning / cos_am_sweep).
+            # This keeps GUI construction + .show() fast; the BackgroundScheduler + daemon threads
+            # plus later job execution keep it off the main GUI thread. The billing tick in the window
+            # also has a 2s deferred start path as a fallback.
+            def _start_runtime_deferred():
+                try:
+                    from core.runtime.service import get_runtime_service
+
+                    rs = get_runtime_service(db=_db)
+                    if rs.start():
+                        try:
+                            poll_s = max(5, int(get_runtime_poll_interval_s(_db)))
+                        except Exception:
+                            poll_s = 30
+                        logger.info("Runtime service started (job poll interval %ss).", poll_s)
+                except Exception as e:
+                    logger.warning(f"Runtime service failed to start: {e}")
+            QTimer.singleShot(1200, _start_runtime_deferred)
         if is_local_api_enabled(_db):
             try:
                 from core.service.local_api import get_local_api_service
@@ -193,9 +199,12 @@ if __name__ == "__main__":
         try:
             logger.info("Starting PyQt event loop...")
             result = app.exec()
+            # Runtime service is a singleton; stop it if it was started (started via deferred path or tick fallback).
             try:
-                if runtime_service is not None:
-                    runtime_service.stop()
+                from core.runtime.service import get_runtime_service
+                rs = get_runtime_service()
+                if rs is not None and getattr(rs, "_started", False):
+                    rs.stop()
             except Exception:
                 pass
             try:

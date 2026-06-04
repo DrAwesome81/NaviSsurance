@@ -1,6 +1,6 @@
 # NaviSsurance Testing
 
-Last revised: 2026-05-12
+Last revised: 2026-06 (expanded comprehensive E2E familiarization checklist for user exploration + verification across all major flows)
 
 <!-- Pulse private memory visibility + Shield Security/Compliance surface awareness -->
 
@@ -376,6 +376,115 @@ Note:
   - Prompt appears once for the month (no repeated prompts/duplicate drafts for the same month).
 - Note:
   - The idempotency portion should be covered by automated tests. The remaining manual focus is whether the prompt timing and UX behave acceptably for a real user.
+
+### Comprehensive E2E familiarization & full functionality checklist
+Use this progressive checklist (30–60+ min depending on depth) to explore the app end-to-end, confirm major flows work together, and build familiarity. Run in order. Prerequisites: app launches, basic keys if using live features (GROK_API_KEY, etc.), sample data/clients if needed. Note any surprises or rough edges.
+
+#### 1. App launch & core navigation (2 min)
+- Launch the app.
+- Confirm no crash on start; Dashboard loads with any setup banner.
+- Switch between main tabs: Dashboard, Chief of Staff, Workspace, Deep Research, Intel, Clients, Billing, Tasks, Meetings, Notes, Leads, Compliance.
+- Expected: All tabs open without errors; basic UI responsive.
+
+#### 2. Memory & learning (5 min)
+- In any chat (main Navi or CoS): `Teach Navi: I prefer concise summaries for regulatory work.`
+- In CoS: `Teach Atlas: For device X, always cite the exact K-number of predicates.`
+- Open `Chief of Staff → Global Memory…` (or equivalent).
+- Verify: Global, Agent (Atlas), Assignment scopes visible; search/filter works; your teaches appear (approve if pending).
+- Expected: Memory is queryable later in prompts (e.g. ask CoS something that should use the preference).
+
+#### 3. Deep Research (5 min)
+- Open Deep Research tab.
+- Start a short run (e.g. “latest FDA guidance on AI/ML SaMD PCCP 2026”).
+- Let it run a few rounds; review Web brief, syntheses.
+- Generate final brief if not auto.
+- Export brief.
+- Expected: Pipeline completes, artifacts saved, brief is usable markdown. (Requires OPENAI_API_KEY for full web.)
+
+#### 4. Workspace basic + advanced production (10–15 min)
+- Open Workspace.
+- Add 1–2 sample files (or none); mark in scope.
+- Pick a Prompt Template (e.g. CEO Strategy Memo) or Document Template.
+- Enter objective + Generate Draft. Watch dual-LLM panes + Markdown populate. Use historical docs if listed.
+- Edit the draft manually.
+- Save Markdown; Export as DOCX/PDF.
+- Extract Suggested Tasks → import dialog; import a couple.
+- **Related Set (advanced)**: In Relevant Historical Documents list, find/select items with [ref] + [related] badges (or create a strong cluster first via prior gen). Right-click → “Generate Related Set (presets...)”.
+  - Confirm companions auto-generate using same cluster.
+  - After: View manifest/summary/cross-refs (menu or button); check consistency report was produced.
+  - Quick-export or manual export to client folder; verify pack (doc + manifest + summary + consistency report + cross-refs) lands.
+  - (Optional, if GDrive configured): Toggle auto-upload; confirm uploads.
+- Save the workspace session (Save / Save As); reload and confirm state (including related-set data) restores.
+- Expected: Drafts are good quality, traceable, exportable; related sets produce consistent companions with full artifacts; GDrive/local client folders work when toggled.
+
+#### 5. Chief of Staff / AM Sweep / delegation E2E (10–15 min, key for sub-agents)
+- Open Chief of Staff tab.
+- Run AM Sweep (Options → AM Sweep). Review buckets (Dispatch/Prep/Yours/Skip), any proposals.
+- In chat: Give a complex goal, e.g. “Look for predicates for my new AI ECG monitor [brief desc] and build a substantial equivalence table.”
+  - CoS should propose Work Plan (WP-xxx) or direct ASSIGNs to Atlas (research), Quill (draft table), Sentinel (QA), Mason (track).
+  - Approve the plan/proposals (e.g. “approve WP-42”).
+- Watch Assignments board: New assignments appear (status proposed → queued → in_progress).
+- Open assignee chats (Atlas etc.); watch initial bootstrap + work (research artifacts, draft doc in Workspace, etc.).
+- As agents finish pieces: They should post updates/summaries/artifacts; board shows “NEEDS INPUT” or awaiting_review when appropriate.
+- Use board: Inspect details/timeline/artifacts; “Open Assignee Chat”; upload file if requested; update status (e.g. to awaiting_review or done); bulk actions.
+- Ask CoS: “status of the SE table plan” or “checkpoint WP-42”.
+- In daily briefing or next AM Sweep: Confirm active work / raised items from plan surface.
+- Revisions: In agent chat or via CoS, request changes (e.g. “revise the table to add column X”); re-approve if needed; confirm updates propagate.
+- Expected: Full delegation, parallel work, artifact handoff (research → draft → QA), visibility on board/chat/briefings, easy inspection/revision loop, status updates reported back. Work Plan coordinates if used. (See also CoS-specific TCs above for more granular.)
+
+#### 6. Intel / Pulse (5 min)
+- Open Intel tab.
+- Create/edit a watchlist (topics/keywords).
+- Trigger or wait for monitoring (or manual research request).
+- Create a finding; raise it.
+- Link finding to a client/project.
+- Check badge on tab if raised items.
+- In CoS/briefing: Confirm raised Intel surfaces in context.
+- Expected: Watch → findings → raise → link → use in CoS planning. Private memory themes if configured.
+
+#### 7. Clients / Dossier (5 min)
+- Open Clients tab; add or select a client.
+- View dossier: Recent activity, projects, assignments, Relevant Past Work (historical docs), Compliance Status section.
+- Link a finding or Intel item; add quick note/task.
+- Jump to full Intel or Workspace from dossier.
+- Expected: Single hub for client memory/context; cross-links work (e.g. past work, compliance from Intel, assignments from CoS).
+
+#### 8. Billing & Tasks integration (5 min)
+- Open Billing: Manual time entry (timer or direct); link to project/client.
+- Generate draft invoice from entries (using template).
+- From CoS or assignment: Create tasks; see them in Tasks tab and Dashboard.
+- From Workspace draft: Extract & import tasks.
+- Expected: Time → draft; tasks flow from CoS/Workspace/Meetings into Tasks/Dashboard; billing artifacts in sets/exports.
+
+#### 9. Cross-tab E2E flows & persistence (5–10 min)
+- CoS delegation → Workspace output → export to client folder/GDrive.
+- Intel raised item → appears in CoS briefing → assign to Shield/Sentinel.
+- Generate in Workspace → related set consistency report → surfaces in CoS daily briefing or AM context.
+- Save Workspace state with set data → reload → export again (artifacts still there).
+- Restart app mid-flow (e.g. during research or after assignment); confirm chats, boards, saved workspaces, jobs resume gracefully.
+- Use “Teach” in agent thread → later assignment to same agent uses the reflection in brief/context.
+- Expected: Data and context flow across tabs without loss; persistence across restarts; reports/artifacts visible where designed (CoS, exports, board).
+
+#### 10. Exports, GDrive, final deliverables (3 min, optional setup)
+- From Workspace (set or single): Quick export + manual export.
+- If GDrive token/config ready: Confirm auto-upload of pack (doc + manifest + summary + consistency + billing + historical refs) to client folder.
+- Verify files are client-folder named, traceable.
+- Expected: Full pack lands locally + GDrive (if enabled); no duplicates/conflicts.
+
+#### 11. Optional deeper / runtime (as time allows)
+- Trigger any autorun (billing, briefing) via restart or wait; confirm single prompt per period.
+- Use local API (if running) for /jobs or health.
+- Browser tool via a research/Intel flow if configured.
+- Full AM Sweep → multiple ASSIGNs dispatched → board shows parallel agent work → complete cycle.
+
+**Tips for this checklist:**
+- Use a real or test client/project for traceability.
+- Note prerequisites (keys, tokens) in the pre_pilot doc or here.
+- After each major section, ask CoS “what’s the current status on [thing]?” to test memory/context.
+- If something fails: Check logs/app.log, restart, or run relevant automated tests.
+- This covers the shipped baseline (Phase 1/3/4 core) + active follow-ups. Anything not here is likely in “Active follow-up areas” in roadmap_status.md.
+
+See also `docs/pre_pilot_smoke_tests.md` for a shorter demo-focused version and `docs/user_manual.md` for feature explanations.
 
 ### Automated test commands (recommended)
 

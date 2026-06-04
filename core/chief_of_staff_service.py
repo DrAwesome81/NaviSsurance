@@ -526,6 +526,11 @@ def _tasks_context_rich(db: DatabaseManager, *, limit: int = 80) -> str:
         )
         if not rows:
             return "**Dashboard tasks (rich):** (none)"
+        # Re-rank by heuristic score for CoS context (prioritization engine start)
+        try:
+            rows = sorted(rows, key=_compute_priority_score, reverse=True)
+        except Exception:
+            pass
         lines: list[str] = []
         for r in rows[: int(limit)]:
             tid = int(r.get("id") or 0)
@@ -538,7 +543,8 @@ def _tasks_context_rich(db: DatabaseManager, *, limit: int = 80) -> str:
             due_part = f" due {due}" if due else ""
             assigned_part = f" assigned_to {assigned_to}" if assigned_to else ""
             est_part = f" est {est}m" if est else ""
-            lines.append(f"- #{tid} P{pr} {text}{due_part}{assigned_part}{est_part} tags={tags_json}")
+            sc = _compute_priority_score(r)
+            lines.append(f"- #{tid} P{pr} s{sc} {text}{due_part}{assigned_part}{est_part} tags={tags_json}")
         if lines: logger.debug("CoS rich tasks context chars=%d (Pulse private mem + Shield)", len("\n".join(lines)))
         return "**Dashboard tasks (rich, open):**\n" + "\n".join(lines)
     except Exception as e:
@@ -725,6 +731,102 @@ def _raised_intel_context(db: DatabaseManager, *, max_items: int = 6) -> str:
         return "**Raised Intel (Pulse):** (unable to load)"
 
 
+def _consistency_context(db: DatabaseManager) -> str:
+    """Phase 4 surface: now pulls actual persisted consistency reports (not just note) from workspace saved states.
+    Uses the new extraction in db.workspace_state_list (related_set_consistency_report).
+    Defensive, compact for context budgets. Ties to Sentinel for QA.
+    """
+    try:
+        workspaces = db.workspace_state_list() or []
+        report_lines = []
+        for w in workspaces:
+            rep = w.get("related_set_consistency_report")
+            if rep:
+                name = str(w.get("name") or "set")[:40]
+                # Rough extract overall status from the markdown report (first line after header)
+                status = ""
+                try:
+                    if "**Overall Status:**" in rep:
+                        status = rep.split("**Overall Status:**", 1)[1].split("\n", 1)[0].strip()[:20]
+                except Exception:
+                    status = ""
+                snippet = f"- {name}" + (f" ({status})" if status else "")
+                report_lines.append(snippet)
+                if len(report_lines) >= 3:
+                    break
+        if report_lines:
+            return (
+                "**Workspace Consistency Reports (Phase 4):** \n" +
+                "\n".join(report_lines) +
+                "\n(Full reports + artifacts in Workspace tab. Delegate fixes to Sentinel using its brief template.)"
+            )
+        # Fallback to note if none yet
+        return (
+            "**Workspace Consistency (Phase 4):** "
+            "Related document set (and single-doc) consistency reports (status/issues/recommendations from checker) persist with saved workspaces and exports (also GDrive client folders when enabled). "
+            "Review in Workspace tab (artifacts + cross-refs). Delegate QA/consistency passes to Sentinel (use its brief template for contradictions, refs, scope drift). "
+            "Use on client deliverables for quality gate."
+        )
+    except Exception:
+        return "**Workspace Consistency (Phase 4):** Consistency via Workspace related-sets + Sentinel QA. Reports available in generated artifacts."
+
+
+def _compute_priority_score(row: dict, *, now: datetime | None = None) -> float:
+    """Heuristic urgency/importance score (higher = prioritize in CoS contexts/briefings).
+    Starts formal scoring engine (was raw priority + status order only). Smallest start per roadmap/TODO.
+    Combines: explicit P (5 highest), due/overdue, needs_input/blockers, status, light age.
+    """
+    if now is None:
+        now = datetime.now()
+    pr = int(row.get("priority") or 3)
+    score = float(max(0, min(5, pr))) * 12.0
+    # Due/overdue (supports MM-DD-YYYY or iso-ish)
+    due_str = str(row.get("due_date") or row.get("_due_dt") or "").strip()
+    if due_str and due_str.lower() not in ("", "none", "9999-12-31"):
+        try:
+            if len(due_str) >= 8 and due_str[2] == "-" and due_str[5] == "-":
+                due_dt = datetime.strptime(due_str[:10], "%m-%d-%Y")
+            else:
+                due_dt = datetime.fromisoformat(due_str[:10])
+            delta = (due_dt.date() - now.date()).days
+            if delta < 0:
+                score += 25.0 + min(18.0, abs(delta) * 1.2)
+            elif delta == 0:
+                score += 16.0
+            elif delta <= 2:
+                score += 9.0
+            elif delta <= 7:
+                score += 3.5
+        except Exception:
+            pass
+    # Needs input / blockers
+    if row.get("needs_input") or bool(str(row.get("blockers") or "").strip()):
+        score += 20.0
+    # Status
+    st = str(row.get("status") or "").lower()
+    if st in ("in_progress",):
+        score += 5.0
+    elif st in ("awaiting_review", "proposed"):
+        score += 2.5
+    elif st == "blocked":
+        score += 7.0
+    elif st in ("done", "cancelled"):
+        score -= 40.0
+    # Light stale-open boost (don't lose track)
+    try:
+        upd = row.get("updated_at") or row.get("created_at")
+        if isinstance(upd, str) and upd:
+            u = upd.replace(" ", "T")[:19]
+            u_dt = datetime.fromisoformat(u) if "T" in u or "-" in u else None
+            if u_dt:
+                age = max(0, (now - u_dt).days - 2)
+                if age > 0:
+                    score += min(6.0, age * 0.7)
+    except Exception:
+        pass
+    return round(max(0.0, score), 1)
+
+
 def _assignments_context(db: DatabaseManager, *, max_lines: int = 45) -> str:
     """Format open delegation assignments for CoS context. # Security/privacy assignments can use Shield with Pulse [Security-Relevant] context."""
     try:
@@ -742,6 +844,12 @@ def _assignments_context(db: DatabaseManager, *, max_lines: int = 45) -> str:
         if not open_rows:
             return "**Delegated assignments:** (all closed)"
 
+        # Sort by heuristic score (starts prioritization engine; explicit P + due + signals)
+        try:
+            open_rows.sort(key=_compute_priority_score, reverse=True)
+        except Exception:
+            pass
+
         lines = []
         for r in open_rows[:cap]:
             aid = int(r.get("id") or 0)
@@ -751,7 +859,8 @@ def _assignments_context(db: DatabaseManager, *, max_lines: int = 45) -> str:
             pr = int(r.get("priority") or 3)
             due = str(r.get("due_date") or "")
             due_part = f" due {due}" if due else ""
-            lines.append(f"- A-{aid:04d} [{st}] P{pr} {title} -> {assignee}{due_part}")
+            sc = _compute_priority_score(r)
+            lines.append(f"- A-{aid:04d} [{st}] P{pr} s{sc} {title} -> {assignee}{due_part}")
         if lines: logger.debug("CoS assignments context chars=%d (Pulse private mem + Shield)", len("\n".join(lines)))
         return "**Delegated assignments (open):**\n" + "\n".join(lines)
     except Exception as e:
@@ -1021,6 +1130,7 @@ def cos_am_sweep(
     )
 
     intel_ctx = _raised_intel_context(db, max_items=5)
+    consistency_ctx = _consistency_context(db)
 
     cal_ok, cal_reason = calendar_write_available()
     if cal_ok:
@@ -1067,7 +1177,7 @@ Routing (use these agent names in ASSIGN lines):
 - Lex: contract/policy extraction + obligations + decisions needed.
 - Ledger: billing/invoice prep + anomalies/questions.
 - Archive: notes/filing/timelines + links to source items.
-- Sentinel: QA pass / risk flags / consistency checks.
+- Sentinel: QA pass / risk flags / consistency checks (review persisted workspace consistency reports from Phase 4 checker; use consistency_ctx for context).
 - Scout: prospect/lead recon + outreach prep.
 - Mason: task triage + command emission (use sparingly; you are already doing AM Sweep).
 - Pulse: briefing/monitoring summaries (rare in AM Sweep).
@@ -1080,7 +1190,9 @@ Assignment brief templates (use these patterns so outputs are consistent):
 - Lex brief must include: (1) document type; (2) extraction targets (obligations, deadlines, risks); (3) output: bullet list + decision points.
 - Ledger brief must include: (1) time window; (2) client/project; (3) deliver: draft invoice inputs + anomalies + questions.
 - Archive brief must include: (1) what to update; (2) structure; (3) output: clean notes + action items + links to source items.
-- Sentinel brief must include: (1) what to QA; (2) checklist (clarity, missing info, contradictions, risky wording); (3) output: issues + suggested fixes.
+- Sentinel brief must include: (1) what to QA; (2) checklist (clarity, missing info, contradictions, risky wording, cross-doc consistency from workspace reports); (3) output: issues + suggested fixes.
+
+Use of sub-agent reflections for continuity in AM proposals: The injected memory context (above, from mem_ctx) will contain lines such as "Recent atlas reflection: ..." (or for quill, sentinel, lex, etc.). When emitting ASSIGN for an agent, incorporate 1-2 relevant points from that agent's matching "Recent <code> reflection" into the <Brief> for continuity (e.g. "Building on your recent reflection that the client prefers tables..."). This makes proposals leverage sub-agent self-awareness.
 
 {_COS_MEMORY_REASONING_HINT}
 Output format requirements:
@@ -1117,7 +1229,7 @@ Always interpret and communicate schedule/time references in Adam's local timezo
     if mem_ctx:
         time_ctx += f"\n\n{mem_ctx}"
     if mem_ctx: logger.debug("AM Sweep private memory context chars=%d (Pulse + Shield surface consumption)", len(mem_ctx))
-    time_ctx += f"\n\n{tasks_ctx}\n\n{assignments_ctx}\n\n{intel_ctx}"
+    time_ctx += f"\n\n{tasks_ctx}\n\n{assignments_ctx}\n\n{intel_ctx}\n\n{consistency_ctx}"
 
     user_prompt = (
         "Run AM Sweep now.\n\n"
@@ -1234,6 +1346,13 @@ def _memory_context(db: DatabaseManager, user_message: str, chat_id: Optional[in
                 assignment_memory = ""
             if assignment_memory:
                 parts.append(assignment_memory)
+            # Surface assignment reflection too (smallest).
+            try:
+                refs = db.memory_reflection_recent(scope=f"assignment:{assignment_id}", limit=1)
+                if refs and refs[0].get("summary_text"):
+                    parts.append(f"Recent assignment reflection: {str(refs[0]['summary_text'])[:100]}")
+            except Exception:
+                pass
 
     try:
         agents = db.agents_list_active()
@@ -1267,6 +1386,15 @@ def _memory_context(db: DatabaseManager, user_message: str, chat_id: Optional[in
         if len(agent_sections) >= 2:
             break
     parts.extend(section for section in agent_sections if section.strip())
+
+    # Surface agent reflections (new sub-agent support) in CoS context. Smallest-safe.
+    for code in list(seen_agents)[:3]:
+        try:
+            refs = db.memory_reflection_recent(scope=f"agent:{code}", limit=1)
+            if refs and refs[0].get("summary_text"):
+                parts.append(f"Recent {code} reflection: {str(refs[0]['summary_text'])[:150]}")
+        except Exception:
+            pass
 
     joined = "\n\n".join(parts)
     if joined: logger.debug("CoS private memory consumption: %d chars (for Shield visibility)", len(joined))
@@ -2275,18 +2403,18 @@ def cos_response(
         return direct_task_response
 
     # === Staff Coordinator chat integration (primary way to drive the full CoS staff) ===
-    # Detect natural-language high-level goals and propose a complete multi-agent WorkPlan.
-    planning_goal = _is_staff_planning_request(user_message or "")
-    if planning_goal:
-        try:
-            proposal = propose_work_plan(db, planning_goal, thread_id=chat_id)
-            formatted = _format_work_plan_proposal_for_chat(proposal)
-            _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=formatted)
-            _log_timing("cos_response", t0, mode="staff_plan_proposal", chat_id=chat_id, chars=len(user_message or ""))
-            return formatted
-        except Exception as e:
-            logger.exception("Staff plan proposal from chat failed: %s", e)
-            return f"I understood you want a staff-level plan for that goal, but I ran into an issue building it: {e}. You can still use the Work Plans section in the CoS tab."
+    # Note: The old pre-LLM keyword heuristic for detecting "broad goals" that
+    # should auto-propose a Work Plan has been removed entirely (per user direction:
+    # no more phrase/keyword triggers for intent).
+    #
+    # Planning proposals are now 100% LLM-driven: the model sees the full user
+    # message + rich context and emits PROPOSE_STAFF_PLAN: <goal> in its output
+    # when appropriate. That is caught by _handle_propose_staff_plan_from_llm
+    # after the tool loop (in both single- and multi-turn paths below).
+    #
+    # Explicit user commands like "approve WP-xxx", "revise the plan", "checkpoint WP-xxx"
+    # and plain-language redirections ("Delegate this to Atlas") are still handled
+    # on the *user* message via the dedicated handlers below.
 
     # Handle "approve WP-42" / "delegate this plan" style commands in chat
     approval_response = _handle_work_plan_approval_command(db, user_message or "", chat_id=chat_id)
@@ -2295,12 +2423,28 @@ def cos_response(
         _log_timing("cos_response", t0, mode="staff_plan_approval", chat_id=chat_id, chars=len(user_message or ""))
         return approval_response
 
+    # Plain language approval for the most recent proposed assignment (including those created via redirection)
+    # Catches bare "Approve", "Yes", "Go ahead", "Approve that", etc.
+    plain_approval_response = _handle_plain_proposal_approval(db, user_message or "", chat_id=chat_id)
+    if plain_approval_response is not None:
+        _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=plain_approval_response)
+        _log_timing("cos_response", t0, mode="plain_proposal_approval", chat_id=chat_id, chars=len(user_message or ""))
+        return plain_approval_response
+
     # Revision support: "revise WP-42: make Shield focus on X" or "revise the compliance plan to..."
     revision_response = _handle_work_plan_revision_command(db, user_message or "", chat_id=chat_id)
     if revision_response is not None:
         _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=revision_response)
         _log_timing("cos_response", t0, mode="staff_plan_revision", chat_id=chat_id, chars=len(user_message or ""))
         return revision_response
+
+    # Plain language delegation redirections / overrides
+    # e.g. "Delegate this to Atlas", "Give it to Atlas instead", "Assign the Medicai research to Atlas"
+    redirection_response = _handle_delegation_redirection(db, user_message or "", chat_id=chat_id)
+    if redirection_response is not None:
+        _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=redirection_response)
+        _log_timing("cos_response", t0, mode="delegation_redirection", chat_id=chat_id, chars=len(user_message or ""))
+        return redirection_response
 
     # Also support explicit "checkpoint WP-42" or "status of the plan" for reporting
     import re as _re_plan
@@ -2360,6 +2504,7 @@ def cos_response(
 
     # Phase 1: Relevant Past Work (DocumentRecords) — lightweight, optional, graceful
     # Only when we have a client context so the suggestions are actually useful.
+    historical_docs_ctx = ""   # always initialize to avoid UnboundLocalError on non-client flows
     try:
         if client_digest:
             # Extract a simple client hint from the digest or user message
@@ -2415,6 +2560,7 @@ def cos_response(
     )
 
     intel_ctx = _raised_intel_context(db, max_items=5)
+    consistency_ctx = _consistency_context(db)
 
     cal_ok, cal_reason = calendar_write_available()
     if cal_ok:
@@ -2453,8 +2599,40 @@ ASSIGN: <AgentName> | <Title> | <Brief> | <P1-P5> | <YYYY-MM-DD or none>
 Example: ASSIGN: Atlas | FDA PCCP research brief | Research latest guidance and summarize with citations. | P5 | 2026-03-01
 Available agent names: Atlas, Quill, Sentinel, Lex, Scout, Mason, Ledger, Archive, Pulse, Shield.
 Omit ASSIGN lines if you are not proposing delegation.
+When crafting the <Brief> for any ASSIGN, if the provided context/memory includes a "Recent <AgentName> reflection: ..." line, reference 1 relevant point from it in the <Brief> to ensure continuity with the agent's prior self-reflection and your previous guidance.
 
-High-level Staff Plans (CoS coordinator): You can reference active or proposed Work Plans (WP-IDs) in responses. When the user gives a broad goal, the system will often propose a full multi-agent plan (Pulse/Shield/Mason) with rich context. You can tell the user to say "approve WP-42" or "revise WP-42: ...". In normal conversation, the context will include recent progress on active staff plans — mention them naturally when relevant ("The compliance staff plan is moving well — Pulse just finished its piece.").
+**Important - User Delegation Style:**
+Adam often gives plain-language delegation instructions instead of using the rigid ASSIGN format. Examples:
+- "Delegate this to Atlas"
+- "Give it to Atlas instead"
+- "Assign the Medicai research to Atlas"
+- "Have Atlas handle this"
+- "Use Atlas for the company lookup"
+
+When the user gives a direct instruction like this (especially right after you proposed a plan), do **not** try to emit an ASSIGN line yourself. The system has a dedicated handler that will catch these natural instructions and create the appropriate proposal cleanly. You can simply acknowledge ("Understood, routing to Atlas") and let the handler do the work, or ask a clarifying question if needed.
+
+High-level Staff Plans (CoS coordinator): Use this when the user's request is a broad, multi-step goal that would benefit from structured coordination across specialists (research + drafting + QA + tracking), milestones, and an explicit user approval gate before work starts in parallel.
+
+In that case, output *exactly* (as your primary/only response content for this turn):
+
+PROPOSE_STAFF_PLAN: <clean, concise restatement of the goal>
+
+The system will then run the full planning (Mason consultation for project structure, gather relevant intel/dossier, build rich briefs for the right mix of Pulse/Atlas for research, Quill for writing, Sentinel for review, Mason for coordination, etc.) and present a formatted "Staff Plan WP-xxx Proposed" for Adam to approve, revise, or redirect ("just give it to Atlas instead").
+
+Criteria for using PROPOSE_STAFF_PLAN (vs. just answering or using ASSIGN):
+- The work spans multiple specialists and would benefit from Mason milestone tracking.
+- There is value in user seeing the full proposed team + scope before execution.
+- Examples: building a substantial equivalence table with research + drafting + QA; launching a full regulatory strategy workstream with ongoing monitoring.
+
+Do NOT use it for:
+- Simple factual questions or client forwards about specific facts/timelines.
+- Single lookups or one-off research.
+- Things you can handle yourself with a tool (WEB_SEARCH) or by delegating to one person via ASSIGN: Pulse | ...
+
+In normal conversation you can still reference active/proposed WP-IDs. The context will include recent progress on them.
+
+**Follow-up questions after a plan proposal:**
+If Adam asks a question after you propose a plan (e.g. "What does Atlas usually handle?", "How busy is Mason right now?", "Tell me more about the Medicai task"), answer the question helpfully while keeping the proposed plan visible and "pending". Do not assume the plan is rejected or approved unless he explicitly says so. You can remind him of the proposal and the approval command when appropriate.
 
 You may approve a proposed assignment (queues it and routes work to the assignee). Use only when Adam has confirmed approval in chat:
 APPROVE_PROPOSAL: <P-0007 or A-0007 or numeric id>
@@ -2699,6 +2877,15 @@ Always interpret and communicate schedule/time references in the user's local ti
 {user_message or "What should I focus on right now?"}"""
         try:
             out = _run_tool_loop_single(system, user)
+            # LLM-driven staff plan: if the model judges full coordination (milestones,
+            # multiple specialists, Mason tracking, approval gate) is needed, it emits
+            # PROPOSE_STAFF_PLAN: <goal>. We turn that into the rich proposal here.
+            # This is the main path for nuanced intent instead of keyword pre-filters.
+            staff_plan = _handle_propose_staff_plan_from_llm(db, out, chat_id=chat_id)
+            if staff_plan:
+                _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=staff_plan)
+                _log_timing("cos_response", t0, mode="staff_plan_proposal_from_model", chat_id=chat_id, chars=len(user_message or ""))
+                return staff_plan
             parsed = _parse_task_actions(db, out, chat_id=chat_id)
             parsed = _apply_partial_add_task_recovery(
                 db, user_message, out, parsed, chat_id=chat_id
@@ -2740,7 +2927,7 @@ Always interpret and communicate schedule/time references in the user's local ti
         time_ctx += f"\n\n{mem_ctx}"
     if historical_docs_ctx:
         time_ctx += f"\n\n{historical_docs_ctx}"
-    time_ctx += f"\n\n{tasks_ctx}\n\n{assignments_ctx}\n\n{intel_ctx}"
+    time_ctx += f"\n\n{tasks_ctx}\n\n{assignments_ctx}\n\n{intel_ctx}\n\n{consistency_ctx}"
     recent_history = _compact_conversation_history(
         conversation_history,
         max_messages=hist_max_msg,
@@ -2753,6 +2940,12 @@ Always interpret and communicate schedule/time references in the user's local ti
 
     try:
         out = _run_tool_loop_messages(messages)
+        # LLM-driven staff plan (see single-turn comment).
+        staff_plan = _handle_propose_staff_plan_from_llm(db, out, chat_id=chat_id)
+        if staff_plan:
+            _extract_and_store_memory(db, chat_id=chat_id, user_message=user_message, assistant_message=staff_plan)
+            _log_timing("cos_response", t0, mode="staff_plan_proposal_from_model", chat_id=chat_id, chars=len(user_message or ""))
+            return staff_plan
         parsed = _parse_task_actions(db, (out or "").strip(), chat_id=chat_id)
         parsed = _apply_partial_add_task_recovery(
             db, user_message, out, parsed, chat_id=chat_id
@@ -2805,6 +2998,23 @@ def approve_assignment_proposal(
     assignee = str(row.get("assignee_code") or "").strip().lower()
     if not assignee:
         return True, f"Proposal P-{pid} approved (queued) but assignee was missing; open the assignment to fix."
+
+    # New preferred path: Create a real Task assigned to the agent (instead of relying only on agent_assignments)
+    try:
+        if db.agent_get(assignee):  # it's an agent
+            task_id = db.add_task(
+                session_id=None,
+                task_text=f"[From CoS] {row.get('title', 'Work item')}",
+                due_date=row.get("due_date"),
+                category="Business",
+                assigned_to=assignee,
+                priority=int(row.get("priority", 3)),
+                blockers=row.get("brief_md", "")[:500] if row.get("brief_md") else None,
+            )
+            if task_id:
+                logger.info("Created task %s for agent %s from approved CoS proposal P-%s", task_id, assignee, pid)
+    except Exception:
+        logger.exception("Failed to create task for approved agent assignment P-%s", pid)
 
     try:
         tid = create_assignment_thread(
@@ -4385,13 +4595,15 @@ def _parse_and_add_tasks(db: DatabaseManager, response: str, *, chat_id: Optiona
 # =============================================================================
 #
 # This is the high-level layer on top of the existing agent_assignments scaffolding.
-# CoS is opinionated and proactive:
-#   - User states a goal → CoS proposes a complete, multi-agent WorkPlan
-#   - Rich context + high-quality briefs for each assignee (Pulse, Shield, Mason, etc.)
-#   - Explicit Mason consultation when project structure is unclear
-#   - Mason can autonomously handle milestones on *existing* projects; new projects require user sign-off
-#   - Once approved → CoS delegates (creates real assignments + threads + handoffs)
-#   - CoS reports back on completion / attention-needed / full-plan completion (push notifications)
+# CoS is opinionated and proactive, but intent detection is LLM-driven:
+#   - For broad multi-specialist goals the model emits PROPOSE_STAFF_PLAN: <goal>
+#     (or user uses very explicit "draft a work plan for..." which the light trigger catches).
+#   - CoS then proposes a complete, multi-agent WorkPlan with Mason consult.
+#   - Rich context + high-quality briefs for the appropriate assignees.
+#   - Explicit Mason consultation when project structure is unclear.
+#   - Mason can autonomously handle milestones on *existing* projects; new projects require user sign-off.
+#   - Once approved → CoS delegates (creates real assignments + threads + handoffs).
+#   - CoS reports back on completion / attention-needed / full-plan completion (push notifications).
 #
 # Primary interaction is in chat; the CoS tab will also expose a structured "Work Plans" view.
 # =============================================================================
@@ -4453,7 +4665,7 @@ Your job right now is ONLY to give project-structure advice for this goal:
 
 1. Does this goal clearly belong to one of the existing projects above? If yes, name it and suggest 1-3 new milestones (with rough due dates and owners if obvious).
 2. If it does NOT map cleanly to an existing project, propose a sensible new project name + 2-4 initial milestones.
-3. Flag anything that looks like a compliance, security, or risk angle that Shield or Pulse should own.
+3. Flag ONLY if there is a clear security, privacy, data-risk, or infosec/compliance-control angle that Shield (Security Steward) should own. Do not flag pure regulatory/FDA study-type or timeline questions for Shield.
 
 Respond in clean JSON only with this exact shape:
 
@@ -4465,7 +4677,7 @@ Respond in clean JSON only with this exact shape:
     {{"title": "...", "due_in_days": 14, "notes": "..."}},
     ...
   ],
-  "risk_notes": "any security/compliance/dependency flags for Pulse or Shield",
+  "risk_notes": "any security/privacy/dependency flags for Pulse or Shield (blank for pure regulatory research)",
   "rationale": "one paragraph explaining your reasoning"
 }}
 
@@ -4559,10 +4771,21 @@ def propose_work_plan(
     )
 
     # 3. Decide which specialist agents should own pieces (opinionated defaults)
-    agents = force_agents or ["pulse", "shield", "mason"]
+    # Default to Pulse (intel/research) + Mason (coord) for most goals.
+    # Only pull Shield when Mason advice or goal text signals real security/privacy/risk angle.
+    # This prevents over-scoping pure regulatory timeline/FDA study-type questions (e.g. iQSurgical)
+    # to include Shield which is for security/privacy stewardship.
+    agents = force_agents or ["pulse", "mason"]
     # Always include Mason for execution tracking on anything project-related
     if "mason" not in agents:
         agents.append("mason")
+
+    # Conditional Shield only for real security/privacy angles (see Mason prompt update + risk_notes).
+    if "shield" not in agents:
+        risk = str((mason_advice or {}).get("risk_notes") or "").lower()
+        gl = goal.lower()
+        if ("shield" in risk) or any(w in risk for w in ["security", "privacy", "cyber", "data risk", "infosec"]) or any(w in gl for w in ["security", "privacy risk", "data breach", "hipaa", "cyber"]):
+            agents.append("shield")
 
     # 4. Build the actual assignment specs (rich briefs + context packages)
     assignments_spec: list[dict] = []
@@ -4644,7 +4867,8 @@ Work closely with Mason on milestone integration and with Pulse on ongoing monit
 
     # 5. Persist the WorkPlan + the proposed assignments (linked via plan_id)
     plan_title = f"Plan: {goal[:80]}"
-    plan_summary = f"**Goal:** {goal}\n\n**Mason recommendation:** {mason_advice.get('rationale', 'See details')}\n\n**Agents involved:** {', '.join(a.upper() for a in agents)}"
+    # Note: format func prints the Goal header; summary starts with Mason rec to avoid duplicate "Goal:" lines in chat output.
+    plan_summary = f"**Mason recommendation:** {mason_advice.get('rationale', 'See details')}\n\n**Agents involved:** {', '.join(a.upper() for a in agents)}"
 
     plan_id = db.create_work_plan(
         title=plan_title,
@@ -4797,42 +5021,16 @@ def get_work_plan_checkpoint_report(db: DatabaseManager, plan_id: int) -> str:
 
 def _is_staff_planning_request(message: str) -> str | None:
     """
-    Heuristic to detect when the user is giving CoS a high-level goal that
-    should trigger the full staff planning flow (propose multi-agent WorkPlan).
+    Stub: always returns None.
 
-    Returns the cleaned goal string if it looks like one, else None.
-    This makes the *chat* the natural place to say "we need X done".
+    All staff plan proposal decisions are now driven by the LLM via the
+    PROPOSE_STAFF_PLAN: marker emitted in its output (see post-LLM handling
+    in cos_response and the instructions in the CoS system prompt).
+
+    There are deliberately no keyword lists, phrase triggers, or special
+    cases left for intent detection. The model receives full context and
+    decides.
     """
-    if not message or len(message) < 15:
-        return None
-
-    m = message.lower().strip()
-
-    planning_signals = [
-        "we need to", "i need to get", "get the team to", "coordinate",
-        "prepare a plan for", "put together a plan", "i want us to",
-        "staff plan for", "handle the", "take care of the",
-        "propose assignments for", "who should own", "break this down for the team",
-        "i'd like a plan", "let's plan the", "draft a work plan",
-    ]
-
-    for sig in planning_signals:
-        if sig in m:
-            # Extract a reasonable goal (strip the trigger phrase a bit)
-            goal = message.strip()
-            # Clean obvious prefixes
-            for prefix in ["we need to ", "i need to ", "i need to get ", "get the team to ", "let's ", "i want "]:
-                if goal.lower().startswith(prefix):
-                    goal = goal[len(prefix):].strip().capitalize()
-                    break
-            if len(goal) > 8:
-                return goal
-            return message.strip()
-
-    # Also trigger on explicit "plan for <goal>" style
-    if "plan for" in m or "planning for" in m:
-        return message.strip()
-
     return None
 
 
@@ -4849,7 +5047,10 @@ def _format_work_plan_proposal_for_chat(proposal: WorkPlanProposal) -> str:
     for a in proposal.assignments:
         assignee = str(a.get("assignee_code", "?")).upper()
         title = a.get("title", "")
-        brief = a.get("brief_md", "")[:180].replace("\n", " ")
+        brief = a.get("brief_md", "")[:140].replace("\n", " ")
+        # For display only: if title/brief embed a very long forwarded goal, keep readable.
+        if len(title) > 75:
+            title = title[:72].rsplit(" ", 1)[0] + "..."
         lines.append(f"- **{assignee}**: {title}")
         lines.append(f"  _{brief}..._")
     lines.append("")
@@ -4861,7 +5062,9 @@ def _format_work_plan_proposal_for_chat(proposal: WorkPlanProposal) -> str:
 
     lines.append(proposal.rationale)
     lines.append("")
-    lines.append("**Next step:** Reply with **approve WP-{}** or **yes, delegate this plan** to have CoS hand the work to Pulse, Shield, and Mason.".format(proposal.plan_id))
+    # Dynamic list of agents (not always Pulse+Shield+Mason).
+    agent_list = ", ".join(a.upper() for a in (proposal.assignments and [aa.get("assignee_code") for aa in proposal.assignments] or ["pulse", "mason"]))
+    lines.append("**Next step:** Reply with **approve WP-{}** or **yes, delegate this plan** to have CoS hand the work to {}.".format(proposal.plan_id, agent_list))
     lines.append("You can also say **revise the plan** or give specific changes (e.g. \"add more Shield focus on regulatory\").")
 
     return "\n".join(lines)
@@ -4901,6 +5104,64 @@ def _handle_work_plan_approval_command(db: DatabaseManager, message: str, chat_i
         return f"**Approved and delegated.** {msg}\n\nCurrent status:\n{report}\n\nI'll keep you posted as the specialists make progress."
     else:
         return f"Could not delegate WP-{plan_id}: {msg}"
+
+
+def _handle_plain_proposal_approval(db: DatabaseManager, message: str, chat_id: Optional[int] = None) -> str | None:
+    """
+    Handles simple plain-language approvals like "Approve", "Yes", "Go ahead", "Approve that", etc.
+
+    Priority order for "what to approve":
+    1. Most recently created *individual proposed assignment* in the current chat context (strongly preferred after a redirection like "Delegate this to Atlas").
+    2. Most recent proposed Work Plan.
+    3. Most recent proposed individual assignment overall.
+
+    This fixes the common case where the user redirects a plan to a specific person and then just says "Approve".
+    """
+    m = (message or "").strip().lower()
+    if not m:
+        return None
+
+    approval_triggers = ["approve", "yes", "go ahead", "go", "approved", "approve it", "yes please", "do it"]
+    if not any(trigger in m for trigger in approval_triggers):
+        return None
+
+    try:
+        # Strong preference: the most recently created proposed *individual assignment*
+        # (this is what the redirection handler creates when user says "Delegate this to Atlas")
+        recent_individual = db.agent_list_assignments(status="proposed", limit=10) or []
+        if recent_individual:
+            # Sort by created_at desc if available, otherwise just take the first (most recent from the query)
+            # For now we trust the query returns newest first
+            latest = recent_individual[0]
+            aid = int(latest.get("id") or 0)
+            if aid > 0:
+                ok, msg = approve_assignment_proposal(db, aid, actor_code="navi")
+                if ok:
+                    row = db.agent_get_assignment(aid) or {}
+                    assignee = str(row.get("assignee_code") or "the assignee")
+                    title = str(row.get("title") or "")[:60]
+                    return f"**Approved.** Assignment A-{aid:04d} ({title}) has been queued and routed to {assignee}. I'll keep you posted on progress."
+                else:
+                    return f"Could not approve the most recent proposal: {msg}"
+
+        # Fallback to most recent Work Plan
+        recent_plans = db.list_work_plans(status="proposed", limit=5) or []
+        if recent_plans:
+            latest_plan = recent_plans[0]
+            plan_id = latest_plan.get("id")
+            if plan_id:
+                success, msg, aids = approve_and_delegate_work_plan(db, plan_id, actor="navi")
+                if success:
+                    report = get_work_plan_checkpoint_report(db, plan_id)
+                    return f"**Approved and delegated.** {msg}\n\nCurrent status:\n{report}\n\nI'll keep you posted as the specialists make progress."
+                else:
+                    return f"Could not approve the most recent plan: {msg}"
+
+    except Exception as e:
+        logger.exception("Plain proposal approval failed: %s", e)
+        return None
+
+    return None
 
 
 def _handle_work_plan_revision_command(db: DatabaseManager, message: str, chat_id: Optional[int] = None) -> str | None:
@@ -4988,6 +5249,221 @@ def _get_active_work_plan_status_for_context(db: DatabaseManager, limit: int = 3
         return "\n".join(parts)
     except Exception:
         return ""
+
+
+def _handle_propose_staff_plan_from_llm(db: DatabaseManager, llm_output: str, chat_id: Optional[int] = None) -> str | None:
+    """
+    If the LLM (after seeing full context) decides the request warrants a full
+    multi-agent coordinated Work Plan rather than a direct answer or single
+    assignment, it can emit:
+
+        PROPOSE_STAFF_PLAN: <clean goal>
+
+    We catch it here (post tool loop), call the rich propose_work_plan
+    (Mason consult, intel, briefs for the appropriate specialists), and
+    return the formatted proposal for the user to approve/revise.
+
+    This is the primary (and now only) mechanism for deciding to propose a
+    staff plan. No keyword/phrase pre-filters remain.
+    """
+    if not llm_output:
+        return None
+    import re
+    # Allow the marker anywhere; extract the goal that follows it.
+    m = re.search(r"PROPOSE_STAFF_PLAN:\s*(.+?)(?:\n\n|\n(?=[A-Z])|$)", llm_output, re.IGNORECASE | re.DOTALL)
+    if not m:
+        m = re.search(r"PROPOSE_STAFF_PLAN:\s*(.+)", llm_output, re.IGNORECASE)
+    if not m:
+        return None
+    goal = m.group(1).strip()
+    if len(goal) < 10:
+        return None
+    try:
+        proposal = propose_work_plan(db, goal, thread_id=chat_id)
+        formatted = _format_work_plan_proposal_for_chat(proposal)
+        return formatted
+    except Exception as e:
+        logger.exception("LLM-requested staff plan proposal failed: %s", e)
+        return f"I understood a staff plan was requested for that goal, but hit an error building it: {e}"
+
+
+def _handle_delegation_redirection(db: DatabaseManager, message: str, chat_id: Optional[int] = None) -> str | None:
+    """
+    Handles plain-language delegation redirections/overrides from the user, e.g.:
+    - "Delegate this to Atlas"
+    - "Give it to Atlas instead"
+    - "Assign the Medicai research to Atlas"
+    - "Have Atlas handle this"
+
+    This is the primary path for users who want to give direct, simple instructions
+    instead of accepting the CoS's proposed multi-agent plans.
+
+    Creates a clean proposed assignment to the named agent.
+    """
+    m = (message or "").strip()
+    if not m:
+        return None
+
+    lower = m.lower()
+    import re
+
+    # Common redirection patterns - expanded for natural language
+    redirection_patterns = [
+        r"delegate\s+(?:this|that|it|the\s+.*)\s+to\s+([A-Za-z]+)",
+        r"give\s+(?:this|that|it|the\s+.*)\s+to\s+([A-Za-z]+)",
+        r"assign\s+(?:this|that|it|the\s+.*)\s+to\s+([A-Za-z]+)",
+        r"have\s+([A-Za-z]+)\s+(?:do|handle|take|research|look into)",
+        r"use\s+([A-Za-z]+)\s+(?:for|instead|on)\s+(?:this|that|it|the\s+.*)",
+        r"just\s+give\s+it\s+to\s+([A-Za-z]+)",
+        r"send\s+(?:this|that|it)\s+to\s+([A-Za-z]+)",
+        r"let\s+([A-Za-z]+)\s+(?:do|handle|take)\s+(?:this|that|it)",
+        r"get\s+([A-Za-z]+)\s+on\s+(?:this|that|it)",
+        r"route\s+(?:this|that|it)\s+to\s+([A-Za-z]+)",
+        r"put\s+(?:this|that|it)\s+(?:with|on)\s+([A-Za-z]+)",
+        r"hand\s+(?:this|that|it)\s+(?:off\s+)?to\s+([A-Za-z]+)",
+    ]
+
+    target_name = None
+    for pat in redirection_patterns:
+        match = re.search(pat, lower, re.IGNORECASE)
+        if match:
+            target_name = match.group(1).strip()
+            break
+
+    if not target_name:
+        return None
+
+    # Resolve the agent robustly
+    agent = db.agent_resolve_by_name(target_name)
+    if not agent:
+        return f"I couldn't find an active agent matching '{target_name}'. Available staff include Atlas, Pulse, Shield, Mason, Quill, etc. Want me to propose it to someone else?"
+
+    assignee_code = str(agent.get("code") or "").strip().lower()
+    display_name = str(agent.get("display_name") or target_name).strip()
+
+    # Derive a reasonable title/brief from the message + recent context
+    # Prefer the goal from the most recent proposed work plan if available for this chat.
+    goal = m
+    plan_context = ""
+
+    if chat_id is not None:
+        try:
+            recent_plans = db.list_work_plans(status="proposed", limit=5) or []
+            for p in recent_plans:
+                plan_json = p.get("plan_json") or {}
+                if isinstance(plan_json, str):
+                    try:
+                        plan_json = json.loads(plan_json)
+                    except Exception:
+                        plan_json = {}
+                # Simple heuristic: match by chat context or most recent
+                if str(p.get("chat_id") or "") == str(chat_id) or not plan_context:
+                    plan_context = plan_json.get("goal") or plan_json.get("original_goal") or ""
+                    if plan_context:
+                        break
+        except Exception:
+            pass
+
+    if plan_context and len(plan_context) > 10:
+        goal = plan_context
+    else:
+        # Fallback to the redirection message itself
+        goal = m
+
+    title = f"Research / work on: {goal[:90]}"
+    brief = f"User request via CoS chat: {goal}\n\nAssigned directly by user (overrode previous plan suggestion)."
+
+    # New simplified model: Create a Task assigned to the agent (we can still assign tasks to agents).
+    # This aligns with using the core tasks system instead of a separate agent_assignments concept for staff work.
+    try:
+        context_obj = {
+            "source": "chief_of_staff_chat_redirection",
+            "user_instruction": m,
+            "chat_id": chat_id,
+        }
+
+        # Create the task assigned to the specific agent (e.g. "atlas")
+        task_id = db.add_task(
+            session_id=None,
+            task_text=title,
+            due_date=None,
+            category="Business",
+            assigned_to=assignee_code,
+            blockers=brief[:2000] if brief else None,
+        )
+
+        if task_id:
+            # Record context for traceability (we can later link this task to a CoS Plan when that concept lands)
+            try:
+                db.update_task_status(task_text=title, completed=0)  # ensure it's open
+            except Exception:
+                pass
+
+            # Create / update today's CoS daily plan as "proposed" so it appears in the CoS tab dropdown.
+            # This is the primary proposal container per the Tasks + CoS Plans model.
+            try:
+                from datetime import datetime, UTC
+                today = datetime.now(UTC).strftime("%Y-%m-%d")
+                plan_content = {
+                    "status": "proposed",
+                    "plan_json": {
+                        "goal": f"Staff task: {title}",
+                        "tasks": [{
+                            "task_id": task_id,
+                            "title": title,
+                            "assigned_to": assignee_code,
+                            "blockers": brief[:500] if brief else None,
+                            "priority": 3,
+                        }]
+                    },
+                    "visual_html": None,
+                }
+                db.save_daily_plan(today, plan_content)
+            except Exception:
+                pass
+
+            # For now, also keep the legacy proposed assignment path during transition
+            # (we'll remove this once CoS Plans + task-based delegation is solid)
+            proposal_id = db.agent_create_proposed_assignment(
+                title=title,
+                brief_md=brief,
+                assignee_code=assignee_code,
+                priority=3,
+                due_date=None,
+                proposed_by="navi",
+                context_json=context_obj,
+            )
+
+            return (
+                f"Understood — routing to **{display_name}** as a task.\n\n"
+                f"I've created task T-{int(task_id):04d} assigned to {display_name}.\n"
+                f"Also recorded as today's proposed CoS Plan (see dropdown in Chief of Staff tab)."
+            )
+
+        if proposal_id:
+            # Best-effort: mark any recent proposed Work Plans as superseded.
+            # This prevents the old multi-agent plan from winning on a later plain "Approve".
+            try:
+                recent_plans = db.list_work_plans(status="proposed", limit=5) or []
+                for p in recent_plans:
+                    pid = p.get("id")
+                    if pid:
+                        db.update_work_plan(pid, status="superseded")
+            except Exception:
+                pass
+
+            return (
+                f"Understood — redirecting to **{display_name}**.\n\n"
+                f"I've created a proposed assignment (P-{int(proposal_id):04d}) for {display_name} to handle this.\n"
+                f"Reply with **approve** (or 'approve P-{int(proposal_id)}') when you're ready to delegate it. "
+                f"Any previous multi-agent plan has been marked as superseded."
+            )
+        else:
+            return f"I tried to create an assignment for {display_name} but something went wrong on the creation side. Want me to try again or open it manually in the Delegation Board?"
+
+    except Exception as e:
+        logger.exception("Delegation redirection failed for target=%s: %s", target_name, e)
+        return f"Hit an error while trying to assign this to {display_name}: {e}. We can create it manually on the board instead."
 
 
 # The following hooks are called from cos_response to make chat-first planning work.

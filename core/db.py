@@ -5,6 +5,7 @@ import json
 import logging
 import sys
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -1374,6 +1375,7 @@ class DatabaseManager:
         estimate_minutes: int | None = None,
         blockers: str | None = None,
         depends_on_json: str | None = None,
+        priority: int | None = None,
     ):
         with sqlite3.connect(self.db_name) as conn:
             cursor = conn.execute(
@@ -1409,7 +1411,7 @@ class DatabaseManager:
                     category,
                     recurrence,
                     completed,
-                    0,
+                    int(priority) if priority is not None else 0,
                     "[]",
                     (str(assigned_to).strip() or None) if assigned_to is not None else None,
                     None,
@@ -2157,11 +2159,17 @@ class DatabaseManager:
                         d["related_set_cross_ref_section"] = (st.get("related_set_cross_ref_section") or st.get("related_set_cross_ref_note")) or None
                     except Exception:
                         d["related_set_cross_ref_section"] = None
+                    # Phase 4 surface consistency reports in CoS/Intel (smallest chained): extract the persisted "related_set_consistency_report" (full markdown from ConsistencyChecker) so CoS contexts and lists can surface actual reports (status, issues) without schema change. Defensive; mirrors prior related_set parse micros exactly.
+                    try:
+                        d["related_set_consistency_report"] = st.get("related_set_consistency_report") or None
+                    except Exception:
+                        d["related_set_consistency_report"] = None
                 except Exception:
                     d["related_set_member"] = False
                     d["related_set_companions_count"] = 0
                     d["has_related_set_artifacts"] = False
                     d["related_set_cross_ref_section"] = None
+                    d["related_set_consistency_report"] = None
                 out.append(d)
             return out
 
@@ -5780,6 +5788,29 @@ class DatabaseManager:
             conn.commit()
             return True
 
+    def list_proposed_daily_plans(self, limit: int = 20) -> list[dict]:
+        """List recent proposed CoS daily plans for the history dropdown / review."""
+        with sqlite3.connect(self.db_name) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, date, status, plan_json, visual_html, generated_at, approved_at, plan_md FROM cos_daily_plans "
+                "WHERE status = 'proposed' OR status IS NULL ORDER BY COALESCE(generated_at, created_at, date) DESC, id DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+            out = []
+            for r in rows:
+                out.append({
+                    "id": r[0],
+                    "date": r[1],
+                    "status": r[2] or "proposed",
+                    "plan_json": r[3],
+                    "visual_html": r[4],
+                    "generated_at": r[5],
+                    "approved_at": r[6],
+                    "plan_md": r[7] if len(r) > 7 else None,
+                })
+            return out
+
     def cos_insert_daily_plan(self, date: str, plan_md: str) -> int:
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with sqlite3.connect(self.db_name) as conn:
@@ -6534,14 +6565,26 @@ class DatabaseManager:
                     params,
                 ).fetchall()
         except Exception:
-            like = f"%{q}%"
+            # Fallback to word-based LIKE for robustness (e.g. when FTS MATCH fails in fresh test DBs).
+            # Splits query to terms so "Acme" matches memory containing "Acme".
+            words = [w for w in re.findall(r'\w{3,}', q)]
             with sqlite3.connect(self.db_name) as conn:
-                base = """
-                    SELECT id, agent_code, kind, content, source, confidence, approval_status, json_data, created_at, updated_at
-                    FROM agent_memory
-                    WHERE agent_code = ? AND (content LIKE ? OR source LIKE ?)
-                """
-                params = [agent, like, like]
+                if words:
+                    like_clauses = " OR ".join(["content LIKE ?"] * len(words))
+                    base = f"""
+                        SELECT id, agent_code, kind, content, source, confidence, approval_status, json_data, created_at, updated_at
+                        FROM agent_memory
+                        WHERE agent_code = ? AND ({like_clauses})
+                    """
+                    params = [agent] + [f"%{w}%" for w in words]
+                else:
+                    like = f"%{q}%"
+                    base = """
+                        SELECT id, agent_code, kind, content, source, confidence, approval_status, json_data, created_at, updated_at
+                        FROM agent_memory
+                        WHERE agent_code = ? AND (content LIKE ? OR source LIKE ?)
+                    """
+                    params = [agent, like, like]
                 if kind is not None:
                     base += " AND kind = ?"
                     params.append(str(kind))
@@ -6554,6 +6597,16 @@ class DatabaseManager:
                 base += " ORDER BY confidence DESC, created_at DESC, id DESC LIMIT ?"
                 params.append(int(limit))
                 return conn.execute(base, params).fetchall()
+
+    def agent_memory_delete_links(self, memory_id: int) -> bool:
+        """Remove all entity links for a given memory item (used when updating links)."""
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                conn.execute("DELETE FROM agent_memory_entity_links WHERE mem_id = ?", (int(memory_id),))
+                conn.commit()
+            return True
+        except Exception:
+            return False
 
     def agent_memory_delete(self, memory_id: int) -> bool:
         """Delete one durable agent-memory row and its FTS/entity-link entries."""
@@ -6662,6 +6715,30 @@ class DatabaseManager:
                 params.append(str(approval_status))
             row = conn.execute(base, params).fetchone()
             return int(row[0] or 0) if row else 0
+
+    def agent_memory_link_entity(
+        self,
+        *,
+        mem_id: int,
+        agent_code: str,
+        entity_type: str,
+        entity_key: str,
+    ) -> bool:
+        """Link an agent_memory item to a client or project (for cross-linking)."""
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO agent_memory_entity_links
+                        (mem_id, entity_type, entity_key, created_at)
+                    VALUES (?, ?, ?, datetime('now'))
+                    """,
+                    (int(mem_id), str(entity_type).lower(), str(entity_key),),
+                )
+                conn.commit()
+            return True
+        except Exception:
+            return False
 
     def agent_memory_entity_links(self, *, memory_id: int) -> list[dict]:
         with sqlite3.connect(self.db_name) as conn:

@@ -17,9 +17,27 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import json
+import os
+import re
+
+def _parse_dt(val):
+    """Safely convert DB TEXT (ISO string) or datetime into datetime (or None)."""
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, str):
+        try:
+            # Handle common SQLite / ISO formats
+            s = val.replace('Z', '+00:00').replace(' ', 'T')
+            return datetime.fromisoformat(s)
+        except Exception:
+            return None
+    return None
+import logging
 
 from core.db import DatabaseManager
 from core.file_handler import REGULATORY_CONSULTING_BOOST_TERMS  # Phase 2 (Intelligence & Coordination): reuse domain vocabulary for smarter Pulse raising (cross-cut from Phase 1 retrieval core, VERIFIED COMPLETE)
+
+logger = logging.getLogger(__name__)
 
 
 AGENT_CODE = "pulse"  # The specialist agent code for Intel
@@ -131,9 +149,12 @@ class IntelService:
         linked_clients: Optional[List[int]] = None,
         linked_projects: Optional[List[int]] = None,  # Phase 2 cross-link support
         raised: bool = False,
-        notes: str = ""
+        notes: str = "",
+        extra_json: Optional[dict] = None  # for research source_title, mentioned_companies, etc.
     ) -> int:
-        """Save a new intelligence finding."""
+        """Save a new intelligence finding.
+        Note: The `title` param is vestigial (never persisted to json_data or used for search/display; titles derive from source_title/content or summary). Retained for API compatibility.
+        """
         # save_finding for Pulse private memory + Shield finding persistence
         json_data = {
             "importance": importance,
@@ -141,6 +162,8 @@ class IntelService:
             "source": source,
             "notes": notes.strip()
         }
+        if extra_json:
+            json_data.update({k: v for k, v in extra_json.items() if v is not None})
 
         # Retrieval integration (Phase 1 core complete): if linked to clients, retrieve and embed
         # relevant past documents from the unified retrieval system into the finding.
@@ -215,6 +238,40 @@ class IntelService:
                     entity_key=str(pid)
                 )
 
+        # Pure local Intel retrieval layer integration (smallest-safe increment):
+        # Best-effort, non-blocking embedding + indexing of every saved finding.
+        # Uses the dedicated intel_index/ Chroma + all-MiniLM embeddings. Never touches remote.
+        # The rich text includes source_title, key_points, mentioned_companies etc. for high recall.
+        try:
+            from .intel_retrieval import index_local_intel_finding, build_intel_index_text
+            idx_text = build_intel_index_text(summary, json_data)
+            meta = {
+                "importance": importance,
+                "raised": raised,
+                "source": (source or "")[:120],
+            }
+            # Carry a few rich fields into metadata for future filtered vector queries / UI
+            if json_data:
+                if json_data.get("source_title"):
+                    meta["source_title"] = str(json_data.get("source_title"))[:120]
+                mc = json_data.get("mentioned_companies")
+                if mc:
+                    meta["mentioned_companies"] = mc[:5] if isinstance(mc, list) else str(mc)[:80]
+                # key_points omitted from meta by design (unlike source_title); they are fully present in the rich
+                # idx_text via build_intel_index_text and used in keyword scoring. See limitation in intel_retrieval.py _prepare.
+            # Store client/project links in vector metadata so that local_vector_search
+            # post-filters (and LocalIntelHit population) work for scoped queries.
+            if linked_clients:
+                meta["client_ids"] = [int(x) for x in linked_clients]
+            if linked_projects:
+                meta["project_ids"] = [int(x) for x in linked_projects]
+            import time
+            meta["indexed_at"] = time.time()
+            index_local_intel_finding(mem_id, idx_text or (summary or "")[:800], meta)
+        except Exception:
+            # Never allow indexing issues to break finding persistence or UI flows.
+            pass
+
         return mem_id
 
     def list_findings(
@@ -236,7 +293,15 @@ class IntelService:
 
         findings = []
         for row in rows:
-            mem_id, content, source, confidence, approval_status, json_data, created_at = row
+            if len(row) < 10:
+                continue
+            mem_id = row[0]
+            content = row[3]
+            source = row[4]
+            confidence = row[5]
+            approval_status = row[6]
+            json_data = row[7]
+            created_at = row[8]
             data = json.loads(json_data) if json_data else {}
 
             # Apply filters
@@ -268,7 +333,7 @@ class IntelService:
             client_ids = [int(link["entity_key"]) for link in linked if link["entity_type"] == "client"]
             project_ids = [int(link["entity_key"]) for link in linked if link["entity_type"] == "project"]
 
-            findings.append(IntelFinding(
+            finding = IntelFinding(
                 id=mem_id,
                 title=content[:80] + "..." if len(content) > 80 else content,
                 summary=content,
@@ -278,8 +343,10 @@ class IntelService:
                 linked_clients=client_ids,
                 linked_projects=project_ids,
                 notes=data.get("notes", ""),
-                created_at=created_at
-            ))
+                created_at=_parse_dt(created_at)
+            )
+            finding.data = data  # attach for deeper search in research articles etc.
+            findings.append(finding)
 
         if findings: logger.debug("Pulse findings from private memory: %d (makes Shield consumption actionable)", len(findings))
         return findings
@@ -311,13 +378,13 @@ class IntelService:
             linked_clients=client_ids,
             linked_projects=project_ids,
             notes=data.get("notes", ""),
-            created_at=created_at
+            created_at=_parse_dt(created_at)
         )
 
     def mark_raised(self, finding_id: int, raised: bool = True) -> bool:
         # mark_raised for Pulse private memory + Shield finding raising
         """Mark a finding as raised (important enough to show in badge)."""
-        row = self.db.agent_memory_get(finding_id, agent_code=AGENT_CODE)
+        row = self.db.agent_memory_get(finding_id)
         if not row:
             return False
 
@@ -333,12 +400,20 @@ class IntelService:
             json_data=data
         )
         if raised: logger.debug("marked pulse finding raised id=%d (Shield surface consumption)", finding_id)
+
+        # Best-effort re-index so the vector layer stays reasonably fresh without requiring a full rebuild.
+        # This is part of improving index freshness (one of the two focus areas of the current phase).
+        try:
+            self._reindex_finding(finding_id)
+        except Exception:
+            pass
+
         return updated
 
     def update_finding_notes(self, finding_id: int, notes: str) -> bool:
         # update_finding_notes for Pulse private memory + Shield finding notes
         """Persist free-form notes on a finding."""
-        row = self.db.agent_memory_get(finding_id, agent_code=AGENT_CODE)
+        row = self.db.agent_memory_get(finding_id)
         if not row:
             return False
 
@@ -353,7 +428,150 @@ class IntelService:
             json_data=data
         )
         if notes: logger.debug("updated pulse finding notes len=%d id=%d (Shield surface)", len(notes or ""), finding_id)
+
+        # Best-effort re-index so vector layer stays reasonably fresh.
+        try:
+            self._reindex_finding(finding_id)
+        except Exception:
+            pass
+
         return updated
+
+    def _reindex_finding(self, finding_id: int) -> bool:
+        """Best-effort re-index of a single finding (used for freshness on mutations)."""
+        import time
+        start = time.time()
+        try:
+            from .intel_retrieval import index_local_intel_finding, build_intel_index_text
+
+            row = self.db.agent_memory_get(finding_id)
+            if not row:
+                return False
+
+            content = row[3] or ""
+            json_data = row[7]
+            data = json.loads(json_data) if json_data else {}
+
+            idx_text = build_intel_index_text(content, data)
+
+            meta = {
+                "importance": data.get("importance", "medium"),
+                "raised": data.get("raised", False),
+                "source": (row[4] or "")[:120],
+                "indexed_at": time.time(),
+            }
+            if data.get("source_title"):
+                meta["source_title"] = str(data["source_title"])[:120]
+            mc = data.get("mentioned_companies")
+            if mc:
+                meta["mentioned_companies"] = mc[:5] if isinstance(mc, list) else str(mc)[:80]
+            # key_points omitted from meta (as in save_finding); full signal lives in build_intel_index_text + keyword path.
+
+            if data.get("linked_clients"):
+                meta["client_ids"] = [int(x) for x in data["linked_clients"]] if isinstance(data.get("linked_clients"), list) else []
+            if data.get("linked_projects"):
+                meta["project_ids"] = [int(x) for x in data["linked_projects"]] if isinstance(data.get("linked_projects"), list) else []
+
+            index_local_intel_finding(finding_id, idx_text or content[:800], meta)
+            logger.debug("reindexed intel finding id=%d (%.2fs)", finding_id, time.time() - start)
+            return True
+        except Exception as exc:
+            logger.debug("reindex failed for finding id=%d: %s", finding_id, exc)
+            return False
+
+    def update_finding(
+        self,
+        finding_id: int,
+        *,
+        title: str | None = None,
+        summary: str | None = None,
+        importance: str | None = None,
+        raised: bool | None = None,
+        notes: str | None = None,
+        linked_clients: list[int] | None = None,
+        linked_projects: list[int] | None = None,
+    ) -> bool:
+        """Update an existing intel finding (including replacing its client/project links)."""
+        row = self.db.agent_memory_get(finding_id)
+        if not row:
+            return False
+
+        # Current row layout from agent_memory_get (we only need a few fields)
+        # Note: the unpack here is tolerant; we mainly care about json_data and content
+        try:
+            mem_id, agent_code, kind, content, source, confidence, approval_status, json_data, created_at, updated_at = row
+        except Exception:
+            # Fallback for older row shapes
+            mem_id = row[0]
+            content = row[3] if len(row) > 3 else ""
+            json_data = row[7] if len(row) > 7 else None
+
+        data = json.loads(json_data) if json_data else {}
+
+        # Apply updates to json_data and content
+        if title is not None:
+            # We store title in the visible content for simplicity (consistent with save_finding)
+            content = title
+        if summary is not None:
+            content = summary
+        if importance is not None:
+            data["importance"] = importance
+        if raised is not None:
+            data["raised"] = raised
+        if notes is not None:
+            data["notes"] = notes.strip()
+
+        # Update the memory row itself (agent_memory_update requires all these fields)
+        ok = self.db.agent_memory_update(
+            memory_id=finding_id,   # note: the db method uses "memory_id"
+            kind="intel_finding",
+            content=content,
+            source=source,
+            confidence=confidence,
+            approval_status=approval_status,
+            json_data=data
+        )
+        if not ok:
+            return False
+
+        # Replace links if provided
+        if linked_clients is not None or linked_projects is not None:
+            # Remove all existing links for this finding
+            try:
+                self.db.agent_memory_delete_links(finding_id)  # we'll add this helper if needed
+            except Exception:
+                # If no delete helper yet, fall back to deleting all and re-adding
+                pass
+
+            # Add new client links
+            if linked_clients:
+                for cid in linked_clients:
+                    self.db.agent_memory_link_entity(
+                        mem_id=finding_id,
+                        agent_code=AGENT_CODE,
+                        entity_type="client",
+                        entity_key=str(cid)
+                    )
+
+            # Add new project links
+            if linked_projects:
+                for pid in linked_projects:
+                    self.db.agent_memory_link_entity(
+                        mem_id=finding_id,
+                        agent_code=AGENT_CODE,
+                        entity_type="project",
+                        entity_key=str(pid)
+                    )
+
+        logger.debug("updated intel finding id=%d with new links", finding_id)
+
+        # Best-effort re-index for freshness after broader updates.
+        try:
+            self._reindex_finding(finding_id)
+        except Exception:
+            pass
+
+        return True
 
     def get_raised_count(self) -> int:
         # get_raised_count for Pulse private memory + Shield raised count
@@ -361,6 +579,46 @@ class IntelService:
         findings = self.list_findings(raised_only=True, limit=1000)
         if findings: logger.debug("Pulse raised findings count=%d (Shield surface visibility)", len(findings))
         return len(findings)
+
+    def reindex_finding(self, finding_id: int) -> bool:
+        """
+        Public method to re-index a single finding (best-effort).
+        Useful for external callers or future update paths.
+        """
+        return self._reindex_finding(finding_id)
+
+    def get_index_stats(self) -> dict:
+        """
+        Lightweight stats about the local Intel vector index (best-effort).
+        Useful for health/observability surfaces.
+        """
+        try:
+            from .intel_retrieval import get_intel_index_stats
+            return get_intel_index_stats()
+        except Exception as exc:
+            return {"available": False, "error": str(exc)}
+
+    def rebuild_local_intel_index(self) -> dict:
+        """
+        Rebuild / backfill the pure local Intel vector index (intel_index/ Chroma).
+        Delegates to the hardened local-only layer. Safe to call from Intel tab or scripts.
+        Returns stats (indexed count, errors, model name, etc.).
+        """
+        try:
+            from .intel_retrieval import rebuild_local_intel_index, get_intel_index_stats
+            result = rebuild_local_intel_index(self.db)
+            # Attach current index health after the rebuild for immediate observability
+            try:
+                stats = get_intel_index_stats()
+                result["index_stats"] = stats
+                if stats.get("available"):
+                    logger.info("Intel index health after rebuild: vectors=%s last_indexed=%s model=%s",
+                                stats.get("vector_count"), stats.get("last_indexed_at"), stats.get("embedding_model"))
+            except Exception:
+                pass
+            return result
+        except Exception as exc:
+            return {"status": "error", "error": str(exc), "model": "local-intel-layer"}
 
     def get_last_pulse_run(self) -> Optional[str]:
         # get_last_pulse_run for Pulse private memory + Shield pulse run
@@ -612,6 +870,22 @@ class IntelService:
         if res: logger.debug("security relevant findings: %d (direct Shield surface from private mem)", len(res))
         return res
 
+    def get_relevant_intel(self, goal: str, limit: int = 5000) -> list[dict]:
+        """Return findings relevant to a natural language goal (used by CoS for planning context and by Pulse chat).
+        Broad search with very high default limit per explicit requirement: never artificially limit intel retrieval.
+        """
+        findings = self.search_findings(goal, limit=limit)
+        return [
+            {
+                "kind": "intel",
+                "title": f.title,
+                "summary": f.summary,
+                "source": f.source,
+                "importance": f.importance,
+            }
+            for f in findings
+        ]
+
     def get_recent_pulse_reflections(self, limit: int = 5) -> list:
         """Phase 2 private memory access: Load recent pulse_theme_reflection entries (Pulse's own durable regulatory theme memory).
         Used to make future monitoring/raising smarter and provide structured themes to CoS briefings.
@@ -631,13 +905,63 @@ class IntelService:
         except Exception:
             return []
 
-    def search_findings(self, query: str, limit: int = 20) -> List[IntelFinding]:
-        """Simple text search across findings (for agents or UI). Prefers [Security-Relevant] matches when query relates to security/privacy for Shield use."""
-        all_findings = self.list_findings(limit=200)
+    def search_findings(self, query: str, limit: int = 5000) -> List[IntelFinding]:
+        """Simple text search across findings (for agents or UI). Prefers [Security-Relevant] matches when query relates to security/privacy for Shield use.
+        Searches title, summary, notes, key_points, source_title, mentioned_companies etc. from json_data.
+        IMPORTANT: Per explicit requirement, retrieval is intentionally broad with high limits. We never artificially cap
+        the set of intel findings considered for search (especially for Pulse chat natural-language queries).
+        """
+        # Load a very large number of recent findings for search. "Never limit" directive for recall.
+        # This ensures user-added research items (even old ones) can be found by company name, topic, etc.
+        rows = self.db.agent_memory_recent(
+            agent_code=AGENT_CODE,
+            kind="intel_finding",
+            limit=10000
+        )
         query_lower = query.lower()
-        results = [
-            f for f in all_findings
-            if query_lower in f.title.lower() or query_lower in f.summary.lower()
-        ][:limit]
-        if results: logger.debug("intel search findings results=%d (Shield surface from private mem)", len(results))
-        return results
+        results = []
+        for row in rows:
+            if len(row) < 10:
+                continue
+            mem_id = row[0]
+            content = row[3] or ""
+            json_data = row[7]
+            data = json.loads(json_data) if json_data else {}
+            title = content[:80] + "..." if len(content) > 80 else content
+            summary = content
+            notes = data.get("notes", "")
+            key_points = data.get("key_points", [])
+            key_points_text = " ".join(key_points) if isinstance(key_points, list) else str(key_points)
+            source_title = data.get("source_title", "")
+            mentioned = data.get("mentioned_companies", [])
+            mentioned_text = " ".join(mentioned) if isinstance(mentioned, list) else str(mentioned)
+            # URLs not searchable per spec
+            full_text = (title + " " + summary + " " + notes + " " + key_points_text + " " + source_title + " " + mentioned_text).lower()
+            matched = query_lower in full_text
+            # === DIAGNOSTIC (gated to avoid leaking rich intel content on every broad search) ===
+            if matched and os.environ.get("PULSE_DIAGNOSTIC") == "1":
+                try:
+                    print(f"[search_findings] MATCH row_id={mem_id} q={query_lower!r}")
+                    print(f"  content_preview={content[:160]!r}")
+                    print(f"  source_title={source_title!r}")
+                    print(f"  mentioned={mentioned}")
+                    print(f"  key_points_text[:160]={key_points_text[:160]!r}")
+                except Exception:
+                    pass
+            if matched:
+                # Build a minimal IntelFinding for the result
+                importance = data.get("importance", "medium")
+                raised = data.get("raised", False)
+                finding = IntelFinding(
+                    id=mem_id,
+                    title=title,
+                    summary=summary,
+                    source=row[4] or "pulse",
+                    importance=importance,
+                    raised=raised,
+                    notes=notes
+                )
+                finding.data = data
+                results.append(finding)
+        results.sort(key=lambda f: 0 if "[Security-Relevant]" in (f.title or "") else 1)
+        return results[:limit]

@@ -109,6 +109,24 @@ def _chunk_summary_lines(db, *, limit: int = 20) -> tuple[list[str], dict[str, i
     return lines, counts
 
 
+def _agent_memory_lines(db, agent_code: str, *, limit: int = 40) -> tuple[list[str], dict[str, int]]:
+    """Smallest extension for sub-agent reflection summaries (Phase 3 follow-up: agent/assignment reflections)."""
+    rows = db.agent_memory_recent(agent_code=agent_code, limit=limit)
+    lines: list[str] = []
+    counts: dict[str, int] = {"agent_memory_rows": len(rows)}
+    for row in rows:
+        # layout: (id, agent_code, kind, content, source, confidence, approval_status, json_data, created_at, updated_at)
+        kind = str(row[2] or "note").strip() or "note"
+        content = str(row[3] or "").strip()
+        if not content:
+            continue
+        counts[kind] = int(counts.get(kind, 0) or 0) + 1
+        lines.append(f"- ({kind}) {content}")
+    if lines:
+        logger.debug("memory reflection agent lines=%d for %s (sub-agent summary)", len(lines), agent_code)
+    return lines, counts
+
+
 def build_memory_reflection(
     db,
     *,
@@ -120,8 +138,17 @@ def build_memory_reflection(
     # Pulse reflection deepens Shield context
     reflection_key = _period_key(normalized_scope, today=today)
     period_label = _period_label(normalized_scope, today=today)
-    memory_lines, memory_counts = _approved_memory_lines(db)
-    chunk_lines, chunk_counts = _chunk_summary_lines(db)
+    if normalized_scope.startswith("agent:"):
+        agent = normalized_scope.split(":", 1)[1]
+        memory_lines, memory_counts = _agent_memory_lines(db, agent)
+        chunk_lines, chunk_counts = [], {}
+    elif normalized_scope.startswith("assignment:"):
+        # reuse global for now (assignment mem is task local, summaries via chunks ok); future extend
+        memory_lines, memory_counts = _approved_memory_lines(db)
+        chunk_lines, chunk_counts = _chunk_summary_lines(db)
+    else:
+        memory_lines, memory_counts = _approved_memory_lines(db)
+        chunk_lines, chunk_counts = _chunk_summary_lines(db)
     source_counts = {**memory_counts, **chunk_counts}
 
     base_summary = "No approved memory items or long-term summaries are available yet."
@@ -131,7 +158,7 @@ def build_memory_reflection(
             {
                 "role": "system",
                 "content": (
-                    "Create a concise memory reflection for Navi. "
+                    "Create a concise memory reflection for Navi or the specific agent/assignment scope. "
                     "Return JSON only with keys summary and highlights. "
                     "Highlights should be a short list of durable learnings, preferences, aliases, or open loops worth keeping visible."
                 ),
@@ -139,8 +166,8 @@ def build_memory_reflection(
             {
                 "role": "user",
                 "content": (
-                    f"Period: {period_label}\n\n"
-                    "Approved durable memory:\n"
+                    f"Period/Scope: {period_label} ({normalized_scope})\n\n"
+                    "Approved durable memory (or agent private memory if agent scope):\n"
                     + ("\n".join(memory_lines) if memory_lines else "(none)")
                     + "\n\nRecent long-term chat summaries:\n"
                     + ("\n".join(chunk_lines) if chunk_lines else "(none)")

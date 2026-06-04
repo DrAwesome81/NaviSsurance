@@ -31,6 +31,9 @@ _SESSION_PROFILES: dict[str, dict[str, int | str]] = {
     "conversation_chunk_summarize": {"class": "local_fast", "max_tokens": 260, "timeout_s": 16},
     "memory_reflection": {"class": "local_fast", "max_tokens": 260, "timeout_s": 16},
     "doc_gen": {"class": "local_background", "max_tokens": 900},
+    # Pure local Intel retrieval layer profiles (100% local-only, no remote)
+    "intel_batch_digest": {"class": "local_fast", "max_tokens": 450, "timeout_s": 25},
+    "intel_relevance_batch": {"class": "local_fast", "max_tokens": 320, "timeout_s": 20},
 }
 
 

@@ -110,6 +110,7 @@ class AgentConsole(QWidget):
         response_processor: Callable[[str], str] | None = None,
         reply_ready_callback: Callable[[str], None] | None = None,
         workflow_trigger_callback: Callable[[str], None] | None = None,
+        thread_id: int | str | None = None,  # allow forcing a dedicated thread (used by Intel tab's Pulse chat for isolation)
     ):
         super().__init__(parent)
         self.db = db
@@ -121,7 +122,7 @@ class AgentConsole(QWidget):
         self.agent = self.db.agent_get(self.agent_code) or self.db.agent_resolve_by_name(self.agent_code) or {}
         if self.agent:
             self.agent_code = str(self.agent.get("code") or self.agent_code).strip().lower()
-        self._current_thread_id: int | None = None
+        self._current_thread_id: int | None = int(thread_id) if thread_id is not None else None
         self._current_assignment_id: int | None = None
         self._last_assistant_message: str = ""
         self._last_user_message: str = ""
@@ -273,20 +274,54 @@ class AgentConsole(QWidget):
         if self._current_thread_id is None and rows:
             self._current_thread_id = int(rows[0][0])
             self._load_current_history()
+        elif self._current_thread_id is not None:
+            # We were given a specific thread_id (e.g. "intel_pulse_main" for the isolated Pulse chat in Intel tab).
+            # Make sure it exists; if not, create it so the chat is stable across restarts.
+            existing = [int(r[0]) for r in rows]
+            if self._current_thread_id not in existing:
+                # create a stable thread for this isolated chat
+                new_tid = self.db.agent_create_thread(
+                    agent_code=self.agent_code,
+                    title="Intel Pulse Chat"
+                )
+                if new_tid:
+                    self._current_thread_id = int(new_tid)
+            self._load_current_history()
 
     def _refresh_inbox(self):
+        """Show tasks assigned to this agent (preferred model).
+        Falls back to legacy agent_assignments for now during transition.
+        """
         self.inbox_list.clear()
-        rows = self.db.agent_list_assignments(assignee_code=self.agent_code, limit=200)
-        for r in rows:
-            st = str(r.get("status") or "").strip().lower()
-            if st in {"done", "cancelled"}:
-                continue
-            aid = int(r.get("id") or 0)
-            pr = int(r.get("priority") or 3)
-            title = str(r.get("title") or "Untitled")
-            item = QListWidgetItem(f"A-{aid:04d} [{st}] P{pr} {title}")
-            item.setData(Qt.ItemDataRole.UserRole, aid)
-            self.inbox_list.addItem(item)
+
+        # Preferred: Tasks assigned to this agent
+        try:
+            task_rows = self.db.list_tasks_rich(include_completed=False, limit=300)
+            for t in task_rows:
+                assigned = str(t.get("assigned_to") or "").strip().lower()
+                if assigned != self.agent_code:
+                    continue
+                completed = bool(t.get("completed"))
+                if completed:
+                    continue
+                tid = int(t.get("id") or 0)
+                txt = str(t.get("task_text") or "Untitled task")
+                prio = int(t.get("priority") or 3)
+                due = t.get("due_date") or ""
+                label = f"T-{tid:04d} P{prio} {txt[:70]}"
+                if due:
+                    label += f" (due {due})"
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, f"task:{tid}")
+                self.inbox_list.addItem(item)
+        except Exception:
+            pass
+
+        # During simplification, the Inbox is being reduced.
+        # It now primarily shows open tasks assigned to this agent.
+        # Legacy assignments are hidden by default.
+        # Full task management should happen in the main Tasks tab with assignee filter.
+        # If you want the legacy list back temporarily, we can re-enable it.
 
     def _on_new_thread(self):
         tid = self.db.agent_create_thread(agent_code=self.agent_code, title="New thread")
@@ -303,15 +338,47 @@ class AgentConsole(QWidget):
         self._load_current_history()
 
     def _on_inbox_clicked(self, item: QListWidgetItem):
-        aid = item.data(Qt.ItemDataRole.UserRole)
-        if aid is None:
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if data is None:
             return
-        self.focus_assignment(int(aid))
+
+        if isinstance(data, str):
+            if data.startswith("task:"):
+                task_id = int(data.split(":", 1)[1])
+                self._focus_task(task_id)
+                return
+            elif data.startswith("assignment:"):
+                aid = int(data.split(":", 1)[1])
+                self.focus_assignment(aid)
+                return
+        else:
+            # legacy numeric
+            self.focus_assignment(int(data))
+
+    def _focus_task(self, task_id: int):
+        """Focus the console on a task (new preferred model for agent work)."""
+        try:
+            # For now, just create a dedicated thread for this task and load it.
+            # In the future we can store task_id on the thread context.
+            tid = self.db.agent_create_thread(
+                agent_code=self.agent_code,
+                title=f"Task T-{task_id:04d}"
+            )
+            if tid:
+                self._current_thread_id = int(tid)
+                self._load_current_history()
+                self.chat_display.append(
+                    f"<p style='color:#9aa0a6;'><i>Focused on Task T-{task_id:04d}</i></p>"
+                )
+                self._refresh_inbox()
+        except Exception as e:
+            logger.exception("Failed to focus task %s: %s", task_id, e)
 
     def focus_assignment(self, assignment_id: int) -> bool:
         """
         Focus this console on a given assignment.
         Selects/creates a linked thread and refreshes transcript + inbox.
+        (Legacy path during transition away from agent_assignments)
         """
         aid = int(assignment_id)
         row = self.db.agent_get_assignment(aid)

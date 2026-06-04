@@ -74,11 +74,12 @@ AM Sweep is a **user-initiated morning triage loop** that gathers context (open 
 - A dedicated chat thread is created if needed (titled like `AM Sweep YYYY-MM-DD`)
 
 ### Known gaps / next opportunities
-- Planning/prioritization scoring is still heuristic (no formal urgency/importance scoring engine yet).
+- Planning/prioritization scoring: basic heuristic started (_compute_priority_score in chief_of_staff_service: explicit P + due/overdue + needs_input/blockers + status + age; sorts open assignments + rich tasks contexts for CoS/AM prompts). Still no full formal engine or plan-of-day output schema.
+- Workspace consistency surface in CoS (Phase 4): basic note/context started (_consistency_context helper + daily briefing section; reuses persisted reports from checker + Sentinel QA hook). See TODO for more GDrive/single-doc.
 - Memory retrieval is still primarily lexical/structured, with semantic/entity-aware enhancements still maturing.
 - Delegation now has runtime scaffolding, but broader queue-backed execution still needs production hardening.
 - Calendar write operations are available via explicit command, but broader scheduling optimization remains limited.
-- Agent/assignment reflection summaries are still a follow-up opportunity beyond the current global reflection layer.
+- Agent/assignment reflection summaries: support added (scopes + auto post-chat + prompt injection + CoS _memory_context + daily briefing). Sentinel/Lex bootstraps too.
 
 ## Current Delegation UX
 
@@ -104,6 +105,61 @@ AM Sweep is a **user-initiated morning triage loop** that gathers context (open 
 3. Click `Open Assignee Chat`.
 4. Reply in the agent thread and/or use `Upload Artifact` to attach requested files.
 5. Return to the CoS board to confirm the assignment no longer needs input.
+
+### Example use case: Predicate search + Substantial Equivalence (SE) table for a medical device
+You can give the CoS a goal in plain chat like:  
+"Look for any predicates for my new [device description: e.g. AI-based ECG monitor with these indications and tech characteristics], and put them into a substantial equivalence table for me."
+
+- CoS recognizes this as a high-level regulatory goal. It can propose a multi-agent "Work Plan" (WP-xxx) or you can direct specific agents ("research predicates with Atlas, then have Quill compile the SE comparison table, Sentinel do QA review").
+- Simple client research questions (e.g. "I got this from Rich at iQSurgical: by when do we need to request FDA input to have a decision on non-Silent Mode study need by end Q3? 30/60 days? Will they decide in-meeting?") flow to the normal CoS LLM path. The model, with full context (dossier, reflections, active plans, etc.), either answers directly (using tools), does a lightweight single ASSIGN (to Pulse/Atlas), or (for true multi-agent coordination needs) emits PROPOSE_STAFF_PLAN: <goal>. The latter triggers the rich proposal with Mason consult etc.
+- There are no keyword lists or phrase triggers left for deciding planning level. Intent detection is purely model-driven.
+- Complex multi-agent deliverables keep the rich WP path (via model judgment).
+- It breaks it down using available specialists:
+  - Atlas (Deep Researcher): Spins up a Deep Research project, uses FDA/OpenFDA tools + web search to find relevant predicate 510(k)s, gathers summaries on indications for use, technological characteristics, etc. Attaches findings as artifacts/references.
+  - Quill (Writer): Receives the research artifacts + your device details + any historical similar docs from memory. Drafts a professional SE table (and supporting sections) as a Workspace document using regulatory style.
+  - Sentinel (QA/Compliance): Gets a snapshot for review (raised intel, consistency checks on the doc set if related-set generated, flags on contradictions or gaps vs predicates). Can be assigned to produce a review memo.
+- Mason can coordinate milestones if it's part of a larger project.
+- Pulse/Shield can be pulled in for any emerging regulatory signals or risks around the predicates.
+- Proposals appear in CoS chat and the Assignments board (as "proposed").
+- You approve (e.g. "approve WP-42" or individual proposals). Work is delegated; agents get rich briefs with context (prior reflections, attached research, client dossier).
+- Execution: Agents work in their dedicated threads, produce artifacts (research package, draft .docx table, QA notes). They report progress via summaries and status updates.
+- "Let me know when done" / visibility:
+  - CoS board (Assignments pane) highlights agent tasks, especially "⚠️ NEEDS INPUT" or awaiting_review. Sort/filter by assignee/status. Detail pane shows full timeline, latest agent update, extracted questions, attached files/artifacts.
+  - Open any assignee chat directly from board or CoS to review the output live.
+  - Daily briefings and AM Sweep surface open high-prio agent work and active plan status.
+  - Ask CoS in chat: "status on the SE table for device X", "checkpoint WP-42", or "any updates from Atlas on predicates?" — it pulls from work plan/assignment context and reports.
+  - Work plans provide structured checkpoint reports with recent activity.
+- Inspect & revisions:
+  - Review the draft table in Workspace (linked via artifacts).
+  - In agent chat: give specific feedback ("add a column for clinical data comparison", "use this additional predicate K-number", "tighten the equivalence discussion on power source").
+  - CoS or direct agent can update the brief, re-run sections, or create follow-on assignments.
+  - Upload additional files/artifacts if needed.
+  - Update status (e.g. to in_progress or done) once satisfied.
+  - Full audit trail in assignment events.
+- When complete: Set status to "done"; the table/doc is in your Workspace/client folder (exportable to GDrive), artifacts attached, summary in CoS.
+
+This workflow is supported today for regulatory tasks like this. It uses the general research + drafting + QA tools plus your device description + memory of past work. It won't be perfectly one-shot for a complex table (expect 1-3 iterations with the drafter/QA for precision on SE criteria), but the handoff, artifact passing, review loop, and oversight are built in.
+
+See also: "What happens when CoS assigns work" above, and the Work Plans section in chat for coordinated multi-agent efforts.
+
+## Keyword heuristics vs. LLM intent detection (audit note)
+
+The CoS action system has two layers:
+
+- **Structured explicit commands** (intentional and by design): ACTION_COMMAND_PREFIXES (~20 prefixes) + corresponding regex patterns (ASSIGN:, ADD_TASK:, all UPDATE_*/BULK_*, ADD_*, TASK_SET_*, APPROVE_PROPOSAL, etc.). These enable deterministic parsing/execution when the user or model uses the exact machine-readable syntax. Model is instructed to output them under "## Actions (machine)". This is the "API" for side effects; not fragile intent classification.
+
+- **Natural-language / heuristic intent detectors** (use with care): 
+  - Direct task capture (_user_requested_direct_dashboard_task_add, synthesize_add_task_line_from_user_text, _DASHBOARD_TASK_*_RE regexes with phrases like "add a task to", "remind me to", "create a task", "put this on my task list", "new task").
+  - Delegation redirections (_handle_delegation_redirection: ~12 regex patterns for "delegate this to X", "give it to X", "have X handle", "route to X", etc.).
+  - Plain approvals and work-plan commands (_handle_plain_proposal_approval with approval_triggers list; _handle_work_plan_* using re for "approve|delegate|revise|wp|plan|checkpoint").
+  - Memory hint detection (_MEMORY_HINT_SUBSTRINGS ~19 phrases like "teach navi", "i prefer", "remember ", "client prefers" to decide whether to run extra extraction).
+  - Routing in main_chat_router/response_handler ( "daily briefing", task creation keywords ['add','create',...], "WEB_SEARCH:", medtech+news).
+
+The former staff-planning heuristic (large planning_signals + research bypasses) was the clearest example of the anti-pattern for *complex high-level intent* ("does this need full multi-agent Work Plan + Mason + approval gate?") and has been removed in favor of pure LLM-driven PROPOSE_STAFF_PLAN: marker.
+
+Recommendation (now encoded in practice): For high-level behavioral branching and intent classification that affects whether rich coordination/proposals happen, use LLM + explicit output markers (PROPOSE_STAFF_PLAN, etc.) after providing full context, rather than expanding Python keyword lists. Structured syntax commands and small UX fast-paths (task entry, redirections after proposals) are exceptions. Audit any new ones against this.
+
+See AGENTS.md for related discipline.
 
 ## Current Memory Model
 
@@ -394,7 +450,7 @@ Status as of 2026-05-12:
   - Calendar awareness and explicit calendar block creation implemented.
   - Advanced schedule optimization remains future work.
 - [~] **Milestone 1 (Prioritization MVP)**
-  - Usable guidance exists, but a formal scoring/planning engine is still incomplete.
+  - Usable guidance + basic heuristic scoring exists (see gaps: _compute_priority_score wired to contexts). Formal urgency/importance + plan-of-day schema still incomplete.
 - [~] **Milestone 5 (Evaluation/regression safety)**
   - Strong CoS parser and DB regression coverage exists.
   - Broader scenario/e2e coverage can still be expanded.
@@ -402,7 +458,7 @@ Status as of 2026-05-12:
 ### Next practical milestones
 
 1. **Prioritization engine hardening**
-   - Formal urgency/importance scoring and predictable plan-of-day output schema.
+   - Heuristic started (P+due+signals in CoS contexts). Next: formal urgency/importance + predictable plan-of-day schema.
 2. **Delegation runner v2**
    - Add explicit background job execution model beyond command parsing.
 3. **Evaluation harness**

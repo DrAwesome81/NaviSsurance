@@ -120,6 +120,8 @@
 - [x] Added daily / weekly memory reflection summaries
 - [x] Added summary-first long-term chat retrieval over older conversations
 - [x] Completed Chief of Staff UX polish for preferences, priority handling, scroll behavior, sizing, and host-shell layout
+- [x] Sub-agent/assignment reflection summaries (Phase 3 follow-up): extended memory_reflection for agent:/assignment: scopes using private memory; auto-triggered post-chat; summaries in agent prompts.
+- [x] Added execution bootstraps for Sentinel (QA/compliance snapshot from raised) and Lex (contracts placeholder) in agent_execution.py for more complete sub-agent delegation support.
 - [x] Added optional runtime scheduler, local API, browser tool registry, entity-linked memory scaffolding, and Telegram integration scaffolding
 - [x] Installed and validated APScheduler, local API startup, Playwright browser tooling, and runtime/job execution on the current workstation
 - [x] Runtime operator guide: `docs/runtime_operator.md` (env flags, recurring jobs, health check); linked from `docs/api.md` and `docs/roadmap_status.md`
@@ -162,3 +164,12 @@ The core vision from the original spec is now delivered and in daily use.
 ## Personal / project todos
 
 - [ ] Look into training or fine-tuning a model to generate lead outreach emails in my voice and style, using my past emails.
+
+## Next per roadmap (smallest-safe, after recent sub-agent/Phase4 polish)
+- Integrate agent reflections more (e.g. in AM Sweep/CoS proposals, specific agent briefs) -- _memory_context pulls up to 3; surfaced in briefing/mem. Added explicit prompt instructions (in AM templates + regular ASSIGN desc) so LLM references "Recent <agent> reflection" when writing <Brief> in ASSIGN proposals for continuity.
+- Phase 4: surface consistency report in CoS/Intel, more GDrive for sets, single-doc consistency checks -- **core built** (historical retrieval+sets+consistency+GDrive exports all wired+usable per roadmap bullets); remaining are surfaces/polish (deeper report visibility in CoS/Intel, stronger GDrive parity, single-doc enhancements). Recent: single-doc intra now active.
+- Sub-agents: add bootstraps/handlers for full coverage if needed (Pulse/Shield special cased in monitoring); prioritization scoring start (heuristic in CoS) -- basic _compute_priority_score + sort in contexts done.
+- Update roadmap_status with full current (beyond the note) -- done (added functions completeness snapshot to recent keep-going para).
+- Tests for new reflection/agent features; broader runtime for delegation. -- ran test_agent_memory (8p + skips), test_chief_of_staff context subsets (green); reflection integration + prio/consistency covered in CoS paths.
+- CoS planning intent is now 100% LLM-driven with zero keyword/phrase triggers remaining. Removed the last explicit_planning list and the entire early short-circuit block in cos_response (the function _is_staff_planning_request is a no-op stub). Proposals only occur when the model emits PROPOSE_STAFF_PLAN: <goal> (caught after tool loops). System prompt uses only general principles (no specific scenarios). Test + docs updated. This fully addresses the design flaw.
+- Audit of other keyword/phrase heuristics (user query "what about other functions"): see new section in chief_of_staff.md. Main clusters in chief_of_staff_service.py (structured ACTION prefixes+patterns are deliberate for exact commands; natural heuristics for task capture, redirections, approvals, memory hints). Additional in main_chat_router, response_handler, chat_handler (routing, "daily briefing", task creation keywords, news seeds). ~8-10 total blocks. New principle: use LLM+markers for complex intent classification; document exceptions. Added to TODO for awareness.

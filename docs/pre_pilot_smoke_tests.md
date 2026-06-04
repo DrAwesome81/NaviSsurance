@@ -6,6 +6,8 @@ Last updated: 2026-05-12
 
 Use this checklist before a paid pilot kickoff, a CEO demo, or any “screen share” call.
 
+For a fuller progressive E2E familiarization & verification (recommended for new users or to confirm full functionality), see the "Comprehensive E2E familiarization & full functionality checklist" in docs/testing.md.
+
 ## A) 60-second setup check (no code)
 - Confirm you are on the intended branch and have pulled latest changes.
 - Launch the app once locally and confirm the **Dashboard “Setup” banner** appears (yellow items are OK; just know what you’re not demoing).

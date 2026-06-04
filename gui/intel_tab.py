@@ -13,14 +13,35 @@ from __future__ import annotations
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget, QListWidgetItem,
     QLineEdit, QTextEdit, QTextBrowser, QComboBox, QTableWidget, QTableWidgetItem, QMessageBox,
-    QSplitter, QGroupBox, QHeaderView, QMenu, QInputDialog
+    QSplitter, QGroupBox, QHeaderView, QMenu, QInputDialog, QDialog, QPlainTextEdit, QDialogButtonBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QFont, QColor
 
 from core.db import DatabaseManager
 from core.intel import IntelService, WatchTopic, IntelFinding
 import json
+
+
+class IndexRebuildWorker(QThread):
+    """Non-blocking worker for rebuilding the local Intel vector index (embeddings + Chroma)."""
+    result_signal = pyqtSignal(object)   # stats dict
+    error_signal = pyqtSignal(str)
+    progress_signal = pyqtSignal(str)
+
+    def __init__(self, intel_service):
+        super().__init__()
+        self.intel_service = intel_service
+
+    def run(self):
+        try:
+            self.progress_signal.emit("Rebuilding local Intel index (embeddings + Chroma, 100% offline)...")
+            stats = self.intel_service.rebuild_local_intel_index()
+            self.result_signal.emit(stats)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error_signal.emit(str(e))
 
 
 class IntelTab(QWidget):
@@ -36,7 +57,6 @@ class IntelTab(QWidget):
         self._setup_ui()
         self._refresh_watchlist()
         self._refresh_findings()
-
         # Note: Real background monitoring is now handled by the runtime system
         # via the "intel_monitoring" job (see core/runtime/jobs.py).
         # The QTimer below is kept only as a fallback / for when runtime is disabled.
@@ -189,6 +209,11 @@ class IntelTab(QWidget):
         self.btn_run_monitor.clicked.connect(self._run_monitoring_now)
         actions.addWidget(self.btn_run_monitor)
 
+        self.btn_rebuild_index = QPushButton("Rebuild Local Intel Index")
+        self.btn_rebuild_index.setToolTip("Rebuilds the pure-local Chroma vector index over all Pulse findings (embeddings only, no remote). Use after large imports or to refresh semantic search. Safe & offline.")
+        self.btn_rebuild_index.clicked.connect(self._rebuild_local_index)
+        actions.addWidget(self.btn_rebuild_index)
+
         btn_mark_raised = QPushButton("Toggle Raised")
         btn_mark_raised.clicked.connect(self._toggle_raised)
         actions.addWidget(btn_mark_raised)
@@ -221,7 +246,12 @@ class IntelTab(QWidget):
         self.status_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
         main_layout.addWidget(self.status_label)
 
-        # Dedicated small "Active Regulatory Themes" from Pulse private memory (visible surface for matured private memory + coordination awareness)
+        # Dedicated small "Active Regulatory Themes" + Index Health (grouped footer for Index Freshness + private memory visibility).
+        # Layout fix: health and themes now adjacent as small secondary labels (no intervening chat group).
+        self.index_health_label = QLabel("")
+        self.index_health_label.setStyleSheet("color: #7aa0d6; font-size: 10px;")
+        main_layout.addWidget(self.index_health_label)
+
         self.themes_label = QLabel("")
         self.themes_label.setStyleSheet("color: #7aa0d6; font-size: 10px; font-style: italic;")
         self.themes_label.setToolTip("Pulse private regulatory themes (from reflections in agent_memory). Used for smarter raising, included in CoS reports/briefings, Compliance loads, and client dossiers. Active maturation of private memory + cross-linking.")
@@ -316,32 +346,36 @@ class IntelTab(QWidget):
     # ---------------- Research & Findings ----------------
 
     def _request_research(self):
+        """Simple local-only research path (no remote models or LLM proposal for this increment).
+        Stores a basic raised finding from the query text so it is immediately available to Pulse retrieval / local index.
+        Any advanced analysis can be added later via local_llm intel_* profiles only.
+        """
         query = self.research_input.text().strip()
         if not query:
-            QMessageBox.information(self, "Intel", "Please enter a research topic or question.")
+            QMessageBox.information(self, "Intel", "Please enter a research topic or URL.")
             return
-        # _request_research for Pulse private memory + Shield research requests
 
-        # Save as high-priority research request and auto-add to watchlist.
-        # Context-aware: auto-link new manual finding to current project or client filter if active (Billing client support)
+        # Local-only: direct save (will trigger the existing save_finding indexing hook + indexed_at stamp)
         link_kwargs = {}
         if getattr(self, '_current_project_context', None):
             link_kwargs['linked_projects'] = [self._current_project_context]
         if getattr(self, '_current_client_context', None):
             link_kwargs['linked_clients'] = [self._current_client_context]
+
+        title = f"Research: {query[:80]}"
+        summary = f"User research query: {query}"
         self.intel.save_finding(
-            title=f"Research Request: {query}",
-            summary=f"User explicitly requested research on this topic: {query}. Pulse will prioritize monitoring and surfacing relevant developments.",
-            source="user_request",
-            importance="high",
+            title=title,
+            summary=summary,
+            source="user_research",
+            importance="medium",
+            raised=True,
+            notes=f"Research input: {query}",
             **link_kwargs
         )
         self._refresh_findings()
         self.research_input.clear()
-        ctx = f" (linked to project #{self._current_project_context})" if self._current_project_context else ""
-        if getattr(self, '_current_client_context', None):
-            ctx = f" (linked to client #{self._current_client_context} from Billing)"
-        self.status_label.setText(f"Research request saved with high priority{ctx}. Pulse will monitor this closely. 🛡️ [Security-Relevant] will surface for Shield.")
+        self.status_label.setText(f"Research note stored locally (will appear in Pulse intel retrieval and index).")
 
     def _run_monitoring_now(self):
         """Manually trigger a Pulse monitoring cycle (uses real web search). Respects active project or client filter when set (client-scoped watches from Billing now influence which topics are monitored + findings auto-linked to client)."""
@@ -368,6 +402,116 @@ class IntelTab(QWidget):
         except Exception as e:
             self.status_label.setText(f"Monitoring failed: {e}")
 
+    def _rebuild_local_index(self):
+        """Launch non-blocking rebuild of the pure local Intel vector index. Updates status on completion."""
+        if hasattr(self, 'btn_rebuild_index'):
+            self.btn_rebuild_index.setEnabled(False)
+        self.status_label.setText("Starting local Intel index rebuild (embeddings + Chroma, fully offline)...")
+        self._index_worker = IndexRebuildWorker(self.intel)
+        self._index_worker.progress_signal.connect(self.status_label.setText)
+        self._index_worker.result_signal.connect(self._on_index_rebuild_complete)
+        self._index_worker.error_signal.connect(self._on_index_rebuild_error)
+        self._index_worker.start()
+
+    def _on_index_rebuild_complete(self, stats: dict):
+        if hasattr(self, 'btn_rebuild_index'):
+            self.btn_rebuild_index.setEnabled(True)
+        try:
+            status = stats.get("status", "unknown")
+            scanned = stats.get("findings_scanned", 0)
+            indexed = stats.get("indexed", 0)
+            errs = stats.get("errors", 0)
+            model = stats.get("model", "local")
+
+            base_msg = ""
+            if status == "completed":
+                base_msg = f"Local Intel index rebuilt: {indexed} vectors from {scanned} findings (errors: {errs}). Model: {model}. Keyword+vector hybrid now active."
+            elif status == "vector_unavailable":
+                base_msg = f"Local index: vector layer unavailable ({stats.get('note', '')}). Keyword search remains 100% operational."
+            else:
+                base_msg = f"Rebuild status={status}. Scanned {scanned}, indexed {indexed}. See logs for details."
+
+            # Surface fresh index health stats (vector count + last indexed timestamp if available)
+            extra = ""
+            idx_stats = stats.get("index_stats") or {}
+            if idx_stats.get("available"):
+                vcount = idx_stats.get("vector_count")
+                last_ts = idx_stats.get("last_indexed_at")
+                emb_model = idx_stats.get("embedding_model")
+                parts = []
+                if vcount is not None:
+                    parts.append(f"vectors={vcount}")
+                age_str = self._format_index_age(last_ts)
+                if age_str:
+                    parts.append(age_str)
+                if emb_model:
+                    parts.append(f"model={emb_model}")
+                if parts:
+                    extra = " | Index health: " + ", ".join(parts)
+            elif idx_stats.get("reason"):
+                extra = f" | Index: {idx_stats['reason']}"
+
+            self.status_label.setText(base_msg + extra)
+            self._refresh_findings()
+        except Exception as e:
+            self.status_label.setText(f"Rebuild complete (display error: {e})")
+
+    def _on_index_rebuild_error(self, err: str):
+        if hasattr(self, 'btn_rebuild_index'):
+            self.btn_rebuild_index.setEnabled(True)
+        self.status_label.setText(f"Local Intel index rebuild error (safe, keyword path unaffected): {err[:200]}")
+
+    def _format_index_age(self, last_ts):
+        """Shared helper for human-readable freshness (used by health label + rebuild status)."""
+        if last_ts is None:
+            return None
+        try:
+            import time as _time
+            age = _time.time() - float(last_ts)
+            if age < 10:
+                return "very fresh (<10s)"
+            if age < 60:
+                return f"{int(age)}s ago"
+            if age < 120:
+                return "fresh (<2m)"
+            elif age < 3600:
+                return f"~{int(age // 60)}m ago"
+            else:
+                return f"~{int(age // 3600)}h ago"
+        except Exception:
+            return None
+
+    def _update_index_health(self):
+        """
+        Smallest-safe increment for Index Freshness phase: surface real stats from the local-only
+        intel_index/ (vector_count + last_indexed_at sampled from indexed_at stamps) on tab load
+        and every refresh. Dedicated label keeps status_label free for transient action feedback.
+        100% reuses existing hardened get_index_stats() path; never blocks or raises.
+        (Note: keyword-only path now fully supports source_title + key_points high-value signals
+        after latent restoration in c7c9f864.)
+        """
+        # c7c9f864 restoration note for future readers (keyword path now live for representative usage)
+        # 04572be8: pure additive LLM filter fidelity test coverage added (no engine changes)
+        # (post-fix robustness from 04572be8 re-review round applied)
+        try:
+            stats = self.intel.get_index_stats()
+            if not stats.get("available"):
+                self.index_health_label.setText("Local Intel index: keyword-only (source_title + key_points active)")
+                return
+            vcount = stats.get("vector_count")
+            last_ts = stats.get("last_indexed_at")
+            model = stats.get("embedding_model") or "all-MiniLM-L6-v2"
+            parts = [f"vectors={vcount if vcount is not None else '?'}"]
+            age_str = self._format_index_age(last_ts)
+            if age_str:
+                parts.append(age_str)
+            parts.append(f"model={model}")
+            self.index_health_label.setText("Local Intel index: " + ", ".join(parts) + " (keyword path: source_title + key_points full support)")
+        except Exception:
+            # Never impact tab usability
+            if hasattr(self, 'index_health_label'):
+                self.index_health_label.setText("Local Intel index: health check error (safe) — keyword path still provides source_title + key_points support (c7c9f864 restoration)")
+
     def _refresh_findings(self):
         self.findings_table.setRowCount(0)
         if self._current_project_context:
@@ -389,7 +533,11 @@ class IntelTab(QWidget):
             row = self.findings_table.rowCount()
             self.findings_table.insertRow(row)
 
-            date_str = finding.created_at.strftime("%Y-%m-%d %H:%M") if finding.created_at else ""
+            # Defensive: created_at may be str (from DB) or datetime after parsing in IntelService
+            if finding.created_at and hasattr(finding.created_at, "strftime"):
+                date_str = finding.created_at.strftime("%Y-%m-%d %H:%M")
+            else:
+                date_str = str(finding.created_at or "")[:16]
             self.findings_table.setItem(row, 0, QTableWidgetItem(date_str))
             t = finding.title or ""
             if "[Theme-Continuous]" in t:
@@ -500,6 +648,14 @@ class IntelTab(QWidget):
                 p_suffix = f" for Client #{self._current_client_context}"
             self.themes_label.setText(f"Active Pulse Regulatory Themes (private memory){p_suffix}: (load error, refresh to retry)")
 
+        # Always refresh the dedicated index health label at end of every data refresh
+        # (covers initial load, manual refresh, post-mutation reindex via mark_raised/update/save, client/project filter changes).
+        # This is the core of making Index Freshness visible in daily use.
+        try:
+            self._update_index_health()
+        except Exception:
+            pass
+
     def _on_finding_selected(self):
         """Update the detail pane when a finding is selected."""
         # _on_finding_selected for Pulse private memory + Shield finding selection
@@ -560,6 +716,7 @@ class IntelTab(QWidget):
         success = self.intel.update_finding_notes(finding_id, notes)
         if success:
             self.status_label.setText("Notes saved.")
+            self._refresh_findings()  # Coverage fix: ensures _update_index_health runs after notes mutation (reindex + indexed_at stamp just occurred)
         else:
             self.status_label.setText("Failed to save notes.")
 
@@ -765,14 +922,11 @@ class IntelTab(QWidget):
             selected = list_widget.currentItem()
             if selected:
                 client_id = selected.data(Qt.ItemDataRole.UserRole)
-                self.intel.save_finding(
-                    title=finding.title,
-                    summary=finding.summary,
-                    source=finding.source,
-                    importance=finding.importance,
+                # Use dedicated update path (not save_finding) to avoid duplicating the finding row
+                self.intel.update_finding(
+                    finding.id,
                     linked_clients=finding.linked_clients + [client_id],
-                    linked_projects=finding.linked_projects,  # Phase 2: preserve existing project links on re-save
-                    raised=finding.raised
+                    linked_projects=finding.linked_projects,
                 )
                 self._refresh_findings()
 
@@ -814,14 +968,11 @@ class IntelTab(QWidget):
             selected = list_widget.currentItem()
             if selected:
                 proj_id = selected.data(Qt.ItemDataRole.UserRole)
-                self.intel.save_finding(
-                    title=finding.title,
-                    summary=finding.summary,
-                    source=finding.source,
-                    importance=finding.importance,
+                # Use dedicated update path to avoid duplicating the finding
+                self.intel.update_finding(
+                    finding.id,
                     linked_clients=finding.linked_clients,
                     linked_projects=(finding.linked_projects or []) + [proj_id],
-                    raised=finding.raised
                 )
                 self._refresh_findings()
 

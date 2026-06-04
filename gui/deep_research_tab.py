@@ -244,28 +244,33 @@ class DeepResearchTab(QWidget):
                 tabs.setCurrentWidget(ws)
 
     def setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        """Horizontal layout with main left pane (research run + Atlas chat) and right side pane (syntheses + final output)."""
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(8, 8, 8, 8)
 
         title = QLabel("Deep Research")
         title.setStyleSheet("color: #e8eaed; font-weight: 700; font-size: 14px; margin: 0;")
-        layout.addWidget(title)
+        main_layout.addWidget(title)
 
-        # New: Deep Research now pulls Pulse [Security-Relevant] for Shield (additional research coordination)
-        subtitle = QLabel(
-            "Use this to run web deep research and produce a final research brief (markdown). "
-            "This is separate from the Workspace collaborative drafting workflow. Pulse private memory regulatory themes can seed objectives."
-        )
+        subtitle = QLabel("Run research with Atlas on the left. Review syntheses and final output on the right.")
         subtitle.setStyleSheet("color: #9aa0a6; font-size: 12px;")
         subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
+        main_layout.addWidget(subtitle)
 
-        # --- Form ---
+        # === Main horizontal splitter: Left (main) | Right (side pane) ===
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # --- Left / Main pane: Research run + Atlas chat ---
+        left_pane = QWidget()
+        left_layout = QVBoxLayout(left_pane)
+        left_layout.setContentsMargins(4, 4, 4, 4)
+
+        # Research run controls (compact)
         form_group = QGroupBox("New deep research run")
         form_layout = QVBoxLayout(form_group)
 
         name_layout = QHBoxLayout()
-        name_layout.addWidget(QLabel("Research name:"))
+        name_layout.addWidget(QLabel("Name:"))
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("e.g. EEG-cleared devices brief")
         name_layout.addWidget(self.name_edit)
@@ -274,90 +279,98 @@ class DeepResearchTab(QWidget):
         form_layout.addWidget(QLabel("Research objective / question:"))
         self.goals_edit = QTextEdit()
         self.goals_edit.setPlaceholderText("e.g. cleared medical devices that analyze EEG data")
-        self.goals_edit.setMaximumHeight(90)
+        self.goals_edit.setMaximumHeight(80)
         form_layout.addWidget(self.goals_edit)
 
-        self.auto_generate_checkbox = QCheckBox("Auto-generate final research brief when research completes")
+        self.auto_generate_checkbox = QCheckBox("Auto-generate final research brief")
         self.auto_generate_checkbox.setChecked(True)
         form_layout.addWidget(self.auto_generate_checkbox)
 
         self.start_btn = QPushButton("Start deep research")
         self.start_btn.clicked.connect(self.on_start_project)
         form_layout.addWidget(self.start_btn)
-        layout.addWidget(form_group)
+        left_layout.addWidget(form_group)
 
-        # --- Status ---
-        self.status_label = QLabel("Deep research status: —")
-        self.status_label.setStyleSheet("color: #6b8cae; font-weight: 600; font-size: 13px;")
-        layout.addWidget(self.status_label)
-
+        # Status row
+        status_row = QHBoxLayout()
+        self.status_label = QLabel("Status: —")
+        self.status_label.setStyleSheet("color: #6b8cae; font-weight: 600;")
+        status_row.addWidget(self.status_label)
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)  # indeterminate when running
+        self.progress_bar.setRange(0, 0)
         self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
+        self.progress_bar.setMaximumWidth(160)
+        status_row.addWidget(self.progress_bar)
+        status_row.addStretch(1)
+        left_layout.addLayout(status_row)
 
-        # --- Splitter: review area (top) and final brief (bottom) ---
-        splitter = QSplitter(Qt.Orientation.Vertical)
+        # Atlas chat (main interaction area on the left)
+        atlas_label = QLabel("Direct chat with Atlas (Deep Researcher)")
+        atlas_label.setStyleSheet("color: #c8d1e0; font-weight: 600; margin-top: 8px;")
+        left_layout.addWidget(atlas_label)
 
-        review_widget = QWidget()
-        review_layout = QVBoxLayout(review_widget)
-        review_layout.addWidget(QLabel("Research artifacts to review (after pipeline runs):"))
+        self.atlas_console = AgentConsole(self.db, agent_code="atlas", parent=self)
+        left_layout.addWidget(self.atlas_console, 1)
+
+        main_splitter.addWidget(left_pane)
+
+        # --- Right side pane: Syntheses + Final output ---
+        right_pane = QWidget()
+        right_layout = QVBoxLayout(right_pane)
+        right_layout.setContentsMargins(4, 4, 4, 4)
+
+        # Syntheses (Web / Grok / ChatGPT)
+        synth_label = QLabel("Research Syntheses")
+        synth_label.setStyleSheet("color: #c8d1e0; font-weight: 600;")
+        right_layout.addWidget(synth_label)
 
         self.artifact_tabs = QTabWidget()
         self.artifact_tabs.addTab(QTextBrowser(), "Web brief")
         self.artifact_tabs.addTab(QTextBrowser(), "Grok synthesis")
         self.artifact_tabs.addTab(QTextBrowser(), "ChatGPT synthesis")
-        review_layout.addWidget(self.artifact_tabs)
+        right_layout.addWidget(self.artifact_tabs, 2)
 
-        review_layout.addWidget(QLabel("Optional focus / constraints for the final brief:"))
+        # Feedback (small, above the final brief)
+        right_layout.addWidget(QLabel("Focus / constraints for final brief:"))
         self.feedback_edit = QTextEdit()
-        self.feedback_edit.setMaximumHeight(70)
-        self.feedback_edit.setPlaceholderText("Optional: scope limits, emphasis, key questions to answer…")
-        review_layout.addWidget(self.feedback_edit)
+        self.feedback_edit.setMaximumHeight(55)
+        self.feedback_edit.setPlaceholderText("Optional scope limits, emphasis…")
+        right_layout.addWidget(self.feedback_edit)
 
         self.continue_btn = QPushButton("Generate final research brief")
         self.continue_btn.clicked.connect(self.on_generate_brief)
         self.continue_btn.setEnabled(False)
-        review_layout.addWidget(self.continue_btn)
+        right_layout.addWidget(self.continue_btn)
 
-        splitter.addWidget(review_widget)
-
+        # Final research output
         brief_group = QGroupBox("Final research brief (markdown)")
         brief_layout = QVBoxLayout(brief_group)
         self.brief_browser = QTextBrowser()
         self.brief_browser.setOpenExternalLinks(True)
         self.brief_browser.textChanged.connect(self._sync_current_research_brief_from_ui)
-        brief_layout.addWidget(self.brief_browser)
+        brief_layout.addWidget(self.brief_browser, 1)
+
         brief_actions = QHBoxLayout()
         self.export_brief_btn = QPushButton("Export brief...")
         self.export_brief_btn.setEnabled(False)
         self.export_brief_btn.clicked.connect(self.export_brief)
         brief_actions.addWidget(self.export_brief_btn)
-        self.use_in_workspace_btn = QPushButton("→ Send to Workspace for Drafting")
+
+        self.use_in_workspace_btn = QPushButton("→ Send to Workspace")
         self.use_in_workspace_btn.setStyleSheet("background-color: #FD6262; color: white;")
-        self.use_in_workspace_btn.setToolTip(
-            "Add the final brief as a marked virtual file on the Workspace tab so you can run Generate Draft without copying."
-        )
         self.use_in_workspace_btn.setEnabled(False)
         self.use_in_workspace_btn.clicked.connect(self.send_research_to_workspace)
         brief_actions.addWidget(self.use_in_workspace_btn)
         brief_actions.addStretch(1)
         brief_layout.addLayout(brief_actions)
-        splitter.addWidget(brief_group)
+        right_layout.addWidget(brief_group, 3)
 
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-        layout.addWidget(splitter)
+        main_splitter.addWidget(right_pane)
 
-        self.atlas_chat_group = QGroupBox("Direct chat with Atlas (Deep Researcher)")
-        self.atlas_chat_group.setCheckable(True)
-        self.atlas_chat_group.setChecked(False)
-        atlas_chat_layout = QVBoxLayout(self.atlas_chat_group)
-        self.atlas_console = AgentConsole(self.db, agent_code="atlas", parent=self)
-        self.atlas_console.setVisible(False)
-        atlas_chat_layout.addWidget(self.atlas_console)
-        self.atlas_chat_group.toggled.connect(lambda checked: self.atlas_console.setVisible(bool(checked)))
-        layout.addWidget(self.atlas_chat_group)
+        # Give the right side pane a reasonable default width
+        main_splitter.setSizes([620, 480])
+
+        main_layout.addWidget(main_splitter, 1)
 
     def _load_state(self):
         """Restore persisted field values from last session."""

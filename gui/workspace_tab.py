@@ -40,6 +40,7 @@ from core.workspace_orchestrator import (
     call_chatgpt_api,
     format_reference_pack_summary,
 )
+from core.consistency_checker import ConsistencyChecker  # Phase 4 effort--5: cross-document consistency for related sets (WP0.1)
 from core.file_handler import get_relevant_past_documents, extract_reference_terms, format_compact_historical_context, derive_style_guidance_from_historical_cluster, DocumentRecord, save_document_record  # Phase 1 retrieval core (VERIFIED COMPLETE) + Phase 4 auto-production use: ... + related cluster + "Historical Sources Used" + badge for generated related set members (from extra flag seeded on companion export) + tiniest sources append block extension (via _build helper) with "Related Document Set Cross-References" sibling listings/relationships + export status + summary notes enrichment for full traceability
 from core.app_preferences import is_gdrive_auto_upload_enabled, set_gdrive_auto_upload_enabled  # Phase 4 micro-increment (persist related-set export toggle for GDrive client folders + manifest/summary)
 from core.task_extract import parse_suggested_tasks
@@ -825,6 +826,8 @@ class WorkspaceTab(QWidget):
             "related_set_sources_extended": ((getattr(self, "_current_document_metadata", {}) or {}).get("related_set_sources_extended") if isinstance(getattr(self, "_current_document_metadata", {}), dict) else None),
             # Billing Depth micro (autonomous first increment, extending related-set machinery): persist the billing artifact/summary (if generated for the set via cluster) so that saved workspaces carry it for continued export to client folders + GDrive without re-running Generate Billing. Smallest additive key inside existing payload dict; defensive None; zero impact on non-billing flows. Mirrors the related_set_* persistence pattern exactly.
             "billing_set_artifact": getattr(self, "_last_billing_artifact", None),
+            # Phase 4 effort--5 chained micro: persist the consistency report markdown (from ConsistencyChecker) so saved related-set workspaces carry the full cross-document consistency analysis for export, UI, and CoS feedback without re-running the check. Smallest additive key, defensive None, mirrors all prior related_set_* persistence exactly.
+            "related_set_consistency_report": getattr(self, "_last_related_set_consistency_report_md", None),
         }
 
     def _on_workspace_state_changed(self, *_args):
@@ -1659,6 +1662,12 @@ class WorkspaceTab(QWidget):
                         self._current_document_metadata = mm
                     except Exception:
                         pass
+                # Phase 4 effort--5: restore the persisted consistency report so that after loading a saved related set workspace, the full cross-document analysis is available for re-export, UI display, and CoS reporting without re-computation. 4-line guarded restore, defensive, reuses the exact pattern of manifest/summary/companions.
+                try:
+                    if payload.get("related_set_consistency_report"):
+                        self._last_related_set_consistency_report_md = str(payload.get("related_set_consistency_report"))
+                except Exception:
+                    pass
                 # Autonomous keep-going micro (no pause after dialog note): tiniest defensive enrichment inside the *existing* related restore block. When companions or companion flag present on load of saved related-set workspace, compute+set a compact cross-ref note (reusing same phrasing pattern as sources append) into _current_document_metadata["related_set_cross_ref_note"]. This makes restored set workspaces immediately provide the detailed sibling listing to template renders (via _default_document_metadata + footer/placeholder) + any metadata consumers, achieving full symmetry between markdown "Historical Sources Used" cross-refs and template path. Uses only live restored attrs; zero change if not set-related; ~6 lines.
                 # Chained one-more autonomous micro (this increment): tiniest extension inside same restore try: after short note, also seed the rich full "related_set_cross_ref_section" (from shared _build helper, which leverages the just-restored _last_related_set_companions + derive for exact "Companion to ... Other set members..." text). Ensures on reload of set workspace the template path (and preview consumers) get the complete subsection text immediately (parity with post-gen). Purely additive 3-line guarded setdefault; defensive; only sets when helper produces for sets.
                 try:
@@ -2662,6 +2671,33 @@ class WorkspaceTab(QWidget):
             # fully defensive - never affects other UI paths or generation
             pass
 
+        # Phase 4 effort--5 micro (WP0.1 wiring): run ConsistencyChecker on the generated related set.
+        # Currently non-blocking / advisory. Stores report for later artifact + UI + export integration.
+        # Reuses the exact same cluster_datas snapshot that was used for generation (guarantees apples-to-apples consistency view).
+        try:
+            if 'cluster_datas' in locals() and len(cluster_datas) >= 2:
+                checker = ConsistencyChecker()
+                # Build minimal doc views from the companions we just generated (titles + any markdown we can reach via state)
+                docs_for_check = []
+                for d in cluster_datas:
+                    docs_for_check.append({
+                        "title": d.get("name", "Unknown"),
+                        "markdown": d.get("text_preview") or d.get("content") or "",  # best-effort
+                    })
+                historical_for_check = format_compact_historical_context(get_relevant_past_documents(
+                    client_hint=client_hint,
+                    doc_types=[d.get("doc_type") for d in cluster_datas if d.get("doc_type")],
+                    limit=8
+                )) if client_hint else ""
+                report = checker.check_related_set(docs_for_check, historical_for_check, doc_type="related_set")
+                # Store for next micro (artifact, UI badge, export)
+                self._last_related_set_consistency_report = report
+                logger.info("Phase 4 consistency check completed for related set: status=%s, issues=%d",
+                            report.overall_status, len(report.issues))
+        except Exception:
+            # Never break existing related-set or generation flows
+            logger.debug("Consistency check (Phase 4) skipped or failed defensively")
+
     def _generate_billing_for_set(self):
         """Billing Depth micro-increment (autonomous, smallest safe per roadmap deferral of Phase 2 after memory/intel foundation): extend the exact "Generate Related Set" + historical cluster machinery.
         Reuses: cluster_datas scan + has_ref/related check pattern (from _generate_related_set), client_from_ref scan (from _quick_export + export_markdown), duck-type _H adaptation for derive_style (from pre-gen block), self.db for profile/time/deliverables (existing methods), client folder naming/safe (identical), export write patterns (defensive try blocks), GDrive via updated api + _try call, persistence (already wired).
@@ -2905,6 +2941,15 @@ class WorkspaceTab(QWidget):
                         sf.write(summ)
             except Exception:
                 pass  # non-fatal, never breaks export
+            # Phase 4 effort--5: write the consistency report artifact into the client folder on quick-export of any related set member. Smallest safe addition right after summary (reuses client_dir, safe prefix pattern, try/except non-fatal). Makes the cross-document consistency analysis a first-class deliverable alongside the docs, manifest, and summary.
+            try:
+                if getattr(self, "_last_related_set_consistency_report_md", None):
+                    cons_name = f"{safe}_Related_Set_Consistency_Report.txt"
+                    cons_path = os.path.join(client_dir, cons_name)
+                    with open(cons_path, 'w', encoding='utf-8') as cf:
+                        cf.write(self._last_related_set_consistency_report_md)
+            except Exception:
+                pass  # non-fatal, never breaks export
             # Billing Depth micro (chained export write): smallest defensive write of the generated (or restored) billing artifact into the *exact same* client_dir used for manifests/summaries. Mirrors the summary block 1:1 (safe name, try/except non-fatal, .md). Ensures "place them in the client's folder (local + optional GDrive)" for billing artifacts when Generate Billing for Set (or saved set) was used. Zero change if absent.
             try:
                 if getattr(self, "_last_billing_artifact", None):
@@ -3009,6 +3054,7 @@ class WorkspaceTab(QWidget):
                 summary_text=sum_t,
                 billing_text=bill_t,  # Billing Depth: pass the artifact (populated by Generate Billing for Set or restored) so GDrive client folder receives it too.
                 cross_ref_text=cr_t,  # Phase 4 2f4c91b8 keep-going (this micro, no pause): wire the rich extended Related Document Set Cross-References subsection (sibling listings + Companion to ... via same historical cluster relationships) into GDrive client folder upload. Now the full traceability pack (main doc + Manifest + Summary + Cross-Refs) lands automatically for set members. Defensive (None ok, only set path populates).
+                consistency_report_text=getattr(self, "_last_related_set_consistency_report_md", None),  # Phase 4 effort--5: pass the consistency report so it uploads to client GDrive folder as _Related_Set_Consistency_Report.txt. Completes the artifact pack for sets. Defensive.
             )
             # Autonomous next micro-increment (Phase 4 Workspace Production, after main artifacts GDrive upload): also-upload historical ref docs themselves as reference copies.
             # Only for gdrive sources in cluster (ref_match/related_match); native copy (no dl). Reuses find_or + new copy helper. Gated by same enabled flag + client_name. Fully defensive tiny block (~12 lines). No behavior change otherwise or on failure.

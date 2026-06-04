@@ -74,9 +74,15 @@ class RuntimeService:
             max_instances=1,
         )
         self._scheduler.start()
-        self.ensure_recurring_jobs()
         self._started = True
         logger.info("Runtime service started.")
+
+        # Defer the first ensure_recurring_jobs (which enqueues daily briefing / morning planning)
+        # so it doesn't block the main thread / GUI startup on first run.
+        # The heavy morning planning / daily briefing should run in the background scheduler threads.
+        import threading
+        threading.Thread(target=self.ensure_recurring_jobs, daemon=True).start()
+
         return True
 
     def stop(self) -> None:

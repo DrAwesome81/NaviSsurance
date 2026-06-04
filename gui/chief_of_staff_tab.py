@@ -2497,92 +2497,10 @@ Calendar and task actions:
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(8, 8, 8, 8)
-        host = self.window()
-        if host is not None and hasattr(host, "open_memory_viewer"):
-            self.memory_viewer_btn = QPushButton("\U0001f9e0 View Memories")
-            self.memory_viewer_btn.setToolTip("View, edit, and manage long-term memories")
-            self.memory_viewer_btn.clicked.connect(host.open_memory_viewer)
-            self._apply_button_metrics(self.memory_viewer_btn, min_width=140)
-            layout.addWidget(self.memory_viewer_btn)
-
-        # === Raised Intel (Pulse) section - always visible in CoS sidebar ===
-        intel_group = QGroupBox("Raised Intel (Pulse) 🛡️ (security-relevant items for Shield triage)")
-        intel_group.setStyleSheet("QGroupBox { font-weight: 600; color: #f4c542; }")
-        intel_group.setToolTip("Raised Intel from Pulse; 🛡️ security-relevant highlighted for Shield triage")
-        intel_layout = QVBoxLayout(intel_group)
-        intel_layout.setContentsMargins(6, 6, 6, 6)
-        intel_layout.setSpacing(4)
-
-        self.raised_intel_list = QListWidget()
-        self.raised_intel_list.setMaximumHeight(115)
-        self.raised_intel_list.setMinimumHeight(70)
-        self.raised_intel_list.setToolTip("Double-click for details; 🛡️ security-relevant for Shield triage")
-        self.raised_intel_list.itemDoubleClicked.connect(self._on_raised_intel_double_clicked)
-        intel_layout.addWidget(self.raised_intel_list)
-
-        sec_label = QLabel("🛡️ Security-relevant items highlighted for Shield triage")
-        sec_label.setStyleSheet("font-size: 9px; color: #4fc3f7;")
-        intel_layout.addWidget(sec_label)
-
-        intel_btn_row = QHBoxLayout()
-        btn_intel_refresh = QPushButton("Refresh")
-        btn_intel_refresh.setMaximumWidth(70)
-        btn_intel_refresh.setToolTip("Refresh raised Intel; 🛡️ security-relevant items highlighted for Shield triage")
-        btn_intel_refresh.clicked.connect(self._refresh_raised_intel)
-        intel_btn_row.addWidget(btn_intel_refresh)
-
-        btn_intel_reviewed = QPushButton("Mark Reviewed")
-        btn_intel_reviewed.setToolTip("Mark reviewed; 🛡️ security-relevant items remain for Shield triage")
-        btn_intel_reviewed.setMaximumWidth(110)
-        btn_intel_reviewed.clicked.connect(self._mark_selected_intel_reviewed)
-        intel_btn_row.addWidget(btn_intel_reviewed)
-
-        btn_intel_link = QPushButton("Link Client")
-        btn_intel_link.setMaximumWidth(90)
-        btn_intel_link.setToolTip("Link to client; 🛡️ security-relevant items for Shield triage")
-        btn_intel_link.clicked.connect(self._link_selected_intel_to_client)
-        intel_btn_row.addWidget(btn_intel_link)
-
-        btn_intel_open = QPushButton("Open in Intel")
-        btn_intel_open.setMaximumWidth(100)
-        btn_intel_open.setToolTip("Open in Intel tab; 🛡️ security-relevant items for Shield triage")
-        btn_intel_open.clicked.connect(self._open_selected_in_intel_tab)
-        intel_btn_row.addWidget(btn_intel_open)
-
-        sec_label = QLabel("🛡️")
-        sec_label.setToolTip("Security-relevant items highlighted for Shield triage")
-        sec_label.setStyleSheet("font-size: 12px; color: #4fc3f7;")
-        intel_btn_row.addWidget(sec_label)
-
-        intel_layout.addLayout(intel_btn_row)
-        layout.addWidget(intel_group)
-
-        # Phase 1: Relevant Past Documents surface in CoS sidebar (client-aware, lightweight)
-        past_group = QGroupBox("Relevant Past Documents 🛡️ (security-relevant for Shield/Compliance)")
-        past_group.setStyleSheet("QGroupBox { font-weight: 600; color: #4fc3f7; }")
-        past_layout = QVBoxLayout(past_group)
-        past_layout.setContentsMargins(6, 6, 6, 6)
-        past_layout.setSpacing(4)
-
-        self.relevant_past_docs_list = QListWidget()
-        self.relevant_past_docs_list.setMaximumHeight(100)
-        self.relevant_past_docs_list.setMinimumHeight(60)
-        self.relevant_past_docs_list.itemDoubleClicked.connect(self._on_relevant_past_doc_double_clicked)
-        self.relevant_past_docs_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.relevant_past_docs_list.customContextMenuRequested.connect(self._show_relevant_past_docs_context_menu)
-        past_layout.addWidget(self.relevant_past_docs_list)
-
-        sec_label = QLabel("🛡️ Security-relevant for Shield/Compliance")
-        sec_label.setStyleSheet("font-size: 9px; color: #4fc3f7;")
-        past_layout.addWidget(sec_label)
-
-        past_btn = QPushButton("Refresh for Current Client")
-        past_btn.setMaximumWidth(180)
-        past_btn.setToolTip("Refresh past docs; 🛡️ security-relevant for Shield/Compliance")
-        past_btn.clicked.connect(lambda: self._refresh_relevant_past_docs())
-        past_layout.addWidget(past_btn)
-
-        layout.addWidget(past_group)
+        # NOTE: Per explicit rule ("at most two vertical panes for any given tab"), the sidebar is now
+        # ruthlessly limited to only what the user actually uses for delegation: Chats + Assignments.
+        # Removed: View Memories button, Raised Intel + Shield noise, Relevant Past Documents, Suggested,
+        # Work Plans, and all micro button groups. These can be reintroduced only on explicit request.
 
         tabs = QTabWidget()
         self.sidebar_tabs = tabs
@@ -2598,236 +2516,93 @@ Calendar and task actions:
         chats_layout.addWidget(new_btn)
         self.chat_list = QListWidget()
         self.chat_list.itemClicked.connect(self._on_chat_clicked)
-        chats_layout.addWidget(self.chat_list)
+        chats_layout.addWidget(self.chat_list, 1)
         tabs.addTab(chats_panel, "Chats")
 
-        # Assignments tab (suggested proposals → board → compact action toolbar)
+        # Assignments tab — EXACTLY TWO vertical panes (QSplitter) per the rule.
+        # Top pane: workload + filters + table + primary actions
+        # Bottom pane: large readable staff results + Export / Memory / Link / Open Chat
         asg_panel = QWidget()
         asg_layout = QVBoxLayout(asg_panel)
-        asg_layout.setSpacing(12)
-        asg_layout.setContentsMargins(12, 12, 12, 12)
-        asg_head = QGridLayout()
-        asg_head.setHorizontalSpacing(6)
-        asg_head.setVerticalSpacing(6)
-        new_asg_btn = QPushButton("New")
-        new_asg_btn.clicked.connect(self._create_assignment_from_board)
-        self._apply_button_metrics(new_asg_btn, min_width=72)
-        new_asg_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        asg_head.addWidget(new_asg_btn, 0, 0)
-        reassign_btn = QPushButton("Reassign")
-        reassign_btn.clicked.connect(self._reassign_selected_assignment)
-        self._apply_button_metrics(reassign_btn, min_width=96)
-        reassign_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        asg_head.addWidget(reassign_btn, 0, 1)
-        bulk_status_btn = QPushButton("Bulk Status")
-        bulk_status_btn.clicked.connect(self._bulk_set_filtered_status)
-        self._apply_button_metrics(bulk_status_btn, min_width=110)
-        bulk_status_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        asg_head.addWidget(bulk_status_btn, 0, 2)
-        bulk_priority_btn = QPushButton("Bulk Priority")
-        bulk_priority_btn.clicked.connect(self._bulk_set_filtered_priority)
-        self._apply_button_metrics(bulk_priority_btn, min_width=116)
-        bulk_priority_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        asg_head.addWidget(bulk_priority_btn, 0, 3)
-        bulk_due_btn = QPushButton("Bulk Due")
-        bulk_due_btn.clicked.connect(self._bulk_set_filtered_due)
-        self._apply_button_metrics(bulk_due_btn, min_width=92)
-        bulk_due_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        asg_head.addWidget(bulk_due_btn, 1, 0)
-        bulk_reassign_btn = QPushButton("Bulk Reassign")
-        bulk_reassign_btn.clicked.connect(self._bulk_reassign_filtered_assignments)
-        self._apply_button_metrics(bulk_reassign_btn, min_width=126)
-        bulk_reassign_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        asg_head.addWidget(bulk_reassign_btn, 1, 1)
-        export_btn = QPushButton("Export")
-        export_btn.clicked.connect(self._export_assignment_board_markdown)
-        self._apply_button_metrics(export_btn, min_width=84)
-        export_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        asg_head.addWidget(export_btn, 1, 2)
-        refresh_asg_btn = QPushButton("Refresh")
-        refresh_asg_btn.clicked.connect(self._refresh_assignment_list)
-        self._apply_button_metrics(refresh_asg_btn, min_width=88)
-        refresh_asg_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        asg_head.addWidget(refresh_asg_btn, 1, 3)
-        self.am_sweep_queue_tasks_btn = QPushButton("AM Sweep → dashboard tasks")
-        self.am_sweep_queue_tasks_btn.setToolTip(
-            "One step after AM Sweep: create dashboard tasks for each filtered assignment (Business). "
-            "Skips done/cancelled and assignments that already have a linked task. Adjust filters below first."
+        asg_layout.setContentsMargins(6, 6, 6, 6)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setChildrenCollapsible(False)
+        # Old scaffolding removed. Building clean two-pane content below.
+
+        # Work Plans section removed (not requested in this sidebar under the two-pane rule).
+
+        # Full clean two-pane implementation
+        # Top pane
+        board_pane = QWidget()
+        b_layout = QVBoxLayout(board_pane)
+        b_layout.setContentsMargins(4, 4, 4, 4)
+        b_layout.setSpacing(4)
+
+        self.staff_workload_label = QLabel("")
+        self.staff_workload_label.setStyleSheet(
+            "QLabel { color: #c8d1e0; font-size: 11px; padding: 4px 6px; "
+            "background-color: #1f232b; border: 1px solid #3a3f48; border-radius: 4px; }"
         )
-        self.am_sweep_queue_tasks_btn.clicked.connect(self._bulk_create_tasks_am_sweep_quick)
-        self.am_sweep_queue_tasks_btn.setStyleSheet(
-            "QPushButton { color: #e8f5e9; background-color: #1b5e20; border: 1px solid #2e7d32; "
-            "padding: 10px 14px; border-radius: 8px; font-weight: 600; font-size: 13px; }"
-            "QPushButton:hover { background-color: #2e7d32; color: #ffffff; }"
-            "QPushButton:pressed { background-color: #145214; }"
-        )
-        self._apply_button_metrics(self.am_sweep_queue_tasks_btn, min_width=280)
-        self.am_sweep_queue_tasks_btn.setMinimumHeight(self._control_min_height(extra_padding=18))
-        self.am_sweep_queue_tasks_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        asg_head.addWidget(self.am_sweep_queue_tasks_btn, 2, 0, 1, 4)
+        self.staff_workload_label.setWordWrap(True)
+        self.staff_workload_label.setTextFormat(Qt.TextFormat.RichText)
+        # Clickable chips temporarily disabled (handler not present in this minimal two-pane version).
+        # Can be restored in a follow-up if desired.
+        b_layout.addWidget(self.staff_workload_label)
 
-        suggested_group = QGroupBox("Suggested Assignments")
-        suggested_group.setStyleSheet("QGroupBox { font-weight: bold; color: #FD6262; }")
-        suggested_layout = QVBoxLayout(suggested_group)
-        suggested_layout.setSpacing(8)
-        self.proposed_list = QListWidget()
-        self.proposed_list.setMinimumHeight(200)
-        self.proposed_list.setStyleSheet(
-            "QListWidget { background-color: #22252c; color: #e8eaed; border: 1px solid #2e2f32; border-radius: 6px; }"
-        )
-        self.proposed_list.itemClicked.connect(self.on_proposed_clicked)
-        self.edit_proposal_btn = QPushButton("Edit")
-        self.approve_proposal_btn = QPushButton("Approve & Route")
-        self.reject_proposal_btn = QPushButton("Reject")
-        self.edit_proposal_btn.clicked.connect(self.edit_selected_proposal)
-        self.approve_proposal_btn.clicked.connect(self.approve_selected_proposal)
-        self.reject_proposal_btn.clicked.connect(self.reject_selected_proposal)
-        for _prop_btn in (self.edit_proposal_btn, self.approve_proposal_btn, self.reject_proposal_btn):
-            _prop_btn.setMinimumHeight(36)
-        proposal_btn_row = QHBoxLayout()
-        proposal_btn_row.addWidget(self.edit_proposal_btn)
-        proposal_btn_row.addWidget(self.approve_proposal_btn)
-        proposal_btn_row.addWidget(self.reject_proposal_btn)
-        self.proposal_status_label = QLabel("")
-        self.proposal_status_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
-        self.proposal_status_label.setWordWrap(True)
-        suggested_layout.addWidget(self.proposed_list)
-        suggested_layout.addLayout(proposal_btn_row)
-        suggested_layout.addWidget(self.proposal_status_label)
-        asg_layout.addWidget(suggested_group)
-
-        # ------------------------------------------------------------------
-        # Work Plans (CoS Staff Coordinator) — the high-level plan surface
-        # Proposed plans + Active plans with Approve / View / Report actions
-        # ------------------------------------------------------------------
-        workplan_group = QGroupBox("Work Plans (Staff Coordinator)")
-        workplan_group.setStyleSheet("QGroupBox { font-weight: bold; color: #22C55E; }")
-        wp_layout = QVBoxLayout(workplan_group)
-        wp_layout.setSpacing(6)
-
-        self.workplan_list = QListWidget()
-        self.workplan_list.setMinimumHeight(140)
-        self.workplan_list.itemDoubleClicked.connect(self._on_workplan_double_clicked)
-
-        wp_btn_row = QHBoxLayout()
-        self.refresh_workplans_btn = QPushButton("Refresh Plans")
-        self.approve_workplan_btn = QPushButton("Approve & Delegate")
-        self.view_workplan_report_btn = QPushButton("Checkpoint Report")
-        self.refresh_workplans_btn.setMinimumHeight(30)
-        self.approve_workplan_btn.setMinimumHeight(30)
-        self.view_workplan_report_btn.setMinimumHeight(30)
-        self.refresh_workplans_btn.clicked.connect(self.refresh_work_plans)
-        self.approve_workplan_btn.clicked.connect(self.approve_selected_work_plan)
-        self.view_workplan_report_btn.clicked.connect(self.show_work_plan_report)
-        wp_btn_row.addWidget(self.refresh_workplans_btn)
-        wp_btn_row.addWidget(self.approve_workplan_btn)
-        wp_btn_row.addWidget(self.view_workplan_report_btn)
-
-        self.workplan_status_label = QLabel("Proposed and active staff-level plans appear here. CoS proposes; you approve; CoS delegates and reports back.")
-        self.workplan_status_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
-        self.workplan_status_label.setWordWrap(True)
-
-        # Quick "Tell CoS a goal" row — primary way to create a new staff-level plan
-        goal_row = QHBoxLayout()
-        self.new_plan_goal_edit = QLineEdit()
-        self.new_plan_goal_edit.setPlaceholderText("Tell CoS what needs to get done (e.g. 'Prepare Q3 compliance review for Acme and get it into the project plan')")
-        self.new_plan_goal_edit.returnPressed.connect(self.create_new_work_plan_from_goal)
-        self.create_plan_btn = QPushButton("Propose Staff Plan")
-        self.create_plan_btn.setMinimumHeight(28)
-        self.create_plan_btn.clicked.connect(self.create_new_work_plan_from_goal)
-        goal_row.addWidget(self.new_plan_goal_edit, 3)
-        goal_row.addWidget(self.create_plan_btn, 1)
-
-        wp_layout.addLayout(goal_row)
-        wp_layout.addWidget(self.workplan_list)
-        wp_layout.addLayout(wp_btn_row)
-        wp_layout.addWidget(self.workplan_status_label)
-        asg_layout.addWidget(workplan_group)
-
-        board_group = QGroupBox("Delegation Board")
-        board_layout = QVBoxLayout(board_group)
-        board_layout.setSpacing(8)
-        board_layout.addLayout(asg_head)
-
-        filters = QGridLayout()
-        filters.setContentsMargins(0, 0, 0, 0)
-        filters.setHorizontalSpacing(4)
-        filters.setVerticalSpacing(4)
+        fl = QGridLayout()
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setHorizontalSpacing(4)
+        fl.setVerticalSpacing(3)
         self.assignment_scope_filter = QComboBox()
+        # Default to "All" so completed staff work (Atlas etc. results) is visible by default.
+        # The old "Open only" default was hiding exactly the things users want to review in the Results pane.
+        self.assignment_scope_filter.addItem("All", "all")
         self.assignment_scope_filter.addItem("Open only", "open")
-        self.assignment_scope_filter.addItem("All (include done/cancelled)", "all")
         self.assignment_scope_filter.currentTextChanged.connect(lambda _t: self._refresh_assignment_list())
         self.assignment_scope_filter.currentIndexChanged.connect(self._save_assignment_filter_state)
-        self.assignment_scope_filter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        filters.addWidget(self.assignment_scope_filter, 0, 0)
-
+        # Force "All" on first creation so completed staff work (with results) is visible
+        self.assignment_scope_filter.setCurrentIndex(0)
+        fl.addWidget(self.assignment_scope_filter, 0, 0)
         self.assignment_status_filter = QComboBox()
-        self.assignment_status_filter.addItems(
-            ["All", "proposed", "queued", "in_progress", "awaiting_review", "blocked", "done", "cancelled"]
-        )
+        self.assignment_status_filter.addItems(["All", "proposed", "queued", "in_progress", "awaiting_review", "blocked", "done", "cancelled"])
         self.assignment_status_filter.currentTextChanged.connect(lambda _t: self._refresh_assignment_list())
         self.assignment_status_filter.currentIndexChanged.connect(self._save_assignment_filter_state)
-        self.assignment_status_filter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        filters.addWidget(self.assignment_status_filter, 0, 1)
-
-        self.assignment_health_filter = QComboBox()
-        self.assignment_health_filter.addItem("Health: All", "")
-        self.assignment_health_filter.addItem("Overdue", "overdue")
-        self.assignment_health_filter.addItem("Blocked 3d+", "stale_blocked")
-        self.assignment_health_filter.addItem("Awaiting Review 3d+", "stale_review")
-        self.assignment_health_filter.addItem("Needs Attention", "needs_attention")
-        self.assignment_health_filter.currentTextChanged.connect(lambda _t: self._refresh_assignment_list())
-        self.assignment_health_filter.currentIndexChanged.connect(self._save_assignment_filter_state)
-        self.assignment_health_filter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        filters.addWidget(self.assignment_health_filter, 1, 0)
-
+        fl.addWidget(self.assignment_status_filter, 0, 1)
         self.assignment_assignee_filter = QComboBox()
         self.assignment_assignee_filter.addItem("All assignees", "")
         for a in self.db.agents_list_active():
             code = str(a.get("code") or "").strip().lower()
-            if not code or code == "navi":
-                continue
-            label = f"{a.get('display_name') or code} ({code})"
-            self.assignment_assignee_filter.addItem(label, code)
+            if code and code != "navi":
+                self.assignment_assignee_filter.addItem(f"{a.get('display_name') or code} ({code})", code)
         self.assignment_assignee_filter.currentTextChanged.connect(lambda _t: self._refresh_assignment_list())
         self.assignment_assignee_filter.currentIndexChanged.connect(self._save_assignment_filter_state)
-        self.assignment_assignee_filter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        filters.addWidget(self.assignment_assignee_filter, 1, 1)
-
-        self.assignment_followup_filter = QComboBox()
-        self.assignment_followup_filter.addItem("Follow-up: All", "")
-        self.assignment_followup_filter.addItem("Needs Input", "needs_input")
-        self.assignment_followup_filter.addItem("No Input Needed", "clear")
-        self.assignment_followup_filter.currentTextChanged.connect(lambda _t: self._refresh_assignment_list())
-        self.assignment_followup_filter.currentIndexChanged.connect(self._save_assignment_filter_state)
-        self.assignment_followup_filter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        filters.addWidget(self.assignment_followup_filter, 2, 0)
-
+        fl.addWidget(self.assignment_assignee_filter, 0, 2)
         self.assignment_search_input = QLineEdit()
-        self.assignment_search_input.setPlaceholderText("Search title / brief / A-####")
+        self.assignment_search_input.setPlaceholderText("Search task text / assignee")
         self.assignment_search_input.textChanged.connect(lambda _t: self._refresh_assignment_list())
         self.assignment_search_input.textChanged.connect(self._save_assignment_filter_state)
-        self.assignment_search_input.setMinimumHeight(self._control_min_height(extra_padding=10))
-        filters.addWidget(self.assignment_search_input, 3, 0, 1, 2)
-        filter_row = QHBoxLayout()
-        filter_row.setSpacing(6)
-        _filters_lbl = QLabel("Filters:")
-        _filters_lbl.setStyleSheet("color: #9aa0a6; font-size: 11px;")
-        filter_row.addWidget(_filters_lbl, 0)
-        _filter_host = QWidget()
-        _filter_host.setLayout(filters)
-        filter_row.addWidget(_filter_host, 1)
-        board_layout.addLayout(filter_row)
+        fl.addWidget(self.assignment_search_input, 1, 0, 1, 3)
+        _fh = QWidget(); _fh.setLayout(fl)
+        b_layout.addWidget(_fh)
 
-        self.assignment_count_label = QLabel("")
-        self.assignment_count_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
-        self.assignment_count_label.setWordWrap(True)
-        board_layout.addWidget(self.assignment_count_label)
+        self.assignment_count_label = QLabel("Only showing tasks assigned to staff that need your input. (CoS Plans history in dropdown; full legacy board removed.)")
+        self.assignment_count_label.setStyleSheet("color: #9aa0a6; font-size: 10px;")
+        b_layout.addWidget(self.assignment_count_label)
 
-        self.assignment_list = QTableWidget(0, 8)
-        self.assignment_list.setHorizontalHeaderLabels(
-            ["Assignment", "Status", "Needs Input", "Priority", "Assignee", "Due", "Health", "Title"]
-        )
+        # Proposed plans now behind dropdown only (per "history from a dropdown; not always present")
+        plans_bar = QHBoxLayout()
+        self.plans_dropdown = QPushButton("CoS Proposed Plans History ▾")
+        self.plans_dropdown.setStyleSheet("font-size: 10px; padding: 2px 6px;")
+        self.plans_menu = QMenu(self.plans_dropdown)
+        self.plans_dropdown.setMenu(self.plans_menu)
+        self.plans_menu.aboutToShow.connect(self._populate_cos_plans_menu)
+        plans_bar.addWidget(self.plans_dropdown)
+        plans_bar.addStretch(1)
+        b_layout.addLayout(plans_bar)
+
+        self.assignment_list = QTableWidget(0, 7)
+        self.assignment_list.setHorizontalHeaderLabels(["Task", "Status", "Needs Input", "Priority", "Assignee", "Due", "Title"])
         self.assignment_list.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.assignment_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.assignment_list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -2835,128 +2610,92 @@ Calendar and task actions:
         self.assignment_list.setSortingEnabled(True)
         self.assignment_list.verticalHeader().setVisible(False)
         self.assignment_list.itemSelectionChanged.connect(self._on_assignment_selection_changed)
-        header = self.assignment_list.horizontalHeader()
-        header.setStretchLastSection(True)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSortIndicatorShown(True)
-        header.sectionResized.connect(self._save_assignment_table_state)
-        header.sortIndicatorChanged.connect(self._save_assignment_table_state)
-        board_layout.addWidget(self.assignment_list, 1)
+        self.assignment_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.assignment_list.customContextMenuRequested.connect(self._show_assignment_context_menu)
+        h = self.assignment_list.horizontalHeader()
+        h.setStretchLastSection(True)
+        h.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        b_layout.addWidget(self.assignment_list, 1)
+
+        # Simplified controls: only refresh for now.
+        # "New work" creation moves to CoS chat + CoS Plans (dropdown).
+        # Full assignment creation / bulk management removed from this always-visible pane.
+        act = QHBoxLayout()
+        rb = QPushButton("Refresh Needs-Input Tasks")
+        rb.clicked.connect(self._refresh_assignment_list)
+        act.addWidget(rb)
+        act.addStretch(1)
+        b_layout.addLayout(act)
+
+        splitter.addWidget(board_pane)
+
+        # Bottom pane
+        results_pane = QWidget()
+        r_layout = QVBoxLayout(results_pane)
+        r_layout.setContentsMargins(4, 4, 4, 4)
+        r_layout.setSpacing(6)
+
         self.assignment_details = QTextBrowser()
-        self.assignment_details.setPlaceholderText("Select an assignment to view details.")
-        board_layout.addWidget(self.assignment_details, 1)
-
-        self.asg_start_btn = QPushButton("Start")
-        self.asg_start_btn.clicked.connect(lambda: self._set_assignment_status("in_progress"))
-        self._apply_button_metrics(self.asg_start_btn, min_width=92)
-        self.asg_start_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_set_priority_btn = QPushButton("Set Priority")
-        self.asg_set_priority_btn.clicked.connect(self._set_assignment_priority)
-        self._apply_button_metrics(self.asg_set_priority_btn, min_width=110)
-        self.asg_set_priority_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_set_due_btn = QPushButton("Set Due")
-        self.asg_set_due_btn.clicked.connect(self._set_assignment_due)
-        self._apply_button_metrics(self.asg_set_due_btn, min_width=96)
-        self.asg_set_due_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_review_btn = QPushButton("Awaiting Review")
-        self.asg_review_btn.clicked.connect(lambda: self._set_assignment_status("awaiting_review"))
-        self._apply_button_metrics(self.asg_review_btn, min_width=138)
-        self.asg_review_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_block_btn = QPushButton("Block")
-        self.asg_block_btn.clicked.connect(lambda: self._set_assignment_status("blocked"))
-        self._apply_button_metrics(self.asg_block_btn, min_width=92)
-        self.asg_block_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_done_btn = QPushButton("Done")
-        self.asg_done_btn.clicked.connect(lambda: self._set_assignment_status("done"))
-        self._apply_button_metrics(self.asg_done_btn, min_width=92)
-        self.asg_done_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_cancel_btn = QPushButton("Cancel")
-        self.asg_cancel_btn.clicked.connect(lambda: self._set_assignment_status("cancelled"))
-        self._apply_button_metrics(self.asg_cancel_btn, min_width=92)
-        self.asg_cancel_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_reopen_btn = QPushButton("Reopen")
-        self.asg_reopen_btn.clicked.connect(lambda: self._set_assignment_status("queued"))
-        self._apply_button_metrics(self.asg_reopen_btn, min_width=92)
-        self.asg_reopen_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_edit_title_btn = QPushButton("Edit Title")
-        self.asg_edit_title_btn.clicked.connect(self._edit_assignment_title)
-        self._apply_button_metrics(self.asg_edit_title_btn, min_width=108)
-        self.asg_edit_title_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_edit_brief_btn = QPushButton("Edit Brief")
-        self.asg_edit_brief_btn.clicked.connect(self._edit_assignment_brief)
-        self._apply_button_metrics(self.asg_edit_brief_btn, min_width=108)
-        self.asg_edit_brief_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_edit_summary_btn = QPushButton("Edit Summary")
-        self.asg_edit_summary_btn.clicked.connect(self._edit_assignment_summary)
-        self._apply_button_metrics(self.asg_edit_summary_btn, min_width=122)
-        self.asg_edit_summary_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_create_task_btn = QPushButton("Create Task")
-        self.asg_create_task_btn.clicked.connect(self._create_task_from_assignment)
-        self._apply_button_metrics(self.asg_create_task_btn, min_width=116)
-        self.asg_create_task_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_bulk_create_tasks_btn = QPushButton("Bulk tasks (custom)…")
-        self.asg_bulk_create_tasks_btn.setToolTip(
-            "Choose category, whether to include closed assignments, and an optional note—then confirm."
+        self.assignment_details.setPlaceholderText(
+            "Select a task (assigned to staff like Atlas/Mason) in the table above to view its details here.\n\n"
+            "Use the CoS chat (left pane) for delegation and replies to staff. Right-click for basic actions."
         )
-        self.asg_bulk_create_tasks_btn.clicked.connect(self._bulk_create_tasks_from_filtered_assignments)
-        self._apply_button_metrics(self.asg_bulk_create_tasks_btn, min_width=152)
-        self.asg_bulk_create_tasks_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_view_artifact_btn = QPushButton("View Artifact")
-        self.asg_view_artifact_btn.clicked.connect(self._view_selected_assignment_artifact)
-        self._apply_button_metrics(self.asg_view_artifact_btn, min_width=118)
-        self.asg_view_artifact_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.asg_open_chat_btn = QPushButton("Open Assignee Chat")
+        self.assignment_details.setStyleSheet(
+            "QTextBrowser { font-family: 'Segoe UI', 'Helvetica Neue', sans-serif; font-size: 13px; "
+            "line-height: 1.35; color: #e8eaed; background-color: #1f232b; border: 1px solid #3a3f48; "
+            "border-radius: 4px; padding: 8px; } QTextBrowser h3 { color: #8ab4f8; }"
+        )
+        self.assignment_details.setOpenExternalLinks(False)
+        self.assignment_details.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        r_layout.addWidget(self.assignment_details, 1)
+
+        resb = QHBoxLayout()
+        self.asg_export_results_btn = QPushButton("Export Board")
+        self.asg_export_results_btn.clicked.connect(self._export_assignment_board_markdown)
+        self.asg_export_results_btn.setEnabled(True)
+        resb.addWidget(self.asg_export_results_btn)
+        self.asg_add_memory_btn = QPushButton("Refresh Tasks View")
+        self.asg_add_memory_btn.clicked.connect(self._refresh_task_views)
+        self.asg_add_memory_btn.setEnabled(True)
+        resb.addWidget(self.asg_add_memory_btn)
+        self.asg_link_project_btn = QPushButton("Focus Tasks Tab")
+        self.asg_link_project_btn.clicked.connect(lambda: self._refresh_task_views())
+        self.asg_link_project_btn.setEnabled(True)
+        resb.addWidget(self.asg_link_project_btn)
+        self.asg_open_chat_btn = QPushButton("Reply to Staff via Chat")
         self.asg_open_chat_btn.clicked.connect(self._open_assignment_in_assignee_console)
-        self._apply_button_metrics(self.asg_open_chat_btn, min_width=160)
-        self.asg_open_chat_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        resb.addWidget(self.asg_open_chat_btn)
 
-        action_toolbar = QHBoxLayout()
-        action_toolbar.setSpacing(8)
-        status_group = QGroupBox("Status")
-        status_layout = QHBoxLayout(status_group)
-        for _sb in (
-            self.asg_start_btn,
-            self.asg_review_btn,
-            self.asg_block_btn,
-            self.asg_done_btn,
-            self.asg_cancel_btn,
-            self.asg_reopen_btn,
-        ):
-            status_layout.addWidget(_sb)
-        edit_group = QGroupBox("Edit")
-        edit_layout = QHBoxLayout(edit_group)
-        for _eb in (
-            self.asg_edit_title_btn,
-            self.asg_edit_brief_btn,
-            self.asg_edit_summary_btn,
-            self.asg_set_priority_btn,
-            self.asg_set_due_btn,
-        ):
-            edit_layout.addWidget(_eb)
-        tasks_group = QGroupBox("Tasks")
-        tasks_layout = QHBoxLayout(tasks_group)
-        tasks_layout.addWidget(self.asg_create_task_btn)
-        tasks_layout.addWidget(self.asg_bulk_create_tasks_btn)
-        tasks_layout.addWidget(self.asg_view_artifact_btn)
-        action_toolbar.addWidget(status_group)
-        action_toolbar.addWidget(edit_group)
-        action_toolbar.addWidget(tasks_group)
-        action_toolbar.addWidget(self.asg_open_chat_btn)
-        action_toolbar.addStretch(1)
+        # Dedicated refresh for the selected assignment details (critical for knowing if work is progressing)
+        refresh_btn = QPushButton("Refresh Details")
+        refresh_btn.setToolTip("Refresh the needs-input tasks board and details")
+        refresh_btn.clicked.connect(self._refresh_selected_assignment_details)
+        resb.addWidget(refresh_btn)
 
-        asg_layout.addWidget(board_group, 1)
-        asg_layout.addLayout(action_toolbar)
+        resb.addStretch(1)
+        r_layout.addLayout(resb)
+
+        splitter.addWidget(results_pane)
+        splitter.setSizes([280, 480])  # Give results pane more initial room
+
+        asg_layout.addWidget(splitter, 1)
+
         tabs.addTab(asg_panel, "Assignments")
 
         layout.addWidget(tabs)
         self._refresh_chat_list()
         self._refresh_assignment_list()
+        # _refresh_staff_workload stubbed for the minimal two-pane version
+        if not hasattr(self, "_refresh_staff_workload"):
+            self._refresh_staff_workload = lambda: None
+        self._refresh_staff_workload()
+
+        # Lightweight timer to help users see if "In Progress" assignments are actually moving
+        # (directly addresses "now it says In Progress but I don't see anything happening")
+        self._assignment_activity_timer = QTimer(self)
+        self._assignment_activity_timer.setInterval(45000)  # 45 seconds
+        self._assignment_activity_timer.timeout.connect(self._maybe_refresh_active_assignment_details)
+
         return panel
 
     def _create_assignment_from_board(self):
@@ -3052,6 +2791,14 @@ Calendar and task actions:
         if not self._current_assignment_id:
             QMessageBox.information(self, "Assignments", "Select an assignment first.")
             return
+        # Guard for task rows (CoS now uses Tasks for needs-input pane)
+        try:
+            last = getattr(self, "_last_task_rows", None) or []
+            if any(int(r.get("id") or 0) == int(self._current_assignment_id) and r.get("_is_task") for r in last):
+                QMessageBox.information(self, "Tasks", "Reassign for staff tasks is done via the Tasks tab or by asking in CoS chat (e.g. 'reassign task #123 to mason').")
+                return
+        except Exception:
+            pass
         current = self.db.agent_get_assignment(int(self._current_assignment_id))
         if not current:
             QMessageBox.warning(self, "Assignments", "Assignment not found.")
@@ -3474,65 +3221,62 @@ Calendar and task actions:
         return status, assignee, query, health, followup, include_closed
 
     def _filtered_assignment_rows(self):
-        status, assignee, query, health, followup, include_closed = self._assignment_filters()
-        rows = self.db.agent_list_assignments(status=status, assignee_code=assignee, limit=500)
-        st_filter = (status or "").strip().lower()
-        if not include_closed:
-            rows = [
-                r
-                for r in rows
-                if str(r.get("status") or "").strip().lower() not in {"done", "cancelled"}
-            ]
-        if st_filter != "proposed":
-            rows = [
-                r for r in rows if str(r.get("status") or "").strip().lower() != "proposed"
-            ]
-        if query:
-            qnorm = query.replace("a-", "").lstrip("0")
-            filtered = []
-            for r in rows:
-                aid = int(r.get("id") or 0)
-                title = str(r.get("title") or "").lower()
-                brief = str(r.get("brief_md") or "").lower()
-                if query in title or query in brief:
-                    filtered.append(r)
-                    continue
-                if qnorm and qnorm.isdigit() and int(qnorm) == aid:
-                    filtered.append(r)
-                    continue
-            rows = filtered
+        """Sources exclusively from Tasks assigned to agents for the visible CoS pane (needs-input only).
+        This fulfills the model: use the main pane for tasks requiring input; full legacy board removed.
+        agent_assignments still used by other legacy surfaces (work plans, proposed list, chat handlers) during transition.
+        """
+        # Active agents
+        try:
+            agents = self.db.agents_list_active()
+            agent_codes = {str(a.get("code") or "").strip().lower() for a in agents if a.get("code")}
+            agent_codes.discard("")
+            agent_codes.discard("navi")
+        except Exception:
+            agent_codes = set()
 
-        if health:
-            filtered = []
-            now = datetime.now()
-            for r in rows:
-                flags = _assignment_health_flags(r, now=now)
-                if health == "overdue" and "overdue" in flags:
-                    filtered.append(r)
-                    continue
-                if health == "stale_blocked" and "stale_blocked" in flags:
-                    filtered.append(r)
-                    continue
-                if health == "stale_review" and "stale_review" in flags:
-                    filtered.append(r)
-                    continue
-                if health == "needs_attention" and any(
-                    f in flags for f in ("overdue", "stale_blocked", "stale_review")
-                ):
-                    filtered.append(r)
-                    continue
-            rows = filtered
-        if followup:
-            filtered = []
-            for r in rows:
-                snap = _assignment_agent_followup_snapshot(self.db, r)
-                needs_input = bool(snap.get("needs_input"))
-                if followup == "needs_input" and needs_input:
-                    filtered.append(r)
-                elif followup == "clear" and not needs_input:
-                    filtered.append(r)
-            rows = filtered
-        return rows
+        try:
+            candidate_tasks = self.db.list_tasks_rich(include_completed=False, limit=400)
+        except Exception:
+            candidate_tasks = []
+
+        rows = []
+        for t in candidate_tasks:
+            assigned = (t.get("assigned_to") or "").strip().lower()
+            if not assigned or assigned == "navi":
+                continue
+            if agent_codes and assigned not in agent_codes:
+                continue
+            blockers = (t.get("blockers") or "").strip()
+            prio = int(t.get("priority") or 0)
+            # "requires input" = has explicit blockers (agent/user handoff) or high prio open task
+            needs_input = bool(blockers) or prio >= 4
+            # Normalize for downstream code (details, health, snapshots still expect some assignment-like keys)
+            norm = {
+                "id": int(t.get("id") or 0),
+                "title": (t.get("task_text") or "Untitled task")[:200],
+                "brief_md": blockers or (t.get("task_text") or ""),
+                "assignee_code": t.get("assigned_to") or "",
+                "status": "blocked" if blockers else "in_progress",
+                "priority": prio,
+                "due_date": t.get("due_date") or "",
+                "result_summary_md": "",
+                "_is_task": True,
+                "_task_row": t,
+                "needs_input": needs_input,
+            }
+            rows.append(norm)
+
+        # The UI filter is locked to needs_input, so enforce it
+        _, assignee, query, health, followup, include_closed = self._assignment_filters()
+        if followup == "needs_input" or True:  # always enforce for this pane
+            rows = [r for r in rows if r.get("needs_input")]
+        if assignee:
+            rows = [r for r in rows if str(r.get("assignee_code") or "").lower() == assignee.lower()]
+        if query:
+            q = query.lower()
+            rows = [r for r in rows if q in str(r.get("title") or "").lower() or q in str(r.get("brief_md") or "").lower()]
+
+        return rows[:150]
 
     def refresh_proposed_assignments(self) -> None:
         """Load and display assignments in ``proposed`` status (Suggested Assignments panel)."""
@@ -3920,40 +3664,35 @@ Calendar and task actions:
         self.assignment_list.setSortingEnabled(False)
         self.assignment_list.clearContents()
         rows = self._filtered_assignment_rows()
+        self._last_task_rows = rows  # for details fallback when rows are task-based
         now = datetime.now()
         self.assignment_list.setRowCount(len(rows))
 
         for row_idx, r in enumerate(rows):
-            aid = int(r.get("id") or 0)
+            tid = int(r.get("id") or 0)
             title = str(r.get("title") or "Untitled")
             assignee = str(r.get("assignee_code") or "agent")
             status = str(r.get("status") or "queued")
             pr = int(r.get("priority") or 3)
             due = str(r.get("due_date") or "")
-            try:
-                followup_snap = _assignment_agent_followup_snapshot(self.db, r)
-            except Exception:
-                followup_snap = {}
-            health_flags = _assignment_health_flags(r, now=now)
-            tag_map = {
-                "overdue": "OVERDUE",
-                "stale_blocked": "BLOCKED_3D",
-                "stale_review": "REVIEW_3D",
-            }
-            health_text = " | ".join(
-                [tag_map[h] for h in ("overdue", "stale_blocked", "stale_review") if h in health_flags]
-            )
-            needs_input_flag = bool(followup_snap.get("needs_input"))
+            # Prefer the pre-computed needs_input from our task filter; fallback to snapshot (for legacy rows during migration)
+            needs_input_flag = bool(r.get("needs_input"))
+            if not needs_input_flag:
+                try:
+                    snap = _assignment_agent_followup_snapshot(self.db, r)
+                    needs_input_flag = bool(snap.get("needs_input"))
+                except Exception:
+                    pass
             needs_display = "⚠️ NEEDS INPUT" if needs_input_flag else ""
 
+            # 7 columns to match header: Task, Status, NeedsInput, Priority, Assignee, Due, Title
             values = [
-                (f"A-{aid:04d}", aid),
+                (f"T-{tid}", tid),
                 (status, status),
                 (needs_display, 1 if needs_input_flag else 0),
                 (f"P{pr}", pr),
                 (assignee, assignee),
                 (due or "", due or "9999-12-31"),
-                (health_text, health_text),
                 (title, title.lower()),
             ]
             needs_bg = QColor("#F59E0B")
@@ -3964,7 +3703,7 @@ Calendar and task actions:
                     disp_str = f"⚠️ NEEDS INPUT — {disp_str}"
                 item = QTableWidgetItem(disp_str)
                 if col == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, aid)
+                    item.setData(Qt.ItemDataRole.UserRole, tid)
                 item.setData(Qt.ItemDataRole.EditRole, sort_value)
                 item.setText(disp_str)
                 if needs_input_flag:
@@ -3973,15 +3712,15 @@ Calendar and task actions:
                     bold_font = QFont(item.font())
                     bold_font.setBold(True)
                     item.setFont(bold_font)
-                    item.setToolTip("Agent is waiting on you for answers or files.")
+                    item.setToolTip("This task requires your input before the assigned staff can proceed.")
                 self.assignment_list.setItem(row_idx, col, item)
         if hasattr(self, "assignment_count_label"):
             if not rows:
                 self.assignment_count_label.setText(
-                    "No assignments yet. Ask Navi in Chief of Staff chat to create one."
+                    "No tasks requiring input. Delegate via CoS chat (e.g. 'have Atlas research X and report back')."
                 )
             else:
-                self.assignment_count_label.setText(f"{len(rows)} assignment(s)")
+                self.assignment_count_label.setText(f"{len(rows)} task(s) needing input")
         _, _, _, _, followup_filter, _ = self._assignment_filters()
         self.assignment_list.setSortingEnabled(True)
         if followup_filter == "needs_input":
@@ -3990,9 +3729,17 @@ Calendar and task actions:
             self.assignment_list.sortByColumn(sort_col, sort_order)
         if current_aid > 0:
             self._select_assignment_row(current_aid)
-        self.refresh_proposed_assignments()
+        # Legacy proposed/workplan refreshes guarded (may target widgets removed per two-pane + dropdown history rule)
+        if hasattr(self, "proposed_list"):
+            try:
+                self.refresh_proposed_assignments()
+            except Exception:
+                pass
         if hasattr(self, "refresh_work_plans"):
-            self.refresh_work_plans()
+            try:
+                self.refresh_work_plans()
+            except Exception:
+                pass
 
     def _selected_assignment_id(self) -> int:
         if not hasattr(self, "assignment_list"):
@@ -4002,6 +3749,104 @@ Calendar and task actions:
             return 0
         item = self.assignment_list.item(row, 0)
         return int(item.data(Qt.ItemDataRole.UserRole) or 0) if item is not None else 0
+
+    def _populate_cos_plans_menu(self):
+        """Dynamically load proposed CoS Plans into the dropdown (history only; main board is needs-input tasks)."""
+        if not hasattr(self, "plans_menu"):
+            return
+        self.plans_menu.clear()
+        try:
+            plans = self.db.list_proposed_daily_plans(limit=15)
+        except Exception as e:
+            act = self.plans_menu.addAction(f"(error loading plans: {e})")
+            act.setEnabled(False)
+            return
+        if not plans:
+            act = self.plans_menu.addAction("(no proposed CoS Plans yet — ask in chat e.g. 'plan my day')")
+            act.setEnabled(False)
+            return
+        for p in plans:
+            date = p.get("date") or ""
+            status = p.get("status") or "proposed"
+            gen = (p.get("generated_at") or "")[:16]
+            text = f"{date} • {status} • {gen}"
+            act = self.plans_menu.addAction(text)
+            # capture p
+            act.triggered.connect(lambda checked=False, plan=p: self._show_cos_plan(plan))
+        self.plans_menu.addSeparator()
+        refresh_act = self.plans_menu.addAction("Refresh list")
+        refresh_act.triggered.connect(self._populate_cos_plans_menu)
+
+    def _show_cos_plan(self, plan: dict):
+        """Show a CoS proposed plan from history dropdown."""
+        if not plan:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"CoS Plan — {plan.get('date', '')}")
+        dlg.setMinimumSize(700, 500)
+        lay = QVBoxLayout(dlg)
+        info = QLabel(f"Status: {plan.get('status','proposed')} | Generated: {plan.get('generated_at','')}")
+        lay.addWidget(info)
+        content = QTextEdit()
+        content.setReadOnly(True)
+        # Prefer visual or json or md
+        txt = plan.get("visual_html") or plan.get("plan_json") or plan.get("plan_md") or "(no content stored)"
+        if isinstance(txt, (dict, list)):
+            import json
+            txt = json.dumps(txt, indent=2)
+        content.setPlainText(str(txt))
+        lay.addWidget(content, 1)
+        btns = QHBoxLayout()
+        approve_btn = QPushButton("Approve / Turn into Tasks")
+        approve_btn.clicked.connect(lambda: (self._approve_cos_plan(plan.get("date")), dlg.accept()))
+        btns.addWidget(approve_btn)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        btns.addWidget(close_btn)
+        btns.addStretch(1)
+        lay.addLayout(btns)
+        dlg.exec()
+
+    def _approve_cos_plan(self, date_str: str):
+        """Approve a CoS plan date -> mark approved and turn embedded tasks into real assigned Tasks (if not already)."""
+        if not date_str:
+            return
+        try:
+            plan = self.db.get_daily_plan(date_str) or {}
+            ok = self.db.approve_daily_plan(date_str)
+            created = 0
+            plan_json = plan.get("plan_json") or {}
+            if isinstance(plan_json, str):
+                try:
+                    import json
+                    plan_json = json.loads(plan_json)
+                except Exception:
+                    plan_json = {}
+            tasks = plan_json.get("tasks") or []
+            for tspec in tasks:
+                try:
+                    # create if not exists - use add_task; it will be open by default
+                    tid = self.db.add_task(
+                        session_id=None,
+                        task_text=tspec.get("title") or "CoS plan task",
+                        due_date=tspec.get("due_date"),
+                        category="Business",
+                        assigned_to=tspec.get("assigned_to"),
+                        blockers=tspec.get("blockers"),
+                        priority=int(tspec.get("priority", 3)),
+                    )
+                    if tid:
+                        created += 1
+                except Exception:
+                    pass
+            msg = f"Plan for {date_str} marked approved."
+            if created:
+                msg += f" Created/ensured {created} task(s) with assigned_to."
+            else:
+                msg += " (No new tasks created from plan content this time.)"
+            QMessageBox.information(self, "CoS Plan", msg)
+        except Exception as e:
+            QMessageBox.warning(self, "CoS Plan", f"Approve failed: {e}")
 
     def _select_assignment_row(self, assignment_id: int) -> bool:
         aid = int(assignment_id or 0)
@@ -4042,31 +3887,28 @@ Calendar and task actions:
             return s
 
         lines = [
-            "# Delegation Board Snapshot",
+            "# CoS Needs-Input Tasks Snapshot (from Tasks table, assigned_to staff)",
             "",
             f"- Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}",
             f"- Filter status: {status_str}",
-            f"- Filter health: {health_str}",
             f"- Filter follow-up: {followup_str}",
             f"- Filter assignee: {assignee_str}",
             f"- Search query: {query_str}",
             f"- Total rows: {len(rows)}",
             "",
-            "| Assignment | Status | Health | Priority | Assignee | Due | Title |",
+            "| Task | Status | Needs Input | Priority | Assignee | Due | Title |",
             "|---|---|---|---:|---|---|---|",
         ]
-        now_dt = datetime.now()
         for r in rows:
-            aid = int(r.get("id") or 0)
+            tid = int(r.get("id") or 0)
             st_row = _esc(r.get("status") or "")
-            flags = _assignment_health_flags(r, now=now_dt)
-            health_row = _esc(", ".join(flags))
+            needs = "YES" if r.get("needs_input") else ""
             pr = int(r.get("priority") or 3)
             assignee = _esc(r.get("assignee_code") or "")
             due = _esc(r.get("due_date") or "")
             title = _esc(r.get("title") or "Untitled")
             lines.append(
-                f"| A-{aid:04d} | {st_row} | {health_row} | {pr} | {assignee} | {due} | {title} |"
+                f"| T-{tid} | {st_row} | {needs} | {pr} | {assignee} | {due} | {title} |"
             )
 
         try:
@@ -4080,8 +3922,37 @@ Calendar and task actions:
     def _on_assignment_selection_changed(self):
         aid = self._selected_assignment_id()
         if aid <= 0:
+            if hasattr(self, "_assignment_activity_timer"):
+                self._assignment_activity_timer.stop()
             return
         self._on_assignment_clicked(aid)
+
+        # Skip legacy agent activity timer for task rows (new model uses chat for updates)
+        try:
+            last = getattr(self, "_last_task_rows", None) or []
+            is_task_row = any(int(r.get("id") or 0) == aid and r.get("_is_task") for r in last)
+            if is_task_row:
+                if hasattr(self, "_assignment_activity_timer"):
+                    self._assignment_activity_timer.stop()
+                return
+        except Exception:
+            pass
+
+        # Start/stop lightweight activity polling for "In Progress" style work (legacy assignments only)
+        try:
+            row = self.db.agent_get_assignment(int(aid))
+            status = str(row.get("status") or "").lower() if row else ""
+            active_statuses = {"in_progress", "awaiting_review", "blocked"}
+            if status in active_statuses:
+                if hasattr(self, "_assignment_activity_timer"):
+                    if not self._assignment_activity_timer.isActive():
+                        self._assignment_activity_timer.start()
+            else:
+                if hasattr(self, "_assignment_activity_timer"):
+                    self._assignment_activity_timer.stop()
+        except Exception:
+            if hasattr(self, "_assignment_activity_timer"):
+                self._assignment_activity_timer.stop()
 
     def _on_assignment_clicked(self, item_or_id):
         aid = item_or_id
@@ -4090,53 +3961,110 @@ Calendar and task actions:
         if aid is None:
             return
         self._current_assignment_id = int(aid)
-        row = self.db.agent_get_assignment(self._current_assignment_id)
+
+        # Task-based row (new CoS needs-input source): show basic info; full details + chat link via CoS chat or Tasks tab
+        # During migration some legacy paths still expect assignment rows.
+        try:
+            row = self.db.agent_get_assignment(self._current_assignment_id)
+        except Exception:
+            row = None
+
         if not row:
-            self.assignment_details.setPlainText("Assignment not found.")
+            # Assume it's a Task id now
+            try:
+                t = next((x for x in (getattr(self, "_last_task_rows", None) or []) if int(x.get("id") or 0) == self._current_assignment_id), None)
+                if not t:
+                    # fallback fetch
+                    ts = self.db.list_tasks_rich(include_completed=False, limit=500)
+                    t = next((x for x in ts if int(x.get("id") or 0) == self._current_assignment_id), None)
+                if t:
+                    lines = [
+                        f"Task #{t.get('id')}",
+                        f"Text: {t.get('task_text','')}",
+                        f"Assigned to: {t.get('assigned_to','')}",
+                        f"Priority: P{t.get('priority','')}",
+                        f"Due: {t.get('due_date','')}",
+                        f"Blockers / needs input: {t.get('blockers','') or '(none)'}",
+                        "",
+                        "Use CoS chat or the Tasks tab to update, reply to the assignee, or add notes.",
+                        "This pane shows needs-input tasks assigned to staff (Atlas, Mason, etc.).",
+                    ]
+                    self.assignment_details.setPlainText("\n".join(lines))
+                    for btn in (getattr(self, 'asg_export_results_btn', None), getattr(self, 'asg_add_memory_btn', None), getattr(self, 'asg_link_project_btn', None)):
+                        if btn: btn.setEnabled(False)
+                    return
+            except Exception:
+                pass
+            self.assignment_details.setPlainText(f"Item #{aid} (legacy or not found in current view).")
+            for btn in (getattr(self, 'asg_export_results_btn', None), getattr(self, 'asg_add_memory_btn', None), getattr(self, 'asg_link_project_btn', None)):
+                if btn: btn.setEnabled(False)
             return
+
+        # Enable result actions in the bottom pane
+        for btn in (getattr(self, 'asg_export_results_btn', None),
+                    getattr(self, 'asg_add_memory_btn', None),
+                    getattr(self, 'asg_link_project_btn', None)):
+            if btn: btn.setEnabled(True)
         health_flags = _assignment_health_flags(row, now=datetime.now())
         events = self.db.agent_get_assignment_events(assignment_id=self._current_assignment_id, limit=40)
         artifacts = self.db.agent_list_artifacts(assignment_id=self._current_assignment_id, limit=10)
         followup = _assignment_agent_followup_snapshot(self.db, row)
+        status = str(row.get("status") or "").lower()
+
+        # Header block (always first)
         lines = [
             f"ID: A-{int(row.get('id') or 0):04d}",
             f"Title: {row.get('title') or ''}",
             f"Status: {row.get('status') or ''}",
-            f"Requester: {row.get('requester_code') or ''}",
             f"Assignee: {row.get('assignee_code') or ''}",
-            f"Priority: P{int(row.get('priority') or 3)}",
-            f"Due: {row.get('due_date') or '(none)'}",
-            f"Health: {', '.join(health_flags) if health_flags else '(ok)'}",
-            f"Linked thread: {row.get('source_thread_id') or '(none)'}",
-            "",
-            "Brief:",
-            str(row.get("brief_md") or "").strip(),
+            f"Last updated: {row.get('updated_at') or '(unknown)'}",
         ]
+
         latest_reply = str(followup.get("latest_agent_reply") or "").strip()
         request_lines = [str(x).strip() for x in (followup.get("request_lines") or []) if str(x).strip()]
-        uploaded_files = [str(x).strip() for x in (followup.get("uploaded_files") or []) if str(x).strip()]
-        lines.extend(
-            [
-                "",
-                "Agent follow-up:",
-                f"Needs input: {'yes' if followup.get('needs_input') else 'no'}",
-            ]
-        )
-        if latest_reply:
-            lines.extend(["Latest agent update:", _single_line_preview(latest_reply, limit=500)])
-        else:
-            lines.append("Latest agent update: (none yet)")
-        if request_lines:
-            lines.append("Requested from you:")
-            for req in request_lines:
-                lines.append(f"- {req}")
-        if uploaded_files:
-            lines.append(f"Uploaded files ({len(uploaded_files)}):")
-            for name in uploaded_files[:5]:
-                lines.append(f"- {name}")
+
+        # For active work, put a very clear, scannable activity summary right at the top
+        if status in ("in_progress", "awaiting_review", "blocked"):
+            lines.append("")
+            lines.append("=== CURRENT ACTIVITY STATUS ===")
+
+            # Compute rough "last activity" from events
+            last_event_ts = ""
+            last_actor = ""
+            if events:
+                # events are returned oldest first in many queries; take the last one as most recent
+                last_ev = events[-1]
+                last_event_ts = str(last_ev.get("created_at") or "")
+                last_actor = str(last_ev.get("actor_code") or "")
+
+            if last_event_ts:
+                lines.append(f"Last event: {last_event_ts} by {last_actor or 'agent'}")
+            else:
+                lines.append("Last event: (no events yet)")
+
+            lines.append(f"Needs input from you: {'YES' if followup.get('needs_input') else 'no'}")
+            if latest_reply:
+                lines.append(f"Most recent message from agent: { _single_line_preview(latest_reply, limit=400) }")
+
+            if request_lines:
+                lines.append("Still waiting on you for:")
+                for req in request_lines[:3]:
+                    lines.append(f"  • {req}")
+
+        # The rest of the details
+        lines.append("")
+        lines.append("Brief:")
+        lines.append(str(row.get("brief_md") or "").strip())
+
+        if latest_reply and status not in ("in_progress", "awaiting_review", "blocked"):
+            # Show follow-up later only for non-active items
+            lines.extend(["", "Agent follow-up:", f"Needs input: {'yes' if followup.get('needs_input') else 'no'}"])
+            lines.append(f"Latest agent update: { _single_line_preview(latest_reply, limit=500) }")
+
         result_summary = str(row.get("result_summary_md") or "").strip()
         if result_summary:
             lines.extend(["", "Result summary:", result_summary])
+
         lines.extend(["", f"Artifacts ({len(artifacts)}):"])
         for a in artifacts[:5]:
             art_id = int(a.get("id") or 0)
@@ -4144,7 +4072,8 @@ Calendar and task actions:
             art_title = str(a.get("title") or "").strip() or "(untitled)"
             art_ts = str(a.get("created_at") or "")
             lines.append(f"- #{art_id} [{art_type}] {art_title} ({art_ts})")
-        lines.extend(["", "Events:"])
+
+        lines.extend(["", "Recent Events (newest last):"])
         for ev in events:
             et = str(ev.get("event_type") or "")
             fr = str(ev.get("from_status") or "")
@@ -4155,12 +4084,120 @@ Calendar and task actions:
             move = f"{fr} → {to}" if (fr or to) else ""
             tail = f" | {note}" if note else ""
             lines.append(f"- {ts} | {et} {move} | {actor}{tail}".strip())
+
         self.assignment_details.setPlainText("\n".join(lines).strip())
+
+        # Make the Open Assignee Chat button context-sensitive when the assignment needs input
+        if hasattr(self, "asg_open_chat_btn"):
+            if followup.get("needs_input"):
+                assignee = str(row.get("assignee_code") or "assignee").upper()
+                self.asg_open_chat_btn.setText(f"Reply to {assignee} (provide input)")
+                self.asg_open_chat_btn.setEnabled(True)
+            else:
+                self.asg_open_chat_btn.setText("Open Assignee Chat")
+
+    def _refresh_selected_assignment_details(self):
+        """Re-render the bottom pane for the currently selected assignment.
+        Use this to check if an 'In Progress' item has produced new events/artifacts/replies."""
+        if not getattr(self, "_current_assignment_id", None):
+            return
+        try:
+            self._on_assignment_clicked(int(self._current_assignment_id))
+            # Also refresh the table row so status etc. is up to date
+            self._refresh_assignment_list()
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Assignments", f"Failed to refresh details: {e}")
+
+    def _maybe_refresh_active_assignment_details(self):
+        """Called by the activity timer. Only refreshes if the selected assignment looks active."""
+        if not getattr(self, "_current_assignment_id", None):
+            self._assignment_activity_timer.stop()
+            return
+
+        try:
+            row = self.db.agent_get_assignment(int(self._current_assignment_id))
+            if not row:
+                self._assignment_activity_timer.stop()
+                return
+
+            status = str(row.get("status") or "").lower()
+            active_statuses = {"in_progress", "awaiting_review", "blocked"}
+            if status in active_statuses:
+                # Silent refresh of just the details pane (don't spam the table)
+                self._on_assignment_clicked(int(self._current_assignment_id))
+            else:
+                # No longer active, stop the timer
+                self._assignment_activity_timer.stop()
+        except Exception:
+            # Don't let timer errors surface to the user
+            pass
+
+    def _show_assignment_context_menu(self, pos):
+        """Right-click menu on the assignment table (keeps the UI to two vertical panes)."""
+        table = self.assignment_list
+        idx = table.indexAt(pos)
+        if not idx.isValid():
+            return
+        # Ensure the clicked row is selected
+        if not table.selectionModel().isRowSelected(idx.row(), idx.parent()):
+            table.selectRow(idx.row())
+        # For task-based rows (current CoS model), show a simplified menu; full legacy assignment actions are in other surfaces
+        row = self._filtered_assignment_rows()[idx.row()] if idx.row() < len(self._filtered_assignment_rows() or []) else {}
+        if row.get('_is_task'):
+            menu = QMenu(self)
+            menu.addAction("Open in Tasks tab (or use CoS chat to reply)").triggered.connect(lambda: self._refresh_task_views())
+            menu.addAction("Refresh board").triggered.connect(self._refresh_assignment_list)
+            menu.exec(table.viewport().mapToGlobal(pos))
+            return
+
+        menu = QMenu(self)
+        menu.setStyleSheet("QMenu { font-size: 12px; }")
+
+        reassign_act = menu.addAction("Reassign…")
+        reassign_act.triggered.connect(self._reassign_selected_assignment)
+
+        menu.addSeparator()
+
+        status_menu = menu.addMenu("Set Status")
+        for st in ["queued", "in_progress", "awaiting_review", "blocked", "done", "cancelled"]:
+            act = status_menu.addAction(st.replace("_", " ").title())
+            act.triggered.connect(lambda checked=False, s=st: self._set_assignment_status(s))
+
+        cancel_act = menu.addAction("Cancel (soft delete)")
+        cancel_act.triggered.connect(lambda: self._set_assignment_status("cancelled"))
+
+        menu.addSeparator()
+
+        chat_act = menu.addAction("Open Assignee Chat")
+        chat_act.triggered.connect(self._open_assignment_in_assignee_console)
+
+        # If the current selection needs input, surface a clear "Reply" action
+        if self._current_assignment_id:
+            try:
+                cur_row = self.db.agent_get_assignment(int(self._current_assignment_id))
+                if cur_row:
+                    snap = _assignment_agent_followup_snapshot(self.db, cur_row)
+                    if snap.get("needs_input"):
+                        reply_act = menu.addAction("Reply / Provide Input to Assignee")
+                        reply_act.triggered.connect(self._open_assignment_in_assignee_console)
+            except Exception:
+                pass
+
+        menu.exec(table.viewport().mapToGlobal(pos))
 
     def _set_assignment_status(self, to_status: str):
         if not self._current_assignment_id:
             QMessageBox.information(self, "Assignments", "Select an assignment first.")
             return
+        # Guard for task rows
+        try:
+            last = getattr(self, "_last_task_rows", None) or []
+            if any(int(r.get("id") or 0) == int(self._current_assignment_id) and r.get("_is_task") for r in last):
+                QMessageBox.information(self, "Tasks", "Status for staff tasks is managed in the Tasks tab (or tell CoS chat to update it).")
+                return
+        except Exception:
+            pass
         ok = self.db.agent_update_assignment_status(
             assignment_id=int(self._current_assignment_id),
             to_status=str(to_status),
@@ -4177,6 +4214,14 @@ Calendar and task actions:
         if not self._current_assignment_id:
             QMessageBox.information(self, "Assignments", "Select an assignment first.")
             return
+        # Guard for task rows (tasks support priority directly via Tasks tab)
+        try:
+            last = getattr(self, "_last_task_rows", None) or []
+            if any(int(r.get("id") or 0) == int(self._current_assignment_id) and r.get("_is_task") for r in last):
+                QMessageBox.information(self, "Tasks", "Edit priority for staff tasks in the Tasks tab (or ask in CoS chat).")
+                return
+        except Exception:
+            pass
         row = self.db.agent_get_assignment(int(self._current_assignment_id))
         if not row:
             QMessageBox.warning(self, "Assignments", "Assignment not found.")
@@ -4717,8 +4762,44 @@ Calendar and task actions:
 
     def _open_assignment_in_assignee_console(self):
         if not self._current_assignment_id:
-            QMessageBox.information(self, "Assignments", "Select an assignment first.")
+            QMessageBox.information(self, "Assignments", "Select a task first.")
             return
+
+        # Check if this is a task row (new model)
+        is_task = False
+        assignee = ""
+        title = ""
+        try:
+            last_rows = getattr(self, "_last_task_rows", None) or []
+            for r in last_rows:
+                if int(r.get("id") or 0) == int(self._current_assignment_id):
+                    is_task = bool(r.get("_is_task"))
+                    assignee = str(r.get("assignee_code") or "").strip().lower()
+                    title = str(r.get("title") or "")
+                    break
+        except Exception:
+            pass
+
+        if is_task:
+            # For tasks, focus the main CoS chat (left pane in this tab) and prefill a reply prompt.
+            # This keeps the "plain language chat" model for interacting with staff.
+            try:
+                # The CoS tab itself has the chat on the left via horizontal splitter in _setup_ui / _build_chat_panel
+                # Switch focus to the ask_input if available.
+                if hasattr(self, "ask_input"):
+                    self.ask_input.setFocus()
+                    prompt = f"Reply to {assignee or 'staff'} about task #{self._current_assignment_id} ({title}): "
+                    self.ask_input.setText(prompt)
+                    self.ask_input.setCursorPosition(len(prompt))
+                    QMessageBox.information(self, "Reply to Staff", f"Focused CoS chat. Type your reply/instructions for {assignee or 'the assignee'}.")
+                    return
+            except Exception:
+                pass
+            # Fallback
+            QMessageBox.information(self, "Reply to Staff", f"Use the chat on the left to reply to {assignee or 'staff'} about task #{self._current_assignment_id}.\n\nE.g. 'Atlas, provide update on task #{self._current_assignment_id}'")
+            return
+
+        # Legacy assignment path
         row = self.db.agent_get_assignment(int(self._current_assignment_id))
         if not row:
             QMessageBox.warning(self, "Assignments", "Assignment not found.")
