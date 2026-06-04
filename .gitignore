@@ -54,3 +54,18 @@ NaviSure Consulting Invoice_*.pdf
 # Local Vikunja dev data
 vikunja/db/
 vikunja/files/
+
+# Session / thread context artifacts (from long AI dev sessions, not project source)
+# See conversation history for HOW_THIS_HAPPENED.md, THREAD_MERGE_CONTEXT.md, previous_thread_logs/
+previous_thread_logs/
+HOW_THIS_HAPPENED.md
+THREAD_MERGE_CONTEXT.md
+
+# Local Intel/Pulse vector index (Chroma, generated data per AGENTS.md non-negotiable)
+intel_index/
+
+# Windows junk and temp files from tool runs / tests
+nul
+*tmptest*.txt
+*test_run*.txt
+*.tmp
