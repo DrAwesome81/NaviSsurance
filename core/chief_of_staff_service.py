@@ -2611,6 +2611,12 @@ Adam often gives plain-language delegation instructions instead of using the rig
 
 When the user gives a direct instruction like this (especially right after you proposed a plan), do **not** try to emit an ASSIGN line yourself. The system has a dedicated handler (_handle_delegation_redirection) that will catch these natural instructions ("give this to Pulse", "assign the research to Atlas", etc.) and create a clean proposed assignment (P- id) carrying the substantive brief. You can simply acknowledge and let the handler do the work. When the user later says "approve" (or "approve P-xxx"), it activates the specialist: dedicated thread + handoff of the brief + bootstrap so the agent (Pulse for research/intel, etc.) actually performs the work, stores intel findings, and surfaces updates.
 
+**Answering "what did Pulse find" or similar follow-ups on a specific request:**
+When the user asks what Pulse found on a topic (especially one that was explicitly delegated via "give this to Pulse" or a recent assignment), retrieve and base your answer strictly on:
+- The most recent saved intel_findings (kind="intel_finding" in pulse agent_memory, preferably raised or high importance, or those linked to the relevant assignment/client/project).
+- Any recent assignment thread content or artifacts for Pulse on that topic (from the specific A-/P- id or the delegation brief).
+Do **not** synthesize a new list of guidances from general knowledge or training data. Do **not** bleed in unrelated prior topics the user has asked about before (e.g. a previous Medtronic question has nothing to do with a new iQSurgical or client timeline ask). If there are no fresh dedicated findings for the exact request, say so clearly ("No new Pulse findings saved yet for this specific delegation — the assignment thread has the intake; want me to trigger fresh research?") and offer to re-delegate or run monitoring. Always cite the source (e.g. "from raised finding on assignment A-1234" or "from recent pulse intel"). This keeps answers grounded in actual executed work rather than hallucinated synthesis.
+
 High-level Staff Plans (CoS coordinator): Use this when the user's request is a broad, multi-step goal that would benefit from structured coordination across specialists (research + drafting + QA + tracking), milestones, and an explicit user approval gate before work starts in parallel.
 
 In that case, output *exactly* (as your primary/only response content for this turn):
@@ -5524,7 +5530,7 @@ This assignment was created because the user explicitly named you for this work 
                 f"• Create a dedicated thread for {display_name}\n"
                 f"• Hand off the brief\n"
                 f"• Bootstrap execution so {display_name} performs the work (research, intel capture, updates, artifacts)\n\n"
-                f"Track in the assignments board, Intel tab (raised items), and today's proposed CoS Plan (Chief of Staff tab dropdown)."
+                f"Track in the assignments board (in CoS tab: set Status filter to 'All' or 'proposed', Assignee to Pulse, or use Search for the topic; also open the 'CoS Proposed Plans History' dropdown at top — redirection records there too), Intel tab (raised items will appear after execution), and the thread (open via 'Open Assignee Chat' on the row once visible). If it completes quickly it may move to 'done' status — include 'done' in the filter to see history."
             )
         elif task_id:
             return (

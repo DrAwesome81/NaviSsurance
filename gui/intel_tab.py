@@ -346,36 +346,88 @@ class IntelTab(QWidget):
     # ---------------- Research & Findings ----------------
 
     def _request_research(self):
-        """Simple local-only research path (no remote models or LLM proposal for this increment).
-        Stores a basic raised finding from the query text so it is immediately available to Pulse retrieval / local index.
-        Any advanced analysis can be added later via local_llm intel_* profiles only.
+        """Request real research from Pulse.
+        Creates a proper proposed assignment for Pulse (with the query as brief), primes the handoff
+        (initial thread reply + our promotion to raised intel_finding), and triggers bootstrap.
+        The assignment appears in the CoS Assignments board (filter for Pulse / proposed or All).
+        Findings are saved raised so they show in this tab, raised context, and retrieval.
+        This is the real delegation path (not a local stub note).
         """
         query = self.research_input.text().strip()
         if not query:
             QMessageBox.information(self, "Intel", "Please enter a research topic or URL.")
             return
 
-        # Local-only: direct save (will trigger the existing save_finding indexing hook + indexed_at stamp)
-        link_kwargs = {}
-        if getattr(self, '_current_project_context', None):
-            link_kwargs['linked_projects'] = [self._current_project_context]
-        if getattr(self, '_current_client_context', None):
-            link_kwargs['linked_clients'] = [self._current_client_context]
+        try:
+            from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
+            context_obj = {
+                "source": "intel_tab_research_request",
+                "query": query,
+            }
+            if getattr(self, "_current_project_context", None):
+                context_obj["project_id"] = self._current_project_context
+            if getattr(self, "_current_client_context", None):
+                context_obj["client_id"] = self._current_client_context
 
-        title = f"Research: {query[:80]}"
-        summary = f"User research query: {query}"
-        self.intel.save_finding(
-            title=title,
-            summary=summary,
-            source="user_research",
-            importance="medium",
-            raised=True,
-            notes=f"Research input: {query}",
-            **link_kwargs
-        )
-        self._refresh_findings()
-        self.research_input.clear()
-        self.status_label.setText(f"Research note stored locally (will appear in Pulse intel retrieval and index).")
+            title = f"Pulse research: {query[:70]}"
+            brief = f"User requested research via Intel tab: {query}\n\nProvide findings, sources, dates, and implications. Save key results as raised intel findings."
+
+            pid = self.db.agent_create_proposed_assignment(
+                title=title,
+                brief_md=brief,
+                assignee_code="pulse",
+                priority=3,
+                proposed_by="navi",
+                context_json=context_obj,
+            )
+            if not pid:
+                raise RuntimeError("Failed to create proposed assignment")
+
+            # Create thread and handoff (this will also promote to raised finding for Pulse via our handoff hook)
+            tid = create_assignment_thread(
+                self.db,
+                assignment_id=int(pid),
+                assignee_code="pulse",
+                reason="intel_tab_research",
+                actor_code="navi",
+                context_json=context_obj,
+            )
+            if tid:
+                prime_assignment_handoff(
+                    self.db,
+                    assignment_id=int(pid),
+                    thread_id=int(tid),
+                )
+
+            self._refresh_findings()
+            self.research_input.clear()
+            self.status_label.setText(f"Research delegated to Pulse (P-{int(pid):04d}). Check CoS Assignments board (filter Pulse / proposed), open the thread, and refresh this tab for new raised findings.")
+            # Optional toast if available on parent
+            try:
+                parent = self.parent()
+                if parent and hasattr(parent, "show_toast"):
+                    parent.show_toast(f"Delegated to Pulse: P-{int(pid):04d}", 3000)
+            except Exception:
+                pass
+        except Exception as e:
+            # Fallback to the old local note behavior so the button never completely breaks
+            link_kwargs = {}
+            if getattr(self, '_current_project_context', None):
+                link_kwargs['linked_projects'] = [self._current_project_context]
+            if getattr(self, '_current_client_context', None):
+                link_kwargs['linked_clients'] = [self._current_client_context]
+            self.intel.save_finding(
+                title=f"Research: {query[:80]}",
+                summary=f"User research query: {query}",
+                source="user_research",
+                importance="medium",
+                raised=True,
+                notes=f"Research input: {query} (fallback; delegation hit: {e})",
+                **link_kwargs
+            )
+            self._refresh_findings()
+            self.research_input.clear()
+            self.status_label.setText(f"Research note stored (delegation path had an issue: {e}).")
 
     def _run_monitoring_now(self):
         """Manually trigger a Pulse monitoring cycle (uses real web search). Respects active project or client filter when set (client-scoped watches from Billing now influence which topics are monitored + findings auto-linked to client)."""

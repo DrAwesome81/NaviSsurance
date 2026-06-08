@@ -363,6 +363,29 @@ def prime_assignment_handoff(
             "or to upload requested documents."
         )
     db.save_message(session_id, "assistant", reply)
+
+    # For Pulse (research/intel) direct delegations: immediately promote the handoff reply
+    # (or the brief) into a raised intel_finding. This ensures the Intel tab, raised
+    # context, and retrieval see something from the delegation even before full bootstrap.
+    # Uses the same path as monitoring and the new pulse bootstrap.
+    try:
+        if assignee_code == "pulse" and reply:
+            from core.intel import IntelService
+            intel = IntelService(db)
+            a_title = str(row.get("title") or "Pulse research delegation")
+            a_brief = str(row.get("brief_md") or "")[:400]
+            sum_text = f"User delegation (via CoS chat redirection or plan): {a_brief}\n\nPulse handoff / initial response:\n{reply[:1800]}"
+            intel.save_finding(
+                title=a_title[:80],
+                summary=sum_text,
+                source="pulse_handoff",
+                importance="high",
+                raised=True,
+                notes=f"Assignment A-{assignment_id:04d} thread {thread_id}. Direct user delegation.",
+            )
+    except Exception:
+        logger.exception("pulse handoff finding promotion failed for A-%04d", int(assignment_id))
+
     try:
         from core.runtime.jobs import enqueue_assignment_bootstrap
 

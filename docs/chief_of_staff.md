@@ -102,6 +102,16 @@ This is one of the core flows: after stating or pasting a request (e.g. the iQSu
 
 The rest of the board / Intel / thread / revision loops described above apply to these assignments once approved.
 
+**Finding your delegated Pulse (or other specialist) work after "give this to X"**
+- The routing message names the P- id and says to track in the assignments board + today's CoS Plan dropdown + Intel tab (raised items) + the thread.
+- In CoS tab → Assignments pane: the main table is primarily task-oriented (T- rows for staff tasks needing input). Use the Status filter ("All", or explicitly "proposed"/"queued"/"done"), Assignee filter (Pulse etc.), search box for topic keywords, and Scope ("All"). Refresh often. Completed items only appear if "done" is selected.
+- CoS Proposed Plans History dropdown (top of the pane): redirection and plans record items here for quick access.
+- Open the row → "Open Assignee Chat" / "Reply to Staff via Chat" for the dedicated thread (kickoff + Pulse's responses + any artifacts from bootstrap).
+- Intel tab: no direct chat console (that moved to assignment threads / agent consoles). Use "Request Research" (now creates a real Pulse assignment + handoff + bootstrap so it appears in the board and produces raised findings) or the findings table (populated when Pulse or the bootstrap calls save_finding with raised=True). The "Research" button used to be a local stub note; it now triggers the proper delegation flow.
+- After approval of a Pulse delegation, the new pulse bootstrap + handoff promotion automatically does a focused web search on the brief and saves raised intel_findings (visible in the tab, raised CoS context, and local retrieval). This is what makes "the work was done" notification actually produce inspectable output in the expected places.
+
+If a follow-up "what did Pulse find on [topic]" still synthesizes instead of reporting the actual saved findings/assignment content, the delegation either didn't produce new intel_finding records or the query pulled broad prior context. The system prompt and execution path are now biased toward actual saved work for these questions.
+
 ### What to look for on the board
 - Assignment rows can show `NEEDS_INPUT` when the latest agent reply contains questions, missing-input requests, or document requests.
 - The delegation board can be sorted by column header to group by status, assignee, priority, due date, or follow-up state.

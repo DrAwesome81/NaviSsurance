@@ -405,4 +405,74 @@ def bootstrap_assignment_execution(db: DatabaseManager, *, assignment_id: int, t
         return _run_sentinel_bootstrap(db, assignment, thread_id=thread_id)
     if code == "lex":
         return _run_lex_bootstrap(db, assignment, thread_id=thread_id)
+    if code == "pulse":
+        return _run_pulse_bootstrap(db, assignment, thread_id=thread_id)
     return {"created": False, "reason": "unsupported_agent", "agent_code": code}
+
+
+def _run_pulse_bootstrap(db: DatabaseManager, assignment: dict, *, thread_id: int | None = None) -> dict:
+    """Pulse (Intel / research) bootstrap for direct delegations and assignments.
+    Performs a focused search on the brief using Grok web search, saves as raised
+    intel_finding(s) so they appear in the Intel tab, raised context, and retrieval.
+    Also records an artifact and result summary on the assignment.
+    """
+    from core.intel import IntelService
+    from core.grok_client import grok_web_search, MODEL_FAST
+
+    assignment_id = int(assignment.get("id") or 0)
+    title = str(assignment.get("title") or "Pulse research").strip()
+    brief = str(assignment.get("brief_md") or "").strip()
+    if not brief:
+        brief = title
+
+    # Use the same web search the Pulse monitoring uses.
+    query = f"Recent regulatory, FDA, guidance, or market intelligence on: {brief}. Include dates, sources, and actionable implications for medical device / surgical navigation / AI-SaMD companies. Focus on the last 90 days if possible."
+    search_result = ""
+    try:
+        search_result = grok_web_search(query, model=MODEL_FAST) or ""
+    except Exception:
+        search_result = "(search unavailable)"
+
+    intel = IntelService(db)
+    summary = f"Delegated research brief:\n{brief}\n\nSearch / findings:\n{search_result[:2500] if search_result else '(no external results)'}"
+    mem_id = intel.save_finding(
+        title=title[:80],
+        summary=summary,
+        source="pulse_assignment_bootstrap",
+        importance="high",
+        raised=True,
+        notes=f"From CoS delegation / assignment A-{assignment_id:04d}. Thread: {thread_id}",
+    )
+
+    # Record artifact for the assignment thread / board visibility
+    artifact_content = (
+        f"## Pulse research bootstrap (A-{assignment_id:04d})\n\n"
+        f"**Brief:**\n{brief}\n\n"
+        f"**Search query:** {query}\n\n"
+        f"**Results / synthesized findings (raised in Intel):**\n{search_result[:3000] if search_result else '(none)'}\n\n"
+        f"Finding saved as raised intel (mem_id ~ {mem_id}). Visible in Intel tab and CoS raised context."
+    )
+    try:
+        db.agent_add_artifact(
+            artifact_type="pulse_research_findings",
+            assignment_id=assignment_id,
+            thread_id=int(thread_id) if thread_id is not None else None,
+            title=f"Pulse research findings A-{assignment_id:04d}",
+            content_md=artifact_content,
+            content_json={"search_query": query, "finding_mem_id": mem_id, "raised": True},
+        )
+    except Exception:
+        pass
+
+    try:
+        db.agent_set_assignment_result_summary(
+            assignment_id=assignment_id,
+            summary_md=f"Pulse research completed. Raised finding(s) saved to Intel (high importance). See artifact and Intel tab for details.",
+            actor_code="navi",
+            note="Pulse execution bootstrap",
+        )
+    except Exception:
+        pass
+
+    if search_result: logger.debug("pulse bootstrap search result chars=%d (for intel finding)", len(search_result))
+    return {"created": True, "artifact_type": "pulse_research_findings", "finding_mem_id": mem_id, "raised": True}
