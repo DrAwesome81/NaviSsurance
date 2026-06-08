@@ -4781,6 +4781,31 @@ Calendar and task actions:
             pass
 
         if is_task:
+            # Special case for Pulse: open the direct chat console in the Intel tab (user wants direct talk to Pulse,
+            # not routed back to CoS chat). Other staff stay with plain-language CoS for now.
+            if assignee == "pulse":
+                try:
+                    host, tw = self._resolve_host_with_tab_widget()
+                    if tw is not None:
+                        route = route_for_agent(assignee)
+                        if route:
+                            tab_attr, group_attr, console_attr, tab_label = route
+                            target_tab = getattr(host, tab_attr, None)
+                            if target_tab is not None:
+                                idx = tw.indexOf(target_tab)
+                                if idx >= 0:
+                                    tw.setCurrentIndex(idx)
+                                console = getattr(target_tab, console_attr, None)
+                                if console is not None and hasattr(console, "_focus_task"):
+                                    console._focus_task(int(self._current_assignment_id))
+                                    return
+                                # at least switched the tab so user sees the direct console
+                                return
+                except Exception:
+                    pass
+                QMessageBox.information(self, "Pulse", "Switched to Intel tab — use the Direct chat with Pulse console there for this task.")
+                return
+
             # For tasks, focus the main CoS chat (left pane in this tab) and prefill a reply prompt.
             # This keeps the "plain language chat" model for interacting with staff.
             try:

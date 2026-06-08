@@ -20,6 +20,7 @@ from PyQt6.QtGui import QFont, QColor
 
 from core.db import DatabaseManager
 from core.intel import IntelService, WatchTopic, IntelFinding
+from gui.agent_console import AgentConsole
 import json
 
 
@@ -159,6 +160,18 @@ class IntelTab(QWidget):
         research_layout.addWidget(self.btn_research)
 
         main_layout.addWidget(research_group)
+
+        # === Direct chat with Pulse ===
+        # This gives the missing direct interaction the Intel tab was lacking (unlike Atlas/Quill/etc. in their tabs).
+        # Uses dedicated thread "intel_pulse_main" for isolation. "Request Research" creates tracked assignments;
+        # this console is for immediate direct talk to Pulse.
+        chat_group = QGroupBox("Direct chat with Pulse")
+        chat_layout = QVBoxLayout(chat_group)
+        self.agent_console = AgentConsole(
+            self.db, agent_code="pulse", parent=self, thread_id="intel_pulse_main"
+        )
+        chat_layout.addWidget(self.agent_console, 1)
+        main_layout.addWidget(chat_group)
 
         # === Findings Section ===
         findings_group = QGroupBox("Findings")
@@ -399,9 +412,17 @@ class IntelTab(QWidget):
                     thread_id=int(tid),
                 )
 
+            # Load the new assignment/thread directly into this tab's Pulse console for immediate direct chat.
+            # (The assignment is also visible in CoS board for approval/tracking if you want the full workflow.)
+            if hasattr(self, "agent_console") and hasattr(self.agent_console, "focus_assignment"):
+                try:
+                    self.agent_console.focus_assignment(int(pid))
+                except Exception:
+                    pass
+
             self._refresh_findings()
             self.research_input.clear()
-            self.status_label.setText(f"Research delegated to Pulse (P-{int(pid):04d}). Check CoS Assignments board (filter Pulse / proposed), open the thread, and refresh this tab for new raised findings.")
+            self.status_label.setText(f"Research delegated to Pulse (P-{int(pid):04d}) and loaded in the Direct chat console above. Use the console for live talk; approve in CoS board if you want full tracking/notifications.")
             # Optional toast if available on parent
             try:
                 parent = self.parent()
