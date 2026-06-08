@@ -13,7 +13,7 @@ NaviSsurance now includes a working **Chief of Staff + AI Executive Team** opera
 
 This document tracks implementation status and remaining roadmap work.
 
-Last updated: 2026-05-12
+Last updated: 2026-06-02 (plain-language specialist delegation activation: "give this to Pulse" etc. now produces a primary proposed assignment (P- id) with carried research brief; approval activates thread + handoff + bootstrap for real sub-agent execution + intel storage; supporting task + CoS Plan entry kept for unified terminology and visibility)
 
 ## Current State (Implemented)
 
@@ -89,6 +89,19 @@ AM Sweep is a **user-initiated morning triage loop** that gathers context (open 
 - The assigned agent gets an initial kickoff prompt and posts an intake-style first reply into that thread.
 - The CoS assignment board can then show whether the assignee is waiting on you for answers or files.
 
+### Plain-language specialist delegation ("give this to Pulse", "assign this to Atlas", etc.)
+This is one of the core flows: after stating or pasting a request (e.g. the iQSurgical FDA timeline question), you can say "Ok, I want you to give this to Pulse" (or "have Pulse look into this", "assign the research to Atlas", "just give it to Quill", etc.).
+
+- The `_handle_delegation_redirection` handler (early in `cos_response`, before any LLM call) matches via natural patterns, resolves the specialist by name, recovers the *substantive request* (recent plan goal, recent `cos_memory` user-like entries for the chat, or the message content itself when it includes the ask).
+- It creates a **proposed assignment (P- id)** as the primary activation artifact, with a rich brief that includes the original request + explicit instructions for the assignee (research, store intel_findings in agent memory, raise visibility, report via thread/CoS, ask for missing inputs).
+- It also creates a supporting task (honoring the simplification that discrete work items are just called "tasks") and records the item in today's `proposed` CoS Plan (visible in the Chief of Staff tab dropdown).
+- Recent proposed multi-agent Work Plans are superseded so a later bare "approve" activates *this* specialist assignment.
+- The chat reply is explicit: it names the P- id and explains that "approve" (or "approve P-0xxx") will create the dedicated thread, perform the handoff of the brief, and bootstrap execution for that agent (Pulse for research/intel work, etc.).
+- Approving routes through `approve_assignment_proposal` → `create_assignment_thread` + `prime_assignment_handoff` + `bootstrap_assignment_execution`. The specialist then runs (tools, memory storage, intel raising) and produces visible effects in the Intel tab, notifications, assignee chat, CoS board, and daily briefings.
+- This makes plain-language named delegation actually *trigger work by the sub-agent* (not merely populate a static task/plan list). The prior "static list-populator" behavior for these redirections is fixed while the task + CoS Plan surfaces remain for overview and the unified terminology.
+
+The rest of the board / Intel / thread / revision loops described above apply to these assignments once approved.
+
 ### What to look for on the board
 - Assignment rows can show `NEEDS_INPUT` when the latest agent reply contains questions, missing-input requests, or document requests.
 - The delegation board can be sorted by column header to group by status, assignee, priority, due date, or follow-up state.
@@ -111,7 +124,7 @@ You can give the CoS a goal in plain chat like:
 "Look for any predicates for my new [device description: e.g. AI-based ECG monitor with these indications and tech characteristics], and put them into a substantial equivalence table for me."
 
 - CoS recognizes this as a high-level regulatory goal. It can propose a multi-agent "Work Plan" (WP-xxx) or you can direct specific agents ("research predicates with Atlas, then have Quill compile the SE comparison table, Sentinel do QA review").
-- Simple client research questions (e.g. "I got this from Rich at iQSurgical: by when do we need to request FDA input to have a decision on non-Silent Mode study need by end Q3? 30/60 days? Will they decide in-meeting?") flow to the normal CoS LLM path. The model, with full context (dossier, reflections, active plans, etc.), either answers directly (using tools), does a lightweight single ASSIGN (to Pulse/Atlas), or (for true multi-agent coordination needs) emits PROPOSE_STAFF_PLAN: <goal>. The latter triggers the rich proposal with Mason consult etc.
+- Simple client research questions (e.g. "I got this from Rich at iQSurgical: by when do we need to request FDA input to have a decision on non-Silent Mode study need by end Q3? 30/60 days? Will they decide in-meeting?") flow to the normal CoS LLM path or a direct specialist delegation. The model (or your plain-language command) can answer, do a lightweight ASSIGN, or you can say "give this to Pulse" / "have Pulse look into this". The latter is caught by the redirection handler and produces a clean proposed assignment (P- id) with the carried brief; "approve" activates Pulse (thread + bootstrap) to do the research and surface intel. For true multi-agent coordination the model emits PROPOSE_STAFF_PLAN: <goal>.
 - There are no keyword lists or phrase triggers left for deciding planning level. Intent detection is purely model-driven.
 - Complex multi-agent deliverables keep the rich WP path (via model judgment).
 - It breaks it down using available specialists:
@@ -150,7 +163,7 @@ The CoS action system has two layers:
 
 - **Natural-language / heuristic intent detectors** (use with care): 
   - Direct task capture (_user_requested_direct_dashboard_task_add, synthesize_add_task_line_from_user_text, _DASHBOARD_TASK_*_RE regexes with phrases like "add a task to", "remind me to", "create a task", "put this on my task list", "new task").
-  - Delegation redirections (_handle_delegation_redirection: ~12 regex patterns for "delegate this to X", "give it to X", "have X handle", "route to X", etc.).
+  - Delegation redirections (_handle_delegation_redirection: ~12 regex patterns for "delegate this to X", "give it to X", "have X handle", "route to X", etc.). This fast-path is intentionally preserved because it directly implements a primary user flow (named specialist delegation that must produce an *activatable* assignment carrying the real brief, not just a task list entry). The handler prioritizes the proposed assignment (P-id + rich brief) + activation semantics on approve while still creating the supporting task for terminology consistency.
   - Plain approvals and work-plan commands (_handle_plain_proposal_approval with approval_triggers list; _handle_work_plan_* using re for "approve|delegate|revise|wp|plan|checkpoint").
   - Memory hint detection (_MEMORY_HINT_SUBSTRINGS ~19 phrases like "teach navi", "i prefer", "remember ", "client prefers" to decide whether to run extra extraction).
   - Routing in main_chat_router/response_handler ( "daily briefing", task creation keywords ['add','create',...], "WEB_SEARCH:", medtech+news).

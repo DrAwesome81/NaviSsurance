@@ -2609,7 +2609,7 @@ Adam often gives plain-language delegation instructions instead of using the rig
 - "Have Atlas handle this"
 - "Use Atlas for the company lookup"
 
-When the user gives a direct instruction like this (especially right after you proposed a plan), do **not** try to emit an ASSIGN line yourself. The system has a dedicated handler that will catch these natural instructions and create the appropriate proposal cleanly. You can simply acknowledge ("Understood, routing to Atlas") and let the handler do the work, or ask a clarifying question if needed.
+When the user gives a direct instruction like this (especially right after you proposed a plan), do **not** try to emit an ASSIGN line yourself. The system has a dedicated handler (_handle_delegation_redirection) that will catch these natural instructions ("give this to Pulse", "assign the research to Atlas", etc.) and create a clean proposed assignment (P- id) carrying the substantive brief. You can simply acknowledge and let the handler do the work. When the user later says "approve" (or "approve P-xxx"), it activates the specialist: dedicated thread + handoff of the brief + bootstrap so the agent (Pulse for research/intel, etc.) actually performs the work, stores intel findings, and surfaces updates.
 
 High-level Staff Plans (CoS coordinator): Use this when the user's request is a broad, multi-step goal that would benefit from structured coordination across specialists (research + drafting + QA + tracking), milestones, and an explicit user approval gate before work starts in parallel.
 
@@ -5294,11 +5294,23 @@ def _handle_delegation_redirection(db: DatabaseManager, message: str, chat_id: O
     - "Give it to Atlas instead"
     - "Assign the Medicai research to Atlas"
     - "Have Atlas handle this"
+    - "Ok, give this to Pulse"
+    - "I want you to assign this research to Pulse"
 
     This is the primary path for users who want to give direct, simple instructions
     instead of accepting the CoS's proposed multi-agent plans.
 
-    Creates a clean proposed assignment to the named agent.
+    When a named specialist is specified, we create a *proposed assignment* (P- id)
+    carrying a high-quality brief of the user's actual request. The assignment is the
+    activation vehicle: user "approve" (or "approve P-xxx") leads to
+    approve_assignment_proposal → dedicated thread + prime handoff of the brief +
+    bootstrap_assignment_execution for that agent (e.g. Pulse for research/intel).
+    The agent then performs the work, stores findings (agent_memory / intel),
+    raises visibility, and surfaces in Intel tab / notifications / CoS updates.
+
+    We still create a supporting task (unified "task" terminology for discrete work items)
+    and record in the daily CoS Plan for overview / dropdown visibility. Bare "approve"
+    after redirection is intended to activate the specialist's execution path.
     """
     m = (message or "").strip()
     if not m:
@@ -5341,80 +5353,148 @@ def _handle_delegation_redirection(db: DatabaseManager, message: str, chat_id: O
     assignee_code = str(agent.get("code") or "").strip().lower()
     display_name = str(agent.get("display_name") or target_name).strip()
 
-    # Derive a reasonable title/brief from the message + recent context
-    # Prefer the goal from the most recent proposed work plan if available for this chat.
+    # Derive a *high-quality* title + brief for the *actual work* requested.
+    # The triggering `m` is often a short delegation command in a follow-up turn
+    # (e.g. after pasting a client question or after a prior plan). We recover the
+    # substantive request so the specialist (Pulse etc.) receives a useful brief.
     goal = m
     plan_context = ""
 
     if chat_id is not None:
         try:
-            recent_plans = db.list_work_plans(status="proposed", limit=5) or []
-            for p in recent_plans:
-                plan_json = p.get("plan_json") or {}
-                if isinstance(plan_json, str):
-                    try:
-                        plan_json = json.loads(plan_json)
-                    except Exception:
-                        plan_json = {}
-                # Simple heuristic: match by chat context or most recent
-                if str(p.get("chat_id") or "") == str(chat_id) or not plan_context:
-                    plan_context = plan_json.get("goal") or plan_json.get("original_goal") or ""
-                    if plan_context:
-                        break
+            # Prefer proposed plans for this chat; fall back to any recent plans
+            for st in ("proposed", None):
+                recent_plans = db.list_work_plans(status=st, limit=5) or []
+                for p in recent_plans:
+                    plan_json = p.get("plan_json") or {}
+                    if isinstance(plan_json, str):
+                        try:
+                            plan_json = json.loads(plan_json)
+                        except Exception:
+                            plan_json = {}
+                    if str(p.get("chat_id") or "") == str(chat_id) or not plan_context:
+                        plan_context = plan_json.get("goal") or plan_json.get("original_goal") or ""
+                        if plan_context:
+                            break
+                if plan_context:
+                    break
+        except Exception:
+            pass
+
+    # Recovery from recent cos_memory for this chat (user requests / notes about the ask).
+    # Skip meta kinds and obvious command/plan/approval text so we surface the real topic.
+    memory_context = ""
+    if chat_id is not None:
+        try:
+            recent_mem = db.cos_memory_recent(chat_id=chat_id, limit=12) or []
+            skip_kinds = {"reflection", "plan", "approval", "system", "progress", "error", "note"}
+            delegation_hints = ("delegate ", "give this", "give it to", "assign this", "have ", "routing to", "approve", "wp-", "proposed staff", "staff plan")
+            for mem in recent_mem:
+                kind = (mem[2] or "").strip().lower() if len(mem) > 2 else ""
+                content = (mem[3] or "").strip() if len(mem) > 3 else ""
+                if not content or len(content) < 15:
+                    continue
+                cl = content.lower()
+                if kind in skip_kinds:
+                    continue
+                if any(h in cl for h in delegation_hints):
+                    continue
+                # Looks like a substantive prior request
+                memory_context = content
+                break
         except Exception:
             pass
 
     if plan_context and len(plan_context) > 10:
         goal = plan_context
+    elif len(m) > 60:
+        # User likely included the real request in the same turn (paste + delegation command)
+        goal = m
+    elif memory_context and len(memory_context) > 10:
+        goal = memory_context
     else:
-        # Fallback to the redirection message itself
         goal = m
 
-    title = f"Research / work on: {goal[:90]}"
-    brief = f"User request via CoS chat: {goal}\n\nAssigned directly by user (overrode previous plan suggestion)."
+    title = f"Research / work delegated to {display_name}: {goal[:85]}"
 
-    # New simplified model: Create a Task assigned to the agent (we can still assign tasks to agents).
-    # This aligns with using the core tasks system instead of a separate agent_assignments concept for staff work.
+    # Rich, directive brief so the receiving specialist knows exactly what to do and how
+    # to use the assignment/agent memory/intel raising paths. This is what gets handed
+    # off on approval + bootstrap.
+    brief = f"""Direct user delegation to {display_name} via CoS chat.
+
+User instruction: {m}
+
+Substantive request / topic to handle:
+{goal}
+
+Instructions for {display_name}:
+- Treat this as your primary task. Use tools (web search, intel retrieval, domain resources, etc.) to investigate thoroughly and produce actionable findings.
+- Capture key facts, sources, timelines, options, and recommendations. Attach or reference them as artifacts.
+- Store important results as intel_findings in your agent memory (mark importance/visibility appropriately) and link to this assignment/thread.
+- Raise high-visibility items, risks, or explicit questions for the user via the assignment timeline and CoS surfaces.
+- Report progress and a clear final summary through the assignment thread and CoS updates.
+- If you need more context, source documents, or clarification, ask explicitly in the thread.
+
+This assignment was created because the user explicitly named you for this work and overrode any prior broader plan suggestion. Focus on delivering the requested research / outcome."""
+
+    # Create the proposed assignment as the *primary* activation artifact.
+    # Its approval path (approve_assignment_proposal) does the real work trigger:
+    #   - supporting task for the agent
+    #   - create_assignment_thread + prime_assignment_handoff (delivers the brief)
+    #   - bootstrap_assignment_execution (agent-specific intake + execution loop)
+    # We also create a task (for "everything discrete is a task" unification) and
+    # surface in the daily CoS plan proposed (dropdown / overview).
+    proposal_id = None
+    task_id = None
     try:
         context_obj = {
             "source": "chief_of_staff_chat_redirection",
             "user_instruction": m,
             "chat_id": chat_id,
+            "substantive_goal": goal,
         }
 
-        # Create the task assigned to the specific agent (e.g. "atlas")
-        task_id = db.add_task(
-            session_id=None,
-            task_text=title,
+        # Primary activation vehicle
+        proposal_id = db.agent_create_proposed_assignment(
+            title=title,
+            brief_md=brief,
+            assignee_code=assignee_code,
+            priority=3,
             due_date=None,
-            category="Business",
-            assigned_to=assignee_code,
-            blockers=brief[:2000] if brief else None,
+            proposed_by="navi",
+            context_json=context_obj,
         )
 
-        if task_id:
-            # Record context for traceability (we can later link this task to a CoS Plan when that concept lands)
-            try:
-                db.update_task_status(task_text=title, completed=0)  # ensure it's open
-            except Exception:
-                pass
+        # Supporting task for unified tracking / terminology / CoS Plan
+        try:
+            task_id = db.add_task(
+                session_id=None,
+                task_text=title[:200],
+                due_date=None,
+                category="Business",
+                assigned_to=assignee_code,
+                blockers=brief[:1500] if brief else None,
+                priority=3,
+            )
+            if task_id:
+                try:
+                    db.update_task_status(task_text=title[:200], completed=0)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-            # Create / update today's CoS daily plan as "proposed" so it appears in the CoS tab dropdown.
-            # This is the primary proposal container per the Tasks + CoS Plans model.
+        # Today's CoS daily plan (proposed) for dropdown visibility in Chief of Staff tab
+        if task_id or proposal_id:
             try:
                 from datetime import datetime, UTC
                 today = datetime.now(UTC).strftime("%Y-%m-%d")
                 plan_content = {
                     "status": "proposed",
                     "plan_json": {
-                        "goal": f"Staff task: {title}",
-                        "tasks": [{
-                            "task_id": task_id,
-                            "title": title,
-                            "assigned_to": assignee_code,
-                            "blockers": brief[:500] if brief else None,
-                            "priority": 3,
-                        }]
+                        "goal": f"Direct delegation to {display_name}: {title[:55]}",
+                        "tasks": ([{"task_id": task_id, "title": title, "assigned_to": assignee_code, "priority": 3}] if task_id else []),
+                        "assignments": ([{"proposal_id": proposal_id, "assignee": assignee_code, "title": title}] if proposal_id else []),
                     },
                     "visual_html": None,
                 }
@@ -5422,44 +5502,37 @@ def _handle_delegation_redirection(db: DatabaseManager, message: str, chat_id: O
             except Exception:
                 pass
 
-            # For now, also keep the legacy proposed assignment path during transition
-            # (we'll remove this once CoS Plans + task-based delegation is solid)
-            proposal_id = db.agent_create_proposed_assignment(
-                title=title,
-                brief_md=brief,
-                assignee_code=assignee_code,
-                priority=3,
-                due_date=None,
-                proposed_by="navi",
-                context_json=context_obj,
-            )
+        # Supersede recent proposed multi-agent work plans so a bare "approve" here
+        # activates *this* specialist assignment rather than reviving an old broad plan.
+        try:
+            recent_plans = db.list_work_plans(status="proposed", limit=5) or []
+            for p in recent_plans:
+                pid = p.get("id")
+                if pid:
+                    db.update_work_plan(pid, status="superseded")
+        except Exception:
+            pass
 
-            return (
-                f"Understood — routing to **{display_name}** as a task.\n\n"
-                f"I've created task T-{int(task_id):04d} assigned to {display_name}.\n"
-                f"Also recorded as today's proposed CoS Plan (see dropdown in Chief of Staff tab)."
-            )
-
+        # User-facing message: make the P- id and activation path explicit and actionable.
         if proposal_id:
-            # Best-effort: mark any recent proposed Work Plans as superseded.
-            # This prevents the old multi-agent plan from winning on a later plain "Approve".
-            try:
-                recent_plans = db.list_work_plans(status="proposed", limit=5) or []
-                for p in recent_plans:
-                    pid = p.get("id")
-                    if pid:
-                        db.update_work_plan(pid, status="superseded")
-            except Exception:
-                pass
-
+            pid_str = f"P-{int(proposal_id):04d}"
+            task_note = f" (supporting task T-{int(task_id):04d})" if task_id else ""
             return (
-                f"Understood — redirecting to **{display_name}**.\n\n"
-                f"I've created a proposed assignment (P-{int(proposal_id):04d}) for {display_name} to handle this.\n"
-                f"Reply with **approve** (or 'approve P-{int(proposal_id)}') when you're ready to delegate it. "
-                f"Any previous multi-agent plan has been marked as superseded."
+                f"Understood — routing to **{display_name}**.\n\n"
+                f"I've created proposed assignment **{pid_str}** for {display_name} with the research brief from your request{task_note}.\n\n"
+                f"Reply with **approve** (or 'approve {pid_str}') when ready. Approving will:\n"
+                f"• Create a dedicated thread for {display_name}\n"
+                f"• Hand off the brief\n"
+                f"• Bootstrap execution so {display_name} performs the work (research, intel capture, updates, artifacts)\n\n"
+                f"Track in the assignments board, Intel tab (raised items), and today's proposed CoS Plan (Chief of Staff tab dropdown)."
+            )
+        elif task_id:
+            return (
+                f"Understood — routing to **{display_name}** (task T-{int(task_id):04d}).\n\n"
+                f"Recorded in today's proposed CoS Plan. (Assignment proposal hit an issue; the task is live. You can approve from the board or re-issue the delegation.)"
             )
         else:
-            return f"I tried to create an assignment for {display_name} but something went wrong on the creation side. Want me to try again or open it manually in the Delegation Board?"
+            return f"I understood the request to give this to {display_name}, but creation of the proposal/task hit an issue. Open the Delegation board to create it manually."
 
     except Exception as e:
         logger.exception("Delegation redirection failed for target=%s: %s", target_name, e)
