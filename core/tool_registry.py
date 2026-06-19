@@ -116,6 +116,55 @@ def _tool_chat_history_search(**kwargs):
     }
 
 
+# CoS tools for simplified delegation (Phase 2)
+def _tool_propose_assignment(**kwargs):
+    """Propose assignment to specialist. Used by CoS for named delegations."""
+    db = kwargs.get("db")
+    if not db:
+        return {"error": "no db"}
+    proposal_id = db.agent_create_proposed_assignment(
+        title=kwargs.get("title", "Untitled"),
+        brief_md=kwargs.get("brief", ""),
+        assignee_code=kwargs.get("assignee_code", ""),
+        priority=kwargs.get("priority", 3),
+        due_date=kwargs.get("due_date"),
+        proposed_by="cos",
+        context_json={"source": "cos_tool", "chat_id": kwargs.get("chat_id")},
+    )
+    auto_activate = kwargs.get("auto_activate", False)
+    if auto_activate and proposal_id:
+        from core.chief_of_staff_service import approve_assignment_proposal
+        from core.agent_execution import bootstrap_assignment_execution
+        ok, _ = approve_assignment_proposal(db, proposal_id, actor_code="navi")
+        if ok:
+            try:
+                bootstrap_assignment_execution(db, assignment_id=proposal_id)
+            except Exception:
+                pass
+            return {"proposal_id": proposal_id, "activated": True}
+    return {"proposal_id": proposal_id, "activated": False}
+
+
+def _tool_approve_assignment(**kwargs):
+    """Approve a proposal by id. Triggers activation, thread, handoff, bootstrap."""
+    db = kwargs.get("db")
+    if not db:
+        return {"error": "no db"}
+    pid = kwargs.get("id") or kwargs.get("proposal_id")
+    if not pid:
+        return {"error": "missing id"}
+    from core.chief_of_staff_service import approve_assignment_proposal
+    from core.agent_execution import bootstrap_assignment_execution
+    ok, msg = approve_assignment_proposal(db, int(pid), actor_code="navi")
+    if ok:
+        try:
+            bootstrap_assignment_execution(db, assignment_id=int(pid))
+        except Exception as e:
+            return {"assignment_id": pid, "status": "approved", "bootstrap_error": str(e)}
+        return {"assignment_id": pid, "status": "activated"}
+    return {"error": msg}
+
+
 _REGISTRY: dict[str, ToolSpec] = {
     "internal_retrieval": ToolSpec(
         name="internal_retrieval",
@@ -169,6 +218,18 @@ _REGISTRY: dict[str, ToolSpec] = {
         description="Search long-term chat history for one session.",
         handler=_tool_chat_history_search,
         side_effect_class="read",
+    ),
+    "propose_assignment": ToolSpec(
+        name="propose_assignment",
+        description="Propose a new assignment/delegation to a named specialist (e.g. Pulse, Atlas). Use when user says 'Have X look into this' or similar. Returns proposal_id. Set auto_activate=true for explicit named delegations to auto-start the agent.",
+        handler=_tool_propose_assignment,
+        side_effect_class="write",
+    ),
+    "approve_assignment": ToolSpec(
+        name="approve_assignment",
+        description="Approve/activate a proposed assignment by id (or use 'latest' / context to resolve). Triggers thread creation, handoff, and agent bootstrap. Use for 'go ahead', 'approve', or follow-up confirmations on a recent delegation.",
+        handler=_tool_approve_assignment,
+        side_effect_class="write",
     ),
 }
 

@@ -39,6 +39,7 @@ from gui.agent_console import AgentConsole
 from gui.document_export import export_markdownish_document
 from gui.notifications import notify_background_complete
 from gui.workspace_tab import WorkspaceTab
+from gui import utils as gui_utils
 
 logger = logging.getLogger(__name__)
 
@@ -248,14 +249,11 @@ class DeepResearchTab(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(8, 8, 8, 8)
 
-        title = QLabel("Deep Research")
-        title.setStyleSheet("color: #e8eaed; font-weight: 700; font-size: 14px; margin: 0;")
-        main_layout.addWidget(title)
-
-        subtitle = QLabel("Run research with Atlas on the left. Review syntheses and final output on the right.")
-        subtitle.setStyleSheet("color: #9aa0a6; font-size: 12px;")
-        subtitle.setWordWrap(True)
-        main_layout.addWidget(subtitle)
+        gui_utils.add_standard_header(
+            main_layout,
+            "Deep Research",
+            "Run research with Atlas on the left. Review syntheses and final output on the right."
+        )
 
         # === Main horizontal splitter: Left (main) | Right (side pane) ===
         main_splitter = QSplitter(Qt.Orientation.Horizontal)

@@ -54,6 +54,7 @@ from core.task_command_contract import (
 from gui.agent_console import AgentConsole
 from gui.task_edit_dialog import TaskEditDialog
 from gui.project_management_panel import ProjectManagementPanel
+from gui import utils as gui_utils
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,8 @@ class TasksTab(QWidget):
             # Fallback: create our own DB manager (same path via config.DATABASE_PATH)
             self.db = DatabaseManager()
         self._settings = QSettings("NaviSsurance", "TasksTab")
+        import os
+        print("[DEBUG] Loaded tasks_tab.py from:", os.path.abspath(__file__))
         self._setup_ui()
         self.refresh_tasks()
 
@@ -156,9 +159,11 @@ class TasksTab(QWidget):
         task_list_layout.setSpacing(base_spacing)
 
         if self._show_header:
-            header = QLabel("Tasks 🛡️ (Pulse/Intel coordination active)")
-            header.setStyleSheet("color: #e8eaed; font-weight: 700; font-size: 14px; margin: 0;")
-            task_list_layout.addWidget(header)
+            gui_utils.add_standard_header(
+                task_list_layout,
+                "Tasks 🛡️ (Pulse/Intel coordination active)",
+                "Local tasks with direct Mason chat (when enabled) and project management."
+            )
         # Additional: tasks tab now highlights Pulse private memory and Shield tasks (new tasks surface)
 
         # Filters row
@@ -330,36 +335,27 @@ class TasksTab(QWidget):
         )
 
         hdr = self.table.horizontalHeader()
+        hdr.setMinimumSectionSize(50)
+
+        # Reset any old saved state that locked most columns to non-resizable modes (only assigned-to was Interactive).
+        # New state will be saved as you resize.
+        self._settings.remove(self._header_state_key())
+        self._settings.sync()
+
         if self._compact:
-            # Dashboard focus view: no action buttons; allow user-resizable columns.
+            # Dashboard: all resizable
             self.table.setColumnHidden(10, True)
-            for c in range(self.table.columnCount()):
-                if c == 0:
-                    continue
+            for c in range(1, self.table.columnCount()):
                 hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
-            # Keep task as the flex column so the table naturally fills available width.
-            hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-            hdr.setStretchLastSection(False)
-            hdr.resizeSection(1, 360)  # Task
-            hdr.resizeSection(2, 140)  # Assigned To
-            hdr.resizeSection(3, 85)   # Priority
-            hdr.resizeSection(5, 110)  # Due
-            hdr.resizeSection(6, 100)  # Category
-            hdr.resizeSection(8, 88)  # Est (min)
+            hdr.setStretchLastSection(True)
         else:
-            # Task column: stretch to use remaining space (main content)
-            hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-            hdr.resizeSection(2, 150)
-            hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
-            # Priority: fixed width so P0–P5 combo is fully visible (Tasks tab footprint)
-            hdr.resizeSection(3, 80)
-            hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-            # Tags, Due, Category, Project, Est, Done: size to content
-            for c in (4, 5, 6, 7, 8, 9):
-                hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
-            # Actions: size to content so buttons aren’t squished (width comes from button layout)
-            hdr.setSectionResizeMode(10, QHeaderView.ResizeMode.ResizeToContents)
-        # Persist user-adjusted column widths/order.
+            # Full tasks tab: ALL columns Interactive so ANY (incl. Task) can be resized by dragging borders.
+            # Stretch last to fill width without forcing scrollbar on normal use.
+            for c in range(1, self.table.columnCount()):
+                hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+            hdr.setStretchLastSection(True)
+
+        # Persist...
         hdr.setSectionsMovable(True)
         hdr.sectionResized.connect(lambda *_: self._save_header_state())
         hdr.sectionMoved.connect(lambda *_: self._save_header_state())
@@ -622,7 +618,7 @@ class TasksTab(QWidget):
                 it_id.setData(Qt.ItemDataRole.UserRole, task_id)
                 self.table.setItem(r, 0, it_id)
 
-                it_task = QTableWidgetItem(task_text)
+                it_task = QTableWidgetItem(f"T-{task_id:04d}  {task_text}")
                 it_task.setFlags(it_task.flags() ^ Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(r, 1, it_task)
 
@@ -759,6 +755,17 @@ class TasksTab(QWidget):
             fixed_row_h = 52
             for rx in range(self.table.rowCount()):
                 self.table.setRowHeight(rx, fixed_row_h)
+
+            # Force Interactive on all columns after data load (widgets can affect auto modes)
+            hdr = self.table.horizontalHeader()
+            if self._compact:
+                for c in range(1, self.table.columnCount()):
+                    hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+            else:
+                for c in range(1, self.table.columnCount()):
+                    hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+            hdr.setStretchLastSection(True)
+            hdr.update()
         except Exception as e:
             logger.exception("refresh_tasks failed: %s", e)
 
@@ -777,6 +784,15 @@ class TasksTab(QWidget):
             state = self._settings.value(self._header_state_key())
             if state:
                 self.table.horizontalHeader().restoreState(state)
+            # Force all to Interactive after restore (in case old state had locked modes)
+            hdr = self.table.horizontalHeader()
+            if self._compact:
+                for c in range(1, self.table.columnCount()):
+                    hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+            else:
+                for c in range(1, self.table.columnCount()):
+                    hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+            hdr.setStretchLastSection(True)
         except Exception:
             pass
 

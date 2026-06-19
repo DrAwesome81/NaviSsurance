@@ -4,6 +4,11 @@
 
 ## High Priority
 
+*(Phase 3 CoS cleanup note, 2026-06-12): old unreachable NL delegation/approval/revision handlers and their regex heuristics removed from chief_of_staff_service.py (see roadmap_status.md + chief_of_staff.md updates). No remaining work item; this was completion of the internal simplification track. All structured command patterns + _parse_task_actions retained.*
+
+*(Phase 4 Workspace start, 2026-06-12): Per fixed consultant-os-roadmap.md, shifted to highest-leverage Phase 4 (Workspace Production Engine: historical refs in gen, related sets, consistency checking incl. single-doc intra, GDrive client exports). Core wired and usable. First micro: enhanced _consistency_context (chief_of_staff_service.py) for richer report extraction (issues + recs) + explicit single-doc + better CoS actionability (Sentinel delegation). 
+Chained keep-going micro: added auto full ConsistencyChecker single-doc intra-review (LLM) in gui/workspace_tab.py historical sources injection block for regular single docs with strong cluster (in addition to heuristic + related-set path). Stores report for export/CoS. Smoke verified. See roadmap_status. Next candidates remain: GDrive parity, deeper artifact visibility, more injection points.*
+
 - [x] Billing template quality:
   - create a default invoice template that is actually human-readable
   - ensure rendered invoice drafts have clean layout and usable formatting

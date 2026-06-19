@@ -1144,6 +1144,7 @@ class DashboardTab(QWidget):
         layout.addWidget(task_header)
         
         # Task list - back to QTableWidget but with custom delegate for row coloring
+        print("[DEBUG] Using LEGACY task_list in dashboard_tab.py from:", __file__ if '__file__' in globals() else 'no __file__')
         self.task_list = QTableWidget()
         self.task_list.setColumnCount(4)
         self.task_list.setHorizontalHeaderLabels(["Task", "Category", "Due Date", "Actions"])
@@ -1174,16 +1175,18 @@ class DashboardTab(QWidget):
             }
         """)
         
-        # Configure columns
+        # Configure columns: all Interactive so any (incl Task/col0) can be resized by dragging borders.
+        # Movable for reorder. Stretch last to fill width.
         header = self.task_list.horizontalHeader()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)  # Task column stretches
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)  # Category fixed width
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)  # Due Date fixed width
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)  # Actions fixed width
-        header.resizeSection(1, 100)  # Set Category column to 100px width
-        header.resizeSection(2, 100)  # Set Due Date column to 100px width
-        header.resizeSection(3, 200)  # Set Actions column to 200px width
+        header.setMinimumSectionSize(50)
+        header.setSectionsMovable(True)
+        for c in range(4):
+            header.setSectionResizeMode(c, QHeaderView.ResizeMode.Fixed)
+            header.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+        header.resizeSection(1, 100)
+        header.resizeSection(2, 100)
+        header.resizeSection(3, 200)
         
         # Enable sorting
         self.task_list.setSortingEnabled(True)

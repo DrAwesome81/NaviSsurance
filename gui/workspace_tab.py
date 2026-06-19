@@ -58,6 +58,7 @@ from gui.task_import_dialog import TaskImportDialog
 from gui.agent_console import AgentConsole
 from gui.document_export import export_markdownish_document
 from gui.notifications import notify_background_complete
+from gui import utils as gui_utils
 from core.agent_chat_service import create_assignment_thread, prime_assignment_handoff
 
 logger = logging.getLogger(__name__)
@@ -4170,6 +4171,17 @@ class WorkspaceTab(QWidget):
                                     matched.add(dt)
                             if matched:
                                 consistency_note = f" (cluster consistency pass: {len(matched)} signals from references matched in deliverable)"
+                            # Phase 4 keep-going micro (single-doc enhancement): when strong historical cluster present but *not* a multi related-set flow, run the full ConsistencyChecker single-doc intra-review (LLM-based, not just heuristic). Reuses the same hist_docs + format_compact path already built here. Stores lightweight report summary for export/CoS visibility (defensive attr). Advances "single-doc enhancements" + auto checks on gen for regular single docs with refs. Tiniest guarded addition; zero effect on sets or no-cluster; non-fatal.
+                            try:
+                                if not has_related_cluster and getattr(self, "_current_markdown", None):
+                                    checker = ConsistencyChecker()
+                                    docs_for_single = [{"title": "Document", "markdown": (self._current_markdown or "")[:6000]}]
+                                    hist_for_single = format_compact_historical_context(hist_docs) if hist_docs else ""
+                                    srep = checker.check_related_set(docs_for_single, hist_for_single, doc_type="single")
+                                    setattr(self, "_last_single_doc_consistency_report_md", f"Status: {srep.overall_status}. {srep.summary or ''}"[:1500])
+                                    logger.debug("Phase 4 single-doc consistency check: status=%s", srep.overall_status)
+                            except Exception:
+                                pass  # defensive
                             # Autonomous next micro (after auto-related gen wiring): simple "related set summary" note.
                             # Better handling for docs generated as companions via the _generate_related_set path (now auto-starts workflow).
                             # Detects companion/cluster language in the task goal (from prefill); appends terse note to sources header (visible in preview + all exports).

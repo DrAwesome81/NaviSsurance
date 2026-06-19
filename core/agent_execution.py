@@ -335,7 +335,8 @@ def _run_sentinel_bootstrap(db: DatabaseManager, assignment: dict, *, thread_id:
     ]
     if findings:
         for f in findings[:3]:
-            t = str(f.get("title") or f.get("content", ""))[:60]
+            # IntelFinding is a dataclass (title, summary, etc.), not a dict
+            t = str(getattr(f, 'title', None) or getattr(f, 'summary', '') or getattr(f, 'content', ''))[:60]
             lines.append(f"- {t}")
     else:
         lines.append("- (no raised findings for snapshot)")

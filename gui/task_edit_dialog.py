@@ -45,6 +45,11 @@ class TaskEditDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
 
+        tid = int(self._task.get("id") or 0)
+        if tid > 0:
+            id_lbl = QLabel(f"<b>Task ID: T-{tid:04d}</b>")
+            layout.addWidget(id_lbl)
+
         layout.addWidget(QLabel("Task:"))
         self.task_text = QLineEdit()
         self.task_text.setText(str(self._task.get("task_text") or self._task.get("text") or "").strip())

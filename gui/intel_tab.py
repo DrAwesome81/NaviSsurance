@@ -13,7 +13,8 @@ from __future__ import annotations
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget, QListWidgetItem,
     QLineEdit, QTextEdit, QTextBrowser, QComboBox, QTableWidget, QTableWidgetItem, QMessageBox,
-    QSplitter, QGroupBox, QHeaderView, QMenu, QInputDialog, QDialog, QPlainTextEdit, QDialogButtonBox
+    QSplitter, QGroupBox, QHeaderView, QMenu, QInputDialog, QDialog, QPlainTextEdit, QDialogButtonBox,
+    QTabWidget
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QFont, QColor
@@ -21,6 +22,7 @@ from PyQt6.QtGui import QFont, QColor
 from core.db import DatabaseManager
 from core.intel import IntelService, WatchTopic, IntelFinding
 from gui.agent_console import AgentConsole
+from gui import utils as gui_utils
 import json
 
 
@@ -71,15 +73,12 @@ class IntelTab(QWidget):
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(8)
 
-        # Header
-        self.header_label = QLabel("Intel — Pulse")
-        self.header_label.setStyleSheet("font-size: 16px; font-weight: 600; color: #e8eaed;")
-        # IntelTab strengthens Pulse visibility + Shield triage surface
-        main_layout.addWidget(self.header_label)
-
-        self.subtitle_label = QLabel("Market intelligence, regulatory signals, and competitive analysis")
-        self.subtitle_label.setStyleSheet("color: #9aa0a6; font-size: 12px;")
-        main_layout.addWidget(self.subtitle_label)
+        # Header (standardized)
+        gui_utils.add_standard_header(
+            main_layout,
+            "Intel — Pulse",
+            "Market intelligence, regulatory signals, and competitive analysis"
+        )
 
         # Tiny project context header for cross-link from Projects panel (hidden by default, shown when focus_intel_tab passes project_id)
         self.project_context_label = QLabel("")
@@ -145,7 +144,7 @@ class IntelTab(QWidget):
         watch_input_layout.addWidget(btn_remove)
 
         watch_layout.addLayout(watch_input_layout)
-        main_layout.addWidget(self.watch_group)
+        # Watch Topics moved to sub-tab (not main focus)
 
         # === Research Request Section ===
         research_group = QGroupBox("Request Research")
@@ -159,7 +158,7 @@ class IntelTab(QWidget):
         self.btn_research.clicked.connect(self._request_research)
         research_layout.addWidget(self.btn_research)
 
-        main_layout.addWidget(research_group)
+        # research_group added to findings tab below
 
         # === Direct chat with Pulse ===
         # This gives the missing direct interaction the Intel tab was lacking (unlike Atlas/Quill/etc. in their tabs).
@@ -168,10 +167,10 @@ class IntelTab(QWidget):
         chat_group = QGroupBox("Direct chat with Pulse")
         chat_layout = QVBoxLayout(chat_group)
         self.agent_console = AgentConsole(
-            self.db, agent_code="pulse", parent=self, thread_id="intel_pulse_main"
+            self.db, agent_code="pulse", parent=self, thread_id="intel_pulse_main", show_agent_title=False
         )
         chat_layout.addWidget(self.agent_console, 1)
-        main_layout.addWidget(chat_group)
+        # chat_group added to findings tab below
 
         # === Findings Section ===
         findings_group = QGroupBox("Findings")
@@ -210,7 +209,7 @@ class IntelTab(QWidget):
 
         findings_layout.addWidget(detail_pane, 1)
 
-        main_layout.addWidget(findings_group, 1)
+        # findings_group added to findings tab below
 
         # Action buttons below
         actions = QHBoxLayout()
@@ -252,23 +251,41 @@ class IntelTab(QWidget):
         actions.addWidget(btn_pulse_note)
 
         actions.addStretch()
-        main_layout.addLayout(actions)
 
-        # Status label
+        # Status label and footer (moved inside findings tab)
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
-        main_layout.addWidget(self.status_label)
 
         # Dedicated small "Active Regulatory Themes" + Index Health (grouped footer for Index Freshness + private memory visibility).
-        # Layout fix: health and themes now adjacent as small secondary labels (no intervening chat group).
         self.index_health_label = QLabel("")
         self.index_health_label.setStyleSheet("color: #7aa0d6; font-size: 10px;")
-        main_layout.addWidget(self.index_health_label)
 
         self.themes_label = QLabel("")
         self.themes_label.setStyleSheet("color: #7aa0d6; font-size: 10px; font-style: italic;")
         self.themes_label.setToolTip("Pulse private regulatory themes (from reflections in agent_memory). Used for smarter raising, included in CoS reports/briefings, Compliance loads, and client dossiers. Active maturation of private memory + cross-linking.")
-        main_layout.addWidget(self.themes_label)
+
+        # Use sub-tabs so Watch Topics is not the main focus of the tab (per user request).
+        # Primary focus: Findings & Research (including Request Research and Direct chat with Pulse).
+        # Watch Topics is now a secondary sub-tab.
+        self.content_tabs = QTabWidget()
+
+        findings_tab = QWidget()
+        ft_layout = QVBoxLayout(findings_tab)
+        ft_layout.addWidget(research_group)
+        ft_layout.addWidget(chat_group)
+        ft_layout.addWidget(findings_group, 1)
+        ft_layout.addLayout(actions)
+        ft_layout.addWidget(self.status_label)
+        ft_layout.addWidget(self.index_health_label)
+        ft_layout.addWidget(self.themes_label)
+        self.content_tabs.addTab(findings_tab, "Findings & Research")
+
+        watches_tab = QWidget()
+        wt_layout = QVBoxLayout(watches_tab)
+        wt_layout.addWidget(self.watch_group)
+        self.content_tabs.addTab(watches_tab, "Watch Topics")
+
+        main_layout.addWidget(self.content_tabs, 1)
 
     # ---------------- Watchlist ----------------
 

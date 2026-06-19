@@ -2319,12 +2319,13 @@ class ChiefOfStaffTab(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         # Top row: optional options button (right-aligned)
         top_row = QHBoxLayout()
-        self.am_sweep_queue_tasks_chat_btn = QPushButton("AM Sweep → tasks")
+        self.am_sweep_queue_tasks_chat_btn = QPushButton("AM Sweep → tasks (disabled)")
         self.am_sweep_queue_tasks_chat_btn.setToolTip(
-            "Create dashboard tasks from the current assignment filters (same as Delegation Board). "
-            "Business category, one confirmation."
+            "Morning plan / AM Sweep is temporarily disabled while it receives more work. "
+            "Use CoS chat for planning."
         )
-        self.am_sweep_queue_tasks_chat_btn.clicked.connect(self._bulk_create_tasks_am_sweep_quick)
+        self.am_sweep_queue_tasks_chat_btn.setEnabled(False)
+        # self.am_sweep_queue_tasks_chat_btn.clicked.connect(self._bulk_create_tasks_am_sweep_quick)  # disabled temporarily
         self.am_sweep_queue_tasks_chat_btn.setStyleSheet(
             "QPushButton { color: #e8f5e9; background-color: #1b5e20; border: 1px solid #2e7d32; "
             "padding: 6px 12px; border-radius: 6px; font-weight: 600; }"
@@ -2351,11 +2352,15 @@ class ChiefOfStaffTab(QWidget):
         )
         self._apply_button_metrics(self.options_btn, min_width=108)
         menu = QMenu()
-        am_sweep_action = QAction("AM Sweep", self)
-        am_sweep_action.triggered.connect(self._on_am_sweep)
+        am_sweep_action = QAction("AM Sweep (temporarily disabled)", self)
+        am_sweep_action.setEnabled(False)
+        am_sweep_action.setToolTip("Morning plan / AM Sweep is temporarily disabled while it receives more work.")
+        # am_sweep_action.triggered.connect(self._on_am_sweep)  # disabled
         menu.addAction(am_sweep_action)
-        am_sweep_rerun_action = QAction("AM Sweep (Run again)", self)
-        am_sweep_rerun_action.triggered.connect(self._on_am_sweep_rerun)
+        am_sweep_rerun_action = QAction("AM Sweep (Run again) (temporarily disabled)", self)
+        am_sweep_rerun_action.setEnabled(False)
+        am_sweep_rerun_action.setToolTip("Morning plan / AM Sweep is temporarily disabled while it receives more work.")
+        # am_sweep_rerun_action.triggered.connect(self._on_am_sweep_rerun)  # disabled
         menu.addAction(am_sweep_rerun_action)
         prefs_action = QAction("Preferences…", self)
         prefs_action.triggered.connect(self._open_preferences)
@@ -3794,6 +3799,14 @@ Calendar and task actions:
         if isinstance(txt, (dict, list)):
             import json
             txt = json.dumps(txt, indent=2)
+        elif isinstance(txt, str):
+            try:
+                import json
+                parsed = json.loads(txt)
+                if isinstance(parsed, (dict, list)):
+                    txt = json.dumps(parsed, indent=2)
+            except Exception:
+                pass
         content.setPlainText(str(txt))
         lay.addWidget(content, 1)
         btns = QHBoxLayout()
@@ -4540,6 +4553,9 @@ Calendar and task actions:
 
     def _bulk_create_tasks_am_sweep_quick(self):
         """Default bulk path: Business, skip closed, no note—one confirmation."""
+        # Temporarily disabled (AM Sweep disabled).
+        QMessageBox.information(self, "AM Sweep tasks", "Morning plan / AM Sweep is temporarily disabled while it receives more work.")
+        return
         rows = self._filtered_assignment_rows()
         if not rows:
             QMessageBox.information(
@@ -4912,6 +4928,9 @@ Calendar and task actions:
 
     def _on_am_sweep(self):
         """Run AM Sweep if not already run today; otherwise focus today's sweep chat."""
+        # Temporarily disabled.
+        QMessageBox.information(self, "AM Sweep", "Morning plan / AM Sweep is temporarily disabled while it receives more work.")
+        return
         if self._ask_worker and self._ask_worker.isRunning():
             return
         if self._am_sweep_worker and self._am_sweep_worker.isRunning():
@@ -4971,6 +4990,9 @@ Calendar and task actions:
 
     def _on_am_sweep_rerun(self):
         """Always run AM Sweep (creates/uses today's sweep chat)."""
+        # Temporarily disabled.
+        QMessageBox.information(self, "AM Sweep", "Morning plan / AM Sweep is temporarily disabled while it receives more work.")
+        return
         if self._ask_worker and self._ask_worker.isRunning():
             return
         if self._am_sweep_worker and self._am_sweep_worker.isRunning():

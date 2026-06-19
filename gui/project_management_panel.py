@@ -467,6 +467,11 @@ class ProjectEditDialog(QDialog):
         ph.addWidget(self.client_view_pulse_btn)
         self.client_view_pulse_btn.setVisible(False)
         form.addRow("", pulse_container)
+        # initial state for pre-selected client (setCurrentIndex happened before connect, so explicit call needed)
+        try:
+            self._update_client_pulse_note()
+        except Exception:
+            pass
         self.client_edit = QLineEdit()
         self.client_edit.setPlaceholderText("Client (optional)")
         self.client_edit.setText(self._project.get("client") or "")
@@ -518,6 +523,52 @@ class ProjectEditDialog(QDialog):
             "status": self.status_combo.currentText() or "Active",
             "deadline": deadline,
         }
+
+    def _update_client_pulse_note(self):
+        """Tiny: show Pulse summary for selected client in project form (actionable when linking client)."""
+        try:
+            cid = self.client_combo.currentData()
+            if not cid or not self._db:
+                self.client_pulse_note.setText("")
+                return
+            from core.intel import IntelService
+            isvc = IntelService(self._db)
+            w_list = [w for w in (isvc.list_watch_topics() or []) if getattr(w, 'client_id', None) == cid]
+            recent = isvc.list_findings(client_id=cid, raised_only=True, limit=1)
+            txt = ""
+            if w_list:
+                txt = f"👤 {len(w_list)} watches"
+            if recent:
+                txt += ("; " if txt else "") + f"recent: {getattr(recent[0],'title','')[:20]}"
+            self.client_pulse_note.setText("📡 " + txt if txt else "")
+            if hasattr(self, 'client_view_pulse_btn'):
+                self.client_view_pulse_btn.setVisible(bool(txt))
+            if hasattr(self, 'client_edit') and self.client_edit:
+                self.client_edit.setToolTip(f"Pulse for linked client: {txt}" if txt else "Client (optional)")
+        except Exception:
+            self.client_pulse_note.setText("")
+            if hasattr(self, 'client_view_pulse_btn'):
+                self.client_view_pulse_btn.setVisible(False)
+            if hasattr(self, 'client_edit') and self.client_edit:
+                self.client_edit.setToolTip("Client (optional)")
+
+    def _view_pulse_intel(self):
+        """Tiny: View in Intel filtered to current client from the project form Pulse note."""
+        try:
+            cid = self.client_combo.currentData()
+            target = self.parent()
+            if not (target and hasattr(target, "focus_intel_tab")):
+                p2 = getattr(target, "parent", lambda: None)() if target else None
+                if p2 and hasattr(p2, "focus_intel_tab"):
+                    target = p2
+            if cid and hasattr(target, "focus_intel_tab"):
+                target.focus_intel_tab(client_id=cid)
+                # seamless: confirm in the note area after jumping (stays until client changes or form closes)
+                txt = self.client_pulse_note.text()
+                if txt and "✓ viewed" not in txt:
+                    self.client_pulse_note.setText(txt + " ✓ viewed")
+        except Exception:
+            pass
 
 
 class ProjectManagementPanel(QWidget):
@@ -1050,43 +1101,3 @@ class ProjectManagementPanel(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Projects", f"Could not delete project:\n{e}")
 
-    def _update_client_pulse_note(self):
-        """Tiny: show Pulse summary for selected client in project form (actionable when linking client)."""
-        try:
-            cid = self.client_combo.currentData()
-            if not cid or not self._db:
-                self.client_pulse_note.setText("")
-                return
-            from core.intel import IntelService
-            isvc = IntelService(self._db)
-            w_list = [w for w in (isvc.list_watch_topics() or []) if getattr(w, 'client_id', None) == cid]
-            recent = isvc.list_findings(client_id=cid, raised_only=True, limit=1)
-            txt = ""
-            if w_list:
-                txt = f"👤 {len(w_list)} watches"
-            if recent:
-                txt += ("; " if txt else "") + f"recent: {getattr(recent[0],'title','')[:20]}"
-            self.client_pulse_note.setText("📡 " + txt if txt else "")
-            if hasattr(self, 'client_view_pulse_btn'):
-                self.client_view_pulse_btn.setVisible(bool(txt))
-            if hasattr(self, 'client_edit') and self.client_edit:
-                self.client_edit.setToolTip(f"Pulse for linked client: {txt}" if txt else "Client (optional)")
-        except Exception:
-            self.client_pulse_note.setText("")
-            if hasattr(self, 'client_view_pulse_btn'):
-                self.client_view_pulse_btn.setVisible(False)
-            if hasattr(self, 'client_edit') and self.client_edit:
-                self.client_edit.setToolTip("Client (optional)")
-
-    def _view_pulse_intel(self):
-        """Tiny: View in Intel filtered to current client from the project form Pulse note."""
-        try:
-            cid = self.client_combo.currentData()
-            if cid and hasattr(self.parent(), "focus_intel_tab"):
-                self.parent().focus_intel_tab(client_id=cid)
-                # seamless: confirm in the note area after jumping (stays until client changes or form closes)
-                txt = self.client_pulse_note.text()
-                if txt and "✓ viewed" not in txt:
-                    self.client_pulse_note.setText(txt + " ✓ viewed")
-        except Exception:
-            pass

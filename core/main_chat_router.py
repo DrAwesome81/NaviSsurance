@@ -19,7 +19,9 @@ from core.user_memory import (
 )
 
 logger = logging.getLogger(__name__)
-# Routes CoS, Pulse (intel), Shield; private memory + security-relevant intel from Pulse informs supervisor context and agent dispatch (fresh coordination)
+# Routes Navi (sidebar secretary, local model) and CoS (planning/delegation).
+# Main sidebar chat is now always Navi (local) for secretary tasks (calendar, tasks, reminders).
+# CoS tab uses dedicated sessions for heavy planning.
 # Pulse private memory + Shield (main chat router surface)
 
 LOCAL_FAST_UNSUPPORTED = "LOCAL_FAST_UNSUPPORTED"
@@ -209,8 +211,10 @@ def select_main_chat_route_details(
     sid = str(session_id or "").strip()
     if sid.startswith("cos_") and not is_dashboard_chat_session(db, sid):
         return "cos", "non_dashboard_cos_session"
-    if not is_dashboard_chat_session(db, sid):
-        return "cos", "not_dashboard_session"
+    # Main sidebar (dashboard / non-explicit-CoS sessions) is always Navi using local model.
+    # CoS tab uses dedicated cos_ sessions for planning/delegation.
+    if is_dashboard_chat_session(db, sid) or not sid.startswith("cos_"):
+        return "local_fast", "navi_sidebar_local"
     if _looks_like_local_fast_turn(message, conversation_history):
         return "local_fast", "self_contained_text_turn"
     return "cos", "stateful_or_work_context_turn"
@@ -232,10 +236,10 @@ def _build_local_fast_messages(
         {
             "role": "system",
             "content": (
-                "You are handling a local-fast dashboard chat turn. "
-                "This lane is only for self-contained text help. "
-                "Never request tools and never emit action command lines. "
-                f"If the request needs tasks, calendar, assignments, memory, search, or any side effect, reply with exactly {LOCAL_FAST_UNSUPPORTED}."
+                "You are Navi, Adam's personal secretary and day-to-day assistant. "
+                "You run on the local model. Focus on logistics: access and summarize his calendar, suggest or schedule meetings when asked, add and manage tasks/reminders, provide quick practical help and summaries. "
+                "Be concise, proactive, and respectful of his time freedom and boundaries. "
+                "Respond in natural prose. If a request clearly requires deep strategic planning or delegation to sub-agents (CoS work), acknowledge briefly but do not attempt it."
             ),
         },
     ]
@@ -345,7 +349,8 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
             logger.debug("knowledge_ingestion hook non-fatal (chat continues): %s", ke)
 
     if not response and route == "local_fast":
-        # Keep the fast path fast: formatting/rewrite turns do not need durable recall.
+        # Navi sidebar (dashboard) always stays on local model as secretary.
+        # Only explicit non-dashboard CoS sessions fall back.
         memory_context = build_user_memory_context(db, message, limit=5, recent_limit=2)
         try:
             cross_memory_context = build_supervisor_cross_memory_context(
@@ -366,7 +371,7 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
                 conversation_history,
                 memory_context=memory_context,
             )
-            if _requires_cos_fallback(response):
+            if _requires_cos_fallback(response) and not is_dashboard_chat_session(db, sid):
                 logger.info(
                     "MAIN_CHAT_FALLBACK session_id=%s chat_id=%s from=local_fast to=cos reason=unsupported_output",
                     sid,
@@ -374,6 +379,7 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
                 )
                 response = cos_response(db, message, conversation_history=history_items, chat_id=chat_id)
                 final_source = "cos_fallback"
+            # For Navi sidebar (dashboard), remain on local even for secretary tasks; prompt handles in natural text.
         except Exception as e:
             logger.warning(
                 "MAIN_CHAT_FALLBACK session_id=%s chat_id=%s from=local_fast to=cos reason=runtime_error error=%s",
@@ -381,8 +387,10 @@ def run_main_chat_turn(chat_handler, message: str, session_id: str | None, conve
                 chat_id,
                 e,
             )
-            response = cos_response(db, message, conversation_history=history_items, chat_id=chat_id)
-            final_source = "cos_fallback"
+            if not is_dashboard_chat_session(db, sid):
+                response = cos_response(db, message, conversation_history=history_items, chat_id=chat_id)
+                final_source = "cos_fallback"
+            # else: keep whatever local gave for Navi sidebar
     elif not response:
         response = cos_response(db, message, conversation_history=history_items, chat_id=chat_id)
 

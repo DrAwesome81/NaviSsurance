@@ -22,6 +22,11 @@ The goal of this document is to keep developer/integration checks out of the use
   - `python -m pytest -q`
 - Alternate wrapper:
   - `python run_tests.py`
+- Automated "user-like" smoke harness (drives CoS planning/delegation/calendar day planning, tasks with blockers + numeric IDs, local API patterns, Workspace consistency surface, etc. "as if another app were using Navi like you would"):
+  - `python run_tests.py user-smoke` (now dispatches cleanly) or `python -c "import run_tests; run_tests.run_user_smoke()"`
+  - On failures it captures + dumps recent stdout + log buffer (simulating "capture terminal messages when it fails"). Scenarios wrapped for explicit dumps.
+  - Covers: local API headless, CoS day planning from calendar, task creation + ID/blocker refs, CoS delegation marker flow + direct ConsistencyChecker single-doc + richer _consistency_context.
+  - Extend inside run_user_smoke() (add scenarios using public core functions). See long docstring in run_tests.py. For "another app", use local HTTP API (TestClient pattern in tests/test_local_api.py). Can loop for "try a bunch of things".
 - Focused suites:
   - `python -m pytest tests/test_chief_of_staff.py -q`
   - `python -m pytest tests/test_workflow_engine.py -q`
@@ -66,6 +71,7 @@ The layered memory architecture is now partially covered by focused automated su
   - CoS retrieval of relevant agent and assignment memory
 - `tests/test_workspace_tab.py`
   - Workspace dual-LLM handoff, marked-file normalization into collaboration runs, and fail-fast when marked sources are unusable
+- Single-doc intra consistency (Phase 4 polish) and richer CoS report extraction are exercised via the manual gold paths in this doc (Workspace single + cluster gen → CoS _consistency_context). The core ConsistencyChecker single-doc path (<2 docs) is unit-exercisable directly; full tab coverage remains Qt/manual for now. Add pytest cases for checker single-doc behavior if expanding automated suite.
 
 On this Windows environment, a few Qt-backed dialog tests are intentionally skipped because PyQt teardown is unstable even when assertions pass. The non-UI logic remains covered.
 
@@ -414,8 +420,11 @@ Use this progressive checklist (30–60+ min depending on depth) to explore the 
   - After: View manifest/summary/cross-refs (menu or button); check consistency report was produced.
   - Quick-export or manual export to client folder; verify pack (doc + manifest + summary + consistency report + cross-refs) lands.
   - (Optional, if GDrive configured): Toggle auto-upload; confirm uploads.
+- **Single document with historical cluster (Phase 4 polish)**: Generate a regular (non-set) document using a strong historical reference cluster (ref/related badges in the list). After generation, the "Historical Sources Used" section is auto-appended; a full single-doc intra-document consistency review (via ConsistencyChecker) now also runs automatically for cluster-backed singles (in addition to the lightweight heuristic signal match).
+  - Verify in preview or saved state: consistency report data is available (status + summary/issues if any).
+  - Export (quick or manual): pack should be traceable; for cluster singles the intra-review note/report participates in client-folder/GDrive artifacts where applicable.
 - Save the workspace session (Save / Save As); reload and confirm state (including related-set data) restores.
-- Expected: Drafts are good quality, traceable, exportable; related sets produce consistent companions with full artifacts; GDrive/local client folders work when toggled.
+- Expected: Drafts are good quality, traceable, exportable; related sets produce consistent companions with full artifacts; GDrive/local client folders work when toggled. Single docs with strong refs now exercise intra-consistency automatically.
 
 #### 5. Chief of Staff / AM Sweep / delegation E2E (10–15 min, key for sub-agents)
 - Open Chief of Staff tab.
@@ -459,7 +468,7 @@ Use this progressive checklist (30–60+ min depending on depth) to explore the 
 #### 9. Cross-tab E2E flows & persistence (5–10 min)
 - CoS delegation → Workspace output → export to client folder/GDrive.
 - Intel raised item → appears in CoS briefing → assign to Shield/Sentinel.
-- Generate in Workspace → related set consistency report → surfaces in CoS daily briefing or AM context.
+- Generate in Workspace (related set or single doc with strong historical cluster) → consistency report (cross-doc for sets, intra-doc for singles) → surfaces in CoS _consistency_context / daily briefing / AM context (richer extraction of status + issues/recommendations now active for both).
 - Save Workspace state with set data → reload → export again (artifacts still there).
 - Restart app mid-flow (e.g. during research or after assignment); confirm chats, boards, saved workspaces, jobs resume gracefully.
 - Use “Teach” in agent thread → later assignment to same agent uses the reflection in brief/context.
@@ -467,9 +476,9 @@ Use this progressive checklist (30–60+ min depending on depth) to explore the 
 
 #### 10. Exports, GDrive, final deliverables (3 min, optional setup)
 - From Workspace (set or single): Quick export + manual export.
-- If GDrive token/config ready: Confirm auto-upload of pack (doc + manifest + summary + consistency + billing + historical refs) to client folder.
-- Verify files are client-folder named, traceable.
-- Expected: Full pack lands locally + GDrive (if enabled); no duplicates/conflicts.
+- If GDrive token/config ready: Confirm auto-upload of pack (doc + manifest + summary + consistency report (cross or intra for single) + billing + historical refs) to client folder.
+- Verify files are client-folder named, traceable. For singles with cluster, the intra-consistency review participates.
+- Expected: Full pack lands locally + GDrive (if enabled); no duplicates/conflicts. Single-doc intra reports now part of the traceability surface.
 
 #### 11. Optional deeper / runtime (as time allows)
 - Trigger any autorun (billing, briefing) via restart or wait; confirm single prompt per period.

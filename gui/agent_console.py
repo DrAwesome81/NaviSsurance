@@ -111,6 +111,7 @@ class AgentConsole(QWidget):
         reply_ready_callback: Callable[[str], None] | None = None,
         workflow_trigger_callback: Callable[[str], None] | None = None,
         thread_id: int | str | None = None,  # allow forcing a dedicated thread (used by Intel tab's Pulse chat for isolation)
+        show_agent_title: bool = True,  # set False when the parent already provides a "Direct chat with X" title (e.g. Intel tab general console)
     ):
         super().__init__(parent)
         self.db = db
@@ -119,10 +120,12 @@ class AgentConsole(QWidget):
         self._response_processor = response_processor
         self._reply_ready_callback = reply_ready_callback
         self._workflow_trigger_callback = workflow_trigger_callback
+        self._show_agent_title = bool(show_agent_title)
         self.agent = self.db.agent_get(self.agent_code) or self.db.agent_resolve_by_name(self.agent_code) or {}
         if self.agent:
             self.agent_code = str(self.agent.get("code") or self.agent_code).strip().lower()
-        self._current_thread_id: int | None = int(thread_id) if thread_id is not None else None
+        self._requested_thread_id: int | str | None = thread_id
+        self._current_thread_id: int | None = None
         self._current_assignment_id: int | None = None
         self._last_assistant_message: str = ""
         self._last_user_message: str = ""
@@ -138,14 +141,16 @@ class AgentConsole(QWidget):
 
         display_name = str(self.agent.get("display_name") or self.agent_code or "Agent")
         role_title = str(self.agent.get("role_title") or "Specialist")
-        title = QLabel(f"{display_name} — {role_title}")
-        title.setStyleSheet("color: #e8eaed; font-weight: 600; font-size: 13px;")
-        root.addWidget(title)
+        if self._show_agent_title:
+            title = QLabel(f"{display_name} — {role_title}")
+            title.setStyleSheet("color: #e8eaed; font-weight: 600; font-size: 13px;")
+            root.addWidget(title)
 
         self.assignment_label = QLabel("Assignment: (none selected)")
         self.assignment_label.setStyleSheet("color: #9aa0a6; font-size: 11px;")
         self.assignment_label.setWordWrap(True)
         root.addWidget(self.assignment_label)
+        self.assignment_label.hide()
 
         action_row = QHBoxLayout()
         action_row.setContentsMargins(0, 0, 0, 0)
@@ -182,7 +187,11 @@ class AgentConsole(QWidget):
         self.edit_summary_btn.clicked.connect(self._edit_assignment_summary)
         action_row.addWidget(self.edit_summary_btn)
         action_row.addStretch()
-        root.addLayout(action_row)
+
+        self._assignment_action_container = QWidget()
+        self._assignment_action_container.setLayout(action_row)
+        self._assignment_action_container.hide()
+        root.addWidget(self._assignment_action_container)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(6)
@@ -271,21 +280,29 @@ class AgentConsole(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, int(tid))
             self.threads_list.addItem(item)
 
+        if self._requested_thread_id is not None:
+            if isinstance(self._requested_thread_id, str):
+                # Named isolated thread (e.g. "intel_pulse_main" for the Intel tab's dedicated Pulse chat).
+                # Find existing stable "Intel Pulse Chat" thread for this agent, or create one.
+                # This keeps the direct Pulse chat isolated and persistent across app restarts.
+                for r in rows:
+                    if str(r[2] or "").strip() == "Intel Pulse Chat":
+                        self._current_thread_id = int(r[0])
+                        break
+                if self._current_thread_id is None:
+                    new_tid = self.db.agent_create_thread(
+                        agent_code=self.agent_code,
+                        title="Intel Pulse Chat"
+                    )
+                    if new_tid:
+                        self._current_thread_id = int(new_tid)
+            else:
+                self._current_thread_id = int(self._requested_thread_id)
+            if self._current_thread_id is not None:
+                self._load_current_history()
+                return  # handled requested, skip default
         if self._current_thread_id is None and rows:
             self._current_thread_id = int(rows[0][0])
-            self._load_current_history()
-        elif self._current_thread_id is not None:
-            # We were given a specific thread_id (e.g. "intel_pulse_main" for the isolated Pulse chat in Intel tab).
-            # Make sure it exists; if not, create it so the chat is stable across restarts.
-            existing = [int(r[0]) for r in rows]
-            if self._current_thread_id not in existing:
-                # create a stable thread for this isolated chat
-                new_tid = self.db.agent_create_thread(
-                    agent_code=self.agent_code,
-                    title="Intel Pulse Chat"
-                )
-                if new_tid:
-                    self._current_thread_id = int(new_tid)
             self._load_current_history()
 
     def _refresh_inbox(self):
@@ -367,6 +384,9 @@ class AgentConsole(QWidget):
             if tid:
                 self._current_thread_id = int(tid)
                 self._load_current_history()
+                self.assignment_label.show()
+                self._assignment_action_container.show()
+                self._refresh_assignment_label()
                 self.chat_display.append(
                     f"<p style='color:#9aa0a6;'><i>Focused on Task T-{task_id:04d}</i></p>"
                 )
@@ -391,6 +411,10 @@ class AgentConsole(QWidget):
         self._current_assignment_id = aid
         st = str(row.get("status") or "")
         title = str(row.get("title") or "")
+
+        self.assignment_label.show()
+        self._assignment_action_container.show()
+        self._refresh_assignment_label()
 
         selected_thread: int | None = None
         source_thread_id = row.get("source_thread_id")

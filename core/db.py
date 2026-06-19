@@ -5761,7 +5761,11 @@ class DatabaseManager:
         with sqlite3.connect(self.db_name) as conn:
             existing = conn.execute("SELECT id FROM cos_daily_plans WHERE date = ?", (date_str,)).fetchone()
             plan_json = plan_data.get("plan_json")
+            if isinstance(plan_json, (dict, list)):
+                plan_json = json.dumps(plan_json, ensure_ascii=False)
             visual_html = plan_data.get("visual_html")
+            if isinstance(visual_html, (dict, list)):
+                visual_html = json.dumps(visual_html, ensure_ascii=False)
             status = plan_data.get("status", "proposed")
             if existing:
                 conn.execute(

@@ -5,11 +5,11 @@ context menus, and other UI-related utilities extracted from interface.py.
 (Pulse Intel badges, Shield notes, private memory surfaces can use these UI helpers.)
 """
 
-from PyQt6.QtWidgets import QMessageBox, QLabel, QMenu, QFileDialog
+from PyQt6.QtWidgets import QMessageBox, QLabel, QMenu, QFileDialog, QVBoxLayout, QHBoxLayout, QWidget, QGroupBox
 from PyQt6.QtGui import QAction
 from PyQt6.QtCore import QTimer, Qt, QPoint
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional, Callable
 
 # Pulse private memory + Shield (gui utils surface)
 if TYPE_CHECKING:
@@ -316,6 +316,66 @@ def clear_chat_history(window: 'ChatWindow') -> None:
     )
     if reply == QMessageBox.StandardButton.Yes:
         window.chatDisplay.clear()
+
+
+# =============================================================================
+# Standard tab layout helpers (for consistent look across CoS, Intel, Deep Research,
+# Tasks, Workspace, Leads, Billing, Compliance, etc.)
+# Pattern: header + optional context bar + main splitter (left: chat or primary list,
+# right: details/syntheses/forms) + bottom actions.
+# Use these to avoid drift in header styles, spacing, group boxes, etc.
+# =============================================================================
+
+def add_standard_header(layout: 'QVBoxLayout', title: str, subtitle: str = "") -> None:
+    """Add consistent title + optional subtitle to a tab root layout."""
+    header = QLabel(title)
+    header.setStyleSheet("font-size: 16px; font-weight: 600; color: #e8eaed;")
+    layout.addWidget(header)
+    if subtitle:
+        sub = QLabel(subtitle)
+        sub.setStyleSheet("color: #9aa0a6; font-size: 12px;")
+        layout.addWidget(sub)
+
+
+def create_direct_chat_group(agent_display_name: str, agent_code: str, db: 'DatabaseManager',
+                            context_provider: Optional[Callable] = None,
+                            response_processor: Optional[Callable] = None,
+                            checkable: bool = False, checked: bool = True) -> 'QGroupBox':
+    """Create a standard 'Direct chat with X' group box containing an AgentConsole.
+    Matches the pattern used in Deep Research (Atlas), Tasks (Mason), Intel (Pulse), etc.
+    """
+    from gui.agent_console import AgentConsole
+    group = QGroupBox(f"Direct chat with {agent_display_name}")
+    if checkable:
+        group.setCheckable(True)
+        group.setChecked(checked)
+    chat_layout = QVBoxLayout(group)
+    console = AgentConsole(
+        db,
+        agent_code=agent_code,
+        parent=group,
+        context_provider=context_provider,
+        response_processor=response_processor,
+    )
+    if checkable:
+        console.setVisible(checked)
+        group.toggled.connect(lambda c: console.setVisible(bool(c)))
+    chat_layout.addWidget(console, 1)
+    return group
+
+
+def create_standard_horizontal_splitter(left_widget: 'QWidget', right_widget: 'QWidget',
+                                        left_stretch: int = 2, right_stretch: int = 3) -> 'QSplitter':
+    """Create a standard left/right splitter used across tabs for chat + details.
+    Left usually holds primary interaction (chat or form), right holds supporting content.
+    """
+    splitter = QSplitter(Qt.Orientation.Horizontal)
+    splitter.addWidget(left_widget)
+    splitter.addWidget(right_widget)
+    splitter.setStretchFactor(0, left_stretch)
+    splitter.setStretchFactor(1, right_stretch)
+    splitter.setHandleWidth(6)
+    return splitter
 
 
 def export_chat_as_text(window: 'ChatWindow') -> None:

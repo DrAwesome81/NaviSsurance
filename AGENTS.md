@@ -2,7 +2,7 @@
 
 **Purpose**: This file captures the project's hard rules, conventions, non-negotiables, and development discipline for any agent (Grok, Cursor, human contributor using AI tools, etc.) working on the codebase. It exists so future work stays consistent with how the app was intentionally built.
 
-Last updated: 2026-06 (post CoS/Intel thread + business plan merge)
+Last updated: 2026-06-18 (added absolute rule: only ever edit the Dropbox version; it is the git repo — no separate worktrees)
 
 ## Project Vision & Mental Model
 NaviSsurance is a **desktop-first, local-first Consultant Operating System** for MedTech regulatory work (AI/ML SaMD, IVD/LDT focus). 
@@ -66,6 +66,7 @@ Follow `docs/contributor_guide.md` exactly:
 - Changes that affect CoS layout must preserve (or strengthen) this mental model of "real delegable staff via plain-language chat + clean board/results".
 
 ### 3. Development & Change Discipline (Smallest-Safe, Representative, Verifiable)
+- **Only ever edit the Dropbox version** (`C:\Users\adamo\Dropbox\_Consulting\NaviSsurance`). It is the real git repository. Do **not** touch any worktree, .grok, .cursor, Desktop, or other copy.
 - **Smallest-safe diffs / micro-increments only**. Prefer the tiniest edit to an existing file. No over-engineering, no speculative abstractions, no polish outside the exact task.
 - **Generally prefer editing an existing file** to creating a new one (prevents bloat, builds on existing work).
 - Do not create new source files unless absolutely necessary.
@@ -80,6 +81,7 @@ Follow `docs/contributor_guide.md` exactly:
 - For genuine ambiguity or high-impact restructuring: use `enter_plan_mode` / `exit_plan_mode` (explore, propose plan, get approval before coding).
 - Before claiming "done" on any task: actually verify (run the thing, inspect output). If no test exists for a claim, say so explicitly.
 - "Defensive" implementation: never break existing writes/flows; graceful fallbacks; handle missing optional deps (e.g., onnxruntime for Intel vectors → keyword fallback).
+- Responses and summaries to the user must be short and to the point. No walls of text.
 
 ### 4. Roadmap & Scope Discipline
 - The 5-phase plan in `docs/consultant-os-roadmap.md` is **fixed and approved**. Follow the order.
@@ -110,17 +112,26 @@ Follow `docs/contributor_guide.md` exactly:
 - Logs, timing, and diagnostics (e.g., `PULSE_DIAGNOSTIC`) are valuable for debugging but keep user-facing surfaces clean.
 - Business context: The June 2026 plan (`business-plan/`) is the current growth blueprint. 90-day actions are meant to be executed *inside* the app (CoS + Intel + Workspace).
 
+### 8. Source Location Discipline (Dropbox Version Only — Absolute Rule)
+- The **only** place you are ever allowed to read, grep, or edit code/docs is the Dropbox version:
+  `C:\Users\adamo\Dropbox\_Consulting\NaviSsurance`
+- The Dropbox folder **is** the git repository. Do not use, create, or edit any separate worktree, `.grok/worktrees`, `.cursor`, Desktop zip copy, or any other checkout.
+- There is never a need for a "separate local branch" or worktree — commit, branch, and push directly from the Dropbox tree.
+- This rule exists specifically to prevent the "I edited the code but the running app showed no change" class of bugs.
+- When a user says "I'm running from the Dropbox version", you must target that path for every file operation.
+
 ## Practical Workflow for Agents
 1. Start every significant task by reading the relevant source-of-truth docs + `AGENTS.md` + key code.
-2. Use exploration tools liberally.
-3. For anything non-trivial: create a todo list.
-4. Make the smallest possible safe change.
-5. Run targeted tests + representative verification.
-6. Update docs if the change is meaningful.
-7. Verify end-to-end where possible (run the app flow, inspect artifacts, check logs).
-8. If layout/UI: double-check the two-pane rule and prune ruthlessly.
-9. If touching Intel: re-assert 100% local + run the vector-disabled tests.
-10. Document what you did (in commit message, summary, or code comments) with file:line references.
+2. **Always target the Dropbox tree** (`C:\Users\adamo\Dropbox\_Consulting\NaviSsurance`). Never touch any worktree/.grok/.cursor copy.
+3. Use exploration tools liberally (on the Dropbox paths only).
+4. For anything non-trivial: create a todo list.
+5. Make the smallest possible safe change.
+6. Run targeted tests + representative verification.
+7. Update docs if the change is meaningful.
+8. Verify end-to-end where possible (run the app flow, inspect artifacts, check logs).
+9. If layout/UI: double-check the two-pane rule and prune ruthlessly.
+10. If touching Intel: re-assert 100% local + run the vector-disabled tests.
+11. Document what you did (in commit message, summary, or code comments) with file:line references.
 
 ## Things That Have Historically Caused Pain (Avoid)
 - Feature accretion in CoS sidebar (leads to "fucking disaster" cluttered UIs and massive cleanup debt).
